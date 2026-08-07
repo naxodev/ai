@@ -15,7 +15,7 @@
   },
   "devDependencies": {
     "@nx/js": "23.0.0",
-    "nx": "23.0.0",
+    "nx": "23.1.1",
     "prettier": "3.9.6",
     "typescript": "5.9.3"
   }
