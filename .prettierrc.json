@@ -1,0 +1,12 @@
+{
+  "semi": false,
+  "overrides": [
+    {
+      "files": "packages/pi-music-dock/**/*.{ts,tsx}",
+      "options": {
+        "semi": true,
+        "useTabs": true
+      }
+    }
+  ]
+}

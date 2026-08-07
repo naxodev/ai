@@ -1,0 +1,69 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "cli": {
+    "packageManager": "bun"
+  },
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "sharedGlobals": [
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock",
+      "{workspaceRoot}/nx.json"
+    ]
+  },
+  "targetDefaults": {
+    "typecheck": {
+      "cache": true,
+      "inputs": ["default", "^default"]
+    },
+    "test": {
+      "cache": true,
+      "inputs": ["default", "^default"]
+    },
+    "format:check": {
+      "cache": true,
+      "inputs": ["default"]
+    },
+    "package:check": {
+      "cache": true,
+      "inputs": ["default"]
+    },
+    "smoke": {
+      "cache": true,
+      "inputs": ["default", "^default"]
+    }
+  },
+  "release": {
+    "projectsRelationship": "independent",
+    "projects": ["opencode-music-player", "pi-music-dock"],
+    "version": {
+      "useLegacyVersioning": false,
+      "preVersionCommand": "bunx nx run-many -t typecheck test format:check package:check smoke",
+      "conventionalCommits": true,
+      "fallbackCurrentVersionResolver": "disk",
+      "manifestRootsToUpdate": ["{projectRoot}"]
+    },
+    "git": {
+      "commit": true,
+      "commitArgs": "--no-verify",
+      "push": true
+    },
+    "changelog": {
+      "projectChangelogs": {
+        "createRelease": "github",
+        "file": false
+      },
+      "workspaceChangelog": false,
+      "commitMessageFormat": "conventional"
+    },
+    "conventionalCommits": {
+      "docs": {
+        "semverBump": "patch"
+      }
+    },
+    "releaseTag": {
+      "pattern": "{projectName}@v{version}"
+    }
+  },
+  "analytics": false
+}

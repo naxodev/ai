@@ -1,0 +1,5 @@
+node_modules/
+.nx/
+.DS_Store
+*.log
+*.tgz

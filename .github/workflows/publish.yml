@@ -1,0 +1,134 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "opencode-music-player@v*"
+      - "pi-music-dock@v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, such as opencode-music-player@v0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish production package
+    runs-on: macos-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: publish-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - name: Resolve and validate release tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          if [[ "$RELEASE_TAG" =~ ^(opencode-music-player|pi-music-dock)@v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            PROJECT="${BASH_REMATCH[1]}"
+            VERSION="${RELEASE_TAG#*@v}"
+          else
+            echo "::error::Expected opencode-music-player@vX.Y.Z or pi-music-dock@vX.Y.Z"
+            exit 1
+          fi
+
+          case "$PROJECT" in
+            opencode-music-player) PACKAGE='@naxodev/opencode-music-player' ;;
+            pi-music-dock) PACKAGE='@naxodev/pi-music-dock' ;;
+            *) echo "::error::Unmapped project '$PROJECT'"; exit 1 ;;
+          esac
+
+          case "$VERSION" in
+            *-*) DIST_TAG=next ;;
+            *) DIST_TAG=latest ;;
+          esac
+
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "project=$PROJECT"
+            echo "package=$PACKAGE"
+            echo "version=$VERSION"
+            echo "dist_tag=$DIST_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: package.json
+
+      # Do not set registry-url. It creates an auth-token entry that breaks tokenless OIDC publishing.
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install --global npm@11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify package name and version
+        env:
+          EXPECTED_NAME: ${{ steps.release.outputs.package }}
+          EXPECTED_VERSION: ${{ steps.release.outputs.version }}
+          PROJECT: ${{ steps.release.outputs.project }}
+        run: |
+          ACTUAL_NAME=$(node -p "require('./packages/$PROJECT/package.json').name")
+          ACTUAL_VERSION=$(node -p "require('./packages/$PROJECT/package.json').version")
+          if [ "$ACTUAL_NAME" != "$EXPECTED_NAME" ] || [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Tag expects $EXPECTED_NAME@$EXPECTED_VERSION but manifest contains $ACTUAL_NAME@$ACTUAL_VERSION"
+            exit 1
+          fi
+
+      - name: Check whether version is already published
+        id: published
+        env:
+          PACKAGE: ${{ steps.release.outputs.package }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if [ "$(npm view "$PACKAGE@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+            echo "::notice::$PACKAGE@$VERSION is already published"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run package release gates
+        if: steps.published.outputs.skip != 'true'
+        run: bunx nx run-many -t typecheck test format:check package:check smoke --projects=${{ steps.release.outputs.project }}
+
+      - name: Publish source package with OIDC and provenance
+        if: steps.published.outputs.skip != 'true'
+        run: npm publish "packages/${{ steps.release.outputs.project }}" --access public --provenance --tag "${{ steps.release.outputs.dist_tag }}"
+        env:
+          npm_config_registry: https://registry.npmjs.org
+
+      - name: Verify registry publication
+        if: steps.published.outputs.skip != 'true'
+        env:
+          PACKAGE: ${{ steps.release.outputs.package }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if [ "$(npm view "$PACKAGE@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+              echo "$PACKAGE@$VERSION is live"
+              exit 0
+            fi
+            echo "$PACKAGE@$VERSION is not visible yet (attempt $attempt/5)"
+            sleep 5
+          done
+          echo "::error::$PACKAGE@$VERSION is not visible on npm"
+          exit 1

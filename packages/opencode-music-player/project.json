@@ -1,0 +1,44 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "opencode-music-player",
+  "projectType": "library",
+  "sourceRoot": "packages/opencode-music-player",
+  "tags": ["scope:public", "type:package"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run check",
+        "cwd": "packages/opencode-music-player"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun test",
+        "cwd": "packages/opencode-music-player"
+      }
+    },
+    "format:check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run format:check",
+        "cwd": "packages/opencode-music-player"
+      }
+    },
+    "package:check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run pack:check",
+        "cwd": "packages/opencode-music-player"
+      }
+    },
+    "smoke": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run smoke:package",
+        "cwd": "packages/opencode-music-player"
+      }
+    }
+  }
+}

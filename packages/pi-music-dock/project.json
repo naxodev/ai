@@ -1,0 +1,44 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "pi-music-dock",
+  "projectType": "library",
+  "sourceRoot": "packages/pi-music-dock/extensions",
+  "tags": ["scope:public", "type:package"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run typecheck",
+        "cwd": "packages/pi-music-dock"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun test",
+        "cwd": "packages/pi-music-dock"
+      }
+    },
+    "format:check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run format:check",
+        "cwd": "packages/pi-music-dock"
+      }
+    },
+    "package:check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run pack:check",
+        "cwd": "packages/pi-music-dock"
+      }
+    },
+    "smoke": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run smoke:package",
+        "cwd": "packages/pi-music-dock"
+      }
+    }
+  }
+}

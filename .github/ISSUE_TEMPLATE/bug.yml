@@ -1,0 +1,67 @@
+name: Bug report
+description: Report reproducible incorrect behavior on macOS.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Search existing issues before submitting a report. Remove secrets and private media information from logs.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Current behavior
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Configure the plugin...
+        2. Start playback...
+        3. Run OpenCode...
+    validations:
+      required: true
+  - type: input
+    id: opencode
+    attributes:
+      label: OpenCode version
+      description: Output from `opencode2 --version`.
+    validations:
+      required: true
+  - type: input
+    id: package
+    attributes:
+      label: Package version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Media backend
+      options:
+        - media-control
+        - nowplaying-cli
+        - Neither or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste redacted OpenCode log lines.
+      render: shell
