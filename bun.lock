@@ -21,7 +21,7 @@
         "solid-js": "1.9.12",
       },
       "devDependencies": {
-        "@opencode-ai/theme": "0.0.0-next-16927",
+        "@opencode-ai/theme": "0.0.0",
         "@types/bun": "^1.3.14",
         "prettier": "3.9.6",
         "typescript": "5.9.3",
@@ -411,7 +411,7 @@
 
     "@opencode-ai/sdk": ["@opencode-ai/sdk@1.18.5", "", { "dependencies": { "cross-spawn": "7.0.6" } }, "sha512-7KgMvP5/1oxbhHj6kYBtPSTEdFKYpUeEYOzBTKdzSaRpapUpFFdn6Hkus3rr0rljO0kukWZIgRd3DrVBwTULGA=="],
 
-    "@opencode-ai/theme": ["@opencode-ai/theme@0.0.0-next-16927", "", { "dependencies": { "@opentui/core": "0.4.5", "effect": "4.0.0-beta.101" } }, "sha512-RVIiN4pgcVYMUUlbodpXgGn4sp7hv0waaBbXNJ8JwUmyL8+0Zas47jaHoJSW/FJPjhGDx3eiFKFAj6ALtSSliw=="],
+    "@opencode-ai/theme": ["@opencode-ai/theme@0.0.0", "", {}, "sha512-ktSJn9lTFrMxNMOdgiAfnNikaqjRkTrGe0LkSUy+7ZgAHkWNo189R8scL6DJfC8xf3g62EGU08TkrCYY8+GcWQ=="],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 
