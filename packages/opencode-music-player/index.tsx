@@ -7,7 +7,7 @@ import {
   openNowPlayingApp,
 } from "./system-media.ts"
 import { isMac, type MusicBackend, type PlayerState } from "./types.ts"
-import { FooterDock, type UiState } from "./ui.tsx"
+import { SidebarPlayer, type UiState } from "./ui.tsx"
 
 const POLL_PLAYING_MS = 3000
 const POLL_IDLE_MS = 8000
@@ -18,9 +18,6 @@ type SessionStore = UiState
 
 type Controller = {
   session: SessionStore
-  toggleExpand: () => void
-  expand: () => void
-  collapse: () => void
   openApp: () => Promise<void>
   refreshAll: () => Promise<void>
   playPause: () => Promise<void>
@@ -38,18 +35,12 @@ function errMsg(e: unknown): string {
 
 function createController(context: Context): Controller {
   const [session, setSession] = context.storage.memory<SessionStore>(
-    "music-player.session.v4",
+    "music-player.session.v5",
     {
       initial: {
         loading: false,
         error: null,
-        query: "",
-        results: [],
-        selected: 0,
-        devices: [],
         player: null,
-        view: "now",
-        expanded: false,
       },
     },
   )
@@ -133,7 +124,6 @@ function createController(context: Context): Controller {
       if (disposed) return
       setSession((d) => {
         d.player = player
-        d.devices = player?.device ? [player.device] : []
       })
     } catch (e) {
       if (!disposed) setError(errMsg(e))
@@ -170,30 +160,12 @@ function createController(context: Context): Controller {
     pollTimer = null
   }
 
-  const expand = () => {
-    setSession((d) => {
-      d.expanded = true
-    })
-    void refreshAll()
-  }
-
-  const collapse = () => {
-    setSession((d) => {
-      d.expanded = false
-    })
-  }
-
-  const toggleExpand = () => {
-    if (session.expanded) collapse()
-    else expand()
-  }
-
   const openApp = async () => {
     await withLoading(async () => {
       openNowPlayingApp()
       context.ui.toast.show({
         title: "Music",
-        message: "Play in any app — footer uses system media",
+        message: "Play in any app — the sidebar uses system media",
         variant: "info",
       })
       await Bun.sleep(400)
@@ -232,9 +204,6 @@ function createController(context: Context): Controller {
 
   return {
     session,
-    toggleExpand,
-    expand,
-    collapse,
     openApp,
     refreshAll,
     playPause,
@@ -249,21 +218,11 @@ function createController(context: Context): Controller {
 
 function Host(props: { context: Context; ctrl: Controller }) {
   const { context, ctrl } = props
-  const expanded = () => ctrl.session.expanded
 
   context.keymap.layer(() => ({
     mode: "global",
     priority: 200,
     commands: [
-      {
-        id: "music.toggle",
-        title: "Toggle music footer",
-        group: "Music",
-        bind: "ctrl+shift+m",
-        palette: true,
-        slash: { name: "music" },
-        run: () => ctrl.toggleExpand(),
-      },
       {
         id: "music.playpause",
         title: "Play / pause",
@@ -299,54 +258,10 @@ function Host(props: { context: Context; ctrl: Controller }) {
     ],
   }))
 
-  context.keymap.layer(() => ({
-    mode: "global",
-    enabled: expanded,
-    priority: 750,
-    commands: [
-      {
-        id: "music.collapse",
-        bind: "escape",
-        title: "Collapse",
-        group: "Music",
-        run: () => ctrl.collapse(),
-      },
-      {
-        id: "music.refresh",
-        bind: "shift+r",
-        title: "Refresh",
-        group: "Music",
-        run: () => void ctrl.refreshAll(),
-      },
-      {
-        id: "music.playpause.footer",
-        bind: "space",
-        title: "Play / pause",
-        group: "Music",
-        run: () => void ctrl.playPause(),
-      },
-      {
-        id: "music.next.footer",
-        bind: "right",
-        title: "Next",
-        group: "Music",
-        run: () => void ctrl.next(),
-      },
-      {
-        id: "music.prev.footer",
-        bind: "left",
-        title: "Previous",
-        group: "Music",
-        run: () => void ctrl.prev(),
-      },
-    ],
-  }))
-
   return (
-    <FooterDock
+    <SidebarPlayer
       context={context}
       state={ctrl.session}
-      onToggleExpand={ctrl.toggleExpand}
       onPlayPause={() => void ctrl.playPause()}
       onNext={() => void ctrl.next()}
       onPrev={() => void ctrl.prev()}
@@ -374,7 +289,7 @@ export default Plugin.define({
     }
 
     const ctrl = createController(context)
-    const unsub = context.ui.slot("app", () => (
+    const unsub = context.ui.slot("sidebar.content", () => (
       <Host context={context} ctrl={ctrl} />
     ))
     return () => {

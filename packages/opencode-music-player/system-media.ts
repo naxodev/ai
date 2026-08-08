@@ -6,11 +6,13 @@
  */
 import {
   emptyPlayer,
+  type Artwork,
   type MusicBackend,
   type MusicError,
   type PlayerState,
   type Track,
 } from "./types.ts"
+import { resolveArtwork } from "./artwork.ts"
 
 type MediaGet = {
   title?: string | null
@@ -24,6 +26,15 @@ type MediaGet = {
   bundleIdentifier?: string | null
   contentItemIdentifier?: string | null
   timestamp?: string | null
+  artworkData?: string | null
+}
+
+export type ArtworkIdentity = {
+  uid: string
+  title: string
+  artist: string
+  album: string
+  duration_ms: number
 }
 
 export type Clock = {
@@ -35,6 +46,13 @@ export type Clock = {
 
 let clock: Clock | null = null
 let backendKind: "media-control" | "nowplaying-cli" | null = null
+type ArtworkCacheEntry = {
+  value: Artwork | null
+  pending: boolean
+  attempts: number
+  retry_at: number
+}
+const artworkCache = new Map<string, ArtworkCacheEntry>()
 
 async function run(
   cmd: string[],
@@ -99,6 +117,50 @@ function setPlaying(playing: boolean) {
 
 export function trackKey(title: string, artist: string, uid: string): string {
   return uid || `${title}\0${artist}`
+}
+
+export function artworkIdentityKey(identity: ArtworkIdentity): string {
+  return JSON.stringify([
+    identity.uid,
+    identity.title,
+    identity.artist,
+    identity.album,
+    identity.duration_ms,
+  ])
+}
+
+function artworkIdentityFromSample(sample: MediaGet): ArtworkIdentity | null {
+  if (!sample.title) return null
+  const duration =
+    typeof sample.duration === "number" && Number.isFinite(sample.duration)
+      ? sample.duration
+      : 0
+  return {
+    uid:
+      sample.contentItemIdentifier != null
+        ? String(sample.contentItemIdentifier)
+        : "",
+    title: String(sample.title),
+    artist: sample.artist != null ? String(sample.artist) : "",
+    album: sample.album != null ? String(sample.album) : "",
+    duration_ms: Math.round(duration * 1_000),
+  }
+}
+
+export function artworkDataForIdentity(
+  expected: ArtworkIdentity,
+  sample: MediaGet,
+): string | null {
+  const actual = artworkIdentityFromSample(sample)
+  if (
+    !actual ||
+    artworkIdentityKey(actual) !== artworkIdentityKey(expected) ||
+    typeof sample.artworkData !== "string" ||
+    !sample.artworkData
+  ) {
+    return null
+  }
+  return sample.artworkData
 }
 
 /**
@@ -202,6 +264,7 @@ function buildState(opts: {
   is_playing: boolean
   now: number
   bundle: string | null
+  artwork: Artwork | null
 }): PlayerState {
   return {
     is_playing: opts.is_playing,
@@ -223,9 +286,61 @@ function buildState(opts: {
       artists: opts.artist,
       album: opts.album,
       duration_ms: opts.duration_ms,
+      artwork: opts.artwork,
     },
     fetched_at: opts.now,
   }
+}
+
+async function artworkForTrack(
+  key: string,
+  target: {
+    title: string
+    artist: string
+    album: string
+    duration_ms: number
+  },
+  native: (() => Promise<string | null>) | null,
+): Promise<Artwork | null> {
+  let entry = artworkCache.get(key)
+  if (!entry) {
+    entry = { value: null, pending: false, attempts: 0, retry_at: 0 }
+    artworkCache.set(key, entry)
+    if (artworkCache.size > 32) {
+      const oldest = artworkCache.keys().next().value
+      if (oldest) artworkCache.delete(oldest)
+    }
+  }
+
+  if (
+    !entry.value &&
+    !entry.pending &&
+    entry.attempts < 3 &&
+    Date.now() >= entry.retry_at
+  ) {
+    entry.pending = true
+    entry.attempts++
+    const activeEntry = entry
+    void (async () => {
+      const data = await native?.()
+      return resolveArtwork(key, target, data ?? null)
+    })().then(
+      (artwork) => {
+        activeEntry.value = artwork
+        activeEntry.pending = false
+        if (!artwork) {
+          activeEntry.retry_at =
+            Date.now() + 2_000 * 2 ** (activeEntry.attempts - 1)
+        }
+      },
+      () => {
+        activeEntry.pending = false
+        activeEntry.retry_at =
+          Date.now() + 2_000 * 2 ** (activeEntry.attempts - 1)
+      },
+    )
+  }
+  return entry.value
 }
 
 async function playerViaMediaControl(): Promise<PlayerState | null> {
@@ -269,6 +384,8 @@ async function playerViaMediaControl(): Promise<PlayerState | null> {
   const reported_ms = Math.round(elapsedSec * 1000)
   const now = Date.now()
   const key = trackKey(title, artist, uid)
+  const artworkIdentity = { uid, title, artist, album, duration_ms }
+  const artworkKey = artworkIdentityKey(artworkIdentity)
   const { progress_ms, is_playing } = syncFromSample({
     key,
     reported_ms,
@@ -277,6 +394,20 @@ async function playerViaMediaControl(): Promise<PlayerState | null> {
     rate,
     now,
   })
+  const artwork = await artworkForTrack(
+    artworkKey,
+    { title, artist, album, duration_ms },
+    async () => {
+      const result = await run(["media-control", "get", "--now"])
+      if (!result.ok) return null
+      try {
+        const sample = JSON.parse(result.out) as MediaGet | null
+        return sample ? artworkDataForIdentity(artworkIdentity, sample) : null
+      } catch {
+        return null
+      }
+    },
+  )
 
   return buildState({
     key,
@@ -288,6 +419,7 @@ async function playerViaMediaControl(): Promise<PlayerState | null> {
     is_playing,
     now,
     bundle,
+    artwork,
   })
 }
 
@@ -344,6 +476,13 @@ async function playerViaNowPlayingCli(): Promise<PlayerState | null> {
   const reported_ms = Math.round(elapsedSec * 1000)
   const now = Date.now()
   const key = trackKey(title, artist, "")
+  const artworkKey = artworkIdentityKey({
+    uid: "",
+    title,
+    artist,
+    album,
+    duration_ms,
+  })
   const { progress_ms, is_playing } = syncFromSample({
     key,
     reported_ms,
@@ -352,6 +491,11 @@ async function playerViaNowPlayingCli(): Promise<PlayerState | null> {
     rate: Number.isFinite(rate) ? rate : NaN,
     now,
   })
+  const artwork = await artworkForTrack(
+    artworkKey,
+    { title, artist, album, duration_ms },
+    null,
+  )
 
   return buildState({
     key,
@@ -363,6 +507,7 @@ async function playerViaNowPlayingCli(): Promise<PlayerState | null> {
     is_playing,
     now,
     bundle: null,
+    artwork,
   })
 }
 
