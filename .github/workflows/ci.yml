@@ -34,6 +34,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install tested OpenCode CLI
+        run: |
+          OPENCODE_VERSION=$(node -p "require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']")
+          bun add --global "@opencode-ai/cli@$OPENCODE_VERSION"
+
       - name: Check workspace formatting
         run: bun run format:check
 

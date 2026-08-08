@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "opencode-music-player@v*"
+      - "opencode-vim@v*"
       - "pi-music-dock@v*"
   workflow_dispatch:
     inputs:
@@ -31,16 +32,17 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         run: |
-          if [[ "$RELEASE_TAG" =~ ^(opencode-music-player|pi-music-dock)@v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          if [[ "$RELEASE_TAG" =~ ^(opencode-music-player|opencode-vim|pi-music-dock)@v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             PROJECT="${BASH_REMATCH[1]}"
             VERSION="${RELEASE_TAG#*@v}"
           else
-            echo "::error::Expected opencode-music-player@vX.Y.Z or pi-music-dock@vX.Y.Z"
+            echo "::error::Expected opencode-music-player@vX.Y.Z, opencode-vim@vX.Y.Z, or pi-music-dock@vX.Y.Z"
             exit 1
           fi
 
           case "$PROJECT" in
             opencode-music-player) PACKAGE='@naxodev/opencode-music-player' ;;
+            opencode-vim) PACKAGE='@naxodev/opencode-vim' ;;
             pi-music-dock) PACKAGE='@naxodev/pi-music-dock' ;;
             *) echo "::error::Unmapped project '$PROJECT'"; exit 1 ;;
           esac
@@ -79,6 +81,12 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Install tested OpenCode CLI
+        if: steps.release.outputs.project == 'opencode-vim'
+        run: |
+          OPENCODE_VERSION=$(node -p "require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']")
+          bun add --global "@opencode-ai/cli@$OPENCODE_VERSION"
 
       - name: Verify package name and version
         env:

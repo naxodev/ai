@@ -1,0 +1,70 @@
+{
+  "name": "@naxodev/opencode-vim",
+  "version": "0.1.0",
+  "description": "Native Vim-style modal prompt editing for the OpenCode 2 TUI",
+  "license": "MIT",
+  "author": {
+    "name": "Nacho Vazquez",
+    "url": "https://github.com/NachoVazquez"
+  },
+  "funding": "https://github.com/sponsors/NachoVazquez",
+  "homepage": "https://github.com/naxodev/ai/tree/main/packages/opencode-vim#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/naxodev/ai.git",
+    "directory": "packages/opencode-vim"
+  },
+  "bugs": {
+    "url": "https://github.com/naxodev/ai/issues"
+  },
+  "type": "module",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "vim",
+    "modal-editing"
+  ],
+  "exports": {
+    ".": "./index.tsx",
+    "./tui": "./tui.tsx"
+  },
+  "files": [
+    "clipboard.ts",
+    "editor-actions.ts",
+    "engine.ts",
+    "index.tsx",
+    "tui.tsx",
+    "LICENSE",
+    "LICENSE.vimcode",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "pack:check": "bun run scripts/verify-pack.ts",
+    "smoke:package": "bun run scripts/package-smoke.ts",
+    "validate": "bun run format:check && bun run check && bun run test && bun run pack:check && bun run smoke:package"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-next-17020",
+    "@opentui/core": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "@opencode-ai/theme": "0.0.0-next-17020",
+    "@types/bun": "^1.3.14",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3"
+  }
+}

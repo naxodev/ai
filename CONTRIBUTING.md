@@ -4,7 +4,7 @@ Contributions are welcome. By participating, you agree to follow the [Code of Co
 
 ## Development
 
-This workspace requires macOS because both production packages invoke macOS media tools. Install Bun 1.3.7 and Node.js 22.19 or later.
+This workspace requires macOS because the media packages invoke macOS tools and the OpenCode Vim package runs a real-TUI smoke test. Install Bun 1.3.7, Node.js 22.19 or later, and the OpenCode version pinned by `packages/opencode-vim/package.json`.
 
 ```sh
 git clone https://github.com/naxodev/ai.git
@@ -13,7 +13,7 @@ bun install --frozen-lockfile
 bun run check
 ```
 
-Run one project's checks with `bunx nx run-many -t typecheck test format:check package:check smoke --projects=<project>`. The project names are `opencode-music-player` and `pi-music-dock`.
+Run one project's checks with `bunx nx run-many -t typecheck test format:check package:check smoke --projects=<project>`. The project names are `opencode-music-player`, `opencode-vim`, and `pi-music-dock`.
 
 Keep changes focused and preserve each host integration contract. Add tests that explain why changed behavior matters. Use Conventional Commit messages, such as `fix(pi-music-dock): keep paused waveform still`.
 
@@ -52,24 +52,27 @@ Do not configure an npm token. The workflow uses npm 11, OIDC trusted publishing
 
 ### First publication
 
-npm does not allow trusted publisher configuration before a package exists. Neither package exists yet, so a maintainer must bootstrap version `0.1.0` once from each package directory with an interactive npm account and 2FA:
+npm does not allow trusted publisher configuration before a package exists. A maintainer must bootstrap version `0.1.0` once from each unpublished package directory with an interactive npm account and 2FA:
 
 ```sh
 bun run check
 cd packages/opencode-music-player
 npm publish --access public --provenance=false
+cd ../opencode-vim
+npm publish --access public --provenance=false
 cd ../pi-music-dock
 npm publish --access public --provenance=false
 ```
 
-Configure both trusted publishers immediately afterward. Every later release uses OIDC and includes provenance.
+Configure each trusted publisher immediately afterward. Every later release uses OIDC and includes provenance.
 
 Create the initial release tags on the bootstrap commit so future Nx releases have a version baseline:
 
 ```sh
 git tag -a opencode-music-player@v0.1.0 -m "opencode-music-player@v0.1.0"
+git tag -a opencode-vim@v0.1.0 -m "opencode-vim@v0.1.0"
 git tag -a pi-music-dock@v0.1.0 -m "pi-music-dock@v0.1.0"
-git push origin opencode-music-player@v0.1.0 pi-music-dock@v0.1.0
+git push origin opencode-music-player@v0.1.0 opencode-vim@v0.1.0 pi-music-dock@v0.1.0
 ```
 
 These tag-triggered workflow runs are safe after the manual publications because their registry checks skip existing versions.
