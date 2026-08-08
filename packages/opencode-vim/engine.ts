@@ -10,14 +10,24 @@ function isEnterKey(key: string): key is EnterKey {
   return enterKeys.has(key as EnterKey)
 }
 
+export type PendingCommand =
+  | { type: "none"; count: number }
+  | { type: "prefix"; prefix: "g" | "replace"; count: number }
+  | {
+      type: "operator"
+      operator: Operator
+      count: number
+      motionCount: number
+      prefix: "g" | null
+    }
+
+export type VisualState = { kind: "character" | "line" }
+
 export type VimState = {
   mode: VimMode
   oneShotNormal: boolean
-  count: number
-  operator: Operator | null
-  operatorCount: number
-  prefix: "g" | "replace" | null
-  lineVisual: boolean
+  pending: PendingCommand
+  visual: VisualState | null
 }
 
 export type VimAction =
@@ -63,32 +73,48 @@ export function createVimState(startMode: VimMode = "insert"): VimState {
   return {
     mode: startMode,
     oneShotNormal: false,
-    count: 0,
-    operator: null,
-    operatorCount: 0,
-    prefix: null,
-    lineVisual: false,
+    pending: { type: "none", count: 0 },
+    visual: null,
   }
 }
 
 function takeCount(state: VimState): number {
-  const count = state.count || 1
-  state.count = 0
+  const count =
+    state.pending.type === "operator"
+      ? state.pending.motionCount || 1
+      : state.pending.count || 1
+  if (state.pending.type === "operator") state.pending.motionCount = 0
+  else state.pending.count = 0
   return count
 }
 
 function clearPending(state: VimState) {
-  state.count = 0
-  state.operator = null
-  state.operatorCount = 0
-  state.prefix = null
+  state.pending = { type: "none", count: 0 }
+}
+
+function appendCount(state: VimState, digit: number) {
+  if (state.pending.type === "operator") {
+    state.pending.motionCount = state.pending.motionCount * 10 + digit
+    return
+  }
+  state.pending.count = state.pending.count * 10 + digit
+}
+
+function hasCount(state: VimState) {
+  return state.pending.type === "operator"
+    ? state.pending.motionCount > 0
+    : state.pending.count > 0
+}
+
+function commandComplete(state: VimState) {
+  return state.pending.type === "none" && state.pending.count === 0
 }
 
 function setMode(state: VimState, mode: VimMode) {
   clearPending(state)
   state.mode = mode
   state.oneShotNormal = false
-  state.lineVisual = false
+  state.visual = null
 }
 
 function operatorFor(key: string): Operator | null {
@@ -130,9 +156,7 @@ export function transition(state: VimState, key: string): Transition {
     state.oneShotNormal &&
     result.consume &&
     state.mode === "normal" &&
-    state.count === 0 &&
-    state.operator === null &&
-    state.prefix === null
+    commandComplete(state)
   ) {
     state.mode = "insert"
     state.oneShotNormal = false
@@ -153,9 +177,9 @@ function transitionNormal(state: VimState, key: string): Transition {
     return { consume: true, actions: [] }
   }
 
-  if (state.prefix === "replace") {
+  if (state.pending.type === "prefix" && state.pending.prefix === "replace") {
     const count = takeCount(state)
-    state.prefix = null
+    clearPending(state)
     if (key === "escape") return { consume: true, actions: [] }
     const replacement =
       key === "space"
@@ -175,42 +199,46 @@ function transitionNormal(state: VimState, key: string): Transition {
         }
   }
 
-  if (state.prefix === "g") {
-    state.prefix = null
+  if (state.pending.type === "prefix" && state.pending.prefix === "g") {
     const count = takeCount(state)
+    clearPending(state)
     if (key === "g") {
-      if (state.operator) {
-        const operator = state.operator
-        const operatorCount = state.operatorCount
-        clearPending(state)
-        if (operator === "change") setMode(state, "insert")
-        return {
-          consume: true,
-          actions: [
-            {
-              type: "operator-motion",
-              operator,
-              key: "gg",
-              count: operatorCount * count,
-            },
-          ],
-        }
-      }
       return { consume: true, actions: [{ type: "motion", key: "gg", count }] }
     }
-    clearPending(state)
     return { consume: true, actions: [] }
   }
 
-  if (/^[1-9]$/.test(key) || (key === "0" && state.count > 0)) {
-    state.count = state.count * 10 + Number(key)
+  if (state.pending.type === "operator" && state.pending.prefix === "g") {
+    const { operator, count: operatorCount } = state.pending
+    const count = takeCount(state)
+    clearPending(state)
+    if (key !== "g") return { consume: true, actions: [] }
+    if (operator === "change") setMode(state, "insert")
+    return {
+      consume: true,
+      actions: [
+        {
+          type: "operator-motion",
+          operator,
+          key: "gg",
+          count: operatorCount * count,
+        },
+      ],
+    }
+  }
+
+  if (/^[1-9]$/.test(key) || (key === "0" && hasCount(state))) {
+    appendCount(state, Number(key))
     return { consume: true, actions: [] }
   }
 
   const nextOperator = operatorFor(key)
   if (nextOperator) {
-    if (state.operator === nextOperator) {
-      const count = state.operatorCount * takeCount(state)
+    if (
+      state.pending.type === "operator" &&
+      state.pending.operator === nextOperator
+    ) {
+      const count = state.pending.count * takeCount(state)
       clearPending(state)
       if (nextOperator === "change") {
         state.mode = "insert"
@@ -221,19 +249,25 @@ function transitionNormal(state: VimState, key: string): Transition {
         actions: [{ type: "operator-line", operator: nextOperator, count }],
       }
     }
-    state.operator = nextOperator
-    state.operatorCount = takeCount(state)
+    const count = takeCount(state)
+    state.pending = {
+      type: "operator",
+      operator: nextOperator,
+      count,
+      motionCount: 0,
+      prefix: null,
+    }
     return { consume: true, actions: [] }
   }
 
-  if (state.operator) {
+  if (state.pending.type === "operator") {
     if (key === "g") {
-      state.prefix = "g"
+      state.pending.prefix = "g"
       return { consume: true, actions: [] }
     }
     if (isMotionKey(key)) {
-      const operator = state.operator
-      const count = state.operatorCount * takeCount(state)
+      const operator = state.pending.operator
+      const count = state.pending.count * takeCount(state)
       clearPending(state)
       if (operator === "change") {
         state.mode = "insert"
@@ -255,11 +289,13 @@ function transitionNormal(state: VimState, key: string): Transition {
     }
   }
   if (key === "g") {
-    state.prefix = "g"
+    const count = takeCount(state)
+    state.pending = { type: "prefix", prefix: "g", count }
     return { consume: true, actions: [] }
   }
   if (key === "r") {
-    state.prefix = "replace"
+    const count = takeCount(state)
+    state.pending = { type: "prefix", prefix: "replace", count }
     return { consume: true, actions: [] }
   }
   if (isEnterKey(key)) {
@@ -270,10 +306,16 @@ function transitionNormal(state: VimState, key: string): Transition {
     const oneShotNormal = state.oneShotNormal
     setMode(state, "visual")
     state.oneShotNormal = oneShotNormal
-    state.lineVisual = key === "V"
+    state.visual = { kind: key === "V" ? "line" : "character" }
     return {
       consume: true,
-      actions: [{ type: "mode", mode: "visual", linewise: state.lineVisual }],
+      actions: [
+        {
+          type: "mode",
+          mode: "visual",
+          linewise: state.visual.kind === "line",
+        },
+      ],
     }
   }
   if (key === "x" || key === "X") {
@@ -330,16 +372,15 @@ function transitionNormal(state: VimState, key: string): Transition {
 }
 
 function transitionVisual(state: VimState, key: string): Transition {
-  if (state.prefix === "g") {
-    state.prefix = null
+  if (state.pending.type === "prefix" && state.pending.prefix === "g") {
     const count = takeCount(state)
+    clearPending(state)
     if (key === "g")
       return { consume: true, actions: [{ type: "motion", key: "gg", count }] }
-    clearPending(state)
     return { consume: true, actions: [] }
   }
-  if (/^[1-9]$/.test(key) || (key === "0" && state.count > 0)) {
-    state.count = state.count * 10 + Number(key)
+  if (/^[1-9]$/.test(key) || (key === "0" && hasCount(state))) {
+    appendCount(state, Number(key))
     return { consume: true, actions: [] }
   }
   if (key === "escape" || key === "v" || key === "V") {
@@ -349,7 +390,7 @@ function transitionVisual(state: VimState, key: string): Transition {
   }
   const operator = operatorFor(key === "x" ? "d" : key)
   if (operator) {
-    const linewise = state.lineVisual
+    const linewise = state.visual?.kind === "line"
     const mode =
       operator === "change" || state.oneShotNormal ? "insert" : "normal"
     setMode(state, mode)
@@ -365,7 +406,8 @@ function transitionVisual(state: VimState, key: string): Transition {
     }
   }
   if (key === "g") {
-    state.prefix = "g"
+    const count = takeCount(state)
+    state.pending = { type: "prefix", prefix: "g", count }
     return { consume: true, actions: [] }
   }
   return { consume: true, actions: [] }

@@ -137,6 +137,46 @@ describe("vim transition engine", () => {
     ])
   })
 
+  test("Escape cancels counts, operators, and prefixes", () => {
+    for (const keys of [["4"], ["2", "d", "3"], ["5", "g"]]) {
+      const state = createVimState("normal")
+      for (const key of keys) transition(state, key)
+      expect(transition(state, "escape").actions).toEqual([])
+      expect(state.pending).toEqual({ type: "none", count: 0 })
+      expect(transition(state, "w").actions).toEqual([
+        { type: "motion", key: "w", count: 1 },
+      ])
+    }
+  })
+
+  test("invalid operator and prefix completions cancel the whole command", () => {
+    for (const keys of [
+      ["2", "d", "3", "q"],
+      ["4", "g", "q"],
+    ]) {
+      const state = createVimState("normal")
+      for (const key of keys) transition(state, key)
+      expect(state.pending).toEqual({ type: "none", count: 0 })
+      expect(transition(state, "w").actions).toEqual([
+        { type: "motion", key: "w", count: 1 },
+      ])
+    }
+  })
+
+  test("one-shot normal waits for grammar completion and completes once", () => {
+    const state = createVimState()
+    transition(state, "ctrl+o")
+    for (const key of ["2", "d", "3", "g"]) {
+      expect(transition(state, key).actions).toEqual([])
+      expect(state.mode).toBe("normal")
+    }
+    expect(transition(state, "g").actions).toEqual([
+      { type: "operator-motion", operator: "delete", key: "gg", count: 6 },
+      { type: "mode", mode: "insert" },
+    ])
+    expect(transition(state, "w").consume).toBe(false)
+  })
+
   test("maps host navigation and line joining", () => {
     const state = createVimState("normal")
     expect(transition(state, "/").actions).toEqual([

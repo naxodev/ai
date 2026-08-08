@@ -427,7 +427,7 @@ export function runActions(
   for (const action of actions) {
     if (action.type === "motion") {
       move(editor, action.key, action.count, editor.hasSelection())
-      if (runtime.mode === "visual" && runtime.lineVisual) {
+      if (runtime.mode === "visual" && runtime.visual?.kind === "line") {
         const selection = editor.getSelection()
         if (selection) {
           const start = lineBounds(editor.plainText, selection.start).start
