@@ -24,23 +24,32 @@ body:
     attributes:
       label: Reproduction steps
       placeholder: |
-        1. Configure the plugin...
+        1. Configure the package...
         2. Start playback...
-        3. Run OpenCode...
+        3. Run the host application...
     validations:
       required: true
-  - type: input
-    id: opencode
-    attributes:
-      label: OpenCode version
-      description: Output from `opencode2 --version`.
-    validations:
-      required: true
-  - type: input
+  - type: dropdown
     id: package
+    attributes:
+      label: Package
+      options:
+        - "@naxodev/opencode-music-player"
+        - "@naxodev/pi-music-dock"
+    validations:
+      required: true
+  - type: input
+    id: package-version
     attributes:
       label: Package version
       placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: host-version
+    attributes:
+      label: Host application version
+      description: Output from `opencode2 --version` or `pi --version`.
     validations:
       required: true
   - type: input
@@ -63,5 +72,5 @@ body:
     id: logs
     attributes:
       label: Relevant logs
-      description: Paste redacted OpenCode log lines.
+      description: Paste relevant redacted logs or terminal output.
       render: shell

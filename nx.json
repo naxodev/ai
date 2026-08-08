@@ -8,7 +8,10 @@
     "sharedGlobals": [
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/bun.lock",
-      "{workspaceRoot}/nx.json"
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/.editorconfig",
+      "{workspaceRoot}/.prettierignore",
+      "{workspaceRoot}/.prettierrc.json"
     ]
   },
   "targetDefaults": {

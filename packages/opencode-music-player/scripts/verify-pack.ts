@@ -1,4 +1,5 @@
 const expectedFiles = new Set([
+  "CHANGELOG.md",
   "LICENSE",
   "README.md",
   "SUPPORT.md",
