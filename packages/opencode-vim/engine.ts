@@ -1,8 +1,31 @@
 export type VimMode = "insert" | "normal" | "visual"
 export type Operator = "delete" | "change" | "yank"
 export type MotionKey =
-  "h" | "j" | "k" | "l" | "w" | "b" | "e" | "0" | "^" | "$" | "G" | "gg"
+  | "h"
+  | "j"
+  | "k"
+  | "l"
+  | "w"
+  | "b"
+  | "e"
+  | "W"
+  | "B"
+  | "E"
+  | "0"
+  | "^"
+  | "$"
+  | "%"
+  | "G"
+  | "gg"
 export type EnterKey = "i" | "a" | "A" | "I" | "o" | "O"
+export type FindDirection = "forward" | "backward"
+export type CharacterFind = {
+  direction: FindDirection
+  till: boolean
+  target: string
+}
+export type TextObject =
+  "word" | "paren" | "brace" | "bracket" | "double-quote" | "single-quote"
 
 const enterKeys = new Set<EnterKey>(["i", "a", "A", "I", "o", "O"])
 
@@ -14,11 +37,17 @@ export type PendingCommand =
   | { type: "none"; count: number }
   | { type: "prefix"; prefix: "g" | "replace"; count: number }
   | {
+      type: "find"
+      find: Omit<CharacterFind, "target">
+      count: number
+      operator: Operator | null
+    }
+  | {
       type: "operator"
       operator: Operator
       count: number
       motionCount: number
-      prefix: "g" | null
+      prefix: "g" | "inner" | "around" | null
     }
 
 export type VisualState = { kind: "character" | "line" }
@@ -28,15 +57,31 @@ export type VimState = {
   oneShotNormal: boolean
   pending: PendingCommand
   visual: VisualState | null
+  lastFind: CharacterFind | null
 }
 
 export type VimAction =
-  | { type: "motion"; key: MotionKey; count: number }
+  | { type: "motion"; key: MotionKey; count: number; percentage?: boolean }
+  | {
+      type: "find"
+      find: CharacterFind
+      count: number
+      operator?: Operator
+      repeat?: boolean
+    }
+  | {
+      type: "text-object"
+      object: TextObject
+      around: boolean
+      count: number
+      operator?: Operator
+    }
   | {
       type: "operator-motion"
       operator: Operator
       key: MotionKey
       count: number
+      percentage?: boolean
     }
   | { type: "operator-line"; operator: Operator; count: number }
   | { type: "enter"; key: EnterKey }
@@ -59,9 +104,13 @@ const motions = new Set<MotionKey>([
   "w",
   "b",
   "e",
+  "W",
+  "B",
+  "E",
   "0",
   "^",
   "$",
+  "%",
   "G",
 ])
 
@@ -75,7 +124,12 @@ export function createVimState(startMode: VimMode = "insert"): VimState {
     oneShotNormal: false,
     pending: { type: "none", count: 0 },
     visual: null,
+    lastFind: null,
   }
+}
+
+export function hasPendingInput(state: VimState) {
+  return state.pending.type !== "none" || state.pending.count > 0
 }
 
 function takeCount(state: VimState): number {
@@ -104,6 +158,29 @@ function hasCount(state: VimState) {
   return state.pending.type === "operator"
     ? state.pending.motionCount > 0
     : state.pending.count > 0
+}
+
+function findForKey(key: string): Omit<CharacterFind, "target"> | null {
+  if (key === "f") return { direction: "forward", till: false }
+  if (key === "F") return { direction: "backward", till: false }
+  if (key === "t") return { direction: "forward", till: true }
+  if (key === "T") return { direction: "backward", till: true }
+  return null
+}
+
+function textObjectForKey(key: string): TextObject | null {
+  if (key === "w") return "word"
+  if (key === "(") return "paren"
+  if (key === "{") return "brace"
+  if (key === "[") return "bracket"
+  if (key === '"') return "double-quote"
+  if (key === "'") return "single-quote"
+  return null
+}
+
+function printableTarget(key: string) {
+  if (key === "space") return " "
+  return [...key].length === 1 && !/^\p{Cc}$/u.test(key) ? key : null
 }
 
 function commandComplete(state: VimState) {
@@ -199,6 +276,26 @@ function transitionNormal(state: VimState, key: string): Transition {
         }
   }
 
+  if (state.pending.type === "find") {
+    const pending = state.pending
+    clearPending(state)
+    const target = printableTarget(key)
+    if (target === null) return { consume: true, actions: [] }
+    const find = { ...pending.find, target }
+    state.lastFind = find
+    return {
+      consume: true,
+      actions: [
+        {
+          type: "find",
+          find,
+          count: pending.count,
+          ...(pending.operator ? { operator: pending.operator } : {}),
+        },
+      ],
+    }
+  }
+
   if (state.pending.type === "prefix" && state.pending.prefix === "g") {
     const count = takeCount(state)
     clearPending(state)
@@ -265,27 +362,113 @@ function transitionNormal(state: VimState, key: string): Transition {
       state.pending.prefix = "g"
       return { consume: true, actions: [] }
     }
-    if (isMotionKey(key)) {
+    if (key === "i" || key === "a") {
+      if (
+        state.pending.prefix === "inner" ||
+        state.pending.prefix === "around"
+      ) {
+        clearPending(state)
+        return { consume: true, actions: [] }
+      }
+      state.pending.prefix = key === "i" ? "inner" : "around"
+      return { consume: true, actions: [] }
+    }
+    if (state.pending.prefix === "inner" || state.pending.prefix === "around") {
+      const object = textObjectForKey(key)
       const operator = state.pending.operator
       const count = state.pending.count * takeCount(state)
+      const around = state.pending.prefix === "around"
       clearPending(state)
-      if (operator === "change") {
-        state.mode = "insert"
-        state.oneShotNormal = false
-      }
+      return object
+        ? {
+            consume: true,
+            actions: [{ type: "text-object", object, around, count, operator }],
+          }
+        : { consume: true, actions: [] }
+    }
+    const find = findForKey(key)
+    if (find) {
+      const operator = state.pending.operator
+      const count = state.pending.count * takeCount(state)
+      state.pending = { type: "find", find, count, operator }
+      return { consume: true, actions: [] }
+    }
+    if ((key === ";" || key === ",") && state.lastFind) {
+      const operator = state.pending.operator
+      const count = state.pending.count * takeCount(state)
+      const find: CharacterFind =
+        key === ";"
+          ? state.lastFind
+          : {
+              ...state.lastFind,
+              direction:
+                state.lastFind.direction === "forward" ? "backward" : "forward",
+            }
+      clearPending(state)
       return {
         consume: true,
-        actions: [{ type: "operator-motion", operator, key, count }],
+        actions: [{ type: "find", find, count, operator, repeat: true }],
+      }
+    }
+    if (isMotionKey(key)) {
+      const operator = state.pending.operator
+      const percentage = key === "%" && hasCount(state)
+      const count = state.pending.count * takeCount(state)
+      clearPending(state)
+      return {
+        consume: true,
+        actions: [
+          {
+            type: "operator-motion",
+            operator,
+            key,
+            count,
+            ...(percentage ? { percentage: true } : {}),
+          },
+        ],
       }
     }
     clearPending(state)
     return { consume: true, actions: [] }
   }
 
-  if (isMotionKey(key)) {
+  const find = findForKey(key)
+  if (find) {
+    state.pending = {
+      type: "find",
+      find,
+      count: takeCount(state),
+      operator: null,
+    }
+    return { consume: true, actions: [] }
+  }
+  if ((key === ";" || key === ",") && state.lastFind) {
+    const find: CharacterFind =
+      key === ";"
+        ? state.lastFind
+        : {
+            ...state.lastFind,
+            direction:
+              state.lastFind.direction === "forward" ? "backward" : "forward",
+          }
     return {
       consume: true,
-      actions: [{ type: "motion", key, count: takeCount(state) }],
+      actions: [{ type: "find", find, count: takeCount(state), repeat: true }],
+    }
+  }
+
+  if (isMotionKey(key)) {
+    const percentage = key === "%" && hasCount(state)
+    return {
+      consume: true,
+      actions: [
+        {
+          type: "motion",
+          key,
+          count: takeCount(state),
+          ...(percentage ? { percentage: true } : {}),
+        },
+      ],
     }
   }
   if (key === "g") {
@@ -372,6 +555,22 @@ function transitionNormal(state: VimState, key: string): Transition {
 }
 
 function transitionVisual(state: VimState, key: string): Transition {
+  if (state.pending.type === "find") {
+    const pending = state.pending
+    clearPending(state)
+    const target = printableTarget(key)
+    if (target === null) return { consume: true, actions: [] }
+    const find = { ...pending.find, target }
+    state.lastFind = find
+    return {
+      consume: true,
+      actions: [{ type: "find", find, count: pending.count }],
+    }
+  }
+  if (state.pending.type === "prefix" && state.pending.prefix === "replace") {
+    clearPending(state)
+    return { consume: true, actions: [] }
+  }
   if (state.pending.type === "prefix" && state.pending.prefix === "g") {
     const count = takeCount(state)
     clearPending(state)
@@ -382,6 +581,21 @@ function transitionVisual(state: VimState, key: string): Transition {
   if (/^[1-9]$/.test(key) || (key === "0" && hasCount(state))) {
     appendCount(state, Number(key))
     return { consume: true, actions: [] }
+  }
+  if (
+    state.pending.type === "operator" &&
+    (state.pending.prefix === "inner" || state.pending.prefix === "around")
+  ) {
+    const object = textObjectForKey(key)
+    const count = state.pending.count * takeCount(state)
+    const around = state.pending.prefix === "around"
+    clearPending(state)
+    return object
+      ? {
+          consume: true,
+          actions: [{ type: "text-object", object, around, count }],
+        }
+      : { consume: true, actions: [] }
   }
   if (key === "escape" || key === "v" || key === "V") {
     const mode = state.oneShotNormal ? "insert" : "normal"
@@ -400,10 +614,60 @@ function transitionVisual(state: VimState, key: string): Transition {
     }
   }
   if (isMotionKey(key)) {
+    const percentage = key === "%" && hasCount(state)
     return {
       consume: true,
-      actions: [{ type: "motion", key, count: takeCount(state) }],
+      actions: [
+        {
+          type: "motion",
+          key,
+          count: takeCount(state),
+          ...(percentage ? { percentage: true } : {}),
+        },
+      ],
     }
+  }
+  const find = findForKey(key)
+  if (find) {
+    state.pending = {
+      type: "find",
+      find,
+      count: takeCount(state),
+      operator: null,
+    }
+    return { consume: true, actions: [] }
+  }
+  if ((key === ";" || key === ",") && state.lastFind) {
+    const find: CharacterFind =
+      key === ";"
+        ? state.lastFind
+        : {
+            ...state.lastFind,
+            direction:
+              state.lastFind.direction === "forward" ? "backward" : "forward",
+          }
+    return {
+      consume: true,
+      actions: [{ type: "find", find, count: takeCount(state), repeat: true }],
+    }
+  }
+  if (key === "i" || key === "a") {
+    if (
+      state.pending.type === "operator" &&
+      (state.pending.prefix === "inner" || state.pending.prefix === "around")
+    ) {
+      clearPending(state)
+      return { consume: true, actions: [] }
+    }
+    const count = takeCount(state)
+    state.pending = {
+      type: "operator",
+      operator: "yank",
+      count,
+      motionCount: 0,
+      prefix: key === "i" ? "inner" : "around",
+    }
+    return { consume: true, actions: [] }
   }
   if (key === "g") {
     const count = takeCount(state)

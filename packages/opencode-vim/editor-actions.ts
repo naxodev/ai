@@ -1,7 +1,9 @@
 import type {
+  CharacterFind,
   EnterKey,
   MotionKey,
   Operator,
+  TextObject,
   VimAction,
   VimState,
 } from "./engine.ts"
@@ -49,6 +51,7 @@ export interface VimEditor {
 export type ActionEffects = {
   dispatch(id: string): void
   writeClipboard(text: string): void
+  transitionRuntime(mutation: (runtime: VimState) => void): void
 }
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -87,6 +90,23 @@ function retreatGraphemes(
 
 function lastGraphemeStart(text: string) {
   return graphemeSegments(text).at(-1)?.index ?? 0
+}
+
+function nextGraphemeStart(text: string, offset: number, limit = text.length) {
+  return Math.min(advanceGraphemes(text, offset, 1, limit), limit)
+}
+
+function selectionAnchor(editor: VimEditor) {
+  const selection = editor.getSelection()
+  if (!selection) return editor.cursorOffset
+  if (editor.cursorOffset <= selection.start)
+    return retreatGraphemes(editor.plainText, selection.end, 1, selection.start)
+  return selection.start
+}
+
+function selectTo(editor: VimEditor, target: number) {
+  editor.setSelectionInclusive(selectionAnchor(editor), target)
+  editor.cursorOffset = target
 }
 
 export function lineBounds(text: string, rawOffset: number) {
@@ -195,6 +215,337 @@ function endOfWord(
   return segments[Math.min(index, segments.length - 1)]?.index ?? 0
 }
 
+function bigWordDestination(
+  text: string,
+  offset: number,
+  count: number,
+  key: Extract<MotionKey, "W" | "B" | "E">,
+) {
+  const segments = graphemeSegments(text)
+  if (segments.length === 0) return 0
+  const starts: number[] = []
+  const ends: number[] = []
+  for (let index = 0; index < segments.length; index++) {
+    const value = segments[index]!.segment
+    if (value === "\n") {
+      if (segments[index - 1]?.segment === "\n")
+        starts.push(segments[index]!.index)
+      continue
+    }
+    if (/\s/u.test(value)) continue
+    if (index === 0 || /\s/u.test(segments[index - 1]!.segment))
+      starts.push(segments[index]!.index)
+    if (
+      index === segments.length - 1 ||
+      /\s/u.test(segments[index + 1]!.segment)
+    )
+      ends.push(segments[index]!.index)
+  }
+  const destinations = key === "E" ? ends : starts
+  let destination = offset
+  for (let step = 0; step < count; step++) {
+    const next =
+      key === "B"
+        ? destinations.findLast((position) => position < destination)
+        : destinations.find((position) => position > destination)
+    if (next === undefined) return key === "B" ? 0 : lastGraphemeStart(text)
+    destination = next
+  }
+  return destination
+}
+
+function matchingDelimiter(text: string, offset: number) {
+  const bounds = lineBounds(text, offset)
+  const pairs: Record<string, string> = {
+    "(": ")",
+    "[": "]",
+    "{": "}",
+    ")": "(",
+    "]": "[",
+    "}": "{",
+  }
+  const opening = new Set(["(", "[", "{"])
+  const segments = graphemeSegments(text)
+  let index = segments.findIndex(
+    (segment) =>
+      segment.index >= offset &&
+      segment.index < bounds.end &&
+      pairs[segment.segment],
+  )
+  if (index < 0) return null
+  const delimiter = segments[index]!.segment
+  const forward = opening.has(delimiter)
+  const match = pairs[delimiter]!
+  let depth = 0
+  while (index >= 0 && index < segments.length) {
+    const value = segments[index]!.segment
+    if (value === delimiter) depth++
+    if (value === match && --depth === 0) return segments[index]!.index
+    index += forward ? 1 : -1
+  }
+  return null
+}
+
+function findDestination(
+  text: string,
+  offset: number,
+  find: CharacterFind,
+  count: number,
+  repeat: boolean,
+) {
+  const bounds = lineBounds(text, offset)
+  const starts = graphemeSegments(text)
+    .filter(
+      (segment) => segment.index >= bounds.start && segment.index < bounds.end,
+    )
+    .map((segment) => ({ start: segment.index, value: segment.segment }))
+  let index = starts.findIndex((segment) => segment.start === offset)
+  if (index < 0) return null
+  const step = find.direction === "forward" ? 1 : -1
+  index += step
+  const matches = (value: string) => value.startsWith(find.target)
+  if (repeat && find.till && matches(starts[index]?.value ?? "")) index += step
+  for (let found = 0; index >= 0 && index < starts.length; index += step) {
+    if (!matches(starts[index]!.value)) continue
+    found++
+    if (found !== count) continue
+    const targetIndex = find.till ? index - step : index
+    return starts[targetIndex]?.start ?? null
+  }
+  return null
+}
+
+type TextRange = { start: number; end: number; linewise?: boolean }
+
+function withLinewiseIntent(text: string, range: TextRange): TextRange {
+  if (
+    range.start === lineBounds(text, range.start).start &&
+    range.end > range.start &&
+    rowAt(text, range.start) !== rowAt(text, range.end - 1) &&
+    (range.end === text.length || text[range.end - 1] === "\n")
+  )
+    range.linewise = true
+  return range
+}
+
+function wordObjectRange(
+  text: string,
+  offset: number,
+  around: boolean,
+  count: number,
+): TextRange | null {
+  const bounds = lineBounds(text, offset)
+  const lineText = text.slice(bounds.start, bounds.end)
+  if (text.length === 0) return { start: 0, end: 0 }
+  if (lineText.length === 0)
+    return around && bounds.end < text.length
+      ? { ...lineRange(text, bounds.start, 2), linewise: true }
+      : null
+  const segments = graphemeSegments(text).filter(
+    (segment) => segment.segment !== "\n",
+  )
+  if (segments.length === 0 && count === 1) return { start: 0, end: 0 }
+  let index = segments.findIndex((segment) => segment.index >= offset)
+  if (index < 0) return null
+  const kind = (value: string) => {
+    if (/\s/u.test(value)) return "space"
+    return /[\p{L}\p{N}_]/u.test(value) ? "word" : "punctuation"
+  }
+  const initial = kind(segments[index]!.segment)
+  const adjacent = (left: number, right: number) =>
+    segments[left]!.index + segments[left]!.segment.length ===
+    segments[right]!.index
+  const advanceRun = (runStart: number) => {
+    const runKind = kind(segments[runStart]!.segment)
+    let runEnd = runStart + 1
+    while (
+      runEnd < segments.length &&
+      adjacent(runEnd - 1, runEnd) &&
+      kind(segments[runEnd]!.segment) === runKind
+    )
+      runEnd++
+    return runEnd
+  }
+  let start = index
+  while (
+    start > 0 &&
+    adjacent(start - 1, start) &&
+    kind(segments[start - 1]!.segment) === initial
+  )
+    start--
+  let end = index + 1
+  while (
+    end < segments.length &&
+    adjacent(end - 1, end) &&
+    kind(segments[end]!.segment) === initial
+  )
+    end++
+  if (!around) {
+    for (let object = 1; object < count; object++) {
+      if (end >= segments.length) return null
+      end = advanceRun(end)
+    }
+    return withLinewiseIntent(text, {
+      start: segments[start]!.index,
+      end: segments[end - 1]!.index + segments[end - 1]!.segment.length,
+    })
+  }
+  const objectCount = count + (around && initial === "space" ? 1 : 0)
+  for (let object = 1; object < objectCount; object++) {
+    while (
+      end < segments.length &&
+      adjacent(end - 1, end) &&
+      kind(segments[end]!.segment) === "space"
+    )
+      end++
+    if (end >= segments.length) return null
+    end = advanceRun(end)
+  }
+  if (around && initial !== "space") {
+    const coreEnd = end
+    while (
+      end < segments.length &&
+      adjacent(end - 1, end) &&
+      kind(segments[end]!.segment) === "space"
+    )
+      end++
+    if (end === coreEnd) {
+      let whitespaceStart = start
+      while (
+        whitespaceStart > 0 &&
+        adjacent(whitespaceStart - 1, whitespaceStart) &&
+        kind(segments[whitespaceStart - 1]!.segment) === "space"
+      )
+        whitespaceStart--
+      if (segments[whitespaceStart]!.index > bounds.start)
+        start = whitespaceStart
+    }
+  }
+  const range: TextRange = {
+    start: segments[start]!.index,
+    end: segments[end - 1]!.index + segments[end - 1]!.segment.length,
+  }
+  return withLinewiseIntent(text, range)
+}
+
+function delimiterObjectRange(
+  text: string,
+  offset: number,
+  open: string,
+  close: string,
+  around: boolean,
+  count: number,
+): TextRange | null {
+  const pairs: Array<{ start: number; end: number }> = []
+  const stack: number[] = []
+  const escaped = (offset: number) => {
+    let slashes = 0
+    for (let index = offset - 1; text[index] === "\\"; index--) slashes++
+    return slashes % 2 === 1
+  }
+  for (const segment of graphemeSegments(text)) {
+    if (escaped(segment.index)) continue
+    if (segment.segment === open) stack.push(segment.index)
+    if (segment.segment === close) {
+      const start = stack.pop()
+      if (start !== undefined)
+        pairs.push({ start, end: segment.index + segment.segment.length })
+    }
+  }
+  const containing = pairs
+    .filter((pair) => pair.start <= offset && pair.end > offset)
+    .sort((left, right) => left.end - left.start - (right.end - right.start))
+  const forward = pairs
+    .filter((pair) => pair.start >= offset)
+    .sort(
+      (left, right) =>
+        left.start - right.start ||
+        left.end - left.start - (right.end - right.start),
+    )
+  const pair =
+    containing.length > 0
+      ? containing[count - 1]
+      : count === 1
+        ? forward[0]
+        : undefined
+  if (!pair) return null
+  return around
+    ? pair
+    : { start: pair.start + open.length, end: pair.end - close.length }
+}
+
+function quoteObjectRange(
+  text: string,
+  offset: number,
+  quote: string,
+  around: boolean,
+  count: number,
+): TextRange | null {
+  const bounds = lineBounds(text, offset)
+  const quotes = graphemeSegments(text)
+    .filter(
+      (segment) =>
+        segment.index >= bounds.start &&
+        segment.index < bounds.end &&
+        segment.segment === quote &&
+        (() => {
+          let slashes = 0
+          for (let index = segment.index - 1; text[index] === "\\"; index--)
+            slashes++
+          return slashes % 2 === 0
+        })(),
+    )
+    .map((segment) => segment.index)
+  if (quotes.length < 2) return null
+  const exact = quotes.indexOf(offset)
+  let left: number
+  if (exact >= 0) left = exact % 2 === 0 ? exact : exact - 1
+  else {
+    const right = quotes.findIndex((position) => position > offset)
+    if (right < 0) return null
+    left = right <= 0 ? 0 : right - 1
+  }
+  const start = quotes[left]
+  const end = quotes[left + 1]
+  if (start === undefined || end === undefined) return null
+  if (!around && count === 1) return { start: start + quote.length, end }
+  if (!around) return { start, end: end + quote.length }
+  let rangeStart = start
+  let rangeEnd = end + quote.length
+  while (rangeEnd < bounds.end && /[ \t]/u.test(text[rangeEnd] ?? ""))
+    rangeEnd++
+  if (rangeEnd === end + quote.length)
+    while (
+      rangeStart > bounds.start &&
+      /[ \t]/u.test(text[rangeStart - 1] ?? "")
+    )
+      rangeStart--
+  return { start: rangeStart, end: rangeEnd }
+}
+
+function textObjectRange(
+  text: string,
+  offset: number,
+  object: TextObject,
+  around: boolean,
+  count: number,
+) {
+  if (object === "word") return wordObjectRange(text, offset, around, count)
+  if (object === "paren")
+    return delimiterObjectRange(text, offset, "(", ")", around, count)
+  if (object === "brace")
+    return delimiterObjectRange(text, offset, "{", "}", around, count)
+  if (object === "bracket")
+    return delimiterObjectRange(text, offset, "[", "]", around, count)
+  return quoteObjectRange(
+    text,
+    offset,
+    object === "double-quote" ? '"' : "'",
+    around,
+    count,
+  )
+}
+
 function destinationRow(editor: VimEditor, key: MotionKey, count: number) {
   const current = rowAt(editor.plainText, editor.cursorOffset)
   if (key === "j") return Math.min(current + count, editor.lineCount - 1)
@@ -213,8 +564,9 @@ function move(
   key: MotionKey,
   count: number,
   select: boolean,
+  percentage = false,
 ) {
-  const selectionStart = editor.cursorOffset
+  if (percentage && count > 100) return
   for (let index = 0; index < count; index++) {
     if (key === "h") editor.moveCursorLeft({ select })
     if (key === "j") editor.moveCursorDown({ select })
@@ -223,11 +575,21 @@ function move(
     if (key === "w") editor.moveWordForward({ select })
     if (key === "b") editor.moveWordBackward({ select })
   }
+  if (key === "W" || key === "B" || key === "E") {
+    const target = bigWordDestination(
+      editor.plainText,
+      editor.cursorOffset,
+      count,
+      key,
+    )
+    if (select) selectTo(editor, target)
+    else editor.cursorOffset = target
+  }
   if (key === "0" || key === "^") {
     const bounds = lineBounds(editor.plainText, editor.cursorOffset)
     const target =
       key === "^" ? firstNonblank(editor.plainText, bounds.start) : bounds.start
-    if (select) editor.setSelectionInclusive(selectionStart, target)
+    if (select) selectTo(editor, target)
     editor.cursorOffset = target
   }
   if (key === "$") {
@@ -242,7 +604,7 @@ function move(
       1,
       bounds.start,
     )
-    if (select) editor.setSelectionInclusive(selectionStart, target)
+    if (select) selectTo(editor, target)
     editor.cursorOffset = target
   }
   if (key === "G" || key === "gg") {
@@ -250,14 +612,56 @@ function move(
       editor.plainText,
       rowStart(editor.plainText, destinationRow(editor, key, count)),
     )
-    if (select) editor.setSelectionInclusive(selectionStart, target)
+    if (select) selectTo(editor, target)
     editor.cursorOffset = target
   }
   if (key === "e") {
     const target = endOfWord(editor.plainText, editor.cursorOffset, count)
-    if (select) editor.setSelectionInclusive(selectionStart, target)
+    if (select) selectTo(editor, target)
     editor.cursorOffset = target
   }
+  if (key === "%") {
+    const target = percentage
+      ? firstNonblank(
+          editor.plainText,
+          rowStart(
+            editor.plainText,
+            Math.min(
+              editor.lineCount - 1,
+              Math.max(0, Math.ceil((count * editor.lineCount) / 100) - 1),
+            ),
+          ),
+        )
+      : matchingDelimiter(editor.plainText, editor.cursorOffset)
+    if (target !== null) {
+      if (select) selectTo(editor, target)
+      else editor.cursorOffset = target
+    }
+  }
+}
+
+function applyCharacterRange(
+  editor: VimEditor,
+  operator: Operator,
+  range: TextRange,
+  setRegister: (text: string, linewise?: boolean) => void,
+  writeClipboard: (text: string) => void,
+) {
+  const selected = editor.plainText.slice(range.start, range.end)
+  if (!selected) {
+    if (operator === "change") {
+      editor.cursorOffset = range.start
+      return true
+    }
+    return false
+  }
+  setRegister(selected)
+  editor.clearSelection()
+  if (operator === "yank") {
+    writeClipboard(selected)
+    editor.cursorOffset = range.start
+  } else replaceRange(editor, range.start, range.end, "", range.start)
+  return true
 }
 
 function linewiseMotionRange(editor: VimEditor, key: MotionKey, count: number) {
@@ -315,11 +719,35 @@ function applyOperatorMotion(
   count: number,
   setRegister: (text: string, linewise?: boolean) => void,
   writeClipboard: (text: string) => void,
+  percentage = false,
 ) {
-  if (key === "j" || key === "k" || key === "G" || key === "gg") {
+  if (
+    key === "j" ||
+    key === "k" ||
+    key === "G" ||
+    key === "gg" ||
+    (key === "%" && percentage)
+  ) {
+    if (key === "%" && count > 100) return false
     const currentStart = lineBounds(editor.plainText, editor.cursorOffset).start
     const column = editor.cursorOffset - currentStart
-    const range = linewiseMotionRange(editor, key, count)
+    const targetRow =
+      key === "%"
+        ? Math.min(
+            editor.lineCount - 1,
+            Math.max(0, Math.ceil((count * editor.lineCount) / 100) - 1),
+          )
+        : destinationRow(editor, key, count)
+    const currentRow = rowAt(editor.plainText, editor.cursorOffset)
+    if ((key === "j" || key === "k") && targetRow === currentRow) return false
+    const range =
+      key === "%"
+        ? lineRange(
+            editor.plainText,
+            rowStart(editor.plainText, Math.min(currentRow, targetRow)),
+            Math.abs(targetRow - currentRow) + 1,
+          )
+        : linewiseMotionRange(editor, key, count)
     applyLineRange(
       editor,
       operator,
@@ -328,7 +756,70 @@ function applyOperatorMotion(
       writeClipboard,
       cursorAtColumn(editor.plainText, range.start, column),
     )
-    return
+    return true
+  }
+  if (key === "W" || key === "B" || key === "E") {
+    const original = editor.cursorOffset
+    const target = bigWordDestination(editor.plainText, original, count, key)
+    if (key === "B" && target === original) return false
+    const reachedEnd =
+      key === "W" &&
+      target === lastGraphemeStart(editor.plainText) &&
+      !/\s/u.test(editor.plainText[target] ?? "")
+    const changeWord = operator === "change" && key === "W"
+    const changeTarget = changeWord
+      ? bigWordDestination(editor.plainText, original, count, "E")
+      : target
+    if (
+      key === "W" &&
+      target > original &&
+      target <= firstNonblank(editor.plainText, target)
+    ) {
+      const adjustedEnd = lineBounds(editor.plainText, target - 1).end
+      if (
+        rowAt(editor.plainText, adjustedEnd) >
+          rowAt(editor.plainText, original) &&
+        original <= firstNonblank(editor.plainText, original)
+      ) {
+        applyLineRange(
+          editor,
+          operator,
+          { start: lineBounds(editor.plainText, original).start, end: target },
+          setRegister,
+          writeClipboard,
+        )
+        return true
+      }
+      const succeeded = applyCharacterRange(
+        editor,
+        operator,
+        { start: original, end: adjustedEnd },
+        setRegister,
+        writeClipboard,
+      )
+      if (succeeded && operator === "yank") editor.cursorOffset = original
+      return succeeded
+    }
+    const range = {
+      start: Math.min(original, changeTarget),
+      end:
+        key === "E" || changeWord || reachedEnd
+          ? nextGraphemeStart(
+              editor.plainText,
+              Math.max(original, changeTarget),
+            )
+          : Math.max(original, changeTarget),
+    }
+    const succeeded = applyCharacterRange(
+      editor,
+      operator,
+      range,
+      setRegister,
+      writeClipboard,
+    )
+    if (succeeded && operator === "yank" && target > original)
+      editor.cursorOffset = original
+    return succeeded
   }
   const original = editor.cursorOffset
   editor.clearSelection()
@@ -340,9 +831,18 @@ function applyOperatorMotion(
     const target = endOfWord(editor.plainText, editor.cursorOffset, count, true)
     editor.setSelectionInclusive(original, target)
     editor.cursorOffset = target
-  } else move(editor, key, count, true)
+  } else move(editor, key, count, true, percentage)
+  if (
+    !changeWord &&
+    editor.cursorOffset === original &&
+    key !== "$" &&
+    key !== "e"
+  ) {
+    editor.clearSelection()
+    return false
+  }
   const selection = editor.getSelection()
-  if (!selection) return
+  if (!selection) return false
   const selected = editor.plainText.slice(selection.start, selection.end)
   if (selected) setRegister(selected)
   editor.clearSelection()
@@ -362,6 +862,7 @@ function applyOperatorMotion(
         )
     }
   }
+  return true
 }
 
 function pasteLinewise(
@@ -426,7 +927,13 @@ export function runActions(
   }
   for (const action of actions) {
     if (action.type === "motion") {
-      move(editor, action.key, action.count, editor.hasSelection())
+      move(
+        editor,
+        action.key,
+        action.count,
+        editor.hasSelection(),
+        action.percentage,
+      )
       if (runtime.mode === "visual" && runtime.visual?.kind === "line") {
         const selection = editor.getSelection()
         if (selection) {
@@ -440,15 +947,114 @@ export function runActions(
         }
       }
     }
-    if (action.type === "operator-motion")
-      applyOperatorMotion(
+    if (action.type === "operator-motion") {
+      const succeeded = applyOperatorMotion(
         editor,
         action.operator,
         action.key,
         action.count,
         setRegister,
         effects.writeClipboard,
+        action.percentage,
       )
+      if (succeeded && action.operator === "change") {
+        effects.transitionRuntime((next) => {
+          next.mode = "insert"
+          next.oneShotNormal = false
+          next.visual = null
+        })
+      }
+    }
+    if (action.type === "find") {
+      const original = editor.cursorOffset
+      const target = findDestination(
+        editor.plainText,
+        original,
+        action.find,
+        action.count,
+        action.repeat ?? false,
+      )
+      if (target !== null) {
+        if (action.operator) {
+          const start = Math.min(original, target)
+          const end =
+            target < original
+              ? original
+              : nextGraphemeStart(editor.plainText, target)
+          if (
+            applyCharacterRange(
+              editor,
+              action.operator,
+              { start, end },
+              setRegister,
+              effects.writeClipboard,
+            ) &&
+            action.operator === "change"
+          ) {
+            effects.transitionRuntime((next) => {
+              next.mode = "insert"
+              next.oneShotNormal = false
+              next.visual = null
+            })
+          }
+        } else if (editor.hasSelection()) selectTo(editor, target)
+        else editor.cursorOffset = target
+      }
+    }
+    if (action.type === "text-object") {
+      const range = textObjectRange(
+        editor.plainText,
+        editor.cursorOffset,
+        action.object,
+        action.around,
+        action.count,
+      )
+      if (range && action.operator) {
+        const applied = range.linewise
+          ? (applyLineRange(
+              editor,
+              action.operator,
+              range,
+              setRegister,
+              effects.writeClipboard,
+            ),
+            true)
+          : applyCharacterRange(
+              editor,
+              action.operator,
+              range,
+              setRegister,
+              effects.writeClipboard,
+            )
+        if (applied && action.operator === "change") {
+          effects.transitionRuntime((next) => {
+            next.mode = "insert"
+            next.oneShotNormal = false
+            next.visual = null
+          })
+        }
+      } else if (range) {
+        editor.setSelection(range.start, range.end)
+        editor.cursorOffset = retreatGraphemes(
+          editor.plainText,
+          range.end,
+          1,
+          range.start,
+        )
+        effects.transitionRuntime((next) => {
+          if (next.visual) next.visual.kind = "character"
+        })
+      } else if (!action.operator) {
+        editor.clearSelection()
+        effects.transitionRuntime((next) => {
+          next.mode = next.oneShotNormal ? "insert" : "normal"
+          next.oneShotNormal = false
+          next.visual = null
+        })
+      } else if (action.object === "word") {
+        editor.cursorOffset = lastGraphemeStart(editor.plainText)
+      }
+    }
     if (action.type === "operator-line")
       applyLineRange(
         editor,

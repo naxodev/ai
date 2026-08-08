@@ -47,37 +47,45 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 
 ## Key Reference
 
-| Keys                    | Action                                          |
-| ----------------------- | ----------------------------------------------- |
-| `escape`, `ctrl+[`      | Enter normal mode                               |
-| `i`, `a`, `A`, `I`      | Enter insert mode                               |
-| `o`, `O`                | Open a line and enter insert mode               |
-| `ctrl+o`                | Run one normal-mode command from insert mode    |
-| `h`, `j`, `k`, `l`      | Move left, down, up, or right                   |
-| `w`, `b`, `e`           | Move by words                                   |
-| `0`, `^`, `$`           | Move within the current line                    |
-| `gg`, `G`               | Move to the first or last line                  |
-| digits                  | Prefix a motion or operation with a count       |
-| `d`, `c`, `y` + motion  | Delete, change, or yank by motion               |
-| `dd`, `cc`, `yy`        | Delete, change, or yank complete lines          |
-| `x`, `X`, `D`, `C`      | Delete characters or to the end of the line     |
-| `p`, `P`                | Paste after or before                           |
-| `r` + character         | Replace characters                              |
-| `v`, `V`                | Enter character or line visual mode             |
-| `u`, `ctrl+r`           | Undo or redo one Vim command                    |
-| `J`                     | Join lines                                      |
-| `return`, `ctrl+return` | Submit in normal mode; newline or submit insert |
-| `:`                     | Open the command palette                        |
-| `/`                     | Open the session timeline                       |
-| `[`, `]`                | Move the session view by half a page            |
-| `{`, `}`                | Select the previous or next session message     |
-| `j`, `k` on empty input | Select the next or previous prompt history item |
+| Keys                            | Action                                          |
+| ------------------------------- | ----------------------------------------------- |
+| `escape`, `ctrl+[`              | Enter normal mode                               |
+| `i`, `a`, `A`, `I`              | Enter insert mode                               |
+| `o`, `O`                        | Open a line and enter insert mode               |
+| `ctrl+o`                        | Run one normal-mode command from insert mode    |
+| `h`, `j`, `k`, `l`              | Move left, down, up, or right                   |
+| `w`, `b`, `e`                   | Move by words                                   |
+| `W`, `B`, `E`                   | Move by whitespace-delimited big words          |
+| `f`, `F`, `t`, `T` + character  | Find or move till a character on the line       |
+| `;`, `,`                        | Repeat the last character find or reverse it    |
+| `0`, `^`, `$`                   | Move within the current line                    |
+| `%`                             | Move to the matching `()`, `{}`, or `[]`        |
+| `gg`, `G`                       | Move to the first or last line                  |
+| digits                          | Prefix a motion or operation with a count       |
+| `d`, `c`, `y` + motion          | Delete, change, or yank by motion               |
+| `dd`, `cc`, `yy`                | Delete, change, or yank complete lines          |
+| `iw`, `aw`                      | Select an inner word or a word with whitespace  |
+| `i(`/`a(`, `i{`/`a{`, `i[`/`a[` | Select inside or around paired delimiters       |
+| `i"`/`a"`, `i'`/`a'`            | Select inside or around quotes                  |
+| `x`, `X`, `D`, `C`              | Delete characters or to the end of the line     |
+| `p`, `P`                        | Paste after or before                           |
+| `r` + character                 | Replace characters                              |
+| `v`, `V`                        | Enter character or line visual mode             |
+| `u`, `ctrl+r`                   | Undo or redo one Vim command                    |
+| `J`                             | Join lines                                      |
+| `return`, `ctrl+return`         | Submit in normal mode; newline or submit insert |
+| `:`                             | Open the command palette                        |
+| `/`                             | Open the session timeline                       |
+| `[`, `]`                        | Move the session view by half a page            |
+| `{`, `}`                        | Select the previous or next session message     |
+| `j`, `k` on empty input         | Select the next or previous prompt history item |
 
 Yanks also update the macOS system clipboard.
 
 ## Limitations
 
 - The public V2 keymap API cannot intercept arbitrary printable Unicode. An unlisted Unicode key may reach the editor in normal or visual mode.
+- Character finds register every printable ASCII target with the public keymap. Unicode find targets remain subject to the public keymap limitation above.
 - Active leader prefixes are left to OpenCode. The API does not expose inactive or dynamically changed leader configuration.
 - Clipboard integration uses macOS `pbcopy`. Modal editing still works on other platforms, but clipboard writes do not.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.

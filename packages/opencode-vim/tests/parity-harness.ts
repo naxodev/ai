@@ -6,7 +6,12 @@ import {
   type Register,
   type VimEditor,
 } from "../editor-actions.ts"
-import { createVimState, transition, type VimMode } from "../engine.ts"
+import {
+  createVimState,
+  hasPendingInput,
+  transition,
+  type VimMode,
+} from "../engine.ts"
 
 export type ParityCase = {
   name: string
@@ -22,6 +27,7 @@ export type EditorSnapshot = {
   cursor: number
   mode: VimMode
   register: { text: string; type: "characterwise" | "linewise" }
+  pending: boolean
 }
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -315,6 +321,9 @@ export function runImplementation(testCase: ParityCase): EditorSnapshot {
     runActions(editor, result.actions, register, state, history, {
       dispatch() {},
       writeClipboard() {},
+      transitionRuntime(mutation) {
+        mutation(state)
+      },
     })
   }
   return {
@@ -325,6 +334,7 @@ export function runImplementation(testCase: ParityCase): EditorSnapshot {
       text: register.value,
       type: register.linewise ? "linewise" : "characterwise",
     },
+    pending: hasPendingInput(state),
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createVimState, transition } from "../engine.ts"
+import { createVimState, hasPendingInput, transition } from "../engine.ts"
 
 describe("vim transition engine", () => {
   test("leaves insert mode without consuming ordinary insert input", () => {
@@ -22,6 +22,13 @@ describe("vim transition engine", () => {
     expect(transition(replay, "w").actions).toEqual([
       { type: "operator-motion", operator: "delete", key: "w", count: 6 },
     ])
+  })
+
+  test("treats a numeric count as pending input", () => {
+    const state = createVimState("normal")
+    expect(hasPendingInput(state)).toBe(false)
+    transition(state, "2")
+    expect(hasPendingInput(state)).toBe(true)
   })
 
   test("supports line operators and change mode transitions", () => {
@@ -197,5 +204,123 @@ describe("vim transition engine", () => {
       { type: "visual-operator", operator: "yank", linewise: false },
     ])
     expect(state.mode).toBe("insert")
+  })
+
+  test("parses counted character finds and their repeats", () => {
+    const state = createVimState("normal")
+    for (const key of ["2", "d", "3", "t"]) transition(state, key)
+    expect(transition(state, ",").actions).toEqual([
+      {
+        type: "find",
+        find: { direction: "forward", till: true, target: "," },
+        count: 6,
+        operator: "delete",
+      },
+    ])
+
+    transition(state, "d")
+    expect(transition(state, ";").actions).toEqual([
+      {
+        type: "find",
+        find: { direction: "forward", till: true, target: "," },
+        count: 1,
+        operator: "delete",
+        repeat: true,
+      },
+    ])
+    expect(transition(state, ";").actions).toEqual([
+      {
+        type: "find",
+        find: { direction: "forward", till: true, target: "," },
+        count: 1,
+        repeat: true,
+      },
+    ])
+    expect(transition(state, ",").actions).toEqual([
+      {
+        type: "find",
+        find: { direction: "backward", till: true, target: "," },
+        count: 1,
+        repeat: true,
+      },
+    ])
+  })
+
+  test("parses operator and visual text objects", () => {
+    const operator = createVimState("normal")
+    for (const key of ["2", "d", "3", "a"])
+      expect(transition(operator, key).actions).toEqual([])
+    expect(transition(operator, "(").actions).toEqual([
+      {
+        type: "text-object",
+        object: "paren",
+        around: true,
+        count: 6,
+        operator: "delete",
+      },
+    ])
+
+    const visual = createVimState("normal")
+    transition(visual, "v")
+    transition(visual, "i")
+    expect(transition(visual, '"').actions).toEqual([
+      {
+        type: "text-object",
+        object: "double-quote",
+        around: false,
+        count: 1,
+      },
+    ])
+  })
+
+  test("distinguishes counted percent jumps from delimiter matching", () => {
+    const motion = createVimState("normal")
+    transition(motion, "5")
+    transition(motion, "0")
+    expect(transition(motion, "%").actions).toEqual([
+      { type: "motion", key: "%", count: 50, percentage: true },
+    ])
+
+    const operator = createVimState("normal")
+    for (const key of ["d", "5", "0"])
+      expect(transition(operator, key).actions).toEqual([])
+    expect(transition(operator, "%").actions).toEqual([
+      {
+        type: "operator-motion",
+        operator: "delete",
+        key: "%",
+        count: 50,
+        percentage: true,
+      },
+    ])
+  })
+
+  test("preserves counted percentage intent in visual mode", () => {
+    const state = createVimState("normal")
+    transition(state, "v")
+    transition(state, "5")
+    transition(state, "0")
+    expect(transition(state, "%").actions).toEqual([
+      { type: "motion", key: "%", count: 50, percentage: true },
+    ])
+  })
+
+  test("repeated inner or around prefixes cancel the operator", () => {
+    for (const prefix of ["i", "a"]) {
+      const state = createVimState("normal")
+      transition(state, "d")
+      transition(state, prefix)
+      expect(transition(state, prefix).actions).toEqual([])
+      expect(state.pending).toEqual({ type: "none", count: 0 })
+    }
+  })
+
+  test("does not enter insert mode before a change motion succeeds", () => {
+    const state = createVimState("normal")
+    transition(state, "c")
+    expect(transition(state, "%").actions).toEqual([
+      { type: "operator-motion", operator: "change", key: "%", count: 1 },
+    ])
+    expect(state.mode).toBe("normal")
   })
 })

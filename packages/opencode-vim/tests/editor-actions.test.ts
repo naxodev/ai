@@ -97,7 +97,17 @@ class FakeEditor implements VimEditor {
   }
 }
 
-const effects = { dispatch() {}, writeClipboard() {} }
+function mutableEffects(runtime = createVimState("normal")) {
+  return {
+    dispatch() {},
+    writeClipboard() {},
+    transitionRuntime(mutation: (state: typeof runtime) => void) {
+      mutation(runtime)
+    },
+  }
+}
+
+const effects = mutableEffects()
 
 function run(
   editor: FakeEditor,
@@ -213,6 +223,7 @@ describe("editor action adapter", () => {
         writeClipboard: (text) => {
           copied.push(text)
         },
+        transitionRuntime: effects.transitionRuntime,
       },
     )
     expect(register).toEqual({ value: "  one\n  two", linewise: true })
@@ -325,6 +336,7 @@ describe("editor action adapter", () => {
           dispatched.push(id)
         },
         writeClipboard() {},
+        transitionRuntime: effects.transitionRuntime,
       },
     )
     expect(dispatched).toEqual([
@@ -353,5 +365,150 @@ describe("editor action adapter", () => {
     ])
     expect(register).toEqual({ value: "last", linewise: true })
     expect(editor.plainText).toBe("first")
+  })
+
+  test("character finds stay on their line and failed changes preserve normal mode", () => {
+    const editor = new FakeEditor("😀a,x,x\nnext,x")
+    editor.cursorOffset = 0
+    run(editor, [
+      {
+        type: "find",
+        find: { direction: "forward", till: false, target: "x" },
+        count: 2,
+      },
+    ])
+    expect(editor.cursorOffset).toBe(6)
+
+    const state = createVimState("normal")
+    runActions(
+      editor,
+      [
+        {
+          type: "find",
+          find: { direction: "forward", till: false, target: "z" },
+          count: 1,
+          operator: "change",
+        },
+      ],
+      { value: "", linewise: false },
+      state,
+      createVimHistory(editor.plainText),
+      mutableEffects(state),
+    )
+    expect(editor.plainText).toBe("😀a,x,x\nnext,x")
+    expect(state.mode).toBe("normal")
+  })
+
+  test("matching delimiters and nested text objects resolve complete graphemes", () => {
+    const match = new FakeEditor("😀({a[b]}) tail")
+    match.cursorOffset = 2
+    run(match, [{ type: "motion", key: "%", count: 1 }])
+    expect(match.cursorOffset).toBe(9)
+
+    const nested = new FakeEditor("x (one {😀 two} three) y")
+    nested.cursorOffset = 9
+    const register = run(nested, [
+      {
+        type: "text-object",
+        object: "brace",
+        around: false,
+        count: 1,
+        operator: "yank",
+      },
+    ])
+    expect(register.value).toBe("😀 two")
+    expect(nested.cursorOffset).toBe(8)
+  })
+
+  test("word objects distinguish punctuation and surrounding whitespace", () => {
+    const inner = new FakeEditor("one,   two")
+    const innerRegister = run(inner, [
+      {
+        type: "text-object",
+        object: "word",
+        around: false,
+        count: 2,
+        operator: "delete",
+      },
+    ])
+    expect(innerRegister.value).toBe("one,")
+    expect(inner.plainText).toBe("   two")
+
+    const around = new FakeEditor("one   two")
+    run(around, [
+      {
+        type: "text-object",
+        object: "word",
+        around: true,
+        count: 1,
+        operator: "delete",
+      },
+    ])
+    expect(around.plainText).toBe("two")
+  })
+
+  test("failed visual text objects clear the unrelated selection", () => {
+    const editor = new FakeEditor("plain text")
+    editor.selection = { start: 0, end: 5 }
+    editor.cursorOffset = 4
+    const state = createVimState("visual")
+    state.visual = { kind: "character" }
+    runActions(
+      editor,
+      [
+        {
+          type: "text-object",
+          object: "double-quote",
+          around: false,
+          count: 1,
+        },
+      ],
+      { value: "", linewise: false },
+      state,
+      createVimHistory(editor.plainText),
+      mutableEffects(state),
+    )
+    expect(editor.selection).toBeNull()
+    expect(state.mode).toBe("normal")
+  })
+
+  test("runtime updates go through effects without mutating a frozen store", () => {
+    const editor = new FakeEditor('"one"')
+    editor.cursorOffset = 2
+    const runtime = Object.freeze({
+      ...createVimState("visual"),
+      pending: Object.freeze({ type: "none" as const, count: 0 }),
+      visual: Object.freeze({ kind: "line" as const }),
+    })
+    const next = createVimState("visual")
+    next.visual = { kind: "line" }
+    let transitions = 0
+
+    runActions(
+      editor,
+      [
+        {
+          type: "text-object",
+          object: "double-quote",
+          around: false,
+          count: 1,
+        },
+      ],
+      { value: "", linewise: false },
+      runtime,
+      createVimHistory(editor.plainText),
+      {
+        dispatch() {},
+        writeClipboard() {},
+        transitionRuntime(mutation) {
+          transitions++
+          mutation(next)
+        },
+      },
+    )
+
+    expect(transitions).toBe(1)
+    expect(runtime.visual?.kind).toBe("line")
+    expect(next.visual?.kind).toBe("character")
   })
 })

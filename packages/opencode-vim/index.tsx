@@ -12,6 +12,7 @@ import {
 } from "./editor-actions.ts"
 import {
   createVimState,
+  hasPendingInput,
   transition,
   type VimAction,
   type VimMode,
@@ -81,6 +82,7 @@ function VimHost(props: {
   const histories = new WeakMap<EditBufferRenderable, VimHistory>()
   const target = () => props.context.renderer.currentFocusedEditor
   const [mode, setMode] = createSignal(props.runtime.mode)
+  const [pending, setPending] = createSignal(hasPendingInput(props.runtime))
   const [enabled, setEnabled] = createSignal(props.settings.enabled)
   const hostPrefixKeys = new Set(
     props.context.keymap
@@ -113,6 +115,7 @@ function VimHost(props: {
     props.setRuntime((draft) => {
       actions = transition(draft, key).actions
       nextMode = draft.mode
+      setPending(hasPendingInput(draft))
     })
     setMode(nextMode)
     updateIndicator()
@@ -146,12 +149,19 @@ function VimHost(props: {
     runActions(editor, actions, register, props.runtime, history, {
       dispatch: (id) => queueMicrotask(() => props.context.keymap.dispatch(id)),
       writeClipboard,
+      transitionRuntime: props.setRuntime,
     })
+    setMode(props.runtime.mode)
+    updateIndicator()
+    syncCursor()
   }
 
-  const commands = (scope: string) =>
+  const commands = (scope: string, respectHostPrefixes: boolean) =>
     keyBindings
-      .filter(([bind]) => !hostPrefixKeys.has(bind.toLowerCase()))
+      .filter(
+        ([bind]) =>
+          !respectHostPrefixes || !hostPrefixKeys.has(bind.toLowerCase()),
+      )
       .map(([bind, key], index) => ({
         id: `vimcode-v2.${scope}.${index}`,
         bind,
@@ -207,16 +217,32 @@ function VimHost(props: {
     mode: "base",
     target,
     priority: 10_000,
-    enabled: () => bindingsActive() && mode() === "normal",
-    commands: commands("normal"),
+    enabled: () => bindingsActive() && mode() === "normal" && !pending(),
+    commands: commands("normal", true),
+  }))
+
+  props.context.keymap.layer(() => ({
+    mode: "base",
+    target,
+    priority: 10_001,
+    enabled: () => bindingsActive() && mode() === "normal" && pending(),
+    commands: commands("normal.pending", false),
   }))
 
   props.context.keymap.layer(() => ({
     mode: "base",
     target,
     priority: 10_000,
-    enabled: () => bindingsActive() && mode() === "visual",
-    commands: commands("visual"),
+    enabled: () => bindingsActive() && mode() === "visual" && !pending(),
+    commands: commands("visual", true),
+  }))
+
+  props.context.keymap.layer(() => ({
+    mode: "base",
+    target,
+    priority: 10_001,
+    enabled: () => bindingsActive() && mode() === "visual" && pending(),
+    commands: commands("visual.pending", false),
   }))
 
   props.context.keymap.layer(() => ({
