@@ -48,7 +48,7 @@ describe("vim transition engine", () => {
     expect(transition(state, "y").actions).toEqual([
       { type: "visual-operator", operator: "yank", linewise: false },
     ])
-    expect(state.mode).toBe("normal")
+    expect(state.mode).toBe("visual")
   })
 
   test("preserves linewise visual intent and supports visual gg", () => {
@@ -63,6 +63,30 @@ describe("vim transition engine", () => {
     transition(characterwise, "g")
     expect(transition(characterwise, "g").actions).toEqual([
       { type: "motion", key: "gg", count: 1 },
+    ])
+  })
+
+  test("parses visual endpoint and edit commands without leaving early", () => {
+    const cases = [
+      ["o", { type: "visual-swap" }],
+      ["p", { type: "visual-paste", preserveRegister: false, count: 1 }],
+      ["P", { type: "visual-paste", preserveRegister: true, count: 1 }],
+      ["J", { type: "visual-join" }],
+      ["~", { type: "visual-case" }],
+      [">", { type: "visual-indent", direction: "right", count: 1 }],
+    ] as const
+    for (const [key, action] of cases) {
+      const state = createVimState("normal")
+      transition(state, "v")
+      expect(transition(state, key).actions).toEqual([action])
+      expect(state.mode).toBe("visual")
+    }
+
+    const replace = createVimState("normal")
+    transition(replace, "v")
+    transition(replace, "r")
+    expect(transition(replace, "x").actions).toEqual([
+      { type: "visual-replace", text: "x" },
     ])
   })
 
@@ -89,6 +113,12 @@ describe("vim transition engine", () => {
     expect(transition(space, "space").actions).toEqual([
       { type: "replace", text: " ", count: 1 },
     ])
+
+    const visualReturn = createVimState("normal")
+    transition(visualReturn, "v")
+    transition(visualReturn, "r")
+    expect(transition(visualReturn, "return").actions).toEqual([])
+    expect(visualReturn.mode).toBe("visual")
   })
 
   test("keeps an operator pending through g so dgg/cgg/ygg work", () => {
@@ -222,7 +252,7 @@ describe("vim transition engine", () => {
     expect(transition(state, "y").actions).toEqual([
       { type: "visual-operator", operator: "yank", linewise: false },
     ])
-    expect(state.mode).toBe("insert")
+    expect(state.mode).toBe("visual")
   })
 
   test("parses counted character finds and their repeats", () => {

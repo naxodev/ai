@@ -10,6 +10,7 @@ import {
   insertHostText,
   type Register,
   runActions,
+  syncVisualState,
   syncVimHistory,
   type VimHistory,
 } from "./editor-actions.ts"
@@ -130,9 +131,38 @@ function VimHost(props: {
     indicator.content = `-- ${label()} --`
     indicator.fg = color()
   }
+  let focusedEditor: EditBufferRenderable | undefined
+  const reconcileEditor = (editor: EditBufferRenderable) => {
+    const changed = focusedEditor !== editor
+    if (
+      changed &&
+      props.runtime.mode === "visual" &&
+      focusedEditor &&
+      !focusedEditor.isDestroyed
+    )
+      focusedEditor.clearSelection()
+    focusedEditor = editor
+    if (
+      syncVisualState(
+        editor,
+        props.runtime,
+        {
+          dispatch() {},
+          writeClipboard() {},
+          transitionRuntime: props.setRuntime,
+        },
+        changed,
+      )
+    ) {
+      setMode(props.runtime.mode)
+      setPending(hasPendingInput(props.runtime))
+      updateIndicator()
+    }
+  }
 
   const handle = (key: string) => {
     const editor = target()
+    if (editor && !editor.isDestroyed) reconcileEditor(editor)
     const history =
       editor && !editor.isDestroyed
         ? mode() === "insert"
@@ -312,10 +342,16 @@ function VimHost(props: {
   }
   const syncCursor = () => {
     const editor = target()
-    if (!editor || editor.isDestroyed || !bindingsActive()) {
+    if (!editor || editor.isDestroyed || !active()) {
+      focusedEditor = undefined
       restoreCursors()
       return
     }
+    if (!bindingsActive()) {
+      restoreCursors()
+      return
+    }
+    reconcileEditor(editor)
     if (mode() === "insert") beginInsertFor(editor)
     restoreCursors(editor)
     if (!originalStyles.has(editor))

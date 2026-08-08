@@ -50,7 +50,17 @@ export type PendingCommand =
       prefix: "g" | "inner" | "around" | null
     }
 
-export type VisualState = { kind: "character" | "line" }
+export type VisualState = {
+  kind: "character" | "line"
+  anchor: number | null
+  active: number | null
+}
+export type VisualShape = {
+  graphemes: number
+  lines: number
+  endColumn: number
+  linewise: boolean
+}
 
 export type VimState = {
   mode: VimMode
@@ -89,7 +99,29 @@ export type VimAction =
   | { type: "delete-char"; backward: boolean; count: number }
   | { type: "paste"; before: boolean; count: number }
   | { type: "replace"; text: string; count: number }
-  | { type: "visual-operator"; operator: Operator; linewise: boolean }
+  | {
+      type: "visual-operator"
+      operator: Operator
+      linewise: boolean
+      shape?: VisualShape
+      preserveRegister?: boolean
+    }
+  | { type: "visual-swap" }
+  | {
+      type: "visual-paste"
+      preserveRegister: boolean
+      count: number
+      shape?: VisualShape
+    }
+  | { type: "visual-replace"; text: string; shape?: VisualShape }
+  | { type: "visual-join"; shape?: VisualShape }
+  | { type: "visual-case"; shape?: VisualShape }
+  | {
+      type: "visual-indent"
+      direction: "left" | "right"
+      count: number
+      shape?: VisualShape
+    }
   | { type: "command"; id: string }
   | { type: "join-lines"; count: number }
   | { type: "repeat"; count?: number }
@@ -491,7 +523,11 @@ function transitionNormal(state: VimState, key: string): Transition {
     const oneShotNormal = state.oneShotNormal
     setMode(state, "visual")
     state.oneShotNormal = oneShotNormal
-    state.visual = { kind: key === "V" ? "line" : "character" }
+    state.visual = {
+      kind: key === "V" ? "line" : "character",
+      anchor: null,
+      active: null,
+    }
     return {
       consume: true,
       actions: [
@@ -579,7 +615,21 @@ function transitionVisual(state: VimState, key: string): Transition {
   }
   if (state.pending.type === "prefix" && state.pending.prefix === "replace") {
     clearPending(state)
-    return { consume: true, actions: [] }
+    if (key === "escape") return { consume: true, actions: [] }
+    const replacement =
+      key === "space"
+        ? " "
+        : key === "tab"
+          ? "\t"
+          : key === "return"
+            ? null
+            : printableTarget(key)
+    return replacement === null
+      ? { consume: true, actions: [] }
+      : {
+          consume: true,
+          actions: [{ type: "visual-replace", text: replacement }],
+        }
   }
   if (state.pending.type === "prefix" && state.pending.prefix === "g") {
     const count = takeCount(state)
@@ -615,8 +665,6 @@ function transitionVisual(state: VimState, key: string): Transition {
   const operator = operatorFor(key === "x" ? "d" : key)
   if (operator) {
     const linewise = state.visual?.kind === "line"
-    const mode = state.oneShotNormal ? "insert" : "normal"
-    setMode(state, mode)
     return {
       consume: true,
       actions: [{ type: "visual-operator", operator, linewise }],
@@ -683,5 +731,35 @@ function transitionVisual(state: VimState, key: string): Transition {
     state.pending = { type: "prefix", prefix: "g", count }
     return { consume: true, actions: [] }
   }
+  if (key === "r") {
+    const count = takeCount(state)
+    state.pending = { type: "prefix", prefix: "replace", count }
+    return { consume: true, actions: [] }
+  }
+  if (key === "o") return { consume: true, actions: [{ type: "visual-swap" }] }
+  if (key === "p" || key === "P")
+    return {
+      consume: true,
+      actions: [
+        {
+          type: "visual-paste",
+          preserveRegister: key === "P",
+          count: takeCount(state),
+        },
+      ],
+    }
+  if (key === "J") return { consume: true, actions: [{ type: "visual-join" }] }
+  if (key === "~") return { consume: true, actions: [{ type: "visual-case" }] }
+  if (key === ">" || key === "<")
+    return {
+      consume: true,
+      actions: [
+        {
+          type: "visual-indent",
+          direction: key === ">" ? "right" : "left",
+          count: takeCount(state),
+        },
+      ],
+    }
   return { consume: true, actions: [] }
 }

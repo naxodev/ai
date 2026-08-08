@@ -6,6 +6,7 @@ import type {
   TextObject,
   VimAction,
   VimState,
+  VisualShape,
 } from "./engine.ts"
 
 export type Register = { value: string; linewise: boolean }
@@ -188,6 +189,181 @@ function selectionAnchor(editor: VimEditor) {
 function selectTo(editor: VimEditor, target: number) {
   editor.setSelectionInclusive(selectionAnchor(editor), target)
   editor.cursorOffset = target
+}
+
+function renderVisualEndpoints(
+  editor: VimEditor,
+  kind: "character" | "line",
+  anchor: number,
+  active: number,
+) {
+  if (kind === "line") {
+    const first = Math.min(
+      lineBounds(editor.plainText, anchor).start,
+      lineBounds(editor.plainText, active).start,
+    )
+    const last = Math.max(
+      lineBounds(editor.plainText, anchor).start,
+      lineBounds(editor.plainText, active).start,
+    )
+    editor.setSelection(first, lineRange(editor.plainText, last, 1).end)
+  } else editor.setSelectionInclusive(anchor, active)
+  editor.cursorOffset = active
+}
+
+function renderedVisualRange(
+  editor: VimEditor,
+  kind: "character" | "line",
+  anchor: number,
+  active: number,
+) {
+  if (kind === "line") {
+    const first = Math.min(
+      lineBounds(editor.plainText, anchor).start,
+      lineBounds(editor.plainText, active).start,
+    )
+    const last = Math.max(
+      lineBounds(editor.plainText, anchor).start,
+      lineBounds(editor.plainText, active).start,
+    )
+    return { start: first, end: lineRange(editor.plainText, last, 1).end }
+  }
+  return {
+    start: Math.min(anchor, active),
+    end: nextGraphemeStart(editor.plainText, Math.max(anchor, active)),
+  }
+}
+
+function updateVisualEndpoints(
+  effects: ActionEffects,
+  anchor: number,
+  active: number,
+) {
+  effects.transitionRuntime((next) => {
+    if (!next.visual) return
+    next.visual.anchor = anchor
+    next.visual.active = active
+  })
+}
+
+export function syncVisualState(
+  editor: VimEditor,
+  runtime: VimState,
+  effects: ActionEffects,
+  reset: boolean,
+) {
+  const visual = runtime.mode === "visual" ? runtime.visual : null
+  if (!visual) return false
+  if (reset) {
+    const endpoint = editor.cursorOffset
+    renderVisualEndpoints(editor, visual.kind, endpoint, endpoint)
+    updateVisualEndpoints(effects, endpoint, endpoint)
+    return true
+  }
+
+  const selection = editor.getSelection()
+  if (!selection) {
+    leaveVisual(effects)
+    return true
+  }
+  if (visual.anchor === null || visual.active === null) return false
+  const expected = renderedVisualRange(
+    editor,
+    visual.kind,
+    visual.anchor,
+    visual.active,
+  )
+  if (
+    selection.start === expected.start &&
+    selection.end === expected.end &&
+    editor.cursorOffset === visual.active
+  )
+    return false
+
+  const first =
+    visual.kind === "line"
+      ? lineBounds(editor.plainText, selection.start).start
+      : selection.start
+  const lastOffset = retreatGraphemes(
+    editor.plainText,
+    selection.end,
+    1,
+    selection.start,
+  )
+  const last =
+    visual.kind === "line"
+      ? lineBounds(editor.plainText, lastOffset).start
+      : lastOffset
+  const cursorLine =
+    visual.kind === "line"
+      ? lineBounds(editor.plainText, editor.cursorOffset).start
+      : editor.cursorOffset
+  const active = visual.kind === "line" ? editor.cursorOffset : cursorLine
+  const anchor = cursorLine === first ? last : first
+  updateVisualEndpoints(effects, anchor, active)
+  return true
+}
+
+function visualShape(
+  editor: VimEditor,
+  range: { start: number; end: number },
+  linewise: boolean,
+): VisualShape {
+  const lastOffset = Math.max(range.start, range.end - 1)
+  const lastLineStart = lineBounds(editor.plainText, lastOffset).start
+  return {
+    graphemes: graphemeSegments(editor.plainText.slice(range.start, range.end))
+      .length,
+    lines: Math.max(
+      1,
+      rowAt(editor.plainText, Math.max(range.start, range.end - 1)) -
+        rowAt(editor.plainText, range.start) +
+        1,
+    ),
+    endColumn: graphemeSegments(
+      editor.plainText.slice(lastLineStart, range.end),
+    ).length,
+    linewise,
+  }
+}
+
+function rangeForShape(editor: VimEditor, shape: VisualShape) {
+  if (shape.linewise)
+    return lineRange(editor.plainText, editor.cursorOffset, shape.lines)
+  if (shape.lines > 1) {
+    const targetStart = rowStart(
+      editor.plainText,
+      Math.min(
+        editor.lineCount - 1,
+        rowAt(editor.plainText, editor.cursorOffset) + shape.lines - 1,
+      ),
+    )
+    const targetEnd = lineBounds(editor.plainText, targetStart).end
+    return {
+      start: editor.cursorOffset,
+      end: advanceGraphemes(
+        editor.plainText,
+        targetStart,
+        shape.endColumn,
+        targetEnd,
+      ),
+    }
+  }
+  const end = advanceGraphemes(
+    editor.plainText,
+    editor.cursorOffset,
+    shape.graphemes,
+  )
+  return end > editor.cursorOffset ? { start: editor.cursorOffset, end } : null
+}
+
+function leaveVisual(effects: ActionEffects, insert = false) {
+  effects.transitionRuntime((next) => {
+    next.mode = insert || next.oneShotNormal ? "insert" : "normal"
+    next.oneShotNormal = false
+    next.visual = null
+    next.pending = { type: "none", count: 0 }
+  })
 }
 
 export function lineBounds(text: string, rawOffset: number) {
@@ -995,6 +1171,67 @@ function enter(editor: VimEditor, key: EnterKey) {
   }
 }
 
+function indentRange(
+  editor: VimEditor,
+  range: { start: number; end: number },
+  direction: "left" | "right",
+  count: number,
+) {
+  const start = lineBounds(editor.plainText, range.start).start
+  const last = lineBounds(
+    editor.plainText,
+    Math.max(start, range.end - 1),
+  ).start
+  let end = lineBounds(editor.plainText, last).end
+  if (end < editor.plainText.length) end++
+  const selected = editor.plainText.slice(start, end)
+  const shifted = selected
+    .split("\n")
+    .map((line, index, lines) => {
+      if (index === lines.length - 1 && line === "") return line
+      if (direction === "right") return "\t".repeat(count) + line
+      let remaining = count * 8
+      let offset = 0
+      while (remaining > 0 && offset < line.length) {
+        if (line[offset] === "\t") {
+          offset++
+          remaining -= 8
+        } else if (line[offset] === " ") {
+          offset++
+          remaining--
+        } else break
+      }
+      return line.slice(offset)
+    })
+    .join("\n")
+  if (shifted === selected) return false
+  replaceRange(
+    editor,
+    start,
+    end,
+    shifted,
+    direction === "right" ? start : start + firstNonblank(shifted, 0),
+  )
+  return true
+}
+
+function toggleCase(text: string) {
+  return graphemeSegments(text)
+    .map((segment) => {
+      if (segment.segment === "\n") return "\n"
+      const lower =
+        segment.segment === "İ" ? "i" : segment.segment.toLowerCase()
+      const mapped =
+        segment.segment === lower
+          ? segment.segment === "ß"
+            ? "ẞ"
+            : segment.segment.toUpperCase()
+          : lower
+      return graphemeSegments(mapped).length === 1 ? mapped : segment.segment
+    })
+    .join("")
+}
+
 function hostEdit(baseline: Snapshot, exit: Snapshot): TextEdit {
   const baselineStart = baseline.selection?.start ?? baseline.cursor
   const baselineEnd = baseline.selection?.end ?? baseline.cursor
@@ -1029,6 +1266,15 @@ function repeatableAction(action: VimAction) {
     return action.operator !== "yank"
   if (action.type === "find" || action.type === "text-object")
     return action.operator !== undefined && action.operator !== "yank"
+  if (action.type === "visual-operator") return action.operator !== "yank"
+  if (
+    action.type === "visual-paste" ||
+    action.type === "visual-replace" ||
+    action.type === "visual-join" ||
+    action.type === "visual-case" ||
+    action.type === "visual-indent"
+  )
+    return true
   return false
 }
 
@@ -1119,31 +1365,31 @@ export function runActions(
   if (exitingSession) finalizeInsertSession(editor, history)
   let historyAction = false
   let successfulChange = false
+  let semanticVisualAction: VimAction | null = null
+  let semanticUndo: Snapshot | null = null
   const setRegister = (text: string, linewise = false) => {
     register.value = linewise ? linewiseValue(text) : text
     register.linewise = linewise
   }
   for (const action of actions) {
     if (action.type === "motion") {
-      move(
-        editor,
-        action.key,
-        action.count,
-        editor.hasSelection(),
-        action.percentage,
-      )
-      if (runtime.mode === "visual" && runtime.visual?.kind === "line") {
-        const selection = editor.getSelection()
-        if (selection) {
-          const start = lineBounds(editor.plainText, selection.start).start
-          const end = lineRange(
-            editor.plainText,
-            Math.max(start, selection.end - 1),
-            1,
-          ).end
-          editor.setSelection(start, end)
-        }
-      }
+      const visual = runtime.mode === "visual" ? runtime.visual : null
+      if (visual && visual.anchor !== null && visual.active !== null) {
+        const anchor = visual.anchor
+        editor.clearSelection()
+        editor.cursorOffset = visual.active
+        move(editor, action.key, action.count, false, action.percentage)
+        const active = editor.cursorOffset
+        renderVisualEndpoints(editor, visual.kind, anchor, active)
+        updateVisualEndpoints(effects, anchor, active)
+      } else
+        move(
+          editor,
+          action.key,
+          action.count,
+          editor.hasSelection(),
+          action.percentage,
+        )
     }
     if (action.type === "operator-motion") {
       const succeeded = applyOperatorMotion(
@@ -1209,6 +1455,14 @@ export function runActions(
                 baseline: snapshotOf(editor),
               }
           }
+        } else if (
+          runtime.mode === "visual" &&
+          runtime.visual &&
+          runtime.visual.anchor !== null
+        ) {
+          const anchor = runtime.visual.anchor
+          renderVisualEndpoints(editor, runtime.visual.kind, anchor, target)
+          updateVisualEndpoints(effects, anchor, target)
         } else if (editor.hasSelection()) selectTo(editor, target)
         else editor.cursorOffset = target
       }
@@ -1253,22 +1507,32 @@ export function runActions(
             }
         }
       } else if (range) {
-        editor.setSelection(range.start, range.end)
-        editor.cursorOffset = retreatGraphemes(
+        const end = retreatGraphemes(
           editor.plainText,
           range.end,
           1,
           range.start,
         )
+        const visual = runtime.mode === "visual" ? runtime.visual : null
+        const reversed =
+          action.object === "word" &&
+          visual !== null &&
+          visual.anchor !== null &&
+          visual.active !== null &&
+          visual.active < visual.anchor
+        const anchor =
+          action.object === "word" && visual?.anchor != null
+            ? visual.anchor
+            : range.start
+        const active = reversed
+          ? retreatGraphemes(editor.plainText, range.start, 1)
+          : end
+        renderVisualEndpoints(editor, "character", anchor, active)
         effects.transitionRuntime((next) => {
-          if (next.visual) next.visual.kind = "character"
-        })
-      } else if (!action.operator) {
-        editor.clearSelection()
-        effects.transitionRuntime((next) => {
-          next.mode = next.oneShotNormal ? "insert" : "normal"
-          next.oneShotNormal = false
-          next.visual = null
+          if (!next.visual) return
+          next.visual.kind = "character"
+          next.visual.anchor = anchor
+          next.visual.active = active
         })
       } else if (action.object === "word") {
         editor.cursorOffset = lastGraphemeStart(editor.plainText)
@@ -1424,13 +1688,193 @@ export function runActions(
           baseline: snapshotOf(editor),
         }
     }
-    if (action.type === "visual-operator") {
-      const selection = editor.getSelection()
+    if (action.type === "visual-swap") {
+      const visual = runtime.visual
+      if (visual && visual.anchor !== null && visual.active !== null) {
+        renderVisualEndpoints(editor, visual.kind, visual.active, visual.anchor)
+        updateVisualEndpoints(effects, visual.active, visual.anchor)
+      }
+    }
+    if (action.type === "visual-paste") {
+      const selection = action.shape
+        ? rangeForShape(editor, action.shape)
+        : editor.getSelection()
       if (selection) {
+        const linewise =
+          action.shape?.linewise ?? runtime.visual?.kind === "line"
+        const shape = action.shape ?? visualShape(editor, selection, linewise)
+        const replaced = editor.plainText.slice(selection.start, selection.end)
+        if (!action.shape)
+          semanticUndo = { ...before, cursor: selection.start, selection: null }
+        const source = { ...register }
+        let replacement = source.linewise
+          ? `${Array.from({ length: action.count }, () => source.value).join("\n")}\n`
+          : source.value.repeat(action.count)
+        let start = selection.start
+        let end = selection.end
+        if (linewise) {
+          start = lineBounds(editor.plainText, start).start
+          end = lineRange(
+            editor.plainText,
+            lineBounds(editor.plainText, Math.max(start, end - 1)).start,
+            1,
+          ).end
+          if (!source.linewise && end < editor.plainText.length)
+            replacement += "\n"
+        }
+        const atFinalLine = end === editor.plainText.length
+        let inserted =
+          source.linewise && atFinalLine
+            ? `${start > 0 && editor.plainText[start - 1] !== "\n" ? "\n" : ""}${replacement.slice(0, -1)}`
+            : replacement
+        let firstInserted = start
+        if (source.linewise && !linewise) {
+          inserted = `\n${replacement}`
+          firstInserted++
+        }
+        editor.clearSelection()
+        replaceRange(editor, start, end, inserted, start)
+        editor.cursorOffset = source.linewise
+          ? firstNonblank(editor.plainText, firstInserted)
+          : start + lastGraphemeStart(inserted)
+        if (!action.preserveRegister) setRegister(replaced, linewise)
+        successfulChange = true
+        leaveVisual(effects)
+        semanticVisualAction = {
+          type: "visual-operator",
+          operator: "delete",
+          linewise: shape.linewise,
+          shape,
+          preserveRegister: action.preserveRegister,
+        }
+      }
+    }
+    if (action.type === "visual-replace" || action.type === "visual-case") {
+      const selection = action.shape
+        ? rangeForShape(editor, action.shape)
+        : editor.getSelection()
+      if (selection) {
+        const linewise =
+          action.shape?.linewise ?? runtime.visual?.kind === "line"
+        const shape = action.shape ?? visualShape(editor, selection, linewise)
+        const selected = editor.plainText.slice(selection.start, selection.end)
+        if (selected) {
+          if (!action.shape)
+            semanticUndo = {
+              ...before,
+              cursor: selection.start,
+              selection: null,
+            }
+          const replacement =
+            action.type === "visual-case"
+              ? toggleCase(selected)
+              : graphemeSegments(selected)
+                  .map((segment) =>
+                    segment.segment === "\n" ? "\n" : action.text,
+                  )
+                  .join("")
+          editor.clearSelection()
+          replaceRange(
+            editor,
+            selection.start,
+            selection.end,
+            replacement,
+            selection.start,
+          )
+          successfulChange = true
+          leaveVisual(effects)
+          semanticVisualAction = { ...action, shape }
+        }
+      }
+    }
+    if (action.type === "visual-indent") {
+      const selection = action.shape
+        ? rangeForShape(editor, action.shape)
+        : editor.getSelection()
+      if (selection) {
+        const shape = action.shape ?? visualShape(editor, selection, true)
+        if (indentRange(editor, selection, action.direction, action.count)) {
+          if (!action.shape)
+            semanticUndo = {
+              ...before,
+              cursor: selection.start,
+              selection: null,
+            }
+          successfulChange = true
+          leaveVisual(effects)
+          semanticVisualAction = { ...action, shape }
+        } else {
+          if (runtime.visual?.kind === "line")
+            editor.cursorOffset = Math.min(
+              runtime.visual.anchor ?? selection.start,
+              runtime.visual.active ?? selection.start,
+            )
+          editor.clearSelection()
+          leaveVisual(effects)
+        }
+      }
+    }
+    if (action.type === "visual-join") {
+      const selection = action.shape
+        ? rangeForShape(editor, action.shape)
+        : editor.getSelection()
+      if (selection) {
+        const shape = action.shape ?? visualShape(editor, selection, true)
+        const start = lineBounds(editor.plainText, selection.start).start
+        let text = editor.plainText
+        let cursor = start
+        const joins = shape.lines === 1 ? 1 : shape.lines - 1
+        for (let index = 0; index < joins; index++) {
+          const bounds = lineBounds(text, cursor)
+          if (bounds.end >= text.length) break
+          let nextText = bounds.end + 1
+          while (text[nextText] === " " || text[nextText] === "\t") nextText++
+          const space =
+            bounds.end > bounds.start &&
+            nextText < text.length &&
+            text[nextText] !== "\n" &&
+            !/\s/.test(text[bounds.end - 1] ?? "")
+              ? " "
+              : ""
+          text = text.slice(0, bounds.end) + space + text.slice(nextText)
+          cursor = bounds.end
+        }
+        if (text !== editor.plainText) {
+          if (!action.shape)
+            semanticUndo = {
+              ...before,
+              cursor: selection.start,
+              selection: null,
+            }
+          editor.clearSelection()
+          editor.replaceText(text)
+          editor.cursorOffset = cursor
+          successfulChange = true
+          leaveVisual(effects)
+          semanticVisualAction = { ...action, shape }
+        } else {
+          editor.clearSelection()
+          editor.cursorOffset = selection.start
+          leaveVisual(effects)
+        }
+      }
+    }
+    if (action.type === "visual-operator") {
+      const selection = action.shape
+        ? rangeForShape(editor, action.shape)
+        : editor.getSelection()
+      if (selection) {
+        const preservedRegister = action.preserveRegister
+          ? { ...register }
+          : null
+        const shape =
+          action.shape ?? visualShape(editor, selection, action.linewise)
+        if (!action.shape && action.operator !== "yank")
+          semanticUndo = { ...before, cursor: selection.start, selection: null }
         if (action.operator === "change" && !history.changeSession)
           history.changeSession = {
             before: { ...before, cursor: selection.start },
-            actions: [{ ...action }],
+            actions: [{ ...action, shape }],
             baseline: before,
           }
         if (action.linewise) {
@@ -1450,8 +1894,11 @@ export function runActions(
               next.oneShotNormal = false
               next.visual = null
             })
-          }
+          } else leaveVisual(effects)
           if (action.operator === "yank") editor.cursorOffset = selection.start
+          if (action.operator !== "yank")
+            semanticVisualAction = { ...action, shape }
+          if (preservedRegister) Object.assign(register, preservedRegister)
           continue
         }
         setRegister(
@@ -1478,11 +1925,20 @@ export function runActions(
             next.oneShotNormal = false
             next.visual = null
           })
-        }
+        } else leaveVisual(effects)
+        if (action.operator !== "yank")
+          semanticVisualAction = { ...action, shape }
+        if (preservedRegister) Object.assign(register, preservedRegister)
       }
     }
     if (action.type === "mode") {
       if (action.mode === "visual") {
+        const anchor = editor.cursorOffset
+        effects.transitionRuntime((next) => {
+          if (!next.visual) return
+          next.visual.anchor = anchor
+          next.visual.active = anchor
+        })
         if (action.linewise) {
           const range = lineRange(editor.plainText, editor.cursorOffset, 1)
           editor.setSelection(range.start, range.end)
@@ -1508,9 +1964,9 @@ export function runActions(
     !history.changeSession &&
     (editor.plainText !== before.text || successfulChange)
   ) {
-    history.undo.push(before)
+    history.undo.push(semanticUndo ?? before)
     history.redo.length = 0
-    const action = actions.find(repeatableAction)
+    const action = semanticVisualAction ?? actions.find(repeatableAction)
     if (action) history.lastChange = { actions: [{ ...action }] }
   }
   history.currentText = editor.plainText

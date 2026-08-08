@@ -230,6 +230,185 @@ describe("Neovim parity", () => {
     ])
   })
 
+  test("visual selections preserve direction and edits remain atomic and repeatable", () => {
+    expectParity([
+      {
+        name: "forward chained visual motions",
+        text: "one two three",
+        cursor: 0,
+        keys: ["v", "w", "e", "h", "y"],
+      },
+      {
+        name: "reversed chained visual motions",
+        text: "one two three",
+        cursor: 8,
+        keys: ["v", "b", "h", "l", "d"],
+      },
+      {
+        name: "visual endpoint swap",
+        text: "abcdef",
+        cursor: 4,
+        keys: ["v", "h", "h", "o", "l", "d"],
+      },
+      {
+        name: "visual find repeats retain direction",
+        text: "a,b,c,d",
+        cursor: 6,
+        keys: ["v", "F", ",", ";", ",", "d"],
+      },
+      {
+        name: "visual text object continues from its active end",
+        text: "xx (one two) yy",
+        cursor: 10,
+        keys: ["v", "h", "i", "(", "h", "d"],
+      },
+      {
+        name: "visual p keeps replaced text",
+        text: "abcdef",
+        cursor: 1,
+        register: { text: "XY", type: "characterwise" },
+        keys: ["v", "l", "p"],
+      },
+      {
+        name: "visual P preserves source register",
+        text: "abcdef",
+        cursor: 1,
+        register: { text: "XY", type: "characterwise" },
+        keys: ["v", "l", "P"],
+      },
+      {
+        name: "visual p dot repeats the deletion shape",
+        text: "abcdef",
+        cursor: 1,
+        register: { text: "XY", type: "characterwise" },
+        keys: ["v", "l", "p", "l", "."],
+      },
+      {
+        name: "visual P dot repeats the deletion shape",
+        text: "abcdef",
+        cursor: 1,
+        register: { text: "XY", type: "characterwise" },
+        keys: ["v", "l", "P", "l", "."],
+      },
+      {
+        name: "multiline visual dot preserves rows and final column",
+        text: "abcdefgh\nijk\nlmnopqrst\nuvw\nXYZ",
+        cursor: 1,
+        keys: ["v", "j", "l", "d", "j", "."],
+      },
+      {
+        name: "empty-register visual p deletes, stores, and exits",
+        text: "abcdef",
+        cursor: 1,
+        keys: ["v", "l", "p"],
+      },
+      {
+        name: "line register replaces character selection",
+        text: "abc def",
+        cursor: 1,
+        register: { text: "X\nY", type: "linewise" },
+        keys: ["v", "l", "p"],
+      },
+      {
+        name: "character register replaces line selection",
+        text: "one\ntwo\nthree",
+        cursor: 0,
+        register: { text: "X", type: "characterwise" },
+        keys: ["V", "j", "p"],
+      },
+      {
+        name: "visual replace respects unicode graphemes and undo",
+        text: "a😀ébc",
+        cursor: 1,
+        keys: ["v", "l", "r", "x", "u"],
+      },
+      {
+        name: "visual change and insertion",
+        text: "abcdef",
+        cursor: 1,
+        keys: ["v", "l", "c", "Z", "escape"],
+      },
+      {
+        name: "visual join dot and undo",
+        text: "a\n b\nc\n d",
+        cursor: 0,
+        keys: ["V", "j", "J", "j", ".", "u"],
+      },
+      {
+        name: "visual case toggle dot",
+        text: "aBcd Ef",
+        cursor: 0,
+        keys: ["v", "l", "~", "w", "."],
+      },
+      {
+        name: "visual sharp s uses simple uppercase mapping",
+        text: "aßb",
+        cursor: 1,
+        keys: ["v", "~"],
+      },
+      {
+        name: "visual dotted capital I uses simple lowercase mapping",
+        text: "Aİﬀ",
+        cursor: 0,
+        keys: ["v", "$", "~"],
+      },
+      {
+        name: "counted visual indent dot",
+        text: " a\n  b\nc\nd",
+        cursor: 1,
+        keys: ["V", "j", "2", ">", "j", "."],
+      },
+      {
+        name: "counted visual outdent",
+        text: "\t\t a\n        b\nc",
+        cursor: 2,
+        keys: ["V", "j", "2", "<"],
+      },
+      {
+        name: "no-op visual outdent exits visual mode",
+        text: "abc",
+        cursor: 0,
+        keys: ["v", "l", "<"],
+      },
+      {
+        name: "no-op visual join exits visual mode",
+        text: "abc",
+        cursor: 0,
+        keys: ["v", "l", "J"],
+      },
+      {
+        name: "no-op linewise outdent returns to visual start",
+        text: "aa\nbb\ncc",
+        cursor: 1,
+        keys: ["V", "j", "<"],
+      },
+      {
+        name: "no-op visual join returns to visual start",
+        text: "abcdef",
+        cursor: 2,
+        keys: ["v", "l", "J"],
+      },
+      {
+        name: "final unterminated visual line undo",
+        text: "one\nlast",
+        cursor: 4,
+        keys: ["V", "d", "u"],
+      },
+      {
+        name: "visual delete dot is atomic",
+        text: "abcdefghi",
+        cursor: 1,
+        keys: ["v", "l", "x", "l", ".", "u"],
+      },
+      {
+        name: "visual replace dot",
+        text: "abcdefghi",
+        cursor: 1,
+        keys: ["v", "l", "r", "X", "l", "."],
+      },
+    ])
+  })
+
   test("insert entry and one-shot normal mode match Vim where mode is observable", () => {
     expectParity([
       { name: "append", text: "abc", cursor: 1, keys: ["a"] },
@@ -589,6 +768,12 @@ describe("Neovim parity", () => {
         keys: ["v", "i", '"', "d"],
       },
       {
+        name: "reversed visual inner word preserves its active endpoint",
+        text: "one two",
+        cursor: 5,
+        keys: ["v", "h", "i", "w", "d"],
+      },
+      {
         name: "change empty inner pair",
         text: "()",
         cursor: 0,
@@ -876,6 +1061,32 @@ describe("Neovim parity", () => {
 })
 
 describe("intentional Vim divergences", () => {
+  test("visual replace rejects carriage return because OpenCode cannot represent it safely", () => {
+    const testCase: ParityCase = {
+      name: "visual replace carriage return",
+      text: "abcd",
+      cursor: 1,
+      keys: ["v", "l", "r", "return"],
+    }
+    const implementation = runImplementation(testCase)
+    const neovim = runNeovim([testCase])[0]
+
+    expect(implementation).toEqual({
+      text: "abcd",
+      cursor: 2,
+      mode: "visual",
+      register: { text: "", type: "characterwise" },
+      pending: false,
+    })
+    expect(neovim).toEqual({
+      text: "a\r\rd",
+      cursor: 1,
+      mode: "normal",
+      register: { text: "", type: "characterwise" },
+      pending: false,
+    })
+  })
+
   test("buffer jumps always use first nonblank instead of preserving the desired column", () => {
     const testCase: ParityCase = {
       name: "buffer start with a different desired column",

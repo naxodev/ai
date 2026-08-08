@@ -8,6 +8,7 @@ import {
   lineRange,
   type Register,
   runActions,
+  syncVisualState,
   type VimEditor,
 } from "../editor-actions.ts"
 import { createVimState } from "../engine.ts"
@@ -381,6 +382,55 @@ describe("editor action adapter", () => {
     expect(editor.plainText).toBe("first")
   })
 
+  test("visual endpoints survive reversed motions and swap explicitly", () => {
+    const editor = new FakeEditor("abcdef")
+    editor.cursorOffset = 4
+    const runtime = createVimState("visual")
+    runtime.visual = { kind: "character", anchor: 4, active: 4 }
+    editor.setSelectionInclusive(4, 4)
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runActions(
+      editor,
+      [{ type: "motion", key: "h", count: 2 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(runtime.visual).toEqual({
+      kind: "character",
+      anchor: 4,
+      active: 2,
+    })
+    runActions(
+      editor,
+      [{ type: "visual-swap" }, { type: "motion", key: "l", count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(runtime.visual).toEqual({
+      kind: "character",
+      anchor: 2,
+      active: 5,
+    })
+    runActions(
+      editor,
+      [{ type: "visual-operator", operator: "delete", linewise: false }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("ab")
+    expect(register).toEqual({ value: "cdef", linewise: false })
+    expect(history.undo).toHaveLength(1)
+  })
+
   test("character finds stay on their line and failed changes preserve normal mode", () => {
     const editor = new FakeEditor("😀a,x,x\nnext,x")
     editor.cursorOffset = 0
@@ -461,12 +511,12 @@ describe("editor action adapter", () => {
     expect(around.plainText).toBe("two")
   })
 
-  test("failed visual text objects clear the unrelated selection", () => {
+  test("failed visual text objects preserve the selection and mode", () => {
     const editor = new FakeEditor("plain text")
     editor.selection = { start: 0, end: 5 }
     editor.cursorOffset = 4
     const state = createVimState("visual")
-    state.visual = { kind: "character" }
+    state.visual = { kind: "character", anchor: 0, active: 4 }
     runActions(
       editor,
       [
@@ -482,8 +532,193 @@ describe("editor action adapter", () => {
       createVimHistory(editor.plainText),
       mutableEffects(state),
     )
-    expect(editor.selection).toBeNull()
+    expect(editor.selection).toEqual({ start: 0, end: 5 })
+    expect(state.mode).toBe("visual")
+  })
+
+  test("reversed visual word objects keep the original anchor and active direction", () => {
+    const editor = new FakeEditor("one two")
+    editor.cursorOffset = 4
+    editor.setSelectionInclusive(5, 4)
+    const state = createVimState("visual")
+    state.visual = { kind: "character", anchor: 5, active: 4 }
+
+    runActions(
+      editor,
+      [
+        {
+          type: "text-object",
+          object: "word",
+          around: false,
+          count: 1,
+        },
+      ],
+      { value: "", linewise: false },
+      state,
+      createVimHistory(editor.plainText),
+      mutableEffects(state),
+    )
+
+    expect(state.visual).toEqual({
+      kind: "character",
+      anchor: 5,
+      active: 3,
+    })
+    expect(editor.selection).toEqual({ start: 3, end: 6 })
+    expect(editor.cursorOffset).toBe(3)
+  })
+
+  test("visual paste records deletion shape for dot instead of another paste", () => {
+    const editor = new FakeEditor("abcdef")
+    editor.cursorOffset = 2
+    editor.setSelectionInclusive(1, 2)
+    const state = createVimState("visual")
+    state.visual = { kind: "character", anchor: 1, active: 2 }
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "XY", linewise: false }
+
+    runActions(
+      editor,
+      [{ type: "visual-paste", preserveRegister: true, count: 1 }],
+      register,
+      state,
+      history,
+      mutableEffects(state),
+    )
+
+    expect(editor.plainText).toBe("aXYdef")
+    expect(history.lastChange).toEqual({
+      actions: [
+        {
+          type: "visual-operator",
+          operator: "delete",
+          linewise: false,
+          shape: {
+            graphemes: 2,
+            lines: 1,
+            endColumn: 3,
+            linewise: false,
+          },
+          preserveRegister: true,
+        },
+      ],
+    })
+  })
+
+  test("valid no-op visual outdent and join still leave visual mode", () => {
+    for (const action of [
+      { type: "visual-indent", direction: "left", count: 1 } as const,
+      { type: "visual-join" } as const,
+    ]) {
+      const editor = new FakeEditor("abc")
+      editor.cursorOffset = 1
+      editor.setSelectionInclusive(0, 1)
+      const state = createVimState("visual")
+      state.visual = { kind: "character", anchor: 0, active: 1 }
+      runActions(
+        editor,
+        [action],
+        { value: "", linewise: false },
+        state,
+        createVimHistory(editor.plainText),
+        mutableEffects(state),
+      )
+      expect(state.mode).toBe("normal")
+      expect(editor.selection).toBeNull()
+    }
+  })
+
+  test("no-op linewise outdent and characterwise join return to the visual start", () => {
+    const outdent = new FakeEditor("aa\nbb\ncc")
+    outdent.cursorOffset = 4
+    outdent.setSelection(0, 6)
+    const outdentState = createVimState("visual")
+    outdentState.visual = { kind: "line", anchor: 4, active: 1 }
+    runActions(
+      outdent,
+      [{ type: "visual-indent", direction: "left", count: 1 }],
+      { value: "", linewise: false },
+      outdentState,
+      createVimHistory(outdent.plainText),
+      mutableEffects(outdentState),
+    )
+    expect(outdent.cursorOffset).toBe(1)
+
+    const join = new FakeEditor("abcdef")
+    join.cursorOffset = 3
+    join.setSelectionInclusive(2, 3)
+    const joinState = createVimState("visual")
+    joinState.visual = { kind: "character", anchor: 2, active: 3 }
+    runActions(
+      join,
+      [{ type: "visual-join" }],
+      { value: "", linewise: false },
+      joinState,
+      createVimHistory(join.plainText),
+      mutableEffects(joinState),
+    )
+    expect(join.cursorOffset).toBe(2)
+  })
+
+  test("visual case uses simple Unicode mappings without full-case expansion", () => {
+    const editor = new FakeEditor("ßﬀAİ")
+    editor.cursorOffset = 2
+    editor.setSelection(0, editor.plainText.length)
+    const state = createVimState("visual")
+    state.visual = { kind: "character", anchor: 0, active: 2 }
+    runActions(
+      editor,
+      [{ type: "visual-case" }],
+      { value: "", linewise: false },
+      state,
+      createVimHistory(editor.plainText),
+      mutableEffects(state),
+    )
+    expect(editor.plainText).toBe("ẞﬀai")
+  })
+
+  test("visual state reanchors on editor focus and follows native selection changes", () => {
+    const first = new FakeEditor("first")
+    const second = new FakeEditor("second")
+    second.cursorOffset = 3
+    const state = createVimState("visual")
+    state.visual = { kind: "character", anchor: 4, active: 2 }
+    const actionEffects = mutableEffects(state)
+
+    syncVisualState(second, state, actionEffects, true)
+    expect(state.visual).toEqual({
+      kind: "character",
+      anchor: 3,
+      active: 3,
+    })
+    expect(second.selection).toEqual({ start: 3, end: 4 })
+    expect(first.selection).toBeNull()
+
+    second.cursorOffset = 1
+    second.setSelectionInclusive(1, 4)
+    syncVisualState(second, state, actionEffects, false)
+    expect(state.visual).toEqual({
+      kind: "character",
+      anchor: 4,
+      active: 1,
+    })
+
+    second.clearSelection()
+    syncVisualState(second, state, actionEffects, false)
     expect(state.mode).toBe("normal")
+    expect(state.visual).toBeNull()
+  })
+
+  test("backward native line selection keeps its real cursor as the active end", () => {
+    const editor = new FakeEditor("aa\nbb\ncc")
+    editor.setSelection(0, 6)
+    editor.cursorOffset = 1
+    const state = createVimState("visual")
+    state.visual = { kind: "line", anchor: 1, active: 4 }
+
+    syncVisualState(editor, state, mutableEffects(state), false)
+
+    expect(state.visual).toEqual({ kind: "line", anchor: 3, active: 1 })
   })
 
   test("runtime updates go through effects without mutating a frozen store", () => {
@@ -492,10 +727,10 @@ describe("editor action adapter", () => {
     const runtime = Object.freeze({
       ...createVimState("visual"),
       pending: Object.freeze({ type: "none" as const, count: 0 }),
-      visual: Object.freeze({ kind: "line" as const }),
+      visual: Object.freeze({ kind: "line" as const, anchor: 0, active: 0 }),
     })
     const next = createVimState("visual")
-    next.visual = { kind: "line" }
+    next.visual = { kind: "line", anchor: 0, active: 0 }
     let transitions = 0
 
     runActions(
@@ -700,7 +935,7 @@ describe("editor action adapter", () => {
     editor.setSelection(0, 3)
     editor.cursorOffset = 2
     const runtime = createVimState("visual")
-    runtime.visual = { kind: "character" }
+    runtime.visual = { kind: "character", anchor: 0, active: 0 }
     const history = createVimHistory(editor.plainText)
     const register = { value: "", linewise: false }
     const actionEffects = mutableEffects(runtime)

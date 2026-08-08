@@ -72,6 +72,12 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 | `r` + character                 | Replace characters                              |
 | `.`, `[count].`                 | Repeat the last change, optionally with a count |
 | `v`, `V`                        | Enter character or line visual mode             |
+| `o` in visual mode              | Swap the active visual endpoint                 |
+| `d`, `x`, `c`, `y` in visual    | Delete, change, or yank the selection           |
+| `p`, `P` in visual mode         | Replace the selection from the unnamed register |
+| `r` + character in visual mode  | Replace each selected character                 |
+| `J`, `~` in visual mode         | Join selected lines or toggle selected case     |
+| `>`, `<` in visual mode         | Indent or outdent selected lines                |
 | `u`, `ctrl+r`                   | Undo or redo one Vim command                    |
 | `J`                             | Join lines                                      |
 | `return`, `ctrl+return`         | Submit in normal mode; newline or submit insert |
@@ -90,7 +96,8 @@ Yanks also update the macOS system clipboard.
 - Active leader prefixes are left to OpenCode. The API does not expose inactive or dynamically changed leader configuration.
 - Clipboard integration uses macOS `pbcopy`. Modal editing still works on other platforms, but clipboard writes do not.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.
-- Dot repeat covers the listed normal changes and insert, change, and open-line sessions. Visual changes form one undo transaction, but their shape is not repeatable.
+- Block visual mode is not implemented. Character and line visual changes form one undo transaction and repeat their selection shape with dot.
+- Visual `r<Enter>` is rejected. Vim stores literal carriage returns for this command, but OpenCode's editor only safely represents line feeds.
 
 ## Verify
 
