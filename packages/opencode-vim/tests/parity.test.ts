@@ -53,6 +53,12 @@ describe("Neovim parity", () => {
         keys: ["2", "$"],
       },
       {
+        name: "uncounted line end reaches the final character",
+        text: "one two",
+        cursor: 0,
+        keys: ["$"],
+      },
+      {
         name: "multibyte horizontal",
         text: "a😀éb",
         cursor: 0,
@@ -98,6 +104,12 @@ describe("Neovim parity", () => {
         text: "😀 x",
         cursor: 0,
         keys: ["c", "w"],
+      },
+      {
+        name: "change to line end",
+        text: "one two",
+        cursor: 4,
+        keys: ["c", "$", "X", "escape"],
       },
       {
         name: "counted change word crosses adjacent classes once",

@@ -39,6 +39,16 @@ describe("Vim host keymap", () => {
     )
   })
 
+  test("accepts both terminal spellings for the reserved line-end motion", () => {
+    const selected = selectVimKeyBindings(new Set(["$", "shift+4"]), {
+      respectHostPrefixes: true,
+    })
+
+    expect(
+      selected.filter(({ key }) => key === "$").map(({ bind }) => bind),
+    ).toEqual(["shift+4", "$"])
+  })
+
   test("converts only printable host prefixes into insert text", () => {
     expect(printableHostPrefix("space")).toBe(" ")
     expect(printableHostPrefix("g")).toBe("g")
