@@ -115,6 +115,7 @@ class FakeEditor implements VimEditor {
 function mutableEffects(runtime = createVimState("normal")) {
   return {
     dispatch() {},
+    openEx() {},
     writeClipboard() {},
     transitionRuntime(mutation: (state: typeof runtime) => void) {
       mutation(runtime)
@@ -235,6 +236,7 @@ describe("editor action adapter", () => {
       { value: "", linewise: false },
       {
         dispatch() {},
+        openEx() {},
         writeClipboard: (text) => {
           copied.push(text)
         },
@@ -335,30 +337,31 @@ describe("editor action adapter", () => {
     expect(editor.cursorOffset).toBe(3)
   })
 
-  test("host actions dispatch their public command IDs", () => {
+  test("host actions use their public adapters", () => {
     const editor = new FakeEditor("")
     const dispatched: string[] = []
+    let openedEx = false
     run(
       editor,
       [
         { type: "command", id: "session.timeline" },
         { type: "submit" },
-        { type: "palette" },
+        { type: "ex" },
       ],
       { value: "", linewise: false },
       {
         dispatch: (id) => {
           dispatched.push(id)
         },
+        openEx: () => {
+          openedEx = true
+        },
         writeClipboard() {},
         transitionRuntime: effects.transitionRuntime,
       },
     )
-    expect(dispatched).toEqual([
-      "session.timeline",
-      "input.submit",
-      "command.palette.show",
-    ])
+    expect(dispatched).toEqual(["session.timeline", "input.submit"])
+    expect(openedEx).toBeTrue()
   })
 
   test("visual yank returns the cursor to the ordered selection start", () => {
@@ -748,6 +751,7 @@ describe("editor action adapter", () => {
       createVimHistory(editor.plainText),
       {
         dispatch() {},
+        openEx() {},
         writeClipboard() {},
         transitionRuntime(mutation) {
           transitions++

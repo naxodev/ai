@@ -5,6 +5,7 @@ const expectedFiles = new Set([
   "clipboard.ts",
   "editor-actions.ts",
   "engine.ts",
+  "ex-command.ts",
   "index.tsx",
   "package.json",
   "tui.tsx",

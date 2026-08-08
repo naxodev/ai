@@ -322,6 +322,7 @@ export function runImplementation(testCase: ParityCase): EditorSnapshot {
     const result = transition(state, key)
     runActions(editor, result.actions, register, state, history, {
       dispatch() {},
+      openEx() {},
       writeClipboard() {},
       transitionRuntime(mutation) {
         mutation(state)

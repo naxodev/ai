@@ -22,8 +22,11 @@ the pinned OpenCode dependencies.
   accepts raw command input.
 - `context.ui.dialog.prompt()` returns only a string or cancellation. It does not
   expose whether confirmation came from a typed Enter or a pasted newline.
-- Safe paste handling and a public OpenCode shell route remain unresolved. Do
-  not synthesize prompt submissions or spawn shell commands as a fallback.
+- The EX adapter resolves only commands returned by `commands()` and dispatches
+  their IDs. It does not call command `run` functions directly.
+- `:!` requires a returned shell command whose public slash metadata declares
+  argument support. Do not synthesize prompt submissions or spawn a shell as a
+  fallback. Vim file commands such as `:w` have no honest prompt-editor meaning.
 
 ## Insert Transactions
 

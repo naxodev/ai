@@ -81,7 +81,7 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 | `u`, `ctrl+r`                   | Undo or redo one Vim command                    |
 | `J`                             | Join lines                                      |
 | `return`, `ctrl+return`         | Submit in normal mode; newline or submit insert |
-| `:`                             | Open the command palette                        |
+| `:`                             | Open the EX command dialog                      |
 | `/`                             | Open the session timeline                       |
 | `[`, `]`                        | Move the session view by half a page            |
 | `{`, `}`                        | Select the previous or next session message     |
@@ -96,6 +96,9 @@ Yanks also update the macOS system clipboard.
 - Active leader prefixes are left to OpenCode. The API does not expose inactive or dynamically changed leader configuration.
 - Clipboard integration uses macOS `pbcopy`. Modal editing still works on other platforms, but clipboard writes do not.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.
+- EX commands resolve available OpenCode slash names and aliases. `:q`/`:quit` and `:help` work only when matching public OpenCode commands are available.
+- EX does not implement Vim file commands such as `:w`. `:!` works only when OpenCode exposes a public shell command that accepts arguments; it never spawns a shell itself.
+- The public prompt dialog does not report whether Enter was typed or pasted. The plugin relies only on the dialog's confirmation and cancellation result.
 - Block visual mode is not implemented. Character and line visual changes form one undo transaction and repeat their selection shape with dot.
 - Visual `r<Enter>` is rejected. Vim stores literal carriage returns for this command, but OpenCode's editor only safely represents line feeds.
 

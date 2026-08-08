@@ -132,6 +132,7 @@ export interface VimEditor {
 
 export type ActionEffects = {
   dispatch(id: string): void
+  openEx(): void
   writeClipboard(text: string): void
   transitionRuntime(mutation: (runtime: VimState) => void): void
 }
@@ -1678,7 +1679,7 @@ export function runActions(
       } else editor.redo()
     }
     if (action.type === "submit") effects.dispatch("input.submit")
-    if (action.type === "palette") effects.dispatch("command.palette.show")
+    if (action.type === "ex") effects.openEx()
     if (action.type === "enter") {
       enter(editor, action.key)
       if (!history.changeSession)

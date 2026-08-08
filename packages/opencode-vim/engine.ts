@@ -125,7 +125,7 @@ export type VimAction =
   | { type: "command"; id: string }
   | { type: "join-lines"; count: number }
   | { type: "repeat"; count?: number }
-  | { type: "undo" | "redo" | "submit" | "palette" }
+  | { type: "undo" | "redo" | "submit" | "ex" }
 
 export type Transition = { consume: boolean; actions: VimAction[] }
 
@@ -596,7 +596,7 @@ function transitionNormal(state: VimState, key: string): Transition {
   if (key === "u") return { consume: true, actions: [{ type: "undo" }] }
   if (key === "ctrl+r") return { consume: true, actions: [{ type: "redo" }] }
   if (key === "return") return { consume: true, actions: [{ type: "submit" }] }
-  if (key === ":") return { consume: true, actions: [{ type: "palette" }] }
+  if (key === ":") return { consume: true, actions: [{ type: "ex" }] }
   return { consume: true, actions: [] }
 }
 

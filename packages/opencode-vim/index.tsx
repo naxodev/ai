@@ -3,6 +3,7 @@ import { Plugin } from "@opencode-ai/plugin/tui"
 import type { EditBufferRenderable, TextRenderable } from "@opentui/core"
 import { createEffect, createSignal, onCleanup } from "solid-js"
 import { writeClipboard } from "./clipboard.ts"
+import { openExDialog } from "./ex-command.ts"
 import {
   beginInsertSession,
   createVimHistory,
@@ -148,6 +149,7 @@ function VimHost(props: {
         props.runtime,
         {
           dispatch() {},
+          openEx() {},
           writeClipboard() {},
           transitionRuntime: props.setRuntime,
         },
@@ -201,6 +203,14 @@ function VimHost(props: {
     }
     runActions(editor, actions, register, props.runtime, history, {
       dispatch: (id) => queueMicrotask(() => props.context.keymap.dispatch(id)),
+      openEx: () => {
+        void openExDialog(props.context).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error)
+          void props.context.ui.dialog
+            .alert({ title: "EX command", message })
+            .catch(() => {})
+        })
+      },
       writeClipboard,
       transitionRuntime: props.setRuntime,
     })
