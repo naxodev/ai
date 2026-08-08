@@ -1,19 +1,14 @@
 /** @jsxImportSource @opentui/solid */
 import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
-import { formatMs, type Device, type Track } from "./types.ts"
+import { formatMs } from "./types.ts"
+import { AlbumArtwork } from "./artwork.tsx"
 import { Waveform } from "./waveform.tsx"
 
 export type UiState = {
   loading: boolean
   error: string | null
-  query: string
-  results: Track[]
-  selected: number
-  devices: Device[]
   player: import("./types.ts").PlayerState | null
-  view: "now" | "search" | "devices"
-  expanded: boolean
 }
 
 type Theme = Context["theme"]
@@ -28,8 +23,6 @@ const Icon = {
   pause: t("⏸"),
   refresh: "↻",
   open: "↗",
-  expand: "▴",
-  collapse: "▾",
   dotOn: "●",
   dotOff: "○",
   scrub: "●",
@@ -45,17 +38,12 @@ function liveProgress(player: UiState["player"]): number {
   )
 }
 
-function clipWords(text: string, max = 6): string {
-  const words = text.trim().split(/\s+/).filter(Boolean)
-  if (words.length <= max) return text.trim()
-  return `${words.slice(0, max).join(" ")}…`
-}
-
 function ProgressBar(props: {
   theme: Theme
   progress: number
   duration: number
   width?: number
+  accent?: string | undefined
 }) {
   const rendered = createMemo(() => {
     const w = Math.max(8, props.width ?? 28)
@@ -75,10 +63,14 @@ function ProgressBar(props: {
 
   return (
     <text>
-      <span style={{ fg: props.theme.text.action.primary.default }}>
+      <span
+        style={{ fg: props.accent ?? props.theme.text.action.primary.default }}
+      >
         {rendered().left}
       </span>
-      <span style={{ fg: props.theme.text.action.primary.default }}>
+      <span
+        style={{ fg: props.accent ?? props.theme.text.action.primary.default }}
+      >
         {rendered().thumb}
       </span>
       <span style={{ fg: props.theme.text.subdued }}>{rendered().right}</span>
@@ -97,6 +89,7 @@ function IconBtn(props: {
   /** Currently “on” (playing) */
   active?: boolean
   muted?: boolean
+  accent?: string | undefined
   /** Fixed outer width in cells */
   width?: number
   onClick: () => void
@@ -113,7 +106,8 @@ function IconBtn(props: {
   }
 
   const fg = () => {
-    if (press() || props.active) return props.theme.text.action.primary.default
+    if (press() || props.active)
+      return props.accent ?? props.theme.text.action.primary.default
     if (props.primary) {
       return hover()
         ? props.theme.text.action.primary.default
@@ -168,13 +162,14 @@ function StatusPill(props: {
   theme: Theme
   playing: boolean
   source: string | null
+  accent?: string | undefined
 }) {
   return (
     <box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
       <text
         fg={
           props.playing
-            ? props.theme.text.action.primary.default
+            ? (props.accent ?? props.theme.text.action.primary.default)
             : props.theme.text.subdued
         }
       >
@@ -188,10 +183,9 @@ function StatusPill(props: {
   )
 }
 
-export function FooterDock(props: {
+export function SidebarPlayer(props: {
   context: Context
   state: UiState
-  onToggleExpand: () => void
   onPlayPause: () => void
   onNext: () => void
   onPrev: () => void
@@ -231,103 +225,128 @@ export function FooterDock(props: {
 
   return (
     <box
-      position="absolute"
-      left={0}
-      right={0}
-      bottom={1}
-      zIndex={50}
       flexDirection="column"
-      backgroundColor={theme().background.surface.overlay}
       border={["top"]}
       borderColor={
-        playing() ? theme().text.action.primary.default : theme().border.default
+        playing()
+          ? (track()?.artwork?.accent ?? theme().text.action.primary.default)
+          : theme().border.default
       }
       paddingLeft={1}
       paddingRight={1}
-      paddingTop={0}
-      paddingBottom={0}
+      paddingTop={1}
+      paddingBottom={1}
+      gap={1}
       flexShrink={0}
     >
-      {/* ── main transport row ── */}
-      <box
-        flexDirection="row"
-        gap={1}
-        height={1}
-        alignItems="center"
-        justifyContent="space-between"
-      >
-        {/* Transport cluster */}
-        <box
-          flexDirection="row"
-          gap={0}
-          alignItems="center"
-          flexShrink={0}
-          backgroundColor={theme().background.surface.offset}
-          paddingLeft={0}
-          paddingRight={0}
-        >
-          <IconBtn
-            theme={theme()}
-            icon={Icon.prev}
-            width={3}
-            onClick={() => props.onPrev()}
-          />
-          <IconBtn
-            theme={theme()}
-            icon={playing() ? Icon.pause : Icon.play}
-            primary
-            active={playing()}
-            width={3}
-            onClick={() => props.onPlayPause()}
-          />
-          <IconBtn
-            theme={theme()}
-            icon={Icon.next}
-            width={3}
-            onClick={() => props.onNext()}
-          />
-        </box>
+      <box flexDirection="row" justifyContent="space-between" gap={1}>
+        <text fg={theme().text.default}>
+          <b>Now playing</b>
+        </text>
+        <StatusPill
+          theme={theme()}
+          playing={playing()}
+          source={null}
+          accent={track()?.artwork?.accent}
+        />
+      </box>
 
+      <Show when={props.state.error}>
+        {(err) => <text fg={theme().text.feedback.error.default}>{err()}</text>}
+      </Show>
+
+      <Show when={track()?.artwork}>
+        {(artwork) => (
+          <box flexDirection="row" justifyContent="center">
+            <AlbumArtwork context={props.context} artwork={artwork()} />
+          </box>
+        )}
+      </Show>
+
+      <Show
+        when={track()}
+        fallback={
+          <text fg={theme().text.subdued}>
+            {props.state.loading ? "Syncing…" : "Nothing playing"}
+          </text>
+        }
+      >
+        {(t) => (
+          <box flexDirection="column" gap={0}>
+            <text fg={theme().text.default}>
+              <b>{t().name}</b>
+            </text>
+            <Show when={t().artists}>
+              <text fg={theme().text.subdued}>{t().artists}</text>
+            </Show>
+            <Show when={t().album}>
+              <text fg={theme().text.subdued}>{t().album}</text>
+            </Show>
+          </box>
+        )}
+      </Show>
+
+      <box flexDirection="row" justifyContent="center" overflow="hidden">
         <Waveform
           theme={theme()}
           playing={playing()}
           seedKey={track()?.id ?? track()?.name}
           progressMs={progress()}
-          bars={18}
-          variant="mini"
+          bars={24}
+          variant="hero"
         />
+      </box>
 
-        {/* Title */}
-        <box
-          flexGrow={1}
-          minWidth={10}
-          flexShrink={1}
-          overflow="hidden"
-          onMouseDown={() => props.onToggleExpand()}
-        >
-          <Show
-            when={track()}
-            fallback={
-              <text fg={theme().text.subdued}>
-                {props.state.loading ? "syncing…" : "Nothing playing"}
-              </text>
-            }
-          >
-            {(t) => (
-              <text fg={theme().text.default}>
-                <b>{clipWords(t().name, 6)}</b>
-                <Show when={t().artists}>
-                  <span style={{ fg: theme().text.subdued }}>
-                    {`  ${Icon.sep}  ${clipWords(t().artists, 4)}`}
-                  </span>
-                </Show>
-              </text>
-            )}
-          </Show>
+      <Show when={track() && duration() > 0}>
+        <box flexDirection="column" gap={0} overflow="hidden">
+          <ProgressBar
+            theme={theme()}
+            progress={progress()}
+            duration={duration()}
+            width={24}
+            accent={track()?.artwork?.accent}
+          />
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={theme().text.subdued}>{formatMs(progress())}</text>
+            <text fg={theme().text.subdued}>{formatMs(duration())}</text>
+          </box>
         </box>
+      </Show>
 
-        {/* Utility cluster */}
-        <box flexDirection="row" gap={0} alignItems="center" flexShrink={0}>
+      <box flexDirection="row" gap={1} justifyContent="center">
+        <IconBtn
+          theme={theme()}
+          icon={Icon.prev}
+          width={5}
+          onClick={() => props.onPrev()}
+        />
+        <IconBtn
+          theme={theme()}
+          icon={playing() ? Icon.pause : Icon.play}
+          primary
+          active={playing()}
+          accent={track()?.artwork?.accent}
+          width={7}
+          onClick={() => props.onPlayPause()}
+        />
+        <IconBtn
+          theme={theme()}
+          icon={Icon.next}
+          width={5}
+          onClick={() => props.onNext()}
+        />
+      </box>
+
+      <Show when={source()}>
+        {(name) => (
+          <text fg={theme().text.subdued}>
+            {Icon.dotOn} {name()}
+          </text>
+        )}
+      </Show>
+
+      <box flexDirection="row" justifyContent="space-between">
+        <box flexDirection="row" gap={0}>
           <IconBtn
             theme={theme()}
             icon={Icon.refresh}
@@ -342,138 +361,12 @@ export function FooterDock(props: {
             width={3}
             onClick={() => props.onOpenApp()}
           />
-          <IconBtn
-            theme={theme()}
-            icon={props.state.expanded ? Icon.collapse : Icon.expand}
-            muted
-            width={3}
-            onClick={() => props.onToggleExpand()}
-          />
+        </box>
+        <box flexDirection="row" flexWrap="wrap">
+          <KeyChip theme={theme()} keys="⌃⇧P" label="play" />
+          <KeyChip theme={theme()} keys="⌃⇧←→" label="skip" />
         </box>
       </box>
-
-      {/* ── progress ── */}
-      <Show when={track() && duration() > 0}>
-        <box
-          flexDirection="row"
-          gap={1}
-          height={1}
-          alignItems="center"
-          paddingLeft={1}
-          paddingRight={1}
-        >
-          <box width={5} flexShrink={0}>
-            <text fg={theme().text.subdued}>
-              {formatMs(progress()).padStart(5)}
-            </text>
-          </box>
-          <box flexGrow={1} flexShrink={1} overflow="hidden">
-            <ProgressBar
-              theme={theme()}
-              progress={progress()}
-              duration={duration()}
-              width={52}
-            />
-          </box>
-          <box width={5} flexShrink={0} alignItems="flex-end">
-            <text fg={theme().text.subdued}>
-              {formatMs(duration()).padStart(5)}
-            </text>
-          </box>
-        </box>
-      </Show>
-
-      {/* ── expanded ── */}
-      <Show when={props.state.expanded}>
-        <box
-          flexDirection="column"
-          gap={1}
-          paddingTop={1}
-          paddingBottom={1}
-          paddingLeft={1}
-          paddingRight={1}
-          border={["top"]}
-          borderColor={theme().border.default}
-        >
-          <Show when={props.state.error}>
-            {(err) => (
-              <text fg={theme().text.feedback.error.default}>{err()}</text>
-            )}
-          </Show>
-
-          <box flexDirection="row" gap={2} alignItems="center">
-            <text fg={theme().text.default}>
-              <b>Now playing</b>
-            </text>
-            <StatusPill theme={theme()} playing={playing()} source={source()} />
-            <box flexGrow={1} />
-            <Show when={track()?.album}>
-              <text fg={theme().text.subdued}>{track()!.album}</text>
-            </Show>
-          </box>
-
-          <Show when={track()}>
-            {(t) => (
-              <box flexDirection="column" gap={0}>
-                <text fg={theme().text.default}>
-                  <b>{t().name}</b>
-                </text>
-                <Show when={t().artists}>
-                  <text fg={theme().text.subdued}>{t().artists}</text>
-                </Show>
-              </box>
-            )}
-          </Show>
-
-          {/* Large transport */}
-          <box
-            flexDirection="row"
-            gap={1}
-            alignItems="center"
-            justifyContent="center"
-          >
-            <IconBtn
-              theme={theme()}
-              icon={Icon.prev}
-              width={5}
-              onClick={() => props.onPrev()}
-            />
-            <IconBtn
-              theme={theme()}
-              icon={playing() ? Icon.pause : Icon.play}
-              primary
-              active={playing()}
-              width={7}
-              onClick={() => props.onPlayPause()}
-            />
-            <IconBtn
-              theme={theme()}
-              icon={Icon.next}
-              width={5}
-              onClick={() => props.onNext()}
-            />
-          </box>
-
-          <box flexDirection="row" justifyContent="center">
-            <Waveform
-              theme={theme()}
-              playing={playing()}
-              seedKey={track()?.id ?? track()?.name}
-              progressMs={progress()}
-              bars={48}
-              variant="hero"
-            />
-          </box>
-
-          <box flexDirection="row" gap={1} flexWrap="wrap">
-            <KeyChip theme={theme()} keys="⌃⇧M" label="dock" />
-            <KeyChip theme={theme()} keys="⌃⇧P" label="play" />
-            <KeyChip theme={theme()} keys="⌃⇧←→" label="skip" />
-            <KeyChip theme={theme()} keys="space" label="play" />
-            <KeyChip theme={theme()} keys="esc" label="close" />
-          </box>
-        </box>
-      </Show>
     </box>
   )
 }

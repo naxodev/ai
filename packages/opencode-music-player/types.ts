@@ -1,3 +1,10 @@
+export type Artwork = {
+  id: string
+  png_base64: string
+  accent: string
+  cells: Array<Array<{ upper: string; lower: string }>>
+}
+
 export type Track = {
   uri: string
   id: string
@@ -5,6 +12,7 @@ export type Track = {
   artists: string
   album: string
   duration_ms: number
+  artwork: Artwork | null
 }
 
 export type Device = {

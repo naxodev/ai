@@ -1,8 +1,29 @@
 # @naxodev/opencode-music-player
 
-A footer dock for the OpenCode 2 TUI that displays and controls the active macOS system media session.
+A sidebar player for the OpenCode 2 TUI that displays and controls the active macOS system media session.
 
-It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed through [`media-control`](https://github.com/ungive/media-control). The dock keeps the existing OpenCode theme and provides keyboard and mouse controls.
+It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed through [`media-control`](https://github.com/ungive/media-control). The player keeps the existing OpenCode theme and provides keyboard and mouse controls.
+
+## Artwork
+
+The player reads embedded artwork from `media-control` when the active app publishes it. When artwork is missing, it sends the track title, artist, and album to the public iTunes Search API and downloads an exact match from Apple's image CDN.
+
+Ghostty and other terminals with Kitty graphics support display the cover as a native image. Other terminals receive a true-color half-block rendering of the same cover.
+
+Terminal multiplexers must pass Kitty graphics through to use native images. The player uses the half-block rendering when the host does not expose that support.
+
+Herdr users can enable its experimental renderer in `~/.config/herdr/config.toml`:
+
+```toml
+[experimental]
+kitty_graphics = true
+```
+
+tmux 3.3 and later users must allow wrapped graphics passthrough in `~/.tmux.conf`:
+
+```tmux
+set -g allow-passthrough on
+```
 
 > [!IMPORTANT]
 > This package targets the beta OpenCode 2 TUI plugin API in `opencode2 v0.0.0-next-16927`. OpenCode may change this API before its stable release.
@@ -65,15 +86,11 @@ The response should include `music-player`. If it does not, inspect `~/.local/sh
 
 ## Controls
 
-| Input                      | Action                      |
-| -------------------------- | --------------------------- |
-| `ctrl+shift+m` or `/music` | Expand or collapse the dock |
-| `ctrl+shift+p`             | Play or pause               |
-| `ctrl+shift+left`          | Previous track              |
-| `ctrl+shift+right`         | Next track                  |
-| `space` while expanded     | Play or pause               |
-| `shift+r` while expanded   | Refresh                     |
-| `escape` while expanded    | Collapse                    |
+| Input              | Action         |
+| ------------------ | -------------- |
+| `ctrl+shift+p`     | Play or pause  |
+| `ctrl+shift+left`  | Previous track |
+| `ctrl+shift+right` | Next track     |
 
 ## Development
 
