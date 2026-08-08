@@ -26,12 +26,12 @@ set -g allow-passthrough on
 ```
 
 > [!IMPORTANT]
-> This package targets the beta OpenCode 2 TUI plugin API in `opencode2 v0.0.0-next-16927`. OpenCode may change this API before its stable release.
+> This package targets the beta OpenCode 2 TUI plugin API in `opencode2 v0.0.0-next-17041`. OpenCode may change this API before its stable release.
 
 ## Requirements
 
 - macOS
-- OpenCode 2 `v0.0.0-next-16927`
+- OpenCode 2 `v0.0.0-next-17041`
 - Bun, which OpenCode uses to load TypeScript plugin packages
 - [`media-control`](https://github.com/ungive/media-control), recommended:
 

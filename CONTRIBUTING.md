@@ -4,7 +4,7 @@ Contributions are welcome. By participating, you agree to follow the [Code of Co
 
 ## Development
 
-This workspace requires macOS because the media packages invoke macOS tools and the OpenCode Vim package runs a real-TUI smoke test. Install Bun 1.3.7, Node.js 22.19 or later, Neovim, and tmux. The bootstrap command below installs the OpenCode CLI version pinned by `packages/opencode-vim/package.json`.
+This workspace requires macOS because the media packages invoke macOS tools and the OpenCode packages run real-TUI smoke tests. Install Bun 1.3.7, Node.js 22.19 or later, Neovim, and tmux. The bootstrap command below installs the OpenCode CLI version pinned by `packages/opencode-vim/package.json`.
 
 ```sh
 git clone https://github.com/naxodev/ai.git

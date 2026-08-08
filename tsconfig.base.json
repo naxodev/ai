@@ -5,6 +5,9 @@
     "noEmit": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
-    "strict": true
+    "strict": true,
+    "noUncheckedSideEffectImports": false,
+    "types": ["*"],
+    "ignoreDeprecations": "6.0"
   }
 }
