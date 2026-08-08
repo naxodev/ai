@@ -73,6 +73,17 @@ describe("vim transition engine", () => {
     expect(state.mode).toBe("visual")
   })
 
+  test("changes complete selected lines with visual C and S", () => {
+    for (const key of ["C", "S"]) {
+      const state = createVimState("normal")
+      transition(state, "v")
+
+      expect(transition(state, key).actions).toEqual([
+        { type: "visual-operator", operator: "change", linewise: true },
+      ])
+    }
+  })
+
   test("preserves linewise visual intent and supports visual gg", () => {
     const linewise = createVimState("normal")
     transition(linewise, "V")

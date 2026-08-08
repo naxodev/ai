@@ -33,13 +33,13 @@
       "name": "@naxodev/opencode-vim",
       "version": "0.1.0",
       "dependencies": {
-        "@opencode-ai/plugin": "0.0.0-next-17020",
+        "@opencode-ai/plugin": "0.0.0-next-17041",
         "@opentui/core": "0.4.5",
         "@opentui/solid": "0.4.5",
         "solid-js": "1.9.12",
       },
       "devDependencies": {
-        "@opencode-ai/theme": "0.0.0-next-17020",
+        "@opencode-ai/theme": "0.0.0-next-17041",
         "@types/bun": "^1.3.14",
         "prettier": "3.9.6",
         "typescript": "5.9.3",
@@ -1119,9 +1119,9 @@
 
     "@isaacs/cliui/wrap-ansi": ["wrap-ansi@8.1.0", "", { "dependencies": { "ansi-styles": "^6.1.0", "string-width": "^5.0.1", "strip-ansi": "^7.0.1" } }, "sha512-si7QWI6zUMq56bESFvagtmzMdGOtoxfR+Sez11Mobfc7tm+VkUckk9bW2UeffTGVUbOksxmSw0AA2gs8g71NCQ=="],
 
-    "@naxodev/opencode-vim/@opencode-ai/plugin": ["@opencode-ai/plugin@0.0.0-next-17020", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@opencode-ai/ai": "0.0.0-next-17020", "@opencode-ai/client": "0.0.0-next-17020", "@opencode-ai/schema": "0.0.0-next-17020", "@opencode-ai/sdk": "1.18.5", "@standard-schema/spec": "1.1.0", "effect": "4.0.0-beta.101", "zod": "4.1.8" }, "peerDependencies": { "@opencode-ai/theme": "0.0.0-next-17020", "@opentui/core": ">=0.4.5", "@opentui/keymap": ">=0.4.5", "@opentui/solid": ">=0.4.5", "solid-js": ">=1.9.0" }, "optionalPeers": ["@opencode-ai/theme", "@opentui/core", "@opentui/keymap", "@opentui/solid", "solid-js"] }, "sha512-K4JhFy9uaLfKWMgQKrSW27qpOdaTRDJdoLh/ADwoRG3/YUwzakBNcD0+rmjAgRO3qWPPIHEROc8UTVLnhkeDjQ=="],
+    "@naxodev/opencode-vim/@opencode-ai/plugin": ["@opencode-ai/plugin@0.0.0-next-17041", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@opencode-ai/ai": "0.0.0-next-17041", "@opencode-ai/client": "0.0.0-next-17041", "@opencode-ai/schema": "0.0.0-next-17041", "@opencode-ai/sdk": "1.18.5", "@standard-schema/spec": "1.1.0", "effect": "4.0.0-beta.101", "zod": "4.1.8" }, "peerDependencies": { "@opencode-ai/theme": "0.0.0-next-17041", "@opentui/core": ">=0.4.5", "@opentui/keymap": ">=0.4.5", "@opentui/solid": ">=0.4.5", "solid-js": ">=1.9.0" }, "optionalPeers": ["@opencode-ai/theme", "@opentui/core", "@opentui/keymap", "@opentui/solid", "solid-js"] }, "sha512-Gv1+dqX7KS3iQdMiURRJaE8FLZQRJFZ2Kfamz2RIPVEMPQxJP8k6+scP1or6UF1s8NxCcGJAKVq0IEf0uge6YQ=="],
 
-    "@naxodev/opencode-vim/@opencode-ai/theme": ["@opencode-ai/theme@0.0.0-next-17020", "", { "dependencies": { "@opentui/core": "0.4.5", "effect": "4.0.0-beta.101" } }, "sha512-lm+ZKAEwHdQV3l1KbLm4tLuH1Pi0MDQrSpjw01u6t+N2aCAtX6oZpiJrdmLnypmWZfKuVicdbzBhS1o2QJrmPQ=="],
+    "@naxodev/opencode-vim/@opencode-ai/theme": ["@opencode-ai/theme@0.0.0-next-17041", "", { "dependencies": { "@opentui/core": "0.4.5", "effect": "4.0.0-beta.101" } }, "sha512-DVWWy0BPDBEoKb/wnky2R4CK8AXyI18A90kDQZP/EcB/Z7M7NuT8+EMIS4KZ/WPziCki7Y3dCAbOzOnPwh5lqA=="],
 
     "@naxodev/pi-music-dock/typescript": ["typescript@7.0.2", "", { "optionalDependencies": { "@typescript/typescript-aix-ppc64": "7.0.2", "@typescript/typescript-darwin-arm64": "7.0.2", "@typescript/typescript-darwin-x64": "7.0.2", "@typescript/typescript-freebsd-arm64": "7.0.2", "@typescript/typescript-freebsd-x64": "7.0.2", "@typescript/typescript-linux-arm": "7.0.2", "@typescript/typescript-linux-arm64": "7.0.2", "@typescript/typescript-linux-loong64": "7.0.2", "@typescript/typescript-linux-mips64el": "7.0.2", "@typescript/typescript-linux-ppc64": "7.0.2", "@typescript/typescript-linux-riscv64": "7.0.2", "@typescript/typescript-linux-s390x": "7.0.2", "@typescript/typescript-linux-x64": "7.0.2", "@typescript/typescript-netbsd-arm64": "7.0.2", "@typescript/typescript-netbsd-x64": "7.0.2", "@typescript/typescript-openbsd-arm64": "7.0.2", "@typescript/typescript-openbsd-x64": "7.0.2", "@typescript/typescript-sunos-x64": "7.0.2", "@typescript/typescript-win32-arm64": "7.0.2", "@typescript/typescript-win32-x64": "7.0.2" }, "bin": { "tsc": "bin/tsc" } }, "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="],
 
@@ -1167,11 +1167,11 @@
 
     "@isaacs/cliui/wrap-ansi/ansi-styles": ["ansi-styles@6.2.3", "", {}, "sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg=="],
 
-    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/ai": ["@opencode-ai/ai@0.0.0-next-17020", "", { "dependencies": { "@opencode-ai/schema": "0.0.0-next-17020", "@smithy/eventstream-codec": "4.2.14", "@smithy/util-utf8": "4.2.2", "aws4fetch": "1.0.20", "effect": "4.0.0-beta.101", "google-auth-library": "10.5.0" } }, "sha512-PPIr40Tqh2CdV28LVGYmUhX8iSLhoePbUp/MnQKLdIbF9pjX30GUOqCQJRmwM8B8VA7PsC5vDtronzfJ6V4Mgw=="],
+    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/ai": ["@opencode-ai/ai@0.0.0-next-17041", "", { "dependencies": { "@opencode-ai/schema": "0.0.0-next-17041", "@smithy/eventstream-codec": "4.2.14", "@smithy/util-utf8": "4.2.2", "aws4fetch": "1.0.20", "effect": "4.0.0-beta.101", "google-auth-library": "10.5.0" } }, "sha512-QtUankeiRQC9muRodl1VR3BBwW9GhXMWTDYJjbdZh31hmXfqCIKV1hKl75h0gpsbIBpDfAO8zgMQiZb2q1mmBA=="],
 
-    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/client": ["@opencode-ai/client@0.0.0-next-17020", "", { "dependencies": { "@opencode-ai/protocol": "0.0.0-next-17020", "@opencode-ai/schema": "0.0.0-next-17020" }, "peerDependencies": { "effect": "4.0.0-beta.101" }, "optionalPeers": ["effect"] }, "sha512-tno2ldM4DfhasDi8bwpqXoazOpDhrHcXhC004iDIzmQXzdkdfgAVEZ3OYSq9b/qdcK1HT0SlgRhRCjd6vkwr1w=="],
+    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/client": ["@opencode-ai/client@0.0.0-next-17041", "", { "dependencies": { "@opencode-ai/protocol": "0.0.0-next-17041", "@opencode-ai/schema": "0.0.0-next-17041" }, "peerDependencies": { "effect": "4.0.0-beta.101" }, "optionalPeers": ["effect"] }, "sha512-lXpI5YG6pITLM4Mt8kNZAaVrTN5qRJEkbpyeUXhfOViGUY/1cmUr7Ron+VDGyur7ehdgzbRUzQPSVFdGSdFlMw=="],
 
-    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/schema": ["@opencode-ai/schema@0.0.0-next-17020", "", { "dependencies": { "@standard-schema/spec": "1.1.0", "effect": "4.0.0-beta.101" } }, "sha512-5xpbJT6h9aOV462aE/BUlyBS2vVufn77rUVjY7eM/fWiLB8rnpE9Hby/9wUd/9lCPlxcezkIyXpYiqkjCqj6Zw=="],
+    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/schema": ["@opencode-ai/schema@0.0.0-next-17041", "", { "dependencies": { "@standard-schema/spec": "1.1.0", "effect": "4.0.0-beta.101" } }, "sha512-n3XLHtgY70LFRrEQPVsbCyEG24MdIMNrgDuKa70+J1yjtwLVnLfvlvnitzxVr9dGiCR6bhyMdFhZmxGDxxZVVw=="],
 
     "@opentui/core/string-width/emoji-regex": ["emoji-regex@10.6.0", "", {}, "sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A=="],
 
@@ -1187,7 +1187,7 @@
 
     "rimraf/glob/path-scurry": ["path-scurry@1.11.1", "", { "dependencies": { "lru-cache": "^10.2.0", "minipass": "^5.0.0 || ^6.0.2 || ^7.0.0" } }, "sha512-Xa4Nw17FS9ApQFJ9umLiJS4orGjm7ZzwUrwamcGQuHSzDyth9boKDaycYdDcZDuqYATXw4HFXgaqWTctW/v1HA=="],
 
-    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/client/@opencode-ai/protocol": ["@opencode-ai/protocol@0.0.0-next-17020", "", { "dependencies": { "@opencode-ai/schema": "0.0.0-next-17020", "effect": "4.0.0-beta.101" } }, "sha512-IZykwuDkINnpygygZRPaCAW7NBnHbi1gTrXHxKMC/sETszUp6MlloUq1SSbTWAlyDFcr5/LeRtYQwD0wsubl0w=="],
+    "@naxodev/opencode-vim/@opencode-ai/plugin/@opencode-ai/client/@opencode-ai/protocol": ["@opencode-ai/protocol@0.0.0-next-17041", "", { "dependencies": { "@opencode-ai/schema": "0.0.0-next-17041", "effect": "4.0.0-beta.101" } }, "sha512-fW/JF00Q+o8xFRpL9Rygty9maVxM473spwtgvUh0dbsETSahooG4Hr5fya4qpdaRlA3noAdSw85MHfcT5ja/xA=="],
 
     "babel-plugin-module-resolver/glob/minimatch/brace-expansion": ["brace-expansion@2.1.4", "", { "dependencies": { "balanced-match": "^1.0.0" } }, "sha512-hGfVzPxthbf3+2yjg/RBs60cB0FhqBS/zvdV/4wn4/BmN0bNMMHPc4V/BbFieqf1TKAGGAHnY4eSjajCl0f2Xg=="],
 

@@ -3,11 +3,11 @@
 Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 
 > [!IMPORTANT]
-> This package is tested with exactly `opencode2 v0.0.0-next-17020` and matching `@opencode-ai/plugin` and `@opencode-ai/theme` packages. The OpenCode V2 TUI plugin API is beta and may change before its stable release.
+> This package is tested with exactly `opencode2 v0.0.0-next-17041` and matching `@opencode-ai/plugin` and `@opencode-ai/theme` packages. The OpenCode V2 TUI plugin API is beta and may change before its stable release.
 
 ## Requirements
 
-- OpenCode 2 `v0.0.0-next-17020`
+- OpenCode 2 `v0.0.0-next-17041`
 - Bun 1.3 or later, which OpenCode uses to load TypeScript plugin packages
 - Neovim, required only for development parity tests
 - A supported clipboard executable for system clipboard yanks: macOS `pbcopy`,
@@ -49,7 +49,7 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 
 ## Compatibility
 
-Version `0.1.0` supports only OpenCode 2 `v0.0.0-next-17020`. Its TUI plugin API is not stable, so newer or older OpenCode builds may not load this package.
+Version `0.1.0` supports only OpenCode 2 `v0.0.0-next-17041`. Its TUI plugin API is not stable, so newer or older OpenCode builds may not load this package.
 
 The package intentionally ships TypeScript and TSX source because this OpenCode release loads TUI plugins with Bun. It is not a precompiled JavaScript library and does not support direct loading by Node.js.
 
@@ -82,6 +82,7 @@ The package intentionally ships TypeScript and TSX source because this OpenCode 
 | `v`, `V`                        | Enter character or line visual mode             |
 | `o` in visual mode              | Swap the active visual endpoint                 |
 | `d`, `x`, `c`, `y` in visual    | Delete, change, or yank the selection           |
+| `C`, `S` in visual mode         | Change the selected lines                       |
 | `p`, `P` in visual mode         | Replace the selection from the unnamed register |
 | `r` + character in visual mode  | Replace each selected character                 |
 | `J`, `~` in visual mode         | Join selected lines or toggle selected case     |
@@ -104,7 +105,7 @@ Windows provider remains named `clip` in configuration. On Linux it prefers
 
 - The public V2 keymap API cannot intercept arbitrary printable Unicode. An unlisted Unicode key may reach the editor in normal or visual mode.
 - Character finds register every printable ASCII target with the public keymap. Unicode find targets remain subject to the public keymap limitation above.
-- Active leader prefixes are left to OpenCode. The API does not expose inactive or dynamically changed leader configuration.
+- Active leader prefixes are left to OpenCode except `v` and `V`, which Vim reserves for visual mode. The API does not expose inactive or dynamically changed leader configuration.
 - Clipboard integration requires a supported executable on `PATH` and the matching display environment. Clipboard failures show at most one warning and never affect edits or the unnamed Vim register. Use `"clipboard": "none"` to disable integration and its availability warning.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.
 - OpenCode must be able to install npm dependencies. Offline startup works only after OpenCode has cached the package and its dependencies.

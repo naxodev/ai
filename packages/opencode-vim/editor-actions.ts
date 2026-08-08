@@ -945,17 +945,26 @@ function applyLineRange(
   setRegister: (text: string, linewise?: boolean) => void,
   writeClipboard: (text: string) => void,
   yankCursor = firstNonblank(editor.plainText, range.start),
+  selectedLineCount?: number,
 ) {
   const selected = editor.plainText.slice(range.start, range.end)
-  const value = linewiseValue(selected)
-  setRegister(value, true)
+  const missingLineTerminators =
+    selectedLineCount === undefined
+      ? 0
+      : Math.max(0, selectedLineCount - (selected.match(/\n/g)?.length ?? 0))
+  const registerText = `${selected}${"\n".repeat(missingLineTerminators)}`
+  const value = linewiseValue(registerText)
+  setRegister(registerText, true)
   if (operator === "yank") {
     writeClipboard(`${value}\n`)
     editor.cursorOffset = yankCursor
     return
   }
   if (operator === "change") {
-    const end = selected.endsWith("\n") ? range.end - 1 : range.end
+    const end =
+      selected.endsWith("\n") && missingLineTerminators === 0
+        ? range.end - 1
+        : range.end
     replaceRange(editor, range.start, end, "", range.start)
     return
   }
@@ -1860,20 +1869,54 @@ export function runActions(
       }
     }
     if (action.type === "visual-operator") {
-      const selection = action.shape
+      let selection = action.shape
         ? rangeForShape(editor, action.shape)
         : editor.getSelection()
       if (selection) {
         const preservedRegister = action.preserveRegister
           ? { ...register }
           : null
-        const shape =
+        const measuredShape =
           action.shape ?? visualShape(editor, selection, action.linewise)
+        const shape =
+          !action.shape &&
+          action.linewise &&
+          runtime.visual?.anchor != null &&
+          runtime.visual.active != null
+            ? {
+                ...measuredShape,
+                lines:
+                  Math.abs(
+                    rowAt(editor.plainText, runtime.visual.active) -
+                      rowAt(editor.plainText, runtime.visual.anchor),
+                  ) + 1,
+              }
+            : measuredShape
+        const undoCursor = action.linewise
+          ? shape.lines === 1
+            ? lineBounds(editor.plainText, selection.start).start
+            : (runtime.visual?.anchor ?? selection.start) >
+                (runtime.visual?.active ?? selection.start)
+              ? (runtime.visual?.anchor ?? selection.start)
+              : firstNonblank(
+                  editor.plainText,
+                  runtime.visual?.active ?? selection.end,
+                )
+          : selection.start
+        if (action.linewise)
+          selection = lineRange(editor.plainText, selection.start, shape.lines)
         if (!action.shape && action.operator !== "yank")
-          semanticUndo = { ...before, cursor: selection.start, selection: null }
+          semanticUndo = {
+            ...before,
+            cursor: undoCursor,
+            selection: null,
+          }
         if (action.operator === "change" && !history.changeSession)
           history.changeSession = {
-            before: { ...before, cursor: selection.start },
+            before: {
+              ...before,
+              cursor: undoCursor,
+            },
             actions: [{ ...action, shape }],
             baseline: before,
           }
@@ -1885,6 +1928,11 @@ export function runActions(
             selection,
             setRegister,
             effects.writeClipboard,
+            undefined,
+            Math.min(
+              shape.lines,
+              editor.lineCount - rowAt(editor.plainText, selection.start),
+            ),
           )
           if (action.operator !== "yank") successfulChange = true
           if (action.operator === "change") {

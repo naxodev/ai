@@ -34,6 +34,7 @@
     "editor-actions.ts",
     "engine.ts",
     "ex-command.ts",
+    "host-keymap.ts",
     "index.tsx",
     "tui.tsx",
     "LICENSE",
@@ -51,20 +52,20 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
-    "test": "bun test tests/clipboard.test.ts tests/editor-actions.test.ts tests/engine.test.ts tests/ex-command.test.ts tests/package-load.test.ts",
+    "test": "bun test tests/clipboard.test.ts tests/editor-actions.test.ts tests/engine.test.ts tests/ex-command.test.ts tests/host-keymap.test.ts tests/package-load.test.ts",
     "test:parity": "bun test tests/parity.test.ts",
     "pack:check": "bun run scripts/verify-pack.ts",
     "smoke:package": "bun run scripts/package-smoke.ts",
     "validate": "bun run format:check && bun run check && bun run test && bun run test:parity && bun run pack:check && bun run smoke:package"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-17020",
+    "@opencode-ai/plugin": "0.0.0-next-17041",
     "@opentui/core": "0.4.5",
     "@opentui/solid": "0.4.5",
     "solid-js": "1.9.12"
   },
   "devDependencies": {
-    "@opencode-ai/theme": "0.0.0-next-17020",
+    "@opencode-ai/theme": "0.0.0-next-17041",
     "@types/bun": "^1.3.14",
     "prettier": "3.9.6",
     "typescript": "5.9.3"
