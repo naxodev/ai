@@ -21,12 +21,9 @@ const Icon = {
   next: t("⏭"),
   play: t("▶"),
   pause: t("⏸"),
-  refresh: "↻",
-  open: "↗",
   dotOn: "●",
   dotOff: "○",
   scrub: "●",
-  sep: "·",
 } as const
 
 function liveProgress(player: UiState["player"]): number {
@@ -88,7 +85,6 @@ function IconBtn(props: {
   primary?: boolean
   /** Currently “on” (playing) */
   active?: boolean
-  muted?: boolean
   accent?: string | undefined
   /** Fixed outer width in cells */
   width?: number
@@ -112,9 +108,6 @@ function IconBtn(props: {
       return hover()
         ? props.theme.text.action.primary.default
         : props.theme.text.default
-    }
-    if (props.muted) {
-      return hover() ? props.theme.text.default : props.theme.text.subdued
     }
     return hover()
       ? props.theme.text.action.primary.default
@@ -147,21 +140,9 @@ function IconBtn(props: {
   )
 }
 
-function KeyChip(props: { theme: Theme; keys: string; label: string }) {
-  return (
-    <text>
-      <span style={{ fg: props.theme.text.action.primary.default }}>
-        {props.keys}
-      </span>
-      <span style={{ fg: props.theme.text.subdued }}> {props.label} </span>
-    </text>
-  )
-}
-
 function StatusPill(props: {
   theme: Theme
   playing: boolean
-  source: string | null
   accent?: string | undefined
 }) {
   return (
@@ -177,7 +158,6 @@ function StatusPill(props: {
       </text>
       <text fg={props.theme.text.subdued}>
         {props.playing ? "playing" : "paused"}
-        {props.source ? ` ${Icon.sep} ${props.source}` : ""}
       </text>
     </box>
   )
@@ -189,8 +169,6 @@ export function SidebarPlayer(props: {
   onPlayPause: () => void
   onNext: () => void
   onPrev: () => void
-  onRefresh: () => void
-  onOpenApp: () => void
 }) {
   const theme = () => props.context.theme
   const player = createMemo(() => props.state.player)
@@ -221,7 +199,6 @@ export function SidebarPlayer(props: {
     return liveProgress(player())
   })
   const duration = createMemo(() => track()?.duration_ms ?? 0)
-  const source = createMemo(() => player()?.device?.name ?? null)
 
   return (
     <box
@@ -246,7 +223,6 @@ export function SidebarPlayer(props: {
         <StatusPill
           theme={theme()}
           playing={playing()}
-          source={null}
           accent={track()?.artwork?.accent}
         />
       </box>
@@ -255,13 +231,15 @@ export function SidebarPlayer(props: {
         {(err) => <text fg={theme().text.feedback.error.default}>{err()}</text>}
       </Show>
 
-      <Show when={track()?.artwork}>
-        {(artwork) => (
-          <box flexDirection="row" justifyContent="center">
-            <AlbumArtwork context={props.context} artwork={artwork()} />
-          </box>
-        )}
-      </Show>
+      <box flexDirection="row" justifyContent="center">
+        <box width={24} height={12} overflow="hidden">
+          <Show when={track()?.artwork}>
+            {(artwork) => (
+              <AlbumArtwork context={props.context} artwork={artwork()} />
+            )}
+          </Show>
+        </box>
+      </box>
 
       <Show
         when={track()}
@@ -335,37 +313,6 @@ export function SidebarPlayer(props: {
           width={5}
           onClick={() => props.onNext()}
         />
-      </box>
-
-      <Show when={source()}>
-        {(name) => (
-          <text fg={theme().text.subdued}>
-            {Icon.dotOn} {name()}
-          </text>
-        )}
-      </Show>
-
-      <box flexDirection="row" justifyContent="space-between">
-        <box flexDirection="row" gap={0}>
-          <IconBtn
-            theme={theme()}
-            icon={Icon.refresh}
-            muted
-            width={3}
-            onClick={() => props.onRefresh()}
-          />
-          <IconBtn
-            theme={theme()}
-            icon={Icon.open}
-            muted
-            width={3}
-            onClick={() => props.onOpenApp()}
-          />
-        </box>
-        <box flexDirection="row" flexWrap="wrap">
-          <KeyChip theme={theme()} keys="⌃⇧P" label="play" />
-          <KeyChip theme={theme()} keys="⌃⇧←→" label="skip" />
-        </box>
       </box>
     </box>
   )

@@ -54,25 +54,42 @@ type ArtworkCacheEntry = {
 }
 const artworkCache = new Map<string, ArtworkCacheEntry>()
 
-async function run(
+export type CommandResult =
+  { ok: true; out: string } | { ok: false; err: string; timed_out: boolean }
+
+export async function run(
   cmd: string[],
-): Promise<{ ok: true; out: string } | { ok: false; err: string }> {
+  timeoutMs = 2_000,
+): Promise<CommandResult> {
   try {
     const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" })
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      proc.kill(9)
+    }, timeoutMs)
     const [stdout, stderr, code] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
       proc.exited,
-    ])
+    ]).finally(() => clearTimeout(timer))
+    if (timedOut) {
+      return {
+        ok: false,
+        err: `command timed out after ${timeoutMs}ms`,
+        timed_out: true,
+      }
+    }
     if (code !== 0) {
       return {
         ok: false,
         err: stderr.trim() || stdout.trim() || `exit ${code}`,
+        timed_out: false,
       }
     }
     return { ok: true, out: stdout.trim() }
   } catch (e) {
-    return { ok: false, err: String(e) }
+    return { ok: false, err: String(e), timed_out: false }
   }
 }
 
@@ -343,8 +360,10 @@ async function artworkForTrack(
   return entry.value
 }
 
-async function playerViaMediaControl(): Promise<PlayerState | null> {
-  const r = await run(["media-control", "get", "--no-artwork", "--now"])
+async function playerViaMediaControl(
+  runCommand: typeof run,
+): Promise<PlayerState | null> {
+  const r = await runCommand(["media-control", "get", "--no-artwork", "--now"])
   if (!r.ok) return null
 
   let data: MediaGet | null
@@ -398,7 +417,7 @@ async function playerViaMediaControl(): Promise<PlayerState | null> {
     artworkKey,
     { title, artist, album, duration_ms },
     async () => {
-      const result = await run(["media-control", "get", "--now"])
+      const result = await runCommand(["media-control", "get", "--now"])
       if (!result.ok) return null
       try {
         const sample = JSON.parse(result.out) as MediaGet | null
@@ -424,8 +443,10 @@ async function playerViaMediaControl(): Promise<PlayerState | null> {
 }
 
 /** Fallback when media-control is missing — weaker play-state. */
-async function playerViaNowPlayingCli(): Promise<PlayerState | null> {
-  const r = await run([
+async function playerViaNowPlayingCli(
+  runCommand: typeof run,
+): Promise<PlayerState | null> {
+  const r = await runCommand([
     "nowplaying-cli",
     "get",
     "--json",
@@ -511,8 +532,17 @@ async function playerViaNowPlayingCli(): Promise<PlayerState | null> {
   })
 }
 
-async function cmd(action: string): Promise<void> {
-  const kind = detectBackend()
+type SystemMediaDependencies = {
+  run: typeof run
+  detectBackend: typeof detectBackend
+  hasNowPlayingCli: typeof hasNowPlayingCli
+}
+
+async function cmd(
+  action: string,
+  deps: SystemMediaDependencies,
+): Promise<void> {
+  const kind = deps.detectBackend()
   if (kind === "media-control") {
     const map: Record<string, string[]> = {
       play: ["media-control", "play"],
@@ -523,7 +553,7 @@ async function cmd(action: string): Promise<void> {
     const c = map[action]
     if (!c)
       throw { status: 500, message: `unknown ${action}` } satisfies MusicError
-    const r = await run(c)
+    const r = await deps.run(c)
     if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
     return
   }
@@ -537,7 +567,7 @@ async function cmd(action: string): Promise<void> {
     const c = map[action]
     if (!c)
       throw { status: 500, message: `unknown ${action}` } satisfies MusicError
-    const r = await run(c)
+    const r = await deps.run(c)
     if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
     return
   }
@@ -547,7 +577,16 @@ async function cmd(action: string): Promise<void> {
   } satisfies MusicError
 }
 
-export function createSystemMedia(): MusicBackend {
+export function createSystemMedia(
+  overrides: Partial<SystemMediaDependencies> = {},
+): MusicBackend {
+  const deps: SystemMediaDependencies = {
+    run,
+    detectBackend,
+    hasNowPlayingCli,
+    ...overrides,
+  }
+
   return {
     id: "system",
     label: "System media",
@@ -555,9 +594,14 @@ export function createSystemMedia(): MusicBackend {
     authenticated: () => true,
 
     async player(): Promise<PlayerState | null> {
-      const kind = detectBackend()
-      if (kind === "media-control") return playerViaMediaControl()
-      if (kind === "nowplaying-cli") return playerViaNowPlayingCli()
+      const kind = deps.detectBackend()
+      if (kind === "media-control") {
+        const player = await playerViaMediaControl(deps.run)
+        if (player) return player
+        if (deps.hasNowPlayingCli()) return playerViaNowPlayingCli(deps.run)
+        return idleState("media-control error")
+      }
+      if (kind === "nowplaying-cli") return playerViaNowPlayingCli(deps.run)
       return idleState("install media-control")
     },
 
@@ -570,22 +614,22 @@ export function createSystemMedia(): MusicBackend {
 
     async play() {
       setPlaying(true)
-      await cmd("play")
+      await cmd("play", deps)
     },
 
     async pause() {
       setPlaying(false)
-      await cmd("pause")
+      await cmd("pause", deps)
     },
 
     async next() {
       clock = null
-      await cmd("next")
+      await cmd("next", deps)
     },
 
     async previous() {
       clock = null
-      await cmd("previous")
+      await cmd("previous", deps)
     },
 
     async seek(positionMs: number) {
@@ -602,14 +646,18 @@ export function createSystemMedia(): MusicBackend {
           playing: true,
         }
       }
-      const kind = detectBackend()
+      const kind = deps.detectBackend()
       if (kind === "media-control") {
-        const r = await run(["media-control", "seek", String(sec)])
+        const r = await deps.run(["media-control", "seek", String(sec)])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
         return
       }
       if (kind === "nowplaying-cli") {
-        const r = await run(["nowplaying-cli", "seek", String(Math.floor(sec))])
+        const r = await deps.run([
+          "nowplaying-cli",
+          "seek",
+          String(Math.floor(sec)),
+        ])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
       }
     },

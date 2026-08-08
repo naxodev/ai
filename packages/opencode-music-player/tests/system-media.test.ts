@@ -3,7 +3,9 @@ import {
   artworkDataForIdentity,
   artworkIdentityKey,
   bundleLabel,
+  createSystemMedia,
   liveFromClock,
+  run,
   trackKey,
 } from "../system-media.ts"
 
@@ -40,6 +42,53 @@ describe("playback clock", () => {
     expect(liveFromClock({ ...clock, playing: false }, 20_000, 20_000)).toBe(
       5_000,
     )
+  })
+})
+
+describe("media command boundaries", () => {
+  test("a wedged provider releases polling so a later sample can refresh the sidebar", async () => {
+    const result = await run(
+      [process.execPath, "-e", "await Bun.sleep(1_000)"],
+      50,
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      err: "command timed out after 50ms",
+      timed_out: true,
+    })
+  })
+
+  test("keeps the current track visible through the fallback when the preferred provider times out", async () => {
+    const providers: string[] = []
+    const backend = createSystemMedia({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => true,
+      run: async ([provider]) => {
+        providers.push(provider!)
+        if (provider === "media-control") {
+          return { ok: false, err: "command timed out", timed_out: true }
+        }
+        return {
+          ok: true,
+          out: JSON.stringify({
+            title: "Fallback Song",
+            artist: "Fallback Artist",
+            album: "",
+            duration: 180,
+            elapsedTime: 30,
+            playbackRate: 1,
+            isPlaying: true,
+          }),
+        }
+      },
+    })
+
+    const player = await backend.player()
+
+    expect(providers).toEqual(["media-control", "nowplaying-cli"])
+    expect(player?.track?.name).toBe("Fallback Song")
+    expect(player?.is_playing).toBe(true)
   })
 })
 
