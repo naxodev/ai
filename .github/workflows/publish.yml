@@ -86,7 +86,15 @@ jobs:
         if: steps.release.outputs.project == 'opencode-vim'
         run: |
           OPENCODE_VERSION=$(node -p "require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']")
-          bun add --global "@opencode-ai/cli@$OPENCODE_VERSION"
+          bun add --global --trust "@opencode-ai/cli@$OPENCODE_VERSION"
+
+      - name: Install Neovim parity oracle
+        if: steps.release.outputs.project == 'opencode-vim'
+        run: brew install neovim
+
+      - name: Install Neovim parity oracle
+        if: steps.release.outputs.project == 'opencode-vim'
+        run: brew install neovim
 
       - name: Verify package name and version
         env:
@@ -116,7 +124,7 @@ jobs:
 
       - name: Run package release gates
         if: steps.published.outputs.skip != 'true'
-        run: bunx nx run-many -t typecheck test format:check package:check smoke --projects=${{ steps.release.outputs.project }}
+        run: bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=${{ steps.release.outputs.project }}
 
       - name: Publish source package with OIDC and provenance
         if: steps.published.outputs.skip != 'true'

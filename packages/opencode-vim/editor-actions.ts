@@ -1667,7 +1667,7 @@ export function runActions(
         history.redo.push(snapshotOf(editor))
         editor.setText(snapshot.text)
         editor.cursorOffset = snapshot.cursor
-      } else editor.undo()
+      }
     }
     if (action.type === "redo") {
       historyAction = true
@@ -1676,9 +1676,8 @@ export function runActions(
         history.undo.push(snapshotOf(editor))
         editor.setText(snapshot.text)
         editor.cursorOffset = snapshot.cursor
-      } else editor.redo()
+      }
     }
-    if (action.type === "submit") effects.dispatch("input.submit")
     if (action.type === "ex") effects.openEx()
     if (action.type === "enter") {
       enter(editor, action.key)

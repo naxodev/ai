@@ -72,39 +72,11 @@ function vimAlias(name: string, commands: readonly ExCommand[]) {
   return undefined
 }
 
-function shellCommands(commands: readonly ExCommand[]) {
-  const eligible = commands.filter(
-    (command) => command.id && command.slash?.arguments === true,
-  )
-  const exact = distinctCommands(
-    eligible.filter((command) => command.slash?.name.toLowerCase() === "shell"),
-  )
-  if (exact.length > 0) return exact
-  return distinctCommands(
-    eligible.filter(
-      (command) =>
-        command.id === "session.shell" || command.id === "composer.shell",
-    ),
-  )
-}
-
 export function resolveExCommand(
   parsed: ParsedExCommand,
   commands: readonly ExCommand[],
 ): ExResolution {
-  if (parsed.name === "!") {
-    const matches = shellCommands(commands)
-    if (matches.length === 1 && matches[0]?.id)
-      return { type: "match", id: matches[0].id, arguments: parsed.arguments }
-    if (matches.length > 1)
-      return {
-        type: "ambiguous",
-        names: matches.map(
-          (command) => command.slash?.name ?? command.id ?? "shell",
-        ),
-      }
-    return { type: "unsupported-shell" }
-  }
+  if (parsed.name === "!") return { type: "unsupported-shell" }
 
   const exact = matchingSlashCommands(parsed.name, commands, true)
   if (exact.length === 1 && exact[0]?.id)
@@ -158,7 +130,7 @@ export async function openExDialog(
     resolution.type === "ambiguous"
       ? `Ambiguous command: ${parsed.name} (${resolution.names.join(", ")})`
       : resolution.type === "unsupported-shell"
-        ? "Shell commands are unsupported by this OpenCode version."
+        ? "Shell commands are unsupported by this plugin."
         : `Unknown command: ${parsed.name}`
   await context.ui.dialog.alert({ title: "EX command", message })
 }

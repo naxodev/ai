@@ -186,7 +186,7 @@ function executableOnPath(command: string): boolean {
   if (!path) return false
   const extensions =
     process.platform === "win32"
-      ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
+      ? ["", ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")]
       : [""]
   return path.split(delimiter).some((directory) =>
     extensions.some((extension) => {

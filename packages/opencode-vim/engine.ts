@@ -28,6 +28,7 @@ export type TextObject =
   "word" | "paren" | "brace" | "bracket" | "double-quote" | "single-quote"
 
 const enterKeys = new Set<EnterKey>(["i", "a", "A", "I", "o", "O"])
+const MAX_COUNT = 999
 
 function isEnterKey(key: string): key is EnterKey {
   return enterKeys.has(key as EnterKey)
@@ -125,7 +126,7 @@ export type VimAction =
   | { type: "command"; id: string }
   | { type: "join-lines"; count: number }
   | { type: "repeat"; count?: number }
-  | { type: "undo" | "redo" | "submit" | "ex" }
+  | { type: "undo" | "redo" | "ex" }
 
 export type Transition = { consume: boolean; actions: VimAction[] }
 
@@ -181,10 +182,17 @@ function clearPending(state: VimState) {
 
 function appendCount(state: VimState, digit: number) {
   if (state.pending.type === "operator") {
-    state.pending.motionCount = state.pending.motionCount * 10 + digit
+    state.pending.motionCount = Math.min(
+      MAX_COUNT,
+      state.pending.motionCount * 10 + digit,
+    )
     return
   }
-  state.pending.count = state.pending.count * 10 + digit
+  state.pending.count = Math.min(MAX_COUNT, state.pending.count * 10 + digit)
+}
+
+function multiplyCounts(left: number, right: number) {
+  return Math.min(MAX_COUNT, left * right)
 }
 
 function hasCount(state: VimState) {
@@ -213,6 +221,7 @@ function textObjectForKey(key: string): TextObject | null {
 
 function printableTarget(key: string) {
   if (key === "space") return " "
+  if (key === "tab") return "\t"
   return [...key].length === 1 && !/^\p{Cc}$/u.test(key) ? key : null
 }
 
@@ -235,6 +244,7 @@ function operatorFor(key: string): Operator | null {
 }
 
 export function transition(state: VimState, key: string): Transition {
+  if (key === "ctrl+[") key = "escape"
   if (state.mode === "insert") {
     if (key === "return") {
       return {
@@ -243,7 +253,7 @@ export function transition(state: VimState, key: string): Transition {
       }
     }
     if (key === "ctrl+return") {
-      return { consume: true, actions: [{ type: "submit" }] }
+      return { consume: false, actions: [] }
     }
     if (key === "ctrl+o") {
       clearPending(state)
@@ -254,8 +264,7 @@ export function transition(state: VimState, key: string): Transition {
         actions: [{ type: "mode", mode: "normal", oneShot: true }],
       }
     }
-    if (key !== "escape" && key !== "ctrl+[")
-      return { consume: false, actions: [] }
+    if (key !== "escape") return { consume: false, actions: [] }
     setMode(state, "normal")
     return { consume: true, actions: [{ type: "mode", mode: "normal" }] }
   }
@@ -351,7 +360,7 @@ function transitionNormal(state: VimState, key: string): Transition {
           type: "operator-motion",
           operator,
           key: "gg",
-          count: operatorCount * count,
+          count: multiplyCounts(operatorCount, count),
         },
       ],
     }
@@ -368,7 +377,7 @@ function transitionNormal(state: VimState, key: string): Transition {
       state.pending.type === "operator" &&
       state.pending.operator === nextOperator
     ) {
-      const count = state.pending.count * takeCount(state)
+      const count = multiplyCounts(state.pending.count, takeCount(state))
       clearPending(state)
       if (nextOperator === "change") {
         state.mode = "insert"
@@ -409,7 +418,7 @@ function transitionNormal(state: VimState, key: string): Transition {
     if (state.pending.prefix === "inner" || state.pending.prefix === "around") {
       const object = textObjectForKey(key)
       const operator = state.pending.operator
-      const count = state.pending.count * takeCount(state)
+      const count = multiplyCounts(state.pending.count, takeCount(state))
       const around = state.pending.prefix === "around"
       clearPending(state)
       return object
@@ -422,13 +431,13 @@ function transitionNormal(state: VimState, key: string): Transition {
     const find = findForKey(key)
     if (find) {
       const operator = state.pending.operator
-      const count = state.pending.count * takeCount(state)
+      const count = multiplyCounts(state.pending.count, takeCount(state))
       state.pending = { type: "find", find, count, operator }
       return { consume: true, actions: [] }
     }
     if ((key === ";" || key === ",") && state.lastFind) {
       const operator = state.pending.operator
-      const count = state.pending.count * takeCount(state)
+      const count = multiplyCounts(state.pending.count, takeCount(state))
       const find: CharacterFind =
         key === ";"
           ? state.lastFind
@@ -446,7 +455,7 @@ function transitionNormal(state: VimState, key: string): Transition {
     if (isMotionKey(key)) {
       const operator = state.pending.operator
       const percentage = key === "%" && hasCount(state)
-      const count = state.pending.count * takeCount(state)
+      const count = multiplyCounts(state.pending.count, takeCount(state))
       clearPending(state)
       return {
         consume: true,
@@ -595,12 +604,17 @@ function transitionNormal(state: VimState, key: string): Transition {
   }
   if (key === "u") return { consume: true, actions: [{ type: "undo" }] }
   if (key === "ctrl+r") return { consume: true, actions: [{ type: "redo" }] }
-  if (key === "return") return { consume: true, actions: [{ type: "submit" }] }
+  if (key === "return") return { consume: false, actions: [] }
   if (key === ":") return { consume: true, actions: [{ type: "ex" }] }
   return { consume: true, actions: [] }
 }
 
 function transitionVisual(state: VimState, key: string): Transition {
+  if (key === "escape") {
+    const mode = state.oneShotNormal ? "insert" : "normal"
+    setMode(state, mode)
+    return { consume: true, actions: [{ type: "mode", mode }] }
+  }
   if (state.pending.type === "find") {
     const pending = state.pending
     clearPending(state)
@@ -647,7 +661,7 @@ function transitionVisual(state: VimState, key: string): Transition {
     (state.pending.prefix === "inner" || state.pending.prefix === "around")
   ) {
     const object = textObjectForKey(key)
-    const count = state.pending.count * takeCount(state)
+    const count = multiplyCounts(state.pending.count, takeCount(state))
     const around = state.pending.prefix === "around"
     clearPending(state)
     return object
@@ -657,7 +671,7 @@ function transitionVisual(state: VimState, key: string): Transition {
         }
       : { consume: true, actions: [] }
   }
-  if (key === "escape" || key === "v" || key === "V") {
+  if (key === "v" || key === "V") {
     const mode = state.oneShotNormal ? "insert" : "normal"
     setMode(state, mode)
     return { consume: true, actions: [{ type: "mode", mode }] }

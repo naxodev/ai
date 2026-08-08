@@ -4,16 +4,17 @@ Contributions are welcome. By participating, you agree to follow the [Code of Co
 
 ## Development
 
-This workspace requires macOS because the media packages invoke macOS tools and the OpenCode Vim package runs a real-TUI smoke test. Install Bun 1.3.7, Node.js 22.19 or later, and the OpenCode version pinned by `packages/opencode-vim/package.json`.
+This workspace requires macOS because the media packages invoke macOS tools and the OpenCode Vim package runs a real-TUI smoke test. Install Bun 1.3.7, Node.js 22.19 or later, and Neovim. The bootstrap command below installs the OpenCode CLI version pinned by `packages/opencode-vim/package.json`.
 
 ```sh
 git clone https://github.com/naxodev/ai.git
 cd ai
 bun install --frozen-lockfile
+bun add --global "@opencode-ai/cli@$(node -p \"require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']\")"
 bun run check
 ```
 
-Run one project's checks with `bunx nx run-many -t typecheck test format:check package:check smoke --projects=<project>`. The project names are `opencode-music-player`, `opencode-vim`, and `pi-music-dock`.
+Run one project's checks with `bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=<project>`. The project names are `opencode-music-player`, `opencode-vim`, and `pi-music-dock`. Nx skips targets that a selected project does not define.
 
 Keep changes focused and preserve each host integration contract. Add tests that explain why changed behavior matters. Use Conventional Commit messages, such as `fix(pi-music-dock): keep paused waveform still`.
 

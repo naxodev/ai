@@ -37,10 +37,16 @@ jobs:
       - name: Install tested OpenCode CLI
         run: |
           OPENCODE_VERSION=$(node -p "require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']")
-          bun add --global "@opencode-ai/cli@$OPENCODE_VERSION"
+          bun add --global --trust "@opencode-ai/cli@$OPENCODE_VERSION"
+
+      - name: Install Neovim parity oracle
+        run: brew install neovim
+
+      - name: Install Neovim parity oracle
+        run: brew install neovim
 
       - name: Check workspace formatting
         run: bun run format:check
 
       - name: Run cached package gates
-        run: bunx nx run-many -t typecheck test format:check package:check smoke
+        run: bunx nx run-many -t typecheck test parity format:check package:check smoke

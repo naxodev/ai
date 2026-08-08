@@ -103,24 +103,17 @@ describe("EX command resolver", () => {
     })
   })
 
-  test("rejects shell input unless a public shell slash command accepts arguments", () => {
+  test("always rejects shell input", () => {
     const parsed = { name: "!", arguments: "echo safe" }
     expect(resolveExCommand(parsed, [command("session.shell")])).toEqual({
       type: "unsupported-shell",
-    })
-    expect(
-      resolveExCommand(parsed, [command("session.shell", "shell", [], true)]),
-    ).toEqual({
-      type: "match",
-      id: "session.shell",
-      arguments: "echo safe",
     })
     expect(
       resolveExCommand(parsed, [
         command("session.shell", "shell", [], true),
         command("composer.shell", "shell", [], true),
       ]),
-    ).toMatchObject({ type: "ambiguous" })
+    ).toEqual({ type: "unsupported-shell" })
   })
 })
 

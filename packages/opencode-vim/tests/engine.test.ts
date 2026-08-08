@@ -24,6 +24,28 @@ describe("vim transition engine", () => {
     ])
   })
 
+  test("saturates accumulated and multiplied counts before emitting actions", () => {
+    const maximum = 999
+    const accumulated = createVimState("normal")
+    for (let index = 0; index < 400; index++) transition(accumulated, "9")
+    expect(accumulated.pending).toEqual({ type: "none", count: maximum })
+    expect(transition(accumulated, "j").actions).toEqual([
+      { type: "motion", key: "j", count: maximum },
+    ])
+
+    const multiplied = createVimState("normal")
+    for (const key of ["9", "9", "9", "d", "9", "9", "9"])
+      transition(multiplied, key)
+    const action = transition(multiplied, "w").actions[0]
+    expect(action).toEqual({
+      type: "operator-motion",
+      operator: "delete",
+      key: "w",
+      count: maximum,
+    })
+    expect("count" in action! && Number.isFinite(action.count)).toBe(true)
+  })
+
   test("treats a numeric count as pending input", () => {
     const state = createVimState("normal")
     expect(hasPendingInput(state)).toBe(false)
@@ -153,14 +175,20 @@ describe("vim transition engine", () => {
     expect(state.mode).toBe("insert")
   })
 
-  test("uses Enter for newlines and Ctrl+Enter for submission", () => {
+  test("uses Enter for newlines and leaves submission to the host", () => {
     const state = createVimState()
     expect(transition(state, "return").actions).toEqual([
       { type: "command", id: "input.newline" },
     ])
-    expect(transition(state, "ctrl+return").actions).toEqual([
-      { type: "submit" },
-    ])
+    expect(transition(state, "ctrl+return")).toEqual({
+      consume: false,
+      actions: [],
+    })
+    const normal = createVimState("normal")
+    expect(transition(normal, "return")).toEqual({
+      consume: false,
+      actions: [],
+    })
   })
 
   test("keeps one-shot normal active while an operator is pending", () => {
@@ -184,6 +212,31 @@ describe("vim transition engine", () => {
         { type: "motion", key: "w", count: 1 },
       ])
     }
+  })
+
+  test("Ctrl+[ behaves as Escape in every mode", () => {
+    const insert = createVimState()
+    expect(transition(insert, "ctrl+[").actions).toEqual([
+      { type: "mode", mode: "normal" },
+    ])
+
+    const normal = createVimState("normal")
+    for (const key of ["2", "d", "3"]) transition(normal, key)
+    expect(transition(normal, "ctrl+[").actions).toEqual([])
+    expect(normal.pending).toEqual({ type: "none", count: 0 })
+
+    const visual = createVimState("normal")
+    for (const key of ["v", "2", "f"]) transition(visual, key)
+    expect(transition(visual, "ctrl+[").actions).toEqual([
+      { type: "mode", mode: "normal" },
+    ])
+    expect(visual.pending).toEqual({ type: "none", count: 0 })
+
+    const oneShot = createVimState()
+    transition(oneShot, "ctrl+o")
+    expect(transition(oneShot, "ctrl+[").actions).toEqual([
+      { type: "mode", mode: "insert" },
+    ])
   })
 
   test("invalid operator and prefix completions cancel the whole command", () => {
@@ -293,6 +346,38 @@ describe("vim transition engine", () => {
         repeat: true,
       },
     ])
+  })
+
+  test("maps tab tokens for normal, operator, visual, and repeated finds", () => {
+    const normal = createVimState("normal")
+    transition(normal, "f")
+    expect(transition(normal, "tab").actions).toEqual([
+      {
+        type: "find",
+        find: { direction: "forward", till: false, target: "\t" },
+        count: 1,
+      },
+    ])
+    expect(transition(normal, ";").actions[0]).toMatchObject({
+      type: "find",
+      find: { target: "\t" },
+      repeat: true,
+    })
+
+    const operator = createVimState("normal")
+    for (const key of ["d", "t"]) transition(operator, key)
+    expect(transition(operator, "tab").actions[0]).toMatchObject({
+      type: "find",
+      find: { target: "\t" },
+      operator: "delete",
+    })
+
+    const visual = createVimState("normal")
+    for (const key of ["v", "F"]) transition(visual, key)
+    expect(transition(visual, "tab").actions[0]).toMatchObject({
+      type: "find",
+      find: { direction: "backward", target: "\t" },
+    })
   })
 
   test("parses operator and visual text objects", () => {

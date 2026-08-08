@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "bun run format:check && bunx nx run-many -t typecheck test format:check package:check smoke",
+    "check": "bun run format:check && bunx nx run-many -t typecheck test parity format:check package:check smoke",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "release:dry-run": "bunx nx release --skip-publish --dry-run"

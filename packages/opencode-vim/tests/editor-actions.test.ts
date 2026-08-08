@@ -12,7 +12,7 @@ import {
   syncVisualState,
   type VimEditor,
 } from "../editor-actions.ts"
-import { createVimState } from "../engine.ts"
+import { createVimState, transition } from "../engine.ts"
 
 class FakeEditor implements VimEditor {
   cursorOffset = 0
@@ -364,11 +364,7 @@ describe("editor action adapter", () => {
     let openedEx = false
     run(
       editor,
-      [
-        { type: "command", id: "session.timeline" },
-        { type: "submit" },
-        { type: "ex" },
-      ],
+      [{ type: "command", id: "session.timeline" }, { type: "ex" }],
       { value: "", linewise: false },
       {
         dispatch: (id) => {
@@ -381,7 +377,7 @@ describe("editor action adapter", () => {
         transitionRuntime: effects.transitionRuntime,
       },
     )
-    expect(dispatched).toEqual(["session.timeline", "input.submit"])
+    expect(dispatched).toEqual(["session.timeline"])
     expect(openedEx).toBeTrue()
   })
 
@@ -485,6 +481,17 @@ describe("editor action adapter", () => {
     )
     expect(editor.plainText).toBe("😀a,x,x\nnext,x")
     expect(state.mode).toBe("normal")
+  })
+
+  test("an engine-generated tab find reaches the tab character", () => {
+    const editor = new FakeEditor("a\tb")
+    const state = createVimState("normal")
+    transition(state, "f")
+    const actions = transition(state, "tab").actions
+
+    run(editor, actions)
+
+    expect(editor.cursorOffset).toBe(1)
   })
 
   test("matching delimiters and nested text objects resolve complete graphemes", () => {

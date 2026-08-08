@@ -52,6 +52,7 @@ const keyBindings: ReadonlyArray<readonly [string, string]> = [
   ["shift+semicolon", ":"],
   ["return", "return"],
   ["escape", "escape"],
+  ["ctrl+[", "ctrl+["],
   ["backspace", "backspace"],
   ["ctrl+r", "ctrl+r"],
   ["space", "space"],
@@ -224,11 +225,18 @@ function VimHost(props: {
     syncCursor()
   }
 
-  const commands = (scope: string, respectHostPrefixes: boolean) =>
+  const commands = (
+    scope: string,
+    respectHostPrefixes: boolean,
+    nativeSubmit = false,
+  ) =>
     keyBindings
       .filter(
         ([bind]) =>
-          !respectHostPrefixes || !hostPrefixKeys.has(bind.toLowerCase()),
+          (!nativeSubmit || bind !== "return") &&
+          (!respectHostPrefixes ||
+            bind === "ctrl+[" ||
+            !hostPrefixKeys.has(bind.toLowerCase())),
       )
       .map(([bind, key], index) => ({
         id: `vimcode-v2.${scope}.${index}`,
@@ -277,11 +285,6 @@ function VimHost(props: {
         bind: "return",
         run: () => handle("return"),
       },
-      {
-        id: "vimcode-v2.insert.ctrl-return",
-        bind: "ctrl+return",
-        run: () => handle("ctrl+return"),
-      },
     ],
   }))
 
@@ -290,7 +293,7 @@ function VimHost(props: {
     target,
     priority: 10_000,
     enabled: () => bindingsActive() && mode() === "normal" && !pending(),
-    commands: commands("normal", true),
+    commands: commands("normal", true, true),
   }))
 
   props.context.keymap.layer(() => ({
@@ -358,6 +361,8 @@ function VimHost(props: {
   const syncCursor = () => {
     const editor = target()
     if (!editor || editor.isDestroyed || !active()) {
+      if (mode() === "visual" && focusedEditor && !focusedEditor.isDestroyed)
+        focusedEditor.clearSelection()
       focusedEditor = undefined
       restoreCursors()
       return
@@ -381,6 +386,8 @@ function VimHost(props: {
   syncCursor()
   onCleanup(() => {
     clearInterval(cursorTimer)
+    if (mode() === "visual" && focusedEditor && !focusedEditor.isDestroyed)
+      focusedEditor.clearSelection()
     restoreCursors()
   })
 
