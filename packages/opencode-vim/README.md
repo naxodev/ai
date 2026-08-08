@@ -105,7 +105,7 @@ Windows provider remains named `clip` in configuration. On Linux it prefers
 
 - The public V2 keymap API cannot intercept arbitrary printable Unicode. An unlisted Unicode key may reach the editor in normal or visual mode.
 - Character finds register every printable ASCII target with the public keymap. Unicode find targets remain subject to the public keymap limitation above.
-- Active leader prefixes are left to OpenCode except `v` and `V`, which Vim reserves for visual mode. The API does not expose inactive or dynamically changed leader configuration.
+- Active leader prefixes are left to OpenCode except `v`, `V`, and `$`, which Vim reserves for visual and line-end motions. The API does not expose inactive or dynamically changed leader configuration.
 - Clipboard integration requires a supported executable on `PATH` and the matching display environment. Clipboard failures show at most one warning and never affect edits or the unnamed Vim register. Use `"clipboard": "none"` to disable integration and its availability warning.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.
 - OpenCode must be able to install npm dependencies. Offline startup works only after OpenCode has cached the package and its dependencies.

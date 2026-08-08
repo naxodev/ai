@@ -45,9 +45,10 @@ export const vimKeyBindings: readonly VimKeyBinding[] = [
   ["shift+period", ">"],
   ["shift+slash", "?"],
   ["shift+backquote", "~"],
+  ["$", "$"],
 ]
 
-const reservedBindings = new Set(["ctrl+[", "v", "shift+v"])
+const reservedBindings = new Set(["ctrl+[", "v", "shift+v", "$", "shift+4"])
 
 export function selectVimKeyBindings(
   hostPrefixKeys: ReadonlySet<string>,

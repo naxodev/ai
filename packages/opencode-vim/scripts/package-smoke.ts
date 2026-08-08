@@ -213,6 +213,22 @@ export { default } from "./index.tsx"
     await waitForFooter("INSERT")
     if (capturePane().includes("aabc"))
       throw new Error("visual C left the original prompt text unchanged")
+    stage = "checking literal line-end motion"
+    runTmux("send-keys", "-t", session, "-l", "abc")
+    runTmux("send-keys", "-t", session, "Escape")
+    await waitForFooter("NORMAL")
+    runTmux("send-keys", "-t", session, "-l", "0$")
+    runTmux("send-keys", "-t", session, "-l", "a")
+    await waitForFooter("INSERT")
+    runTmux("send-keys", "-t", session, "-l", "X")
+    await waitForPane((pane) => pane.includes("abcX"), "prompt text abcX")
+    stage = "checking change to line end"
+    runTmux("send-keys", "-t", session, "Escape")
+    await waitForFooter("NORMAL")
+    runTmux("send-keys", "-t", session, "-l", "0c$")
+    await waitForFooter("INSERT")
+    if (capturePane().includes("abcX"))
+      throw new Error("c$ left the original prompt text unchanged")
   } catch (error) {
     const pane = capturePane()
     const detail = error instanceof Error ? error.message : String(error)
