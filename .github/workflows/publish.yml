@@ -6,6 +6,8 @@ on:
       - "opencode-music-player@v*"
       - "opencode-vim@v*"
       - "pi-music-dock@v*"
+      - "apnea@v*"
+      - "pi-apnea@v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -32,17 +34,19 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         run: |
-          if [[ "$RELEASE_TAG" =~ ^(opencode-music-player|opencode-vim|pi-music-dock)@v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          if [[ "$RELEASE_TAG" =~ ^(apnea|opencode-music-player|opencode-vim|pi-apnea|pi-music-dock)@v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             PROJECT="${BASH_REMATCH[1]}"
             VERSION="${RELEASE_TAG#*@v}"
           else
-            echo "::error::Expected opencode-music-player@vX.Y.Z, opencode-vim@vX.Y.Z, or pi-music-dock@vX.Y.Z"
+            echo "::error::Expected a known project@vX.Y.Z release tag"
             exit 1
           fi
 
           case "$PROJECT" in
+            apnea) PACKAGE='@naxodev/apnea' ;;
             opencode-music-player) PACKAGE='@naxodev/opencode-music-player' ;;
             opencode-vim) PACKAGE='@naxodev/opencode-vim' ;;
+            pi-apnea) PACKAGE='@naxodev/pi-apnea' ;;
             pi-music-dock) PACKAGE='@naxodev/pi-music-dock' ;;
             *) echo "::error::Unmapped project '$PROJECT'"; exit 1 ;;
           esac

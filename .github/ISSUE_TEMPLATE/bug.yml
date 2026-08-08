@@ -37,6 +37,8 @@ body:
         - "@naxodev/opencode-music-player"
         - "@naxodev/opencode-vim"
         - "@naxodev/pi-music-dock"
+        - "@naxodev/apnea"
+        - "@naxodev/pi-apnea"
     validations:
       required: true
   - type: input

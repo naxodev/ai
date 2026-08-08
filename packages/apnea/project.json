@@ -1,0 +1,29 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "apnea",
+  "projectType": "library",
+  "sourceRoot": "packages/apnea/extension",
+  "tags": ["scope:public", "type:package"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run typecheck", "cwd": "packages/apnea" }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run test", "cwd": "packages/apnea" }
+    },
+    "format:check": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run format:check", "cwd": "packages/apnea" }
+    },
+    "package:check": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run pack:check", "cwd": "packages/apnea" }
+    },
+    "smoke": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run smoke:package", "cwd": "packages/apnea" }
+    }
+  }
+}

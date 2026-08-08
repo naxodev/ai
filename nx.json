@@ -41,7 +41,13 @@
   },
   "release": {
     "projectsRelationship": "independent",
-    "projects": ["opencode-music-player", "opencode-vim", "pi-music-dock"],
+    "projects": [
+      "apnea",
+      "opencode-music-player",
+      "opencode-vim",
+      "pi-apnea",
+      "pi-music-dock"
+    ],
     "version": {
       "useLegacyVersioning": false,
       "preVersionCommand": "bunx nx run-many -t typecheck test parity format:check package:check smoke",
