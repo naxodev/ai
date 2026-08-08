@@ -44,7 +44,7 @@
     "projects": ["opencode-music-player", "opencode-vim", "pi-music-dock"],
     "version": {
       "useLegacyVersioning": false,
-      "preVersionCommand": "bunx nx run-many -t typecheck test format:check package:check smoke",
+      "preVersionCommand": "bunx nx run-many -t typecheck test parity format:check package:check smoke",
       "conventionalCommits": true,
       "fallbackCurrentVersionResolver": "disk",
       "manifestRootsToUpdate": ["{projectRoot}"]

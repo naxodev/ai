@@ -19,6 +19,14 @@
         "cwd": "packages/opencode-vim"
       }
     },
+    "parity": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "bun run test:parity",
+        "cwd": "packages/opencode-vim"
+      }
+    },
     "format:check": {
       "executor": "nx:run-commands",
       "options": {

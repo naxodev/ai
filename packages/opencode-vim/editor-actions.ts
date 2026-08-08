@@ -158,25 +158,41 @@ function replaceRange(
   editor.cursorOffset = Math.max(0, Math.min(cursor, next.length))
 }
 
-function endOfWord(text: string, offset: number, count: number) {
-  let position = offset
-  const kind = (character: string) => {
-    if (/\s/.test(character)) return "space"
-    return /\w/.test(character) ? "word" : "punctuation"
+function endOfWord(
+  text: string,
+  offset: number,
+  count: number,
+  includeCurrentEndpoint = false,
+) {
+  const segments = graphemeSegments(text)
+  let index = segments.findIndex((segment) => segment.index >= offset)
+  if (index < 0) return Math.max(0, text.length - 1)
+  const kind = (grapheme: string) => {
+    if (/\s/u.test(grapheme)) return "space"
+    return /[\p{L}\p{N}_]/u.test(grapheme) ? "word" : "punctuation"
   }
   for (let step = 0; step < count; step++) {
-    if (position < text.length - 1 && kind(text[position] ?? "") !== "space")
-      position++
-    while (position < text.length && kind(text[position] ?? "") === "space")
-      position++
-    const current = kind(text[position] ?? "")
-    while (
-      position < text.length - 1 &&
-      kind(text[position + 1] ?? "") === current
+    const currentKind = kind(segments[index]?.segment ?? "")
+    const nextKind = kind(segments[index + 1]?.segment ?? "")
+    if (
+      currentKind !== "space" &&
+      nextKind !== currentKind &&
+      !(includeCurrentEndpoint && step === 0)
     )
-      position++
+      index++
+    while (
+      index < segments.length &&
+      kind(segments[index]?.segment ?? "") === "space"
+    )
+      index++
+    const current = kind(segments[index]?.segment ?? "")
+    while (
+      index < segments.length - 1 &&
+      kind(segments[index + 1]?.segment ?? "") === current
+    )
+      index++
   }
-  return Math.max(0, Math.min(position, Math.max(0, text.length - 1)))
+  return segments[Math.min(index, segments.length - 1)]?.index ?? 0
 }
 
 function destinationRow(editor: VimEditor, key: MotionKey, count: number) {
@@ -220,7 +236,12 @@ function move(
       editor.lineCount - 1,
     )
     const bounds = lineBounds(editor.plainText, rowStart(editor.plainText, row))
-    const target = Math.max(bounds.start, bounds.end - 1)
+    const target = retreatGraphemes(
+      editor.plainText,
+      bounds.end,
+      1,
+      bounds.start,
+    )
     if (select) editor.setSelectionInclusive(selectionStart, target)
     editor.cursorOffset = target
   }
@@ -311,7 +332,15 @@ function applyOperatorMotion(
   }
   const original = editor.cursorOffset
   editor.clearSelection()
-  move(editor, key, count, true)
+  const changeWord =
+    operator === "change" &&
+    key === "w" &&
+    !/\s/u.test(editor.plainText[editor.cursorOffset] ?? "")
+  if (changeWord) {
+    const target = endOfWord(editor.plainText, editor.cursorOffset, count, true)
+    editor.setSelectionInclusive(original, target)
+    editor.cursorOffset = target
+  } else move(editor, key, count, true)
   const selection = editor.getSelection()
   if (!selection) return
   const selected = editor.plainText.slice(selection.start, selection.end)
@@ -320,8 +349,19 @@ function applyOperatorMotion(
   if (operator === "yank") {
     if (selected) writeClipboard(selected)
     editor.cursorOffset = original
-  } else
+  } else {
     replaceRange(editor, selection.start, selection.end, "", selection.start)
+    if (operator === "delete" && key === "$") {
+      const bounds = lineBounds(editor.plainText, editor.cursorOffset)
+      if (bounds.end > bounds.start && editor.cursorOffset >= bounds.end)
+        editor.cursorOffset = retreatGraphemes(
+          editor.plainText,
+          bounds.end,
+          1,
+          bounds.start,
+        )
+    }
+  }
 }
 
 function pasteLinewise(
@@ -479,13 +519,17 @@ export function runActions(
         editor.plainText.slice(editor.cursorOffset, end),
       ).length
       if (count > 0) {
-        const replacement = action.text.repeat(count)
+        const replacement =
+          action.text === "\n" ? action.text : action.text.repeat(count)
         replaceRange(
           editor,
           editor.cursorOffset,
           end,
           replacement,
-          editor.cursorOffset + lastGraphemeStart(replacement),
+          editor.cursorOffset +
+            (action.text === "\n"
+              ? action.text.length
+              : lastGraphemeStart(replacement)),
         )
       }
     }
@@ -584,6 +628,16 @@ export function runActions(
       else if (action.mode === "normal" && !action.oneShot)
         editor.moveCursorLeft()
     }
+  }
+  if (runtime.mode === "normal" && !editor.hasSelection()) {
+    const bounds = lineBounds(editor.plainText, editor.cursorOffset)
+    if (editor.cursorOffset === bounds.end && bounds.start < bounds.end)
+      editor.cursorOffset = retreatGraphemes(
+        editor.plainText,
+        bounds.end,
+        1,
+        bounds.start,
+      )
   }
   if (!historyAction && editor.plainText !== before.text) {
     history.undo.push(before)

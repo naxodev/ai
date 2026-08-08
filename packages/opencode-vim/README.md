@@ -9,6 +9,7 @@ Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 
 - OpenCode 2 `v0.0.0-next-17020`
 - Bun, which OpenCode uses to load TypeScript plugin packages
+- Neovim, required only for development parity tests
 - macOS for copying yanks to the system clipboard through `pbcopy`
 
 ## Install
@@ -98,7 +99,9 @@ bun install --frozen-lockfile
 bun run validate
 ```
 
-`validate` checks formatting and types, runs tests, verifies the tarball, and imports the installed tarball from an isolated consumer.
+`validate` checks formatting and types, runs unit and headless Neovim parity tests, verifies the tarball, and imports the installed tarball from an isolated consumer. The parity suites compare text, cursor, mode, and unnamed register semantics for implemented Vim commands. OpenCode host mappings are outside this contract.
+
+Buffer jumps intentionally land on the first nonblank character. Headless Neovim's default `nostartofline` setting preserves the desired column for `gg` and `G`. The parity suite records both exact outcomes when those columns differ.
 
 ## Attribution
 
