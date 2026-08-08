@@ -9,9 +9,12 @@
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/bun.lock",
       "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/.editorconfig",
       "{workspaceRoot}/.prettierignore",
-      "{workspaceRoot}/.prettierrc.json"
+      "{workspaceRoot}/.prettierrc.json",
+      { "runtime": "bun --version" },
+      { "runtime": "node --version" }
     ]
   },
   "targetDefaults": {
@@ -29,11 +32,11 @@
     },
     "package:check": {
       "cache": true,
-      "inputs": ["default"]
+      "inputs": ["default", { "runtime": "npm --version" }]
     },
     "smoke": {
       "cache": true,
-      "inputs": ["default", "^default"]
+      "inputs": ["default", "^default", { "runtime": "npm --version" }]
     }
   },
   "release": {
