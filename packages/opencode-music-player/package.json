@@ -65,7 +65,7 @@
     "@opentui/core": "0.4.5",
     "@opentui/solid": "0.4.5",
     "pngjs": "^7.0.0",
-    "solid-js": "1.9.12"
+    "solid-js": "1.9.14"
   },
   "devDependencies": {
     "@opencode-ai/theme": "0.0.0-next-16927",

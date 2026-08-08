@@ -19,7 +19,7 @@
         "@opentui/core": "0.4.5",
         "@opentui/solid": "0.4.5",
         "pngjs": "^7.0.0",
-        "solid-js": "1.9.12",
+        "solid-js": "1.9.14",
       },
       "devDependencies": {
         "@opencode-ai/theme": "0.0.0-next-16927",
@@ -36,7 +36,7 @@
         "@opencode-ai/plugin": "0.0.0-next-17041",
         "@opentui/core": "0.4.5",
         "@opentui/solid": "0.4.5",
-        "solid-js": "1.9.12",
+        "solid-js": "1.9.14",
       },
       "devDependencies": {
         "@opencode-ai/theme": "0.0.0-next-17041",
@@ -991,7 +991,7 @@
 
     "smol-toml": ["smol-toml@1.6.1", "", {}, "sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg=="],
 
-    "solid-js": ["solid-js@1.9.12", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "~1.5.0", "seroval-plugins": "~1.5.0" } }, "sha512-QzKaSJq2/iDrWR1As6MHZQ8fQkdOBf8GReYb7L5iKwMGceg7HxDcaOHk0at66tNgn9U2U7dXo8ZZpLIAmGMzgw=="],
+    "solid-js": ["solid-js@1.9.14", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "~1.5.4", "seroval-plugins": "~1.5.4" } }, "sha512-sAEXC0Kk0S1EDg+8ysEWJDbYhA3RRoEjwuySUGlKIemeo0I5YZfOyumNjNs9Sv3y2nmhD+0rW66ag2HsMuQiGQ=="],
 
     "source-map": ["source-map@0.6.1", "", {}, "sha512-UjgapumWlbMhkBgzT7Ykc5YXUT46F0iKu8SGXq0bcwP5dz/h0Plj6enJqjz1Zbq2l5WaqYnrVbwWOWMyF3F47g=="],
 
