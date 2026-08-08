@@ -80,11 +80,10 @@ Automated tests cannot confirm the live macOS media state or terminal rendering.
 ```sh
 bun install --frozen-lockfile
 bun run check
-bun run smoke:package
-bun scripts/waveform-demo.ts
+bun packages/pi-music-dock/scripts/waveform-demo.ts
 ```
 
-The package smoke test creates an npm tarball, loads that packed package through Pi's RPC mode, and verifies all three slash commands are registered. Run it on macOS because the package is macOS-only.
+The workspace check includes a package smoke test that creates an npm tarball, loads that packed package through Pi's RPC mode, and verifies all three slash commands are registered. Run it on macOS because the package is macOS-only.
 
 See the workspace [contribution guide](../../CONTRIBUTING.md) for contribution and release instructions.
 

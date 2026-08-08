@@ -6,7 +6,7 @@
 
 <!-- List the commands and manual checks you ran. -->
 
-- [ ] `bun run validate` passes on macOS
+- [ ] `bun run check` passes on macOS
 - [ ] Tests cover changed behavior
 - [ ] Documentation reflects user-facing changes
 

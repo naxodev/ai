@@ -28,6 +28,7 @@
   ],
   "exports": "./index.tsx",
   "files": [
+    "CHANGELOG.md",
     "index.tsx",
     "ui.tsx",
     "system-media.ts",

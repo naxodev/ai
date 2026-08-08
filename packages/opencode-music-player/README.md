@@ -79,10 +79,10 @@ The response should include `music-player`. If it does not, inspect `~/.local/sh
 
 ```sh
 bun install --frozen-lockfile
-bun run validate
+bun run check
 ```
 
-`validate` checks formatting and types, runs tests, and verifies the npm package contents. See the workspace [contribution guide](../../CONTRIBUTING.md) for the contribution and release process.
+The workspace check verifies formatting, types, tests, and npm package contents for both packages. See the workspace [contribution guide](../../CONTRIBUTING.md) for the contribution and release process.
 
 ## Community
 

@@ -1,5 +1,10 @@
 {
   "compilerOptions": {
-    "skipLibCheck": true
+    "allowImportingTsExtensions": true,
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "strict": true
   }
 }
