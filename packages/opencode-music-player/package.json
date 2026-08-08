@@ -62,7 +62,7 @@
   },
   "dependencies": {
     "@opencode-ai/plugin": "0.0.0-next-16927",
-    "@opentui/core": "0.4.5",
+    "@opentui/core": "0.5.1",
     "@opentui/solid": "0.4.5",
     "pngjs": "^7.0.0",
     "solid-js": "1.9.12"
