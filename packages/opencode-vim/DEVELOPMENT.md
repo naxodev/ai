@@ -1,6 +1,6 @@
 # OpenCode V2 API Findings
 
-These findings target `opencode2 v0.0.0-next-17020`. Recheck them when updating
+These findings target `opencode2 v0.0.0-next-17041`. Recheck them when updating
 the pinned OpenCode dependencies.
 
 ## Package Loading

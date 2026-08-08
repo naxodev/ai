@@ -676,9 +676,10 @@ function transitionVisual(state: VimState, key: string): Transition {
     setMode(state, mode)
     return { consume: true, actions: [{ type: "mode", mode }] }
   }
-  const operator = operatorFor(key === "x" ? "d" : key)
+  const visualLineChange = key === "C" || key === "S"
+  const operator = operatorFor(key === "x" ? "d" : visualLineChange ? "c" : key)
   if (operator) {
-    const linewise = state.visual?.kind === "line"
+    const linewise = visualLineChange || state.visual?.kind === "line"
     return {
       consume: true,
       actions: [{ type: "visual-operator", operator, linewise }],

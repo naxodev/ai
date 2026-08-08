@@ -6,6 +6,7 @@ const expectedFiles = new Set([
   "editor-actions.ts",
   "engine.ts",
   "ex-command.ts",
+  "host-keymap.ts",
   "index.tsx",
   "package.json",
   "tui.tsx",

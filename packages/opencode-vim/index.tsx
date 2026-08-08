@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode-ai/plugin/tui"
 import type { EditBufferRenderable, TextRenderable } from "@opentui/core"
-import { createEffect, createSignal, onCleanup } from "solid-js"
+import { createEffect, createSignal, onCleanup, untrack } from "solid-js"
 import {
   clipboardOptions,
   createClipboardWriter,
@@ -27,70 +27,28 @@ import {
   type VimMode,
   type VimState,
 } from "./engine.ts"
+import { printableHostPrefix, selectVimKeyBindings } from "./host-keymap.ts"
 
 type Context = Plugin.Context
 type RuntimeState = VimState
 type Settings = { enabled: boolean }
 type SetRuntime = (mutation: (draft: RuntimeState) => void) => void
-
-const keyBindings: ReadonlyArray<readonly [string, string]> = [
-  ..."abcdefghijklmnopqrstuvwxyz".split("").map((key) => [key, key] as const),
-  ..."abcdefghijklmnopqrstuvwxyz"
-    .split("")
-    .map((key) => [`shift+${key}`, key.toUpperCase()] as const),
-  ..."0123456789".split("").map((key) => [key, key] as const),
-  ["shift+4", "$"],
-  ["shift+6", "^"],
-  ["shift+1", "!"],
-  ["shift+2", "@"],
-  ["shift+3", "#"],
-  ["shift+5", "%"],
-  ["shift+7", "&"],
-  ["shift+8", "*"],
-  ["shift+9", "("],
-  ["shift+0", ")"],
-  ["shift+semicolon", ":"],
-  ["return", "return"],
-  ["escape", "escape"],
-  ["ctrl+[", "ctrl+["],
-  ["backspace", "backspace"],
-  ["ctrl+r", "ctrl+r"],
-  ["space", "space"],
-  ["tab", "tab"],
-  ["minus", "-"],
-  ["equal", "="],
-  ["leftbracket", "["],
-  ["rightbracket", "]"],
-  ["backslash", "\\"],
-  ["semicolon", ";"],
-  ["quote", "'"],
-  ["comma", ","],
-  ["period", "."],
-  ["/", "/"],
-  ["backquote", "`"],
-  ["shift+minus", "_"],
-  ["shift+equal", "+"],
-  ["shift+leftbracket", "{"],
-  ["shift+rightbracket", "}"],
-  ["shift+backslash", "|"],
-  ["shift+quote", '"'],
-  ["shift+comma", "<"],
-  ["shift+period", ">"],
-  ["shift+slash", "?"],
-  ["shift+backquote", "~"],
-]
+type VimSessionState = {
+  register: Register
+  histories: WeakMap<EditBufferRenderable, VimHistory>
+}
 
 function VimHost(props: {
   context: Context
   runtime: RuntimeState
   setRuntime: SetRuntime
   settings: Settings
+  session: VimSessionState
   setSettings: (mutation: (draft: Settings) => void) => Promise<void>
   hostMode: "normal" | "shell"
   writeClipboard(text: string): void
 }) {
-  const register: Register = { value: "", linewise: false }
-  const histories = new WeakMap<EditBufferRenderable, VimHistory>()
+  const { register, histories } = props.session
   const target = () => props.context.renderer.currentFocusedEditor
   const [mode, setMode] = createSignal(props.runtime.mode)
   const [pending, setPending] = createSignal(hasPendingInput(props.runtime))
@@ -101,10 +59,6 @@ function VimHost(props: {
       .filter((binding) => binding.continues)
       .map((binding) => binding.key.toLowerCase()),
   )
-  const printablePrefix = (key: string) => {
-    if (key === "space") return " "
-    return [...key].length === 1 ? key : undefined
-  }
   const active = () => enabled() && props.hostMode === "normal"
   const bindingsActive = () =>
     active() && props.context.keymap.mode.current() === "base"
@@ -178,16 +132,19 @@ function VimHost(props: {
           : historyFor(editor)
         : undefined
     let actions: VimAction[] = []
-    let nextMode = mode()
     props.setRuntime((draft) => {
       actions = transition(draft, key).actions
-      nextMode = draft.mode
       setPending(hasPendingInput(draft))
     })
-    setMode(nextMode)
-    updateIndicator()
-    if (!editor || editor.isDestroyed) return
-    if (!history) return
+    if (props.runtime.mode === "normal") {
+      setMode("normal")
+      updateIndicator()
+    }
+    if (!editor || editor.isDestroyed || !history) {
+      setMode(props.runtime.mode)
+      updateIndicator()
+      return
+    }
     syncVimHistory(history, editor.plainText)
     if (editor.plainText.length === 0) {
       for (const action of actions) {
@@ -230,19 +187,14 @@ function VimHost(props: {
     respectHostPrefixes: boolean,
     nativeSubmit = false,
   ) =>
-    keyBindings
-      .filter(
-        ([bind]) =>
-          (!nativeSubmit || bind !== "return") &&
-          (!respectHostPrefixes ||
-            bind === "ctrl+[" ||
-            !hostPrefixKeys.has(bind.toLowerCase())),
-      )
-      .map(([bind, key], index) => ({
-        id: `vimcode-v2.${scope}.${index}`,
-        bind,
-        run: () => handle(key),
-      }))
+    selectVimKeyBindings(hostPrefixKeys, {
+      respectHostPrefixes,
+      nativeSubmit,
+    }).map(({ bind, key, index }) => ({
+      id: `vimcode-v2.${scope}.${index}`,
+      bind,
+      run: () => handle(key),
+    }))
 
   props.context.keymap.layer(() => ({
     mode: "base",
@@ -250,12 +202,12 @@ function VimHost(props: {
     priority: 10_000,
     enabled: () => bindingsActive() && mode() === "insert",
     commands: [
-      ...[...hostPrefixKeys].flatMap((bind, index) => {
-        const text = printablePrefix(bind)
+      ...[...hostPrefixKeys].flatMap((bind) => {
+        const text = printableHostPrefix(bind)
         if (text === undefined) return []
         return [
           {
-            id: `vimcode-v2.insert.leader.${index}`,
+            id: `vimcode-v2.insert.leader.${encodeURIComponent(bind)}`,
             bind,
             run: () => {
               const editor = target()
@@ -371,7 +323,8 @@ function VimHost(props: {
       restoreCursors()
       return
     }
-    reconcileEditor(editor)
+    // Runtime changes precede editor actions; reconcile after their mode signal.
+    untrack(() => reconcileEditor(editor))
     if (mode() === "insert") beginInsertFor(editor)
     restoreCursors(editor)
     if (!originalStyles.has(editor))
@@ -433,6 +386,22 @@ export default Plugin.define({
         initial: createVimState(startMode),
       },
     )
+    const [memory, setMemory] = context.storage.memory<{
+      sessions: Map<string, VimSessionState>
+    }>("vimcode-v2.sessions.v1", {
+      initial: { sessions: new Map() },
+    })
+    let session = memory.sessions.get("shared")
+    if (!session) {
+      setMemory((draft) => {
+        draft.sessions.set("shared", {
+          register: { value: "", linewise: false },
+          histories: new WeakMap(),
+        })
+      })
+      session = memory.sessions.get("shared")
+    }
+    if (!session) throw new Error("failed to initialize Vim session state")
     const [settings, setSettings] = context.storage.store<Settings>(
       "vimcode-v2.settings.v1",
       {
@@ -443,6 +412,7 @@ export default Plugin.define({
       <VimHost
         context={context}
         runtime={runtime}
+        session={session}
         setRuntime={setRuntime}
         settings={settings}
         setSettings={setSettings}

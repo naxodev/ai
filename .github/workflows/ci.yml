@@ -39,11 +39,8 @@ jobs:
           OPENCODE_VERSION=$(node -p "require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']")
           bun add --global --trust "@opencode-ai/cli@$OPENCODE_VERSION"
 
-      - name: Install Neovim parity oracle
-        run: brew install neovim
-
-      - name: Install Neovim parity oracle
-        run: brew install neovim
+      - name: Install TUI test dependencies
+        run: brew install neovim tmux
 
       - name: Check workspace formatting
         run: bun run format:check
