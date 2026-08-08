@@ -9,22 +9,103 @@ import type {
 } from "./engine.ts"
 
 export type Register = { value: string; linewise: boolean }
-type Snapshot = { text: string; cursor: number }
+type Snapshot = {
+  text: string
+  cursor: number
+  selection: { start: number; end: number } | null
+}
+type TextEdit = {
+  startDelta: number
+  deleteCount: number
+  text: string
+  cursorDelta: number
+}
+export type RepeatDescriptor = {
+  actions: VimAction[]
+  edit?: TextEdit
+}
+type ChangeSession = {
+  before: Snapshot
+  actions: VimAction[]
+  baseline: Snapshot
+}
 export type VimHistory = {
   undo: Snapshot[]
   redo: Snapshot[]
   currentText: string
+  lastChange: RepeatDescriptor | null
+  changeSession: ChangeSession | null
 }
 
 export function createVimHistory(text = ""): VimHistory {
-  return { undo: [], redo: [], currentText: text }
+  return {
+    undo: [],
+    redo: [],
+    currentText: text,
+    lastChange: null,
+    changeSession: null,
+  }
 }
 
 export function syncVimHistory(history: VimHistory, text: string) {
   if (history.currentText === text) return
+  if (history.changeSession) {
+    history.currentText = text
+    return
+  }
   history.undo.length = 0
   history.redo.length = 0
   history.currentText = text
+}
+
+export function beginInsertSession(editor: VimEditor, history: VimHistory) {
+  if (history.changeSession) return
+  const snapshot = snapshotOf(editor)
+  history.changeSession = {
+    before: snapshot,
+    actions: [{ type: "enter", key: "i", count: 1 }],
+    baseline: snapshot,
+  }
+  history.currentText = editor.plainText
+}
+
+export function insertHostText(
+  editor: VimEditor & { insertText(text: string): void },
+  history: VimHistory,
+  text: string,
+) {
+  syncVimHistory(history, editor.plainText)
+  beginInsertSession(editor, history)
+  editor.insertText(text)
+  history.currentText = editor.plainText
+}
+
+export function finalizeInsertSession(editor: VimEditor, history: VimHistory) {
+  const session = history.changeSession
+  if (!session) return
+  const exit = snapshotOf(editor)
+  if (
+    exit.text !== session.baseline.text ||
+    session.baseline.text !== session.before.text
+  ) {
+    history.undo.push(session.before)
+    history.redo.length = 0
+    history.lastChange = {
+      actions: session.actions.map((action) => ({ ...action })),
+      edit: hostEdit(session.baseline, exit),
+    }
+  }
+  history.changeSession = null
+  history.currentText = editor.plainText
+}
+
+function snapshotOf(editor: VimEditor): Snapshot {
+  const selection = editor.getSelection()
+  return {
+    text: editor.plainText,
+    cursor: editor.cursorOffset,
+    selection: selection ? { ...selection } : null,
+  }
 }
 
 export interface VimEditor {
@@ -822,6 +903,9 @@ function applyOperatorMotion(
     return succeeded
   }
   const original = editor.cursorOffset
+  const originalBounds = lineBounds(editor.plainText, original)
+  if (key === "$" && originalBounds.start === originalBounds.end)
+    return operator === "change"
   editor.clearSelection()
   const changeWord =
     operator === "change" &&
@@ -911,6 +995,64 @@ function enter(editor: VimEditor, key: EnterKey) {
   }
 }
 
+function hostEdit(baseline: Snapshot, exit: Snapshot): TextEdit {
+  const baselineStart = baseline.selection?.start ?? baseline.cursor
+  const baselineEnd = baseline.selection?.end ?? baseline.cursor
+  const exitAnchor = exit.selection?.start ?? exit.cursor
+  let prefix = 0
+  while (
+    prefix < baselineStart &&
+    prefix < exitAnchor &&
+    baseline.text[prefix] === exit.text[prefix]
+  )
+    prefix++
+  let suffix = 0
+  while (
+    suffix < baseline.text.length - baselineEnd &&
+    suffix < exit.text.length - exitAnchor &&
+    baseline.text[baseline.text.length - 1 - suffix] ===
+      exit.text[exit.text.length - 1 - suffix]
+  )
+    suffix++
+  return {
+    startDelta: prefix - baseline.cursor,
+    deleteCount: baseline.text.length - prefix - suffix,
+    text: exit.text.slice(prefix, exit.text.length - suffix),
+    cursorDelta: exit.cursor - prefix,
+  }
+}
+
+function repeatableAction(action: VimAction) {
+  if (action.type === "delete-char" || action.type === "paste") return true
+  if (action.type === "replace" || action.type === "join-lines") return true
+  if (action.type === "operator-motion" || action.type === "operator-line")
+    return action.operator !== "yank"
+  if (action.type === "find" || action.type === "text-object")
+    return action.operator !== undefined && action.operator !== "yank"
+  return false
+}
+
+function withRepeatCount(action: VimAction, count?: number): VimAction {
+  if (!count || !("count" in action)) return { ...action }
+  return { ...action, count } as VimAction
+}
+
+function leaveInsertAfterRepeat(editor: VimEditor, effects: ActionEffects) {
+  effects.transitionRuntime((next) => {
+    next.mode = "normal"
+    next.oneShotNormal = false
+    next.visual = null
+  })
+  const bounds = lineBounds(editor.plainText, editor.cursorOffset)
+  if (editor.cursorOffset > bounds.start)
+    editor.cursorOffset = retreatGraphemes(
+      editor.plainText,
+      editor.cursorOffset,
+      1,
+      bounds.start,
+    )
+}
+
 export function runActions(
   editor: VimEditor,
   actions: VimAction[],
@@ -919,8 +1061,64 @@ export function runActions(
   history: VimHistory,
   effects: ActionEffects,
 ) {
-  const before = { text: editor.plainText, cursor: editor.cursorOffset }
+  const before = snapshotOf(editor)
+  const repeat = actions.find((action) => action.type === "repeat")
+  if (repeat?.type === "repeat") {
+    const descriptor = history.lastChange
+    if (!descriptor) return
+    const repeatedActions = descriptor.actions.map((action, index) =>
+      withRepeatCount(action, index === 0 ? repeat.count : undefined),
+    )
+    const isolated = createVimHistory(editor.plainText)
+    runActions(editor, repeatedActions, register, runtime, isolated, effects)
+    if (descriptor.edit && isolated.changeSession) {
+      const enterAction = repeatedActions[0]
+      const editCount = enterAction?.type === "enter" ? enterAction.count : 1
+      for (let index = 0; index < editCount; index++) {
+        if (index > 0 && enterAction?.type === "enter") {
+          if (enterAction.key === "o" || enterAction.key === "O")
+            enter(editor, enterAction.key)
+        }
+        const start = Math.max(
+          0,
+          Math.min(
+            editor.plainText.length,
+            editor.cursorOffset + descriptor.edit.startDelta,
+          ),
+        )
+        replaceRange(
+          editor,
+          start,
+          Math.min(
+            editor.plainText.length,
+            start + descriptor.edit.deleteCount,
+          ),
+          descriptor.edit.text,
+          start + descriptor.edit.cursorDelta,
+        )
+      }
+      leaveInsertAfterRepeat(editor, effects)
+    }
+    if (
+      editor.plainText !== before.text ||
+      isolated.undo.length > 0 ||
+      isolated.changeSession !== null
+    ) {
+      history.undo.push(before)
+      history.redo.length = 0
+    }
+    history.currentText = editor.plainText
+    return
+  }
+  const exitingSession =
+    history.changeSession &&
+    actions.some(
+      (action) =>
+        action.type === "mode" && action.mode === "normal" && !action.oneShot,
+    )
+  if (exitingSession) finalizeInsertSession(editor, history)
   let historyAction = false
+  let successfulChange = false
   const setRegister = (text: string, linewise = false) => {
     register.value = linewise ? linewiseValue(text) : text
     register.linewise = linewise
@@ -957,12 +1155,19 @@ export function runActions(
         effects.writeClipboard,
         action.percentage,
       )
+      if (succeeded && action.operator !== "yank") successfulChange = true
       if (succeeded && action.operator === "change") {
         effects.transitionRuntime((next) => {
           next.mode = "insert"
           next.oneShotNormal = false
           next.visual = null
         })
+        if (!history.changeSession)
+          history.changeSession = {
+            before,
+            actions: [{ ...action }],
+            baseline: snapshotOf(editor),
+          }
       }
     }
     if (action.type === "find") {
@@ -991,11 +1196,18 @@ export function runActions(
             ) &&
             action.operator === "change"
           ) {
+            successfulChange = true
             effects.transitionRuntime((next) => {
               next.mode = "insert"
               next.oneShotNormal = false
               next.visual = null
             })
+            if (!history.changeSession)
+              history.changeSession = {
+                before,
+                actions: [{ ...action }],
+                baseline: snapshotOf(editor),
+              }
           }
         } else if (editor.hasSelection()) selectTo(editor, target)
         else editor.cursorOffset = target
@@ -1027,11 +1239,18 @@ export function runActions(
               effects.writeClipboard,
             )
         if (applied && action.operator === "change") {
+          successfulChange = true
           effects.transitionRuntime((next) => {
             next.mode = "insert"
             next.oneShotNormal = false
             next.visual = null
           })
+          if (!history.changeSession)
+            history.changeSession = {
+              before,
+              actions: [{ ...action }],
+              baseline: snapshotOf(editor),
+            }
         }
       } else if (range) {
         editor.setSelection(range.start, range.end)
@@ -1055,7 +1274,7 @@ export function runActions(
         editor.cursorOffset = lastGraphemeStart(editor.plainText)
       }
     }
-    if (action.type === "operator-line")
+    if (action.type === "operator-line") {
       applyLineRange(
         editor,
         action.operator,
@@ -1064,6 +1283,14 @@ export function runActions(
         effects.writeClipboard,
         editor.cursorOffset,
       )
+      if (action.operator !== "yank") successfulChange = true
+      if (action.operator === "change" && !history.changeSession)
+        history.changeSession = {
+          before,
+          actions: [{ ...action }],
+          baseline: snapshotOf(editor),
+        }
+    }
     if (action.type === "delete-char") {
       const bounds = lineBounds(editor.plainText, editor.cursorOffset)
       const start = action.backward
@@ -1084,6 +1311,7 @@ export function runActions(
           )
       const deleted = editor.plainText.slice(start, end)
       if (deleted) {
+        successfulChange = true
         setRegister(deleted)
         replaceRange(editor, start, end, "", start)
       }
@@ -1092,6 +1320,7 @@ export function runActions(
       action.type === "paste" &&
       (register.value !== "" || register.linewise)
     ) {
+      successfulChange = true
       if (register.linewise)
         pasteLinewise(editor, register, action.before, action.count)
       else {
@@ -1124,7 +1353,8 @@ export function runActions(
       const count = graphemeSegments(
         editor.plainText.slice(editor.cursorOffset, end),
       ).length
-      if (count > 0) {
+      if (count === action.count) {
+        successfulChange = true
         const replacement =
           action.text === "\n" ? action.text : action.text.repeat(count)
         replaceRange(
@@ -1143,7 +1373,8 @@ export function runActions(
     if (action.type === "join-lines") {
       let text = editor.plainText
       let cursor = editor.cursorOffset
-      for (let index = 0; index < action.count; index++) {
+      const joins = action.count === 1 ? 1 : action.count - 1
+      for (let index = 0; index < joins; index++) {
         const bounds = lineBounds(text, cursor)
         if (bounds.end >= text.length) break
         let nextText = bounds.end + 1
@@ -1159,6 +1390,7 @@ export function runActions(
         cursor = bounds.end
       }
       if (text !== editor.plainText) {
+        successfulChange = true
         editor.replaceText(text)
         editor.cursorOffset = cursor
       }
@@ -1167,10 +1399,7 @@ export function runActions(
       historyAction = true
       const snapshot = history.undo.pop()
       if (snapshot) {
-        history.redo.push({
-          text: editor.plainText,
-          cursor: editor.cursorOffset,
-        })
+        history.redo.push(snapshotOf(editor))
         editor.setText(snapshot.text)
         editor.cursorOffset = snapshot.cursor
       } else editor.undo()
@@ -1179,20 +1408,31 @@ export function runActions(
       historyAction = true
       const snapshot = history.redo.pop()
       if (snapshot) {
-        history.undo.push({
-          text: editor.plainText,
-          cursor: editor.cursorOffset,
-        })
+        history.undo.push(snapshotOf(editor))
         editor.setText(snapshot.text)
         editor.cursorOffset = snapshot.cursor
       } else editor.redo()
     }
     if (action.type === "submit") effects.dispatch("input.submit")
     if (action.type === "palette") effects.dispatch("command.palette.show")
-    if (action.type === "enter") enter(editor, action.key)
+    if (action.type === "enter") {
+      enter(editor, action.key)
+      if (!history.changeSession)
+        history.changeSession = {
+          before,
+          actions: [{ ...action }],
+          baseline: snapshotOf(editor),
+        }
+    }
     if (action.type === "visual-operator") {
       const selection = editor.getSelection()
       if (selection) {
+        if (action.operator === "change" && !history.changeSession)
+          history.changeSession = {
+            before: { ...before, cursor: selection.start },
+            actions: [{ ...action }],
+            baseline: before,
+          }
         if (action.linewise) {
           editor.clearSelection()
           applyLineRange(
@@ -1202,6 +1442,15 @@ export function runActions(
             setRegister,
             effects.writeClipboard,
           )
+          if (action.operator !== "yank") successfulChange = true
+          if (action.operator === "change") {
+            history.changeSession!.baseline = snapshotOf(editor)
+            effects.transitionRuntime((next) => {
+              next.mode = "insert"
+              next.oneShotNormal = false
+              next.visual = null
+            })
+          }
           if (action.operator === "yank") editor.cursorOffset = selection.start
           continue
         }
@@ -1221,6 +1470,15 @@ export function runActions(
             "",
             selection.start,
           )
+        if (action.operator !== "yank") successfulChange = true
+        if (action.operator === "change") {
+          history.changeSession!.baseline = snapshotOf(editor)
+          effects.transitionRuntime((next) => {
+            next.mode = "insert"
+            next.oneShotNormal = false
+            next.visual = null
+          })
+        }
       }
     }
     if (action.type === "mode") {
@@ -1245,9 +1503,15 @@ export function runActions(
         bounds.start,
       )
   }
-  if (!historyAction && editor.plainText !== before.text) {
+  if (
+    !historyAction &&
+    !history.changeSession &&
+    (editor.plainText !== before.text || successfulChange)
+  ) {
     history.undo.push(before)
     history.redo.length = 0
+    const action = actions.find(repeatableAction)
+    if (action) history.lastChange = { actions: [{ ...action }] }
   }
   history.currentText = editor.plainText
 }

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import {
+  beginInsertSession,
   createVimHistory,
+  finalizeInsertSession,
+  insertHostText,
   lineBounds,
   lineRange,
   type Register,
@@ -82,6 +85,17 @@ class FakeEditor implements VimEditor {
   replaceText(text: string) {
     this.plainText = text
     this.replacements++
+  }
+
+  insertText(text: string) {
+    const selection = this.getSelection()
+    const start = selection?.start ?? this.cursorOffset
+    const end = selection?.end ?? this.cursorOffset
+    this.replaceText(
+      this.plainText.slice(0, start) + text + this.plainText.slice(end),
+    )
+    this.cursorOffset = start + text.length
+    this.clearSelection()
   }
 
   setText(text: string) {
@@ -191,11 +205,11 @@ describe("editor action adapter", () => {
     expect(replace.cursorOffset).toBe(1)
   })
 
-  test("replace stops at the line end and leaves the cursor on the replacement", () => {
+  test("replace fails atomically when its count crosses the line end", () => {
     const editor = new FakeEditor("ab\ncd")
     editor.cursorOffset = 1
     run(editor, [{ type: "replace", text: "x", count: 4 }])
-    expect(editor.plainText).toBe("ax\ncd")
+    expect(editor.plainText).toBe("ab\ncd")
     expect(editor.cursorOffset).toBe(1)
   })
 
@@ -267,7 +281,7 @@ describe("editor action adapter", () => {
 
   test("a counted join creates one undo point for the complete command", () => {
     const editor = new FakeEditor("one\n  two\nthree")
-    run(editor, [{ type: "join-lines", count: 2 }])
+    run(editor, [{ type: "join-lines", count: 3 }])
     expect(editor.plainText).toBe("one two three")
     expect(editor.replacements).toBe(1)
   })
@@ -510,5 +524,421 @@ describe("editor action adapter", () => {
     expect(transitions).toBe(1)
     expect(runtime.visual?.kind).toBe("line")
     expect(next.visual?.kind).toBe("character")
+  })
+
+  test("repeats normal changes semantically and keeps each repeat atomic", () => {
+    const editor = new FakeEditor("abcdef")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runActions(
+      editor,
+      [{ type: "delete-char", backward: false, count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    editor.cursorOffset = 1
+    runActions(
+      editor,
+      [{ type: "repeat", count: 2 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("bef")
+    expect(register.value).toBe("cd")
+
+    runActions(
+      editor,
+      [{ type: "undo" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("bcdef")
+  })
+
+  test("captures host insert text between public mode transitions", () => {
+    const editor = new FakeEditor("one two")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runtime.mode = "insert"
+    beginInsertSession(editor, history)
+    editor.replaceText("Xone two")
+    editor.cursorOffset = 1
+    runtime.mode = "normal"
+    runActions(
+      editor,
+      [{ type: "mode", mode: "normal" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    editor.cursorOffset = 5
+    runActions(
+      editor,
+      [{ type: "repeat" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("Xone Xtwo")
+
+    runActions(
+      editor,
+      [{ type: "undo" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("Xone two")
+
+    runActions(
+      editor,
+      [{ type: "undo" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("one two")
+  })
+
+  test("anchors captured insertion at the session cursor when neighboring text is identical", () => {
+    const editor = new FakeEditor("foo foo")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runtime.mode = "insert"
+    beginInsertSession(editor, history)
+    editor.insertText("foo ")
+    runtime.mode = "normal"
+    runActions(
+      editor,
+      [{ type: "mode", mode: "normal" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    editor.cursorOffset = 8
+    runActions(
+      editor,
+      [{ type: "repeat" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+
+    expect(editor.plainText).toBe("foo foo foo foo")
+  })
+
+  test("does not apply captured insertion when a repeated text object fails", () => {
+    const editor = new FakeEditor('"one" plain')
+    editor.cursorOffset = 1
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runActions(
+      editor,
+      [
+        {
+          type: "text-object",
+          object: "double-quote",
+          around: false,
+          count: 1,
+          operator: "change",
+        },
+      ],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    editor.insertText("X")
+    runtime.mode = "normal"
+    runActions(
+      editor,
+      [{ type: "mode", mode: "normal" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    editor.cursorOffset = 4
+    runActions(
+      editor,
+      [{ type: "repeat" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+
+    expect(editor.plainText).toBe('"X" plain')
+  })
+
+  test("keeps visual change, host insertion, and undo in one session", () => {
+    const editor = new FakeEditor("one two")
+    editor.setSelection(0, 3)
+    editor.cursorOffset = 2
+    const runtime = createVimState("visual")
+    runtime.visual = { kind: "character" }
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runActions(
+      editor,
+      [{ type: "visual-operator", operator: "change", linewise: false }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(runtime.mode).toBe("insert")
+    expect(history.changeSession?.before.text).toBe("one two")
+    editor.insertText("one")
+    runtime.mode = "normal"
+    runActions(
+      editor,
+      [{ type: "mode", mode: "normal" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+
+    expect(history.undo).toHaveLength(1)
+    runActions(
+      editor,
+      [{ type: "undo" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("one two")
+    expect(history.undo).toHaveLength(0)
+  })
+
+  test("starts a host-prefix insert session synchronously for each editor", () => {
+    const first = new FakeEditor("one")
+    const second = new FakeEditor("two")
+    const firstHistory = createVimHistory(first.plainText)
+    const secondHistory = createVimHistory(second.plainText)
+
+    insertHostText(first, firstHistory, "/")
+    insertHostText(second, secondHistory, "/")
+
+    expect(firstHistory.changeSession?.before.text).toBe("one")
+    expect(secondHistory.changeSession?.before.text).toBe("two")
+    expect(first.plainText).toBe("/one")
+    expect(second.plainText).toBe("/two")
+  })
+
+  test("finalizes editor A before editor B starts so A can repeat and undo its insert", () => {
+    const first = new FakeEditor("one")
+    const second = new FakeEditor("two")
+    const firstHistory = createVimHistory(first.plainText)
+    const secondHistory = createVimHistory(second.plainText)
+    const runtime = createVimState("normal")
+    const register = { value: "", linewise: false }
+
+    insertHostText(first, firstHistory, "/")
+    finalizeInsertSession(first, firstHistory)
+    insertHostText(second, secondHistory, "/")
+
+    expect(firstHistory.changeSession).toBeNull()
+    expect(firstHistory.undo).toHaveLength(1)
+    expect(firstHistory.lastChange).not.toBeNull()
+
+    first.cursorOffset = first.plainText.length
+    runActions(
+      first,
+      [{ type: "repeat" }],
+      register,
+      runtime,
+      firstHistory,
+      mutableEffects(runtime),
+    )
+    expect(first.plainText).toBe("/on/e")
+    runActions(
+      first,
+      [{ type: "undo" }],
+      register,
+      runtime,
+      firstHistory,
+      mutableEffects(runtime),
+    )
+    expect(first.plainText).toBe("/one")
+  })
+
+  test("a counted replacement repeat fails atomically when the line is too short", () => {
+    const editor = new FakeEditor("a😀é")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runActions(
+      editor,
+      [{ type: "replace", text: "z", count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    editor.cursorOffset = 1
+    runActions(
+      editor,
+      [{ type: "repeat", count: 3 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+
+    expect(editor.plainText).toBe("z😀é")
+    expect(history.undo).toHaveLength(1)
+    runActions(
+      editor,
+      [{ type: "undo" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("a😀é")
+  })
+
+  test("D on an empty line creates no transaction or undo point", () => {
+    const editor = new FakeEditor("a\n")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    runActions(
+      editor,
+      [{ type: "delete-char", backward: false, count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    runActions(
+      editor,
+      [{ type: "operator-motion", operator: "delete", key: "$", count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("\n")
+    expect(history.undo).toHaveLength(1)
+
+    runActions(
+      editor,
+      [{ type: "undo" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("a\n")
+  })
+
+  test("yanks, motions, failed edits, and undo do not replace the last change", () => {
+    const editor = new FakeEditor("abcd")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+    const execute = (actions: Parameters<typeof runActions>[1]) =>
+      runActions(editor, actions, register, runtime, history, actionEffects)
+
+    execute([{ type: "replace", text: "z", count: 1 }])
+    execute([{ type: "motion", key: "l", count: 1 }])
+    execute([{ type: "operator-line", operator: "yank", count: 1 }])
+    editor.cursorOffset = editor.plainText.length
+    execute([{ type: "delete-char", backward: false, count: 1 }])
+    execute([{ type: "undo" }])
+    editor.cursorOffset = 1
+    execute([{ type: "repeat" }])
+    expect(editor.plainText).toBe("azcd")
+  })
+
+  test("dot paste reads the current unnamed register", () => {
+    const editor = new FakeEditor("ac")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "b", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+    runActions(
+      editor,
+      [{ type: "paste", before: false, count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    register.value = "z"
+    runActions(
+      editor,
+      [{ type: "repeat" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("abzc")
+  })
+
+  test("a successful no-op replacement still becomes the last change", () => {
+    const editor = new FakeEditor("ab")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+    runActions(
+      editor,
+      [{ type: "replace", text: "a", count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(history.undo).toHaveLength(1)
+    expect(history.lastChange).toEqual({
+      actions: [{ type: "replace", text: "a", count: 1 }],
+    })
+    editor.cursorOffset = 1
+    runActions(
+      editor,
+      [{ type: "repeat" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+    expect(editor.plainText).toBe("aa")
   })
 })

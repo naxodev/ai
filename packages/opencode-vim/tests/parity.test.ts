@@ -266,6 +266,150 @@ describe("Neovim parity", () => {
     ])
   })
 
+  test("dot repeats atomic normal and insert changes", () => {
+    expectParity([
+      {
+        name: "repeat delete word",
+        text: "one two three",
+        cursor: 0,
+        keys: ["d", "w", "w", "."],
+      },
+      {
+        name: "count overrides repeated character delete",
+        text: "abcdef",
+        cursor: 0,
+        keys: ["x", "3", "."],
+      },
+      {
+        name: "repeat inserted host text",
+        text: "one two",
+        cursor: 0,
+        keys: ["i", "X", "escape", "w", "."],
+      },
+      {
+        name: "repeat insert beside identical neighboring text",
+        text: "foo foo",
+        cursor: 0,
+        keys: ["i", "f", "o", "o", "space", "escape", "w", "."],
+      },
+      {
+        name: "ia escape w dot beside repeated neighboring text",
+        text: "aa aa",
+        cursor: 0,
+        keys: ["i", "a", "escape", "w", "."],
+      },
+      {
+        name: "count overrides repeated insert session",
+        text: "ab cd",
+        cursor: 0,
+        keys: ["i", "X", "escape", "w", "3", "."],
+      },
+      {
+        name: "repeat change session",
+        text: "one two",
+        cursor: 0,
+        keys: ["c", "w", "X", "escape", "w", "."],
+      },
+      {
+        name: "one undo restores one repeat",
+        text: "abcd",
+        cursor: 0,
+        keys: ["x", ".", "u"],
+      },
+      {
+        name: "repeat open line session",
+        text: "one\ntwo",
+        cursor: 0,
+        keys: ["o", "X", "escape", "j", "."],
+      },
+      {
+        name: "count overrides repeated open line session",
+        text: "a\nb\nc\nd",
+        cursor: 0,
+        keys: ["o", "X", "escape", "j", "3", "."],
+      },
+      {
+        name: "repeat text object change",
+        text: "one two three",
+        cursor: 0,
+        keys: ["d", "i", "w", "w", "."],
+      },
+      {
+        name: "repeat operator find",
+        text: "a-x a-x",
+        cursor: 0,
+        keys: ["d", "f", "x", "w", "."],
+      },
+      {
+        name: "repeat replacement",
+        text: "abc",
+        cursor: 0,
+        keys: ["r", "z", "l", "."],
+      },
+      {
+        name: "repeat paste uses unnamed register",
+        text: "ac",
+        cursor: 0,
+        keys: ["p", "."],
+        register: { text: "b", type: "characterwise" },
+      },
+      {
+        name: "repeat join",
+        text: "one\ntwo\nthree",
+        cursor: 0,
+        keys: ["J", "."],
+      },
+      {
+        name: "yank does not replace last change",
+        text: "abcd",
+        cursor: 0,
+        keys: ["x", "y", "y", "."],
+      },
+      {
+        name: "failed change does not replace last change",
+        text: "abcd",
+        cursor: 0,
+        keys: ["x", "$", "d", "f", "z", "."],
+      },
+      {
+        name: "failed repeated text object does not insert captured text",
+        text: '"one" plain',
+        cursor: 1,
+        keys: ["c", "i", '"', "X", "escape", "W", "."],
+      },
+      {
+        name: "failed repeated change motion does not insert captured text",
+        text: "a-x\nplain",
+        cursor: 0,
+        keys: ["c", "f", "x", "X", "escape", "G", "."],
+      },
+      {
+        name: "visual change and host insertion undo atomically",
+        text: "one two",
+        cursor: 0,
+        keys: ["v", "e", "c", "o", "n", "e", "escape", "u"],
+      },
+      {
+        name: "successful net-zero replacement creates an undo point",
+        text: "ab",
+        cursor: 0,
+        keys: ["r", "a", "u"],
+      },
+      {
+        name: "counted replacement repeat fails instead of replacing a short suffix",
+        text: "a😀é",
+        cursor: 0,
+        keys: ["r", "z", "l", "3", ".", "u"],
+      },
+      {
+        name: "failed D on an empty line does not consume undo",
+        text: "a\n",
+        cursor: 0,
+        keys: ["x", "D", "u"],
+      },
+    ])
+  })
+
   test("byte columns become JS UTF-16 offsets only at complete grapheme boundaries", () => {
     const text = "a😀éz\nnext"
     expect(nvimByteCursorToOffset(text, 1, 1)).toBe(1)

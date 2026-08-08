@@ -191,7 +191,26 @@ describe("vim transition engine", () => {
     ])
     transition(state, "3")
     expect(transition(state, "J").actions).toEqual([
-      { type: "join-lines", count: 2 },
+      { type: "join-lines", count: 3 },
+    ])
+  })
+
+  test("parses dot with an optional overriding count", () => {
+    const plain = createVimState("normal")
+    expect(transition(plain, ".").actions).toEqual([{ type: "repeat" }])
+
+    const counted = createVimState("normal")
+    transition(counted, "3")
+    expect(transition(counted, ".").actions).toEqual([
+      { type: "repeat", count: 3 },
+    ])
+  })
+
+  test("preserves an insert-entry count for session replay", () => {
+    const state = createVimState("normal")
+    transition(state, "3")
+    expect(transition(state, "o").actions).toEqual([
+      { type: "enter", key: "o", count: 3 },
     ])
   })
 

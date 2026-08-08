@@ -70,6 +70,7 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 | `x`, `X`, `D`, `C`              | Delete characters or to the end of the line     |
 | `p`, `P`                        | Paste after or before                           |
 | `r` + character                 | Replace characters                              |
+| `.`, `[count].`                 | Repeat the last change, optionally with a count |
 | `v`, `V`                        | Enter character or line visual mode             |
 | `u`, `ctrl+r`                   | Undo or redo one Vim command                    |
 | `J`                             | Join lines                                      |
@@ -89,6 +90,7 @@ Yanks also update the macOS system clipboard.
 - Active leader prefixes are left to OpenCode. The API does not expose inactive or dynamically changed leader configuration.
 - Clipboard integration uses macOS `pbcopy`. Modal editing still works on other platforms, but clipboard writes do not.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.
+- Dot repeat covers the listed normal changes and insert, change, and open-line sessions. Visual changes form one undo transaction, but their shape is not repeatable.
 
 ## Verify
 

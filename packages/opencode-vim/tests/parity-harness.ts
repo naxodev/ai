@@ -1,6 +1,7 @@
 import { expect } from "bun:test"
 import { fileURLToPath } from "node:url"
 import {
+  beginInsertSession,
   createVimHistory,
   runActions,
   type Register,
@@ -316,6 +317,7 @@ export function runImplementation(testCase: ParityCase): EditorSnapshot {
     linewise: testCase.register?.type === "linewise",
   }
   const history = createVimHistory(editor.plainText)
+  if (mode === "insert") beginInsertSession(editor, history)
   for (const key of testCase.keys) {
     const result = transition(state, key)
     runActions(editor, result.actions, register, state, history, {
@@ -325,6 +327,18 @@ export function runImplementation(testCase: ParityCase): EditorSnapshot {
         mutation(state)
       },
     })
+    if (!result.consume) {
+      const text = key === "space" ? " " : key === "tab" ? "\t" : key
+      if ([...text].length === 1) {
+        editor.replaceText(
+          editor.plainText.slice(0, editor.cursorOffset) +
+            text +
+            editor.plainText.slice(editor.cursorOffset),
+        )
+        editor.cursorOffset += text.length
+        history.currentText = editor.plainText
+      }
+    }
   }
   return {
     text: editor.plainText,

@@ -4,7 +4,10 @@ import type { EditBufferRenderable, TextRenderable } from "@opentui/core"
 import { createEffect, createSignal, onCleanup } from "solid-js"
 import { writeClipboard } from "./clipboard.ts"
 import {
+  beginInsertSession,
   createVimHistory,
+  finalizeInsertSession,
+  insertHostText,
   type Register,
   runActions,
   syncVimHistory,
@@ -103,6 +106,25 @@ function VimHost(props: {
       ? props.context.theme.text.feedback.success.default
       : props.context.theme.text.action.primary.default
   let indicator: TextRenderable | undefined
+  let activeInsert:
+    { editor: EditBufferRenderable; history: VimHistory } | undefined
+  const historyFor = (editor: EditBufferRenderable) => {
+    let history = histories.get(editor)
+    if (!history) {
+      history = createVimHistory(editor.plainText)
+      histories.set(editor, history)
+    }
+    return history
+  }
+  const beginInsertFor = (editor: EditBufferRenderable) => {
+    if (activeInsert?.editor !== editor) {
+      if (activeInsert && !activeInsert.editor.isDestroyed)
+        finalizeInsertSession(activeInsert.editor, activeInsert.history)
+      activeInsert = { editor, history: historyFor(editor) }
+    }
+    beginInsertSession(editor, activeInsert.history)
+    return activeInsert.history
+  }
   const updateIndicator = () => {
     if (!indicator || indicator.isDestroyed) return
     indicator.content = `-- ${label()} --`
@@ -110,6 +132,13 @@ function VimHost(props: {
   }
 
   const handle = (key: string) => {
+    const editor = target()
+    const history =
+      editor && !editor.isDestroyed
+        ? mode() === "insert"
+          ? beginInsertFor(editor)
+          : historyFor(editor)
+        : undefined
     let actions: VimAction[] = []
     let nextMode = mode()
     props.setRuntime((draft) => {
@@ -119,14 +148,8 @@ function VimHost(props: {
     })
     setMode(nextMode)
     updateIndicator()
-    syncCursor()
-    const editor = target()
     if (!editor || editor.isDestroyed) return
-    let history = histories.get(editor)
-    if (!history) {
-      history = createVimHistory(editor.plainText)
-      histories.set(editor, history)
-    }
+    if (!history) return
     syncVimHistory(history, editor.plainText)
     if (editor.plainText.length === 0) {
       for (const action of actions) {
@@ -181,7 +204,11 @@ function VimHost(props: {
           {
             id: `vimcode-v2.insert.leader.${index}`,
             bind,
-            run: () => target()?.insertText(text),
+            run: () => {
+              const editor = target()
+              if (!editor || editor.isDestroyed) return
+              insertHostText(editor, beginInsertFor(editor), text)
+            },
           },
         ]
       }),
@@ -289,6 +316,7 @@ function VimHost(props: {
       restoreCursors()
       return
     }
+    if (mode() === "insert") beginInsertFor(editor)
     restoreCursors(editor)
     if (!originalStyles.has(editor))
       originalStyles.set(editor, { ...editor.cursorStyle })

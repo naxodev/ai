@@ -84,7 +84,7 @@ export type VimAction =
       percentage?: boolean
     }
   | { type: "operator-line"; operator: Operator; count: number }
-  | { type: "enter"; key: EnterKey }
+  | { type: "enter"; key: EnterKey; count: number }
   | { type: "mode"; mode: VimMode; linewise?: boolean; oneShot?: boolean }
   | { type: "delete-char"; backward: boolean; count: number }
   | { type: "paste"; before: boolean; count: number }
@@ -92,6 +92,7 @@ export type VimAction =
   | { type: "visual-operator"; operator: Operator; linewise: boolean }
   | { type: "command"; id: string }
   | { type: "join-lines"; count: number }
+  | { type: "repeat"; count?: number }
   | { type: "undo" | "redo" | "submit" | "palette" }
 
 export type Transition = { consume: boolean; actions: VimAction[] }
@@ -482,8 +483,9 @@ function transitionNormal(state: VimState, key: string): Transition {
     return { consume: true, actions: [] }
   }
   if (isEnterKey(key)) {
+    const count = takeCount(state)
     setMode(state, "insert")
-    return { consume: true, actions: [{ type: "enter", key }] }
+    return { consume: true, actions: [{ type: "enter", key, count }] }
   }
   if (key === "v" || key === "V") {
     const oneShotNormal = state.oneShotNormal
@@ -530,7 +532,15 @@ function transitionNormal(state: VimState, key: string): Transition {
     const count = takeCount(state)
     return {
       consume: true,
-      actions: [{ type: "join-lines", count: count === 1 ? 1 : count - 1 }],
+      actions: [{ type: "join-lines", count }],
+    }
+  }
+  if (key === ".") {
+    const count = state.pending.count || undefined
+    clearPending(state)
+    return {
+      consume: true,
+      actions: [{ type: "repeat", ...(count ? { count } : {}) }],
     }
   }
   const hostCommand = {
@@ -605,8 +615,7 @@ function transitionVisual(state: VimState, key: string): Transition {
   const operator = operatorFor(key === "x" ? "d" : key)
   if (operator) {
     const linewise = state.visual?.kind === "line"
-    const mode =
-      operator === "change" || state.oneShotNormal ? "insert" : "normal"
+    const mode = state.oneShotNormal ? "insert" : "normal"
     setMode(state, mode)
     return {
       consume: true,
