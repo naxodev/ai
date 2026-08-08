@@ -10,7 +10,8 @@ Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 - OpenCode 2 `v0.0.0-next-17020`
 - Bun, which OpenCode uses to load TypeScript plugin packages
 - Neovim, required only for development parity tests
-- macOS for copying yanks to the system clipboard through `pbcopy`
+- A supported clipboard executable for system clipboard yanks: macOS `pbcopy`,
+  Wayland `wl-copy`, X11 `xclip` or `xsel`, or Windows PowerShell
 
 ## Install
 
@@ -31,7 +32,7 @@ To start in normal mode, use the object form:
   "plugins": [
     {
       "package": "@naxodev/opencode-vim",
-      "options": { "startMode": "normal" },
+      "options": { "startMode": "normal", "clipboard": "auto" },
     },
   ],
 }
@@ -39,9 +40,10 @@ To start in normal mode, use the object form:
 
 ## Options
 
-| Option      | Values                 | Default  | Purpose                      |
-| ----------- | ---------------------- | -------- | ---------------------------- |
-| `startMode` | `"insert"`, `"normal"` | `insert` | Select the initial Vim mode. |
+| Option      | Values                                                                     | Default  | Purpose                               |
+| ----------- | -------------------------------------------------------------------------- | -------- | ------------------------------------- |
+| `startMode` | `"insert"`, `"normal"`                                                     | `insert` | Select the initial Vim mode.          |
+| `clipboard` | `"auto"`, `"none"`, `"pbcopy"`, `"wl-copy"`, `"xclip"`, `"xsel"`, `"clip"` | `auto`   | Select the system clipboard provider. |
 
 Use `/vim` or the command palette action **Toggle Vim mode** to persistently enable or disable modal editing.
 
@@ -87,14 +89,17 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 | `{`, `}`                        | Select the previous or next session message     |
 | `j`, `k` on empty input         | Select the next or previous prompt history item |
 
-Yanks also update the macOS system clipboard.
+Yanks also update the system clipboard when a configured provider is available.
+`auto` uses `pbcopy` on macOS and PowerShell `Set-Clipboard` on Windows. The
+Windows provider remains named `clip` in configuration. On Linux it prefers
+`wl-copy` in Wayland sessions, then `xclip` and `xsel` when X11 is available.
 
 ## Limitations
 
 - The public V2 keymap API cannot intercept arbitrary printable Unicode. An unlisted Unicode key may reach the editor in normal or visual mode.
 - Character finds register every printable ASCII target with the public keymap. Unicode find targets remain subject to the public keymap limitation above.
 - Active leader prefixes are left to OpenCode. The API does not expose inactive or dynamically changed leader configuration.
-- Clipboard integration uses macOS `pbcopy`. Modal editing still works on other platforms, but clipboard writes do not.
+- Clipboard integration requires a supported executable on `PATH` and the matching display environment. Clipboard failures show at most one warning and never affect edits or the unnamed Vim register. Use `"clipboard": "none"` to disable integration and its availability warning.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.
 - EX commands resolve available OpenCode slash names and aliases. `:q`/`:quit` and `:help` work only when matching public OpenCode commands are available.
 - EX does not implement Vim file commands such as `:w`. `:!` works only when OpenCode exposes a public shell command that accepts arguments; it never spawns a shell itself.

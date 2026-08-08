@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { createClipboardWriter } from "../clipboard.ts"
 import {
   beginInsertSession,
   createVimHistory,
@@ -251,6 +252,26 @@ describe("editor action adapter", () => {
     sameLine.cursorOffset = 9
     run(sameLine, [{ type: "operator-line", operator: "yank", count: 1 }])
     expect(sameLine.cursorOffset).toBe(9)
+  })
+
+  test("clipboard failures do not affect edits or the unnamed register", () => {
+    const editor = new FakeEditor("abc")
+    const register = run(
+      editor,
+      [{ type: "delete-char", backward: false, count: 1 }],
+      { value: "", linewise: false },
+      {
+        ...effects,
+        writeClipboard: createClipboardWriter("pbcopy", {
+          isExecutable: () => true,
+          spawn() {
+            throw new Error("clipboard unavailable")
+          },
+        }),
+      },
+    )
+    expect(editor.plainText).toBe("bc")
+    expect(register).toEqual({ value: "a", linewise: false })
   })
 
   test("linewise upward yank never restores the cursor inside a grapheme", () => {

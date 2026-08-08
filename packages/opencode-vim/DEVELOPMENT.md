@@ -36,3 +36,15 @@ the pinned OpenCode dependencies.
 - Insert transactions should therefore snapshot public editor state on entry
   and compare it on exit instead of intercepting printable input or replacing
   the host callback.
+
+## Clipboard Security
+
+- Clipboard providers are a fixed allowlist. Configuration never accepts an
+  arbitrary command, arguments, or shell fragment.
+- Providers are spawned directly with fixed argument arrays and `shell: false`.
+  Yank text is written unchanged as UTF-8 on standard input.
+- The Windows `clip` option invokes a fixed PowerShell `Set-Clipboard` script so
+  non-ASCII text does not depend on the active OEM code page.
+- Provider processes are terminated after two seconds and during plugin cleanup.
+- Availability and process failures must remain outside the editing path. They
+  may produce one public UI warning but cannot change register or editor state.

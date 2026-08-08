@@ -51,7 +51,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
-    "test": "bun test tests/editor-actions.test.ts tests/engine.test.ts tests/ex-command.test.ts tests/package-load.test.ts",
+    "test": "bun test tests/clipboard.test.ts tests/editor-actions.test.ts tests/engine.test.ts tests/ex-command.test.ts tests/package-load.test.ts",
     "test:parity": "bun test tests/parity.test.ts",
     "pack:check": "bun run scripts/verify-pack.ts",
     "smoke:package": "bun run scripts/package-smoke.ts",

@@ -2,7 +2,11 @@
 import { Plugin } from "@opencode-ai/plugin/tui"
 import type { EditBufferRenderable, TextRenderable } from "@opentui/core"
 import { createEffect, createSignal, onCleanup } from "solid-js"
-import { writeClipboard } from "./clipboard.ts"
+import {
+  clipboardOptions,
+  createClipboardWriter,
+  isClipboardOption,
+} from "./clipboard.ts"
 import { openExDialog } from "./ex-command.ts"
 import {
   beginInsertSession,
@@ -82,6 +86,7 @@ function VimHost(props: {
   settings: Settings
   setSettings: (mutation: (draft: Settings) => void) => Promise<void>
   hostMode: "normal" | "shell"
+  writeClipboard(text: string): void
 }) {
   const register: Register = { value: "", linewise: false }
   const histories = new WeakMap<EditBufferRenderable, VimHistory>()
@@ -211,7 +216,7 @@ function VimHost(props: {
             .catch(() => {})
         })
       },
-      writeClipboard,
+      writeClipboard: props.writeClipboard,
       transitionRuntime: props.setRuntime,
     })
     setMode(props.runtime.mode)
@@ -396,6 +401,25 @@ export default Plugin.define({
   setup(context) {
     const startMode: VimMode =
       context.options.startMode === "normal" ? "normal" : "insert"
+    const configuredClipboard = context.options.clipboard
+    if (
+      configuredClipboard !== undefined &&
+      !isClipboardOption(configuredClipboard)
+    )
+      void context.ui.dialog
+        .alert({
+          title: "Vim configuration",
+          message: `Invalid clipboard option. Use one of: ${clipboardOptions.join(", ")}`,
+        })
+        .catch(() => {})
+    const clipboard = isClipboardOption(configuredClipboard)
+      ? configuredClipboard
+      : "auto"
+    const writeClipboard = createClipboardWriter(clipboard, {
+      warn(message) {
+        context.ui.toast.show({ message, variant: "warning" })
+      },
+    })
     const [runtime, setRuntime] = context.storage.memory<RuntimeState>(
       "vimcode-v2.runtime.v1",
       {
@@ -416,8 +440,12 @@ export default Plugin.define({
         settings={settings}
         setSettings={setSettings}
         hostMode={slot.mode}
+        writeClipboard={writeClipboard}
       />
     ))
-    return unsubscribe
+    return () => {
+      writeClipboard.dispose()
+      unsubscribe()
+    }
   },
 })
