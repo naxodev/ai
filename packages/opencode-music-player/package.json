@@ -61,7 +61,7 @@
     "validate": "bun run format:check && bun run check && bun run test && bun run pack:check"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-16927",
+    "@opencode-ai/plugin": "1.18.14",
     "@opentui/core": "0.4.5",
     "@opentui/solid": "0.4.5",
     "pngjs": "^7.0.0",
