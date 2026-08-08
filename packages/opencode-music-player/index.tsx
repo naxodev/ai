@@ -199,7 +199,7 @@ function createController(context: Context): Controller {
     })
   }
 
-  void refreshPlayer()
+  void refreshAll()
   startPoll()
 
   return {
@@ -265,8 +265,6 @@ function Host(props: { context: Context; ctrl: Controller }) {
       onPlayPause={() => void ctrl.playPause()}
       onNext={() => void ctrl.next()}
       onPrev={() => void ctrl.prev()}
-      onRefresh={() => void ctrl.refreshAll()}
-      onOpenApp={() => void ctrl.openApp()}
     />
   )
 }
