@@ -1,4 +1,5 @@
 import { Type, type TSchema } from "typebox"
+import { Check, Errors } from "typebox/value"
 import { workflowCommitPhase } from "./adapters/commit.ts"
 import { workflowDispatch } from "./adapters/dispatch.ts"
 import { apneaSetup } from "./adapters/setup.ts"
@@ -40,11 +41,20 @@ export type Operation = {
   readonly params: TSchema
   /** Gated behind the TTY check in the CLI; never registered as a tool. */
   readonly humanOnly?: true
+}
+
+type RegisteredOperation = Operation & {
   readonly run: (
     params: Record<string, unknown>,
     hooks?: WaitHooks,
   ) => Promise<ToolResult>
 }
+
+export type ExecuteOperation = (
+  verb: string,
+  params: Record<string, unknown>,
+  hooks?: WaitHooks,
+) => Promise<ToolResult>
 
 // Sourced from domain/state-machine.ts (not hardcoded here) so a new kind
 // added there can't silently drift out of sync with the registry — the same
@@ -53,21 +63,25 @@ const DispatchKind = Type.Union(
   DISPATCH_KINDS.map((kind) => Type.Literal(kind)),
 )
 
+function operationParams(properties: Record<string, TSchema>): TSchema {
+  return Type.Object(properties, { additionalProperties: false })
+}
+
 // Workflow order, not alphabetical or tool-name order: setup is the natural
 // first step for a new checkout, then the start → dispatch → wait → commit
 // loop, then the always-available status, then the human-only escape hatch.
 // `/apnea help` and autocomplete (SUBS) both derive their order from this
 // array, so ordering it once here keeps every rendering in sync for free.
-export function createOperations(
+function createRegisteredOperations(
   hostAdapter: ApneaHostAdapter = neutralHostAdapter,
-): readonly Operation[] {
+): readonly RegisteredOperation[] {
   return [
     {
       tool: null,
       verb: "setup",
       usage: "[--project] [--force] [--agents-md]",
       summary: "Write global profiles and optional project role bindings.",
-      params: Type.Object({
+      params: operationParams({
         project: Type.Optional(Type.Boolean()),
         force: Type.Optional(Type.Boolean()),
         agents_md: Type.Optional(Type.Boolean()),
@@ -82,7 +96,7 @@ export function createOperations(
       summary: "Start, resume, or abandon an Apnea run.",
       guidance:
         "Start only writes state (step=planning) — it does NOT launch roles. After start succeeds you MUST immediately call dispatch_role kind=plan then workflow_wait. Resume never auto-dispatches. Refuses if state exists or tree dirty (unless allow_dirty).",
-      params: Type.Object({
+      params: operationParams({
         goal: Type.Optional(
           Type.String({ description: "Run goal (required for action=start)" }),
         ),
@@ -128,7 +142,7 @@ export function createOperations(
       summary: "Write the task file and launch a role in a Herdr pane.",
       guidance:
         "One outstanding dispatch at a time. Pass rework=true only after CHANGES_REQUIRED on the same gate — that is what increments the round counter.",
-      params: Type.Object({
+      params: operationParams({
         kind: DispatchKind,
         task_markdown: Type.Optional(
           Type.String({ description: "Extra task body details" }),
@@ -164,7 +178,7 @@ export function createOperations(
       // The floor is interpolated from the constants, not spelled out. A
       // hardcoded formula here goes stale the moment IDLE_NUDGE_AFTER_MS
       // moves, and then the schema promises a budget the runtime refuses.
-      params: Type.Object({
+      params: operationParams({
         poll_ms: Type.Optional(
           Type.Number({
             minimum: MIN_POLL_MS,
@@ -200,7 +214,7 @@ export function createOperations(
       summary: "Verify and commit the current phase, then advance.",
       guidance:
         "Requires an APPROVED code review. Runs the phase package's verify commands and refuses on non-zero exit. Pass no_remaining_phases=true to move to the PR description instead of the next phase.",
-      params: Type.Object({
+      params: operationParams({
         message: Type.Optional(Type.String()),
         no_remaining_phases: Type.Optional(
           Type.Boolean({
@@ -221,7 +235,7 @@ export function createOperations(
       usage: "",
       summary: "Read-only snapshot of run state and legal next calls.",
       guidance: "Never mutates. Safe to call at any point.",
-      params: Type.Object({}),
+      params: operationParams({}),
       run: () => workflowStatus(hostAdapter),
     },
     {
@@ -235,7 +249,7 @@ export function createOperations(
       usage: "<gate>",
       summary: "Reset the rework counter for a gate. Human only.",
       humanOnly: true,
-      params: Type.Object({
+      params: operationParams({
         gate: Type.String({
           description: "Round key, e.g. plan_review or phase-01/code_review",
         }),
@@ -249,7 +263,51 @@ export function createOperations(
   ]
 }
 
-export const OPERATIONS = createOperations()
+function publicOperation(operation: RegisteredOperation): Operation {
+  const { run: _run, ...metadata } = operation
+  return metadata
+}
+
+function executorFor(
+  operations: readonly RegisteredOperation[],
+): ExecuteOperation {
+  return async (verb, params, hooks) => {
+    const operation = operations.find((candidate) => candidate.verb === verb)
+    if (!operation) {
+      return { ok: false, error: `unknown operation: ${verb}` }
+    }
+    if (!Check(operation.params, params)) {
+      return {
+        ok: false,
+        error: `invalid parameters for ${verb}`,
+        data: {
+          verb,
+          issues: [...Errors(operation.params, params)].map((issue) => ({
+            path: issue.instancePath,
+            message: issue.message,
+          })),
+        },
+      }
+    }
+    return operation.run(params, hooks)
+  }
+}
+
+export function createOperations(
+  hostAdapter: ApneaHostAdapter = neutralHostAdapter,
+): readonly Operation[] {
+  return createRegisteredOperations(hostAdapter).map(publicOperation)
+}
+
+export function createExecutor(
+  hostAdapter: ApneaHostAdapter = neutralHostAdapter,
+): ExecuteOperation {
+  return executorFor(createRegisteredOperations(hostAdapter))
+}
+
+const REGISTERED_OPERATIONS = createRegisteredOperations()
+export const OPERATIONS = REGISTERED_OPERATIONS.map(publicOperation)
+export const executeOperation = executorFor(REGISTERED_OPERATIONS)
 
 export function findByVerb(verb: string): Operation | undefined {
   return OPERATIONS.find((o) => o.verb === verb)

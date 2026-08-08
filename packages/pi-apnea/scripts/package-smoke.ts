@@ -1,6 +1,7 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join, resolve } from "node:path"
+import { assertPeerVersion } from "./package-smoke-policy.ts"
 
 function pack(cwd: string, destination: string): string {
   const result = Bun.spawnSync(
@@ -20,6 +21,12 @@ function pack(cwd: string, destination: string): string {
 
 const packageDir = resolve(import.meta.dir, "..")
 const coreDir = resolve(packageDir, "../apnea")
+const packageManifest = JSON.parse(
+  await readFile(join(packageDir, "package.json"), "utf8"),
+) as { peerDependencies: Record<string, string> }
+const piPackage = "@earendil-works/pi-coding-agent"
+const piPeerRange = packageManifest.peerDependencies[piPackage]
+if (!piPeerRange) throw new Error(`missing ${piPackage} peer dependency`)
 const work = await mkdtemp(join(tmpdir(), "pi-apnea-package-smoke-"))
 await Bun.$`bun run build`.cwd(coreDir).quiet()
 const coreArchive = pack(coreDir, work)
@@ -42,8 +49,14 @@ try {
     stderr: "pipe",
   })
   if (!install.success) throw new Error(install.stderr.toString())
-  const pi = Bun.which("pi")
-  if (!pi) throw new Error("could not resolve the Pi executable from PATH")
+  const pi = join(work, "node_modules", ".bin", "pi")
+  const installedPiManifest = JSON.parse(
+    await readFile(
+      join(work, "node_modules", piPackage, "package.json"),
+      "utf8",
+    ),
+  ) as { version: string }
+  assertPeerVersion(installedPiManifest.version, piPeerRange)
   const child = Bun.spawn(
     [
       pi,

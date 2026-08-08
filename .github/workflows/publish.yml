@@ -132,6 +132,10 @@ jobs:
         if: steps.published.outputs.skip != 'true'
         run: bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=${{ steps.release.outputs.project }}
 
+      - name: Verify compatible Apnea core is published
+        if: steps.published.outputs.skip != 'true' && steps.release.outputs.project == 'pi-apnea'
+        run: bun run --cwd packages/pi-apnea prepublish:core
+
       - name: Publish source package with OIDC and provenance
         if: steps.published.outputs.skip != 'true'
         run: npm publish "packages/${{ steps.release.outputs.project }}" --access public --provenance --tag "${{ steps.release.outputs.dist_tag }}"

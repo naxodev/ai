@@ -8,7 +8,7 @@ import {
   renderJson,
 } from "./format.ts"
 import { confirmHuman, prodHumanGateDeps } from "./human-gate.ts"
-import { OPERATIONS, findByVerb } from "../registry.ts"
+import { OPERATIONS, executeOperation, findByVerb } from "../registry.ts"
 import { DISPATCH_KINDS } from "../domain/state-machine.ts"
 import type { ToolResult } from "../result.ts"
 
@@ -97,7 +97,7 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
-  const result = await op.run(built.params)
+  const result = await executeOperation(op.verb, built.params)
   const text = json ? renderJson(result) : renderHuman(result)
   if (result.ok) console.log(text)
   else console.error(text)

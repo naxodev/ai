@@ -9,10 +9,11 @@ import {
   parseFlags,
   parseNumFlag,
   type DispatchKind,
+  type ExecuteOperation,
   type Operation,
   type ToolResult,
 } from "@naxodev/apnea"
-import { PI_OPERATIONS } from "./runtime.ts"
+import { executePiOperation, PI_OPERATIONS } from "./runtime.ts"
 
 export const SUBS = [
   ...PI_OPERATIONS.map((o) => o.verb),
@@ -75,11 +76,12 @@ function helpText(operations: readonly Operation[]): string {
 export function registerApneaCommands(
   pi: ExtensionAPI,
   operations: readonly Operation[] = PI_OPERATIONS,
+  execute: ExecuteOperation = executePiOperation,
 ): void {
   const run = (verb: string, params: Record<string, unknown>) => {
     const operation = operations.find((candidate) => candidate.verb === verb)
     if (!operation) throw new Error(`Missing Apnea operation: ${verb}`)
-    return operation.run(params)
+    return execute(operation.verb, params)
   }
   const kick = (kind: "start" | "resume", goal?: string) => {
     pi.sendUserMessage(orchestratorKickMessage(kind, goal))

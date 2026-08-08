@@ -52,10 +52,11 @@
   "scripts": {
     "check": "bun run typecheck && bun run test && bun run format:check && bun run pack:check && bun run smoke:package",
     "typecheck": "tsc --noEmit",
-    "test": "bun test extension",
+    "test": "bun test extension scripts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "pack:check": "bun scripts/verify-pack.ts",
+    "prepublish:core": "bun scripts/check-core-published.ts",
     "smoke:package": "bun scripts/package-smoke.ts"
   },
   "dependencies": {

@@ -36,6 +36,12 @@ export function makeFakeFileSystem(initial: Record<string, string> = {}): {
         files.set(path, content)
       }),
 
+    writeProjectFile: (_root, path, content) =>
+      Effect.sync(() => {
+        ensureParent(path)
+        files.set(path, content)
+      }),
+
     rename: (from, to) =>
       Effect.sync(() => {
         const v = files.get(from)

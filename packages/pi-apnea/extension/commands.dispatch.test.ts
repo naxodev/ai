@@ -1,21 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { OPERATIONS, type Operation } from "@naxodev/apnea"
+import { OPERATIONS, type ExecuteOperation } from "@naxodev/apnea"
 import { registerApneaCommands } from "./commands.ts"
 
 type Notify = (message: string, level?: "info" | "warning" | "error") => void
 type Handler = (args: string, ctx: { ui: { notify: Notify } }) => Promise<void>
 
-function stubOperations(calls: Array<{ verb: string; params: unknown }>) {
-  return OPERATIONS.map((operation): Operation => ({
-    ...operation,
-    run: async (params) => {
-      calls.push({ verb: operation.verb, params })
-      return { ok: true, message: "stub" }
-    },
-  }))
-}
-
-function captureApneaHandler(operations: readonly Operation[]): Handler {
+function captureApneaHandler(execute: ExecuteOperation): Handler {
   let captured: Handler | undefined
   const fakePi = {
     registerCommand: (name: string, options: { handler: Handler }) => {
@@ -24,56 +14,107 @@ function captureApneaHandler(operations: readonly Operation[]): Handler {
     sendUserMessage: () => {},
   }
   type ExtensionAPIArg = Parameters<typeof registerApneaCommands>[0]
-  registerApneaCommands(fakePi as unknown as ExtensionAPIArg, operations)
+  registerApneaCommands(
+    fakePi as unknown as ExtensionAPIArg,
+    OPERATIONS,
+    execute,
+  )
   if (!captured) throw new Error('"apnea" command was never registered')
   return captured
 }
 
-async function runAndCollect(handler: Handler, args: string) {
-  const notifications: string[] = []
-  await handler(args, {
-    ui: { notify: (message) => notifications.push(message) },
-  })
-  return notifications
+async function run(handler: Handler, args: string) {
+  await handler(args, { ui: { notify: () => {} } })
 }
 
 describe("registerApneaCommands registry parity", () => {
-  test("every shared registry verb reaches a Pi command case", async () => {
-    const calls: Array<{ verb: string; params: unknown }> = []
-    const handler = captureApneaHandler(stubOperations(calls))
-    for (const operation of OPERATIONS) {
-      const notifications = await runAndCollect(handler, operation.verb)
-      expect(
-        notifications.some((message) =>
-          message.startsWith("Unknown subcommand"),
-        ),
-      ).toBe(false)
+  test("every verb dispatches exact parameters from valid command input", async () => {
+    const calls: Array<{ verb: string; params: Record<string, unknown> }> = []
+    const execute: ExecuteOperation = async (verb, params) => {
+      calls.push({ verb, params })
+      return { ok: true, message: "stub" }
     }
+    const handler = captureApneaHandler(execute)
+
+    const fixtures = [
+      {
+        input: "setup --project --force --agents-md",
+        verb: "setup",
+        params: { project: true, force: true, agents_md: true },
+      },
+      {
+        input: "start ship fix --allow-dirty --slug=ship-fix",
+        verb: "start",
+        params: {
+          goal: "ship fix",
+          slug: "ship-fix",
+          allow_dirty: true,
+          action: "start",
+        },
+      },
+      {
+        input: "dispatch plan --rework",
+        verb: "dispatch",
+        params: { kind: "plan", rework: true },
+      },
+      {
+        input: "wait --poll=5000 --budget=20000",
+        verb: "wait",
+        params: { poll_ms: 5000, budget_ms: 20000 },
+      },
+      {
+        input: "commit release fix --done",
+        verb: "commit",
+        params: { message: "release fix", no_remaining_phases: true },
+      },
+      { input: "status", verb: "status", params: {} },
+      {
+        input: "reset-rounds plan_review",
+        verb: "reset-rounds",
+        params: { gate: "plan_review" },
+      },
+    ] as const
+
+    for (const fixture of fixtures) await run(handler, fixture.input)
+
+    expect(calls).toEqual(
+      fixtures.map(({ verb, params }) => ({ verb, params })),
+    )
+    expect(fixtures.map<string>(({ verb }) => verb).sort()).toEqual(
+      OPERATIONS.map(({ verb }) => verb).sort(),
+    )
   })
 
-  test("resume and abandon route through the shared start operation", async () => {
-    const calls: Array<{ verb: string; params: unknown }> = []
-    const handler = captureApneaHandler(stubOperations(calls))
-    await runAndCollect(handler, "resume")
-    await runAndCollect(handler, "abandon")
-    expect(calls.filter(({ verb }) => verb === "start")).toHaveLength(2)
-  })
+  test("resume and abandon route through start with exact actions", async () => {
+    const calls: Array<{ verb: string; params: Record<string, unknown> }> = []
+    const handler = captureApneaHandler(async (verb, params) => {
+      calls.push({ verb, params })
+      return { ok: true, message: "stub" }
+    })
 
-  test("an unknown verb uses the Pi fallback", async () => {
-    const handler = captureApneaHandler(stubOperations([]))
-    const notifications = await runAndCollect(handler, "not-a-real-verb")
-    expect(
-      notifications.some((message) => message.startsWith("Unknown subcommand")),
-    ).toBe(true)
+    await run(handler, "resume")
+    await run(handler, "abandon")
+
+    expect(calls).toEqual([
+      { verb: "start", params: { goal: "", action: "resume" } },
+      { verb: "start", params: { goal: "", action: "abandon" } },
+    ])
   })
 
   test("Pi wait is unbounded because it has no host shell timeout", async () => {
-    const calls: Array<{ verb: string; params: unknown }> = []
-    const handler = captureApneaHandler(stubOperations(calls))
-    await runAndCollect(handler, "wait")
-    const wait = calls.find(({ verb }) => verb === "wait")
-    expect((wait?.params as { budget_ms?: number }).budget_ms).toBe(
-      Number.MAX_SAFE_INTEGER,
-    )
+    const calls: Array<{ verb: string; params: Record<string, unknown> }> = []
+    const handler = captureApneaHandler(async (verb, params) => {
+      calls.push({ verb, params })
+      return { ok: true, message: "stub" }
+    })
+
+    await run(handler, "wait")
+
+    expect(calls).toEqual([
+      {
+        verb: "wait",
+        params: { poll_ms: undefined, budget_ms: Number.MAX_SAFE_INTEGER },
+      },
+    ])
   })
 })

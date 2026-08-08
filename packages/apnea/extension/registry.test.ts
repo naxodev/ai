@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { OPERATIONS, findByTool, findByVerb, toolToVerb } from "./registry.ts"
+import {
+  OPERATIONS,
+  executeOperation,
+  findByTool,
+  findByVerb,
+  toolToVerb,
+} from "./registry.ts"
 
 describe("OPERATIONS", () => {
   test("pins the exact command set", () => {
@@ -72,10 +78,41 @@ describe("OPERATIONS", () => {
     // index.ts's execute() applies before calling workflowStart — without
     // it, action=start with no goal reaches slugify(undefined) downstream
     // and throws instead of returning a clean refusal.
-    const result = await findByVerb("start")!.run({ action: "start" })
+    const result = await executeOperation("start", { action: "start" })
     expect(result).toEqual({
       ok: false,
       error: "goal is required when action=start",
+    })
+  })
+
+  test('rejects allow_dirty: "false" instead of treating it as enabled', async () => {
+    const result = await executeOperation("start", {
+      action: "start",
+      goal: "validate inputs",
+      allow_dirty: "false",
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      error: "invalid parameters for start",
+      data: {
+        verb: "start",
+        issues: [
+          {
+            path: "/allow_dirty",
+            message: "must be boolean",
+          },
+        ],
+      },
+    })
+  })
+
+  test("rejects undeclared parameters instead of silently ignoring host drift", async () => {
+    const result = await executeOperation("status", { bogus: true })
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "invalid parameters for status",
     })
   })
 })

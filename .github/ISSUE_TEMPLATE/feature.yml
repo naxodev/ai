@@ -16,6 +16,18 @@ body:
       description: Describe the desired behavior and alternatives considered.
     validations:
       required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - "@naxodev/opencode-music-player"
+        - "@naxodev/opencode-vim"
+        - "@naxodev/pi-music-dock"
+        - "@naxodev/apnea"
+        - "@naxodev/pi-apnea"
+    validations:
+      required: true
   - type: checkboxes
     id: scope
     attributes:

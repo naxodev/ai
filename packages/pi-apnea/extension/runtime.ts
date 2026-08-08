@@ -1,4 +1,8 @@
-import { createOperations, type ApneaHostAdapter } from "@naxodev/apnea"
+import {
+  createExecutor,
+  createOperations,
+  type ApneaHostAdapter,
+} from "@naxodev/apnea"
 import {
   isPiCmd,
   materializePiRoleAgentDir,
@@ -13,3 +17,4 @@ export const piHostAdapter: ApneaHostAdapter = {
 }
 
 export const PI_OPERATIONS = createOperations(piHostAdapter)
+export const executePiOperation = createExecutor(piHostAdapter)

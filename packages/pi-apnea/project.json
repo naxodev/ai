@@ -12,7 +12,7 @@
     },
     "test": {
       "executor": "nx:run-commands",
-      "options": { "command": "bun test extension", "cwd": "packages/pi-apnea" }
+      "options": { "command": "bun run test", "cwd": "packages/pi-apnea" }
     },
     "format:check": {
       "executor": "nx:run-commands",

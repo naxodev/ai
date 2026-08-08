@@ -1,10 +1,13 @@
 export {
   createOperations,
+  createExecutor,
+  executeOperation,
   findByTool,
   findByVerb,
   OPERATIONS,
   toolToVerb,
   type Operation,
+  type ExecuteOperation,
 } from "./registry.ts"
 export { parseFlags, parseNumFlag } from "./cli/parse.ts"
 export { DISPATCH_KINDS, type DispatchKind } from "./domain/state-machine.ts"

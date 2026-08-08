@@ -213,10 +213,13 @@ export const setupWorkflow = (
     let projectPath: string | null = null
     if (params.project) {
       const pPath = projectConfigPath(root)
-      yield* fs.mkdir(path.dirname(pPath), { recursive: true })
       // project: roles only — never cmd
       const projectCfg = { roles: pickRoles(has) }
-      yield* fs.writeFile(pPath, `${JSON.stringify(projectCfg, null, 2)}\n`)
+      yield* fs.writeProjectFile(
+        root,
+        pPath,
+        `${JSON.stringify(projectCfg, null, 2)}\n`,
+      )
       projectPath = pPath
     }
 

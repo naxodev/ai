@@ -41,17 +41,28 @@
   },
   "release": {
     "projectsRelationship": "independent",
-    "projects": [
-      "apnea",
-      "opencode-music-player",
-      "opencode-vim",
-      "pi-apnea",
-      "pi-music-dock"
-    ],
+    "groups": {
+      "apnea": {
+        "projects": ["apnea"]
+      },
+      "opencode-music-player": {
+        "projects": ["opencode-music-player"]
+      },
+      "opencode-vim": {
+        "projects": ["opencode-vim"]
+      },
+      "pi-apnea": {
+        "projects": ["pi-apnea"]
+      },
+      "pi-music-dock": {
+        "projects": ["pi-music-dock"]
+      }
+    },
     "version": {
       "useLegacyVersioning": false,
-      "preVersionCommand": "bunx nx run-many -t typecheck test parity format:check package:check smoke",
+      "preVersionCommand": "bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke",
       "conventionalCommits": true,
+      "updateDependents": "auto",
       "fallbackCurrentVersionResolver": "disk",
       "manifestRootsToUpdate": ["{projectRoot}"]
     },

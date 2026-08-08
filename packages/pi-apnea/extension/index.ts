@@ -7,11 +7,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { toolContent } from "@naxodev/apnea"
 import { registerApneaCommands } from "./commands.ts"
-import { PI_OPERATIONS } from "./runtime.ts"
+import { executePiOperation, PI_OPERATIONS } from "./runtime.ts"
 
 export default function (pi: ExtensionAPI) {
   // `/apnea …` for humans (autocomplete); tools remain for the model
-  registerApneaCommands(pi, PI_OPERATIONS)
+  registerApneaCommands(pi, PI_OPERATIONS, executePiOperation)
 
   for (const op of PI_OPERATIONS) {
     if (op.tool === null) continue
@@ -39,7 +39,8 @@ export default function (pi: ExtensionAPI) {
             // can be interrupted, so it has no host shell timeout to fit
             // inside. The registry handler no longer injects this — only
             // the CLI reaches that, and it must stay bounded.
-            await op.run(
+            await executePiOperation(
+              op.verb,
               {
                 ...params,
                 budget_ms: params.budget_ms ?? Number.MAX_SAFE_INTEGER,
@@ -70,7 +71,7 @@ export default function (pi: ExtensionAPI) {
       description: [op.summary, op.guidance].filter(Boolean).join(" "),
       parameters: op.params,
       async execute(_id: string, params: Record<string, unknown>) {
-        return toolContent(await op.run(params))
+        return toolContent(await executePiOperation(op.verb, params))
       },
     })
   }
