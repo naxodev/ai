@@ -4,6 +4,12 @@ import { For, onCleanup, onMount } from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import type { Artwork } from "./types.ts"
 import {
+  planNativeArtworkPlacement,
+  type NativeArtworkPlacementAction,
+  type NativeArtworkPlacementPlan,
+  type NativeArtworkState,
+} from "./artwork-placement.ts"
+import {
   kittyDelete,
   kittyDeletePlacement,
   kittyDisplayPng,
@@ -11,36 +17,20 @@ import {
   kittyPlace,
   writeGraphics,
 } from "./kitty-graphics.ts"
+import {
+  createTmuxOffsetCache,
+  resolveTerminalOffset,
+  type SlotGeometry,
+} from "./tmux-offset.ts"
 
 type Context = Plugin.Context
-let cachedTmuxOffset = { x: 0, y: 0, checked_at: 0 }
+const tmuxOffsetCache = createTmuxOffsetCache()
 
-function terminalOffset(): { x: number; y: number } {
-  if (!process.env.TMUX || process.env.HERDR_ENV) return { x: 0, y: 0 }
-  const now = Date.now()
-  if (now - cachedTmuxOffset.checked_at < 1_000) return cachedTmuxOffset
-  const result = Bun.spawnSync([
-    "tmux",
-    "display-message",
-    "-p",
-    "#{pane_left}\t#{pane_top}\t#{status-position}\t#{status}",
-  ])
-  if (result.exitCode !== 0) {
-    cachedTmuxOffset = { x: 0, y: 0, checked_at: now }
-    return cachedTmuxOffset
-  }
-  const [left, top, statusPosition, status] = result.stdout
-    .toString()
-    .trim()
-    .split("\t")
-  cachedTmuxOffset = {
-    x: Number.parseInt(left ?? "0", 10) || 0,
-    y:
-      (Number.parseInt(top ?? "0", 10) || 0) +
-      (statusPosition === "top" && status !== "off" ? 1 : 0),
-    checked_at: now,
-  }
-  return cachedTmuxOffset
+function terminalOffset(slot: SlotGeometry | null) {
+  return resolveTerminalOffset({
+    slot,
+    cache: tmuxOffsetCache,
+  })
 }
 
 function supportsKittyGraphics(context: Context): boolean {
@@ -50,81 +40,101 @@ function supportsKittyGraphics(context: Context): boolean {
   )
 }
 
+function copyState(next: NativeArtworkState): NativeArtworkState {
+  return {
+    transmitted: next.transmitted,
+    placement: next.placement ? { ...next.placement } : null,
+  }
+}
+
 export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   let container: BoxRenderable | undefined
-  let transmitted = 0
-  let placement = ""
+  let state: NativeArtworkState = { transmitted: 0, placement: null }
   let paintPending = false
   let disposed = false
 
-  const removeImage = () => {
-    if (!transmitted) return
-    writeGraphics(props.context.renderer, kittyDelete(transmitted))
-    transmitted = 0
-    placement = ""
+  const applyAction = (action: NativeArtworkPlacementAction): boolean => {
+    const renderer = props.context.renderer
+    switch (action.type) {
+      case "delete-image":
+        return writeGraphics(renderer, kittyDelete(action.imageId))
+      case "delete-placement":
+        return writeGraphics(renderer, kittyDeletePlacement(action.imageId))
+      case "transmit-and-display": {
+        const commands = kittyDisplayPng(
+          props.artwork.png_base64,
+          action.imageId,
+          action.x,
+          action.y,
+          action.width,
+          action.height,
+        )
+        return commands.every((command) => writeGraphics(renderer, command))
+      }
+      case "place":
+        return writeGraphics(
+          renderer,
+          kittyPlace(
+            action.imageId,
+            action.placementId,
+            action.x,
+            action.y,
+            action.width,
+            action.height,
+          ),
+        )
+    }
+  }
+
+  // Partial success must not commit: stop on first failed write and keep prior state.
+  const applyPlan = (plan: NativeArtworkPlacementPlan): boolean => {
+    for (const action of plan.actions) {
+      if (!applyAction(action)) return false
+    }
+    return true
+  }
+
+  const commitPlan = (plan: NativeArtworkPlacementPlan) => {
+    state = copyState(plan.nextState)
   }
 
   const paintNativeImage = () => {
-    if (
-      !container ||
-      container.isDestroyed ||
-      container.width < 1 ||
-      container.height < 1 ||
-      !supportsKittyGraphics(props.context)
-    ) {
-      removeImage()
-      return
-    }
+    const kittySupported = supportsKittyGraphics(props.context)
+    const slotValid =
+      !!container &&
+      !container.isDestroyed &&
+      container.width >= 1 &&
+      container.height >= 1
 
+    const slot: SlotGeometry | null = container
+      ? {
+          screenX: container.screenX,
+          screenY: container.screenY,
+          width: container.width,
+          height: container.height,
+        }
+      : null
+    const offset = terminalOffset(slot)
     const imageId = kittyImageId(props.artwork.id)
-    const offset = terminalOffset()
-    const screenX = container.screenX + offset.x
-    const screenY = container.screenY + offset.y
-    const nextPlacement = [
-      imageId,
-      screenX,
-      screenY,
-      container.width,
-      container.height,
-    ].join(":")
-    if (transmitted !== imageId) {
-      removeImage()
-      const commands = kittyDisplayPng(
-        props.artwork.png_base64,
-        imageId,
-        screenX,
-        screenY,
-        container.width,
-        container.height,
-      )
-      if (
-        !commands.every((command) =>
-          writeGraphics(props.context.renderer, command),
-        )
-      ) {
-        return
-      }
-      transmitted = imageId
-      placement = nextPlacement
-      return
-    }
+    const x = slot ? slot.screenX + offset.x : 0
+    const y = slot ? slot.screenY + offset.y : 0
+    const width = slot?.width ?? 0
+    const height = slot?.height ?? 0
 
-    if (placement === nextPlacement) return
-    if (placement) {
-      writeGraphics(props.context.renderer, kittyDeletePlacement(imageId))
-    }
-    writeGraphics(
-      props.context.renderer,
-      kittyPlace(
-        imageId,
-        imageId,
-        screenX,
-        screenY,
-        container.width,
-        container.height,
-      ),
-    )
-    placement = nextPlacement
+    const plan = planNativeArtworkPlacement({
+      state,
+      imageId,
+      x,
+      y,
+      width,
+      height,
+      kittySupported,
+      slotValid,
+      disposed,
+    })
+
+    if (plan.actions.length === 0) return
+    if (applyPlan(plan)) commitPlan(plan)
   }
 
   const scheduleNativeImage = () => {
@@ -140,7 +150,8 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   onCleanup(() => {
     disposed = true
     props.context.renderer.off("frame", scheduleNativeImage)
-    void props.context.renderer.idle().then(removeImage)
+    // Synchronous clear so replacement mounts cannot race idle-deferred deletes.
+    paintNativeImage()
   })
 
   return (
