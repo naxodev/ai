@@ -6,7 +6,7 @@ The extension only calls `ctx.ui.setStatus`. It does not replace Pi's footer, so
 
 ## Architecture
 
-`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns Pi registration, polling lifecycle, notifications, status composition, controls, and ANSI waveform rendering.
+`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns Pi registration, lifecycle, notifications, status composition, controls, and ANSI waveform rendering. With `media-control`, provider changes refresh promptly while bounded 3/5/8-second polling remains active for recovery and `nowplaying-cli` compatibility. Reload and shutdown release both the provider subscription and timers.
 
 ## Requirements
 
@@ -76,8 +76,8 @@ Automated tests cannot confirm the live macOS media state or terminal rendering.
 4. Run `/music-next` and `/music-prev`; confirm each command changes the track and status.
 5. Try `ctrl+alt+p`, `ctrl+alt+n`, and `ctrl+alt+b`; use the slash commands if the terminal intercepts a chord.
 6. Run `/reload`; confirm only one status line remains and controls still work.
-7. Stop media playback; confirm the status clears on the next poll.
-8. Exit Pi; confirm it shuts down promptly without a lingering process.
+7. Change tracks, play, pause, or stop media outside Pi; confirm the status changes promptly.
+8. Exit Pi; confirm it shuts down promptly without a lingering provider process or timer.
 
 ## Development
 

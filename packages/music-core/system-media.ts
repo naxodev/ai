@@ -13,10 +13,18 @@ import {
   syncFromSample,
   trackKey,
 } from "./clock.ts"
-import { run as defaultRun, whichOk, type CommandResult } from "./run.ts"
+import {
+  run as defaultRun,
+  startLineStream,
+  whichOk,
+  type CommandResult,
+  type LineStreamStarter,
+} from "./run.ts"
 import {
   emptyPlayer,
   type MusicBackend,
+  type MusicChangeDisposer,
+  type MusicChangeListener,
   type MusicError,
   type PlayerState,
 } from "./types.ts"
@@ -276,11 +284,106 @@ export type SystemMediaDependencies = {
   run: (cmd: string[], timeoutMs?: number) => Promise<CommandResult>
   detectBackend: () => "media-control" | "nowplaying-cli" | null
   hasNowPlayingCli: () => boolean
+  startLineStream?: LineStreamStarter
+  setRetryTimer?: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setTimeout>
+  clearRetryTimer?: (timer: ReturnType<typeof setTimeout>) => void
+}
+
+type ResolvedSystemMediaDependencies = SystemMediaDependencies & {
+  startLineStream: LineStreamStarter
+  setRetryTimer: NonNullable<SystemMediaDependencies["setRetryTimer"]>
+  clearRetryTimer: NonNullable<SystemMediaDependencies["clearRetryTimer"]>
+}
+
+const retryInitialDelayMs = 1_000
+const retryMaximumDelayMs = 8_000
+
+function isDataEnvelope(
+  value: unknown,
+): value is { type: "data"; payload: Record<string, unknown> } {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false
+  const envelope = value as { type?: unknown; payload?: unknown }
+  return (
+    envelope.type === "data" &&
+    typeof envelope.payload === "object" &&
+    envelope.payload !== null &&
+    !Array.isArray(envelope.payload)
+  )
+}
+
+function subscribeToMediaControl(
+  listener: MusicChangeListener,
+  deps: ResolvedSystemMediaDependencies,
+): MusicChangeDisposer {
+  let disposed = false
+  let streamDisposer: MusicChangeDisposer | null = null
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+  let retryDelayMs = retryInitialDelayMs
+  let generation = 0
+
+  const start = () => {
+    if (disposed) return
+    const currentGeneration = ++generation
+    let sourceDisposer: MusicChangeDisposer | null = null
+    sourceDisposer = deps.startLineStream(
+      ["media-control", "stream", "--no-diff", "--no-artwork"],
+      {
+        onLine(line) {
+          if (disposed || currentGeneration !== generation) return
+          try {
+            if (!isDataEnvelope(JSON.parse(line))) return
+          } catch {
+            return
+          }
+          retryDelayMs = retryInitialDelayMs
+          listener()
+        },
+        onTerminal() {
+          if (
+            disposed ||
+            currentGeneration !== generation ||
+            retryTimer !== null
+          ) {
+            return
+          }
+          generation++
+          sourceDisposer?.()
+          if (streamDisposer === sourceDisposer) streamDisposer = null
+          const delayMs = retryDelayMs
+          retryDelayMs = Math.min(retryDelayMs * 2, retryMaximumDelayMs)
+          retryTimer = deps.setRetryTimer(() => {
+            retryTimer = null
+            start()
+          }, delayMs)
+        },
+      },
+    )
+    if (disposed || currentGeneration !== generation) {
+      sourceDisposer()
+      return
+    }
+    streamDisposer = sourceDisposer
+  }
+
+  start()
+  return () => {
+    if (disposed) return
+    disposed = true
+    generation++
+    if (retryTimer !== null) deps.clearRetryTimer(retryTimer)
+    retryTimer = null
+    streamDisposer?.()
+    streamDisposer = null
+  }
 }
 
 async function cmd(
   action: string,
-  deps: SystemMediaDependencies,
+  deps: ResolvedSystemMediaDependencies,
 ): Promise<void> {
   const kind = deps.detectBackend()
   if (kind === "media-control") {
@@ -320,14 +423,18 @@ async function cmd(
 export function createSystemMedia(
   overrides: Partial<SystemMediaDependencies> = {},
 ): MusicBackend {
-  const deps: SystemMediaDependencies = {
+  const deps: ResolvedSystemMediaDependencies = {
     run: defaultRun,
     detectBackend,
     hasNowPlayingCli,
     ...overrides,
+    startLineStream: overrides.startLineStream ?? startLineStream,
+    setRetryTimer: overrides.setRetryTimer ?? setTimeout,
+    clearRetryTimer: overrides.clearRetryTimer ?? clearTimeout,
   }
 
-  return {
+  const kind = deps.detectBackend()
+  const backend: MusicBackend = {
     id: "system",
     label: "System media",
     remoteControl: true,
@@ -384,6 +491,11 @@ export function createSystemMedia(
       }
     },
   }
+
+  if (kind === "media-control") {
+    backend.subscribe = (listener) => subscribeToMediaControl(listener, deps)
+  }
+  return backend
 }
 
 export function hasMediaControl(): boolean {
