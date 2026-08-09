@@ -9,6 +9,20 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
+const manifest = (await Bun.file(
+  new URL("../package.json", import.meta.url),
+).json()) as { dependencies: { "@opencode-ai/plugin": string } }
+const expectedOpenCode = `opencode2 v${manifest.dependencies["@opencode-ai/plugin"]}`
+const openCodeVersion = Bun.spawnSync(["opencode2", "--version"], {
+  stdout: "pipe",
+  stderr: "pipe",
+})
+if (
+  !openCodeVersion.success ||
+  openCodeVersion.stdout.toString().trim() !== expectedOpenCode
+)
+  throw new Error(`package smoke requires ${expectedOpenCode}`)
+
 const socket = `opencode-vim-smoke-${process.pid}-${crypto.randomUUID()}`
 const session = "smoke"
 const tmux = (...args: string[]) =>

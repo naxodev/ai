@@ -12,7 +12,8 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "target": "ESNext",
-    "types": ["bun"]
+    "types": ["bun"],
+    "ignoreDeprecations": "6.0"
   },
   "include": ["*.ts", "*.tsx", "scripts/**/*.ts", "tests/**/*.ts"]
 }

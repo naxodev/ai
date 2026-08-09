@@ -83,14 +83,16 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install tested OpenCode CLI
-        if: steps.release.outputs.project == 'opencode-vim'
+        if: startsWith(steps.release.outputs.project, 'opencode-')
+        env:
+          PROJECT: ${{ steps.release.outputs.project }}
         run: |
-          OPENCODE_VERSION=$(node -p "require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']")
+          OPENCODE_VERSION=$(node -p "require('./packages/$PROJECT/package.json').dependencies['@opencode-ai/plugin']")
           bun add --global --trust "@opencode-ai/cli@$OPENCODE_VERSION"
 
-      - name: Install Neovim parity oracle
-        if: steps.release.outputs.project == 'opencode-vim'
-        run: brew install neovim
+      - name: Install TUI test dependencies
+        if: startsWith(steps.release.outputs.project, 'opencode-')
+        run: brew install tmux
 
       - name: Install Neovim parity oracle
         if: steps.release.outputs.project == 'opencode-vim'
