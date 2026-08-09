@@ -21,8 +21,6 @@ const Icon = {
   next: t("⏭"),
   play: t("▶"),
   pause: t("⏸"),
-  dotOn: "●",
-  dotOff: "○",
   scrub: "●",
 } as const
 
@@ -140,29 +138,6 @@ function IconBtn(props: {
   )
 }
 
-function StatusPill(props: {
-  theme: Theme
-  playing: boolean
-  accent?: string | undefined
-}) {
-  return (
-    <box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-      <text
-        fg={
-          props.playing
-            ? (props.accent ?? props.theme.text.action.primary.default)
-            : props.theme.text.subdued
-        }
-      >
-        {props.playing ? Icon.dotOn : Icon.dotOff}
-      </text>
-      <text fg={props.theme.text.subdued}>
-        {props.playing ? "playing" : "paused"}
-      </text>
-    </box>
-  )
-}
-
 export function SidebarPlayer(props: {
   context: Context
   state: UiState
@@ -216,17 +191,6 @@ export function SidebarPlayer(props: {
       gap={1}
       flexShrink={0}
     >
-      <box flexDirection="row" justifyContent="space-between" gap={1}>
-        <text fg={theme().text.default}>
-          <b>Now playing</b>
-        </text>
-        <StatusPill
-          theme={theme()}
-          playing={playing()}
-          accent={track()?.artwork?.accent}
-        />
-      </box>
-
       <Show when={props.state.error}>
         {(err) => <text fg={theme().text.feedback.error.default}>{err()}</text>}
       </Show>

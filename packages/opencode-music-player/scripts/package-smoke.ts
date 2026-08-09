@@ -164,7 +164,11 @@ export default {
       )
 
     for (let attempt = 0; attempt < 80; attempt++) {
-      if (capturePane().replaceAll(/\s/g, "").includes("Nowplaying")) break
+      // After header chrome removal, idle sidebar copy is the stable marker
+      // (loading first, then empty). Transport alone is too easy to false-match.
+      const compact = capturePane().replaceAll(/\s/g, "")
+      if (compact.includes("Syncing") || compact.includes("Nothingplaying"))
+        break
       if (attempt === 79) throw new Error("timed out waiting for music sidebar")
       await Bun.sleep(250)
     }
