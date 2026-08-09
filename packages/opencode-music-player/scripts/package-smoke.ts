@@ -32,6 +32,8 @@ const capturePane = () => {
   const captured = tmux("capture-pane", "-p", "-e", "-t", session)
   return stripAnsi(captured.stdout.toString())
 }
+const occurrences = (value: string, marker: string) =>
+  value.split(marker).length - 1
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 
 const packed = Bun.spawnSync(["npm", "pack", "--silent"], {
@@ -106,37 +108,53 @@ try {
   const tuiEntry = join(packageDir, "index.tsx")
   const originalEntry = join(packageDir, "index.original.tsx")
   await rename(tuiEntry, originalEntry)
-  await writeFile(
-    tuiEntry,
-    `import plugin from "./index.original.tsx"
+  const fixtureSource = `import { createController, createMusicPlayerPlugin } from "./index.original.tsx"
+
+const track = {
+  id: "smoke-track",
+  name: "SMOKE COMPACT TRACK MARKER",
+  artists: "SMOKE COMPACT ARTIST MARKER",
+  album: "Smoke album",
+  duration_ms: 245000,
+  artwork: null,
+}
+let playing = true
+
+const plugin = createMusicPlayerPlugin({
+  createController: (context) => {
+    return createController(context, {
+      createBackend: () => ({
+        player: async () => ({
+          track,
+          is_playing: playing,
+          progress_ms: 123000,
+          fetched_at: Date.now(),
+        }),
+        searchTracks: async () => [],
+        play: async () => { playing = true },
+        pause: async () => { playing = false },
+      }),
+      scheduleTimeout: setTimeout,
+      clearScheduledTimeout: clearTimeout,
+      delay: Bun.sleep,
+    })
+  },
+})
 
 export default {
   ...plugin,
-  setup(context: Parameters<typeof plugin.setup>[0]) {
-    let sidebar: ((props: { sessionID: string }) => unknown) | undefined
-    const wrappedContext = {
-      ...context,
-      ui: {
-        ...context.ui,
-        slot(name: string, render: (props: any) => unknown) {
-          if (name === "sidebar.content") sidebar = render
-          return context.ui.slot(name as any, render as any)
-        },
-      },
-    } as typeof context
-    const dispose = plugin.setup(wrappedContext)
-    if (!sidebar) throw new Error("music plugin did not register its sidebar")
-    const unsubscribe = context.ui.slot("prompt.footer.end", () =>
-      sidebar!({ sessionID: "smoke" }) as any,
-    )
-    return () => {
-      unsubscribe()
-      dispose()
-    }
+  async setup(context) {
+    const dispose = await plugin.setup(context)
+    const session = await context.client.session.create({
+      title: "Music player smoke",
+    })
+    await context.data.session.sync(session.id)
+    context.ui.router.navigate({ type: "session", sessionID: session.id })
+    return dispose
   },
 }
-`,
-  )
+`
+  await writeFile(tuiEntry, fixtureSource)
 
   const config = join(work, "config")
   await mkdir(config)
@@ -160,8 +178,7 @@ export default {
   const command = ["opencode2", "--standalone", "--log-level", "error", work]
     .map(shellQuote)
     .join(" ")
-
-  try {
+  const launchTui = () => {
     const launched = Bun.spawnSync(
       [
         "tmux",
@@ -185,19 +202,86 @@ export default {
       throw new Error(
         `tmux new-session failed: ${stripAnsi(launched.stderr.toString())}`,
       )
-
+  }
+  const waitForPlayer = async () => {
     for (let attempt = 0; attempt < 80; attempt++) {
-      // After header chrome removal, idle sidebar copy is the stable marker
-      // (loading first, then empty). Transport alone is too easy to false-match.
       const compact = capturePane().replaceAll(/\s/g, "")
-      if (compact.includes("Syncing") || compact.includes("Nothingplaying"))
-        break
-      if (attempt === 79) throw new Error("timed out waiting for music sidebar")
+      if (
+        compact.includes("SMOKECOMPACTTRACKMARKER") &&
+        compact.includes("SMOKECOMPACTARTISTMARKER")
+      )
+        return
+      if (attempt === 79) throw new Error("timed out waiting for music player")
       await Bun.sleep(250)
     }
+  }
+
+  try {
+    launchTui()
+    await waitForPlayer()
     await Bun.sleep(500)
     if (!tmux("has-session", "-t", session).success)
       throw new Error("OpenCode exited after rendering plugin UI")
+    const expanded = capturePane()
+    if (!expanded.includes("Smoke album"))
+      throw new Error("expanded sidebar did not render its track metadata")
+    if (occurrences(expanded, "SMOKE COMPACT TRACK MARKER") !== 2)
+      throw new Error("expanded host did not render track in both real slots")
+    if (occurrences(expanded, "⏸") < 2)
+      throw new Error(
+        "expanded sidebar and compact bar disagreed on playing state",
+      )
+    if (!expanded.includes("Build ·") || !expanded.includes("shift+tab agents"))
+      throw new Error("compact row replaced adjacent OpenCode content")
+
+    tmux("kill-server")
+    await writeFile(
+      tuiEntry,
+      fixtureSource.replace("let playing = true", "let playing = false"),
+    )
+    launchTui()
+    await waitForPlayer()
+    await Bun.sleep(500)
+    const paused = capturePane()
+    if (
+      occurrences(paused, "▶") < 2 ||
+      occurrences(paused, "SMOKE COMPACT TRACK MARKER") !== 2
+    )
+      throw new Error(
+        "expanded sidebar and compact bar disagreed on paused state",
+      )
+
+    tmux("send-keys", "-t", session, "C-x")
+    await Bun.sleep(100)
+    tmux("send-keys", "-t", session, "b")
+    await Bun.sleep(300)
+    const collapsed = capturePane()
+    if (collapsed.includes("Smoke album"))
+      throw new Error("sidebar remained visible after session.sidebar.toggle")
+    if (!collapsed.includes("SMOKE COMPACT TRACK MARKER"))
+      throw new Error("compact app row disappeared after sidebar collapse")
+    if (occurrences(collapsed, "▶") !== 1)
+      throw new Error("collapsed wide layout duplicated or lost its paused row")
+
+    tmux("resize-window", "-t", session, "-x", "24", "-y", "40")
+    await Bun.sleep(300)
+    const narrow = capturePane()
+    if (narrow.includes("SMOKE COMPACT ARTIST MARKER"))
+      throw new Error("compact artist did not yield at narrow width")
+    if (!narrow.includes("▶") || !narrow.includes("SMOKE"))
+      throw new Error("narrow compact row lost its marker or title")
+    if (narrow.includes("SMOKE COMPACT TRACK MARKER"))
+      throw new Error("narrow compact title did not truncate")
+    if (occurrences(narrow, "▶") !== 1)
+      throw new Error("narrow compact layout duplicated its row")
+
+    tmux("resize-window", "-t", session, "-x", "5", "-y", "40")
+    await Bun.sleep(300)
+    const smallest = capturePane()
+    if (!smallest.includes("▶") || smallest.includes("SMOKE"))
+      throw new Error("smallest compact layout did not reduce to its marker")
+    if (occurrences(smallest, "▶") !== 1)
+      throw new Error("smallest compact layout duplicated its row")
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     throw new Error(
@@ -207,7 +291,9 @@ export default {
     tmux("kill-server")
   }
 
-  console.log("OpenCode loaded the installed package and rendered its sidebar.")
+  console.log(
+    "OpenCode loaded the installed package and rendered its app and sidebar slots.",
+  )
 } finally {
   await rm(work, { recursive: true, force: true })
   await rm(archive, { force: true })

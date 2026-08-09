@@ -1,6 +1,14 @@
 /** @jsxImportSource @opentui/solid */
-import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
+import type { BoxRenderable, TextRenderable } from "@opentui/core"
 import { formatMs } from "./types.ts"
 import { AlbumArtwork } from "./artwork.tsx"
 import { Waveform } from "./waveform.tsx"
@@ -59,6 +67,175 @@ export function transportRowWidth(
     layout.playWidth +
     layout.gap +
     layout.nextWidth
+  )
+}
+
+export const COMPACT_MARKER_WIDTH = 1
+export const COMPACT_TITLE_SEPARATOR = " "
+export const COMPACT_SEPARATOR = " - "
+
+export const COMPACT_BUDGETS = {
+  wide: {
+    minWidth: 55,
+    padding: 1,
+    titleWidth: 28,
+    artistWidth: 20,
+  },
+  medium: {
+    minWidth: 32,
+    padding: 1,
+    titleWidth: 28,
+    artistWidth: 0,
+  },
+  narrow: {
+    minWidth: 6,
+    padding: 1,
+    titleWidth: 2,
+    artistWidth: 0,
+  },
+  markerOnly: {
+    minWidth: 1,
+    padding: 0,
+    titleWidth: 0,
+    artistWidth: 0,
+  },
+} as const
+
+export type CompactTier = keyof typeof COMPACT_BUDGETS
+
+export type CompactPresentation = {
+  tier: CompactTier
+  marker: string
+  padding: number
+  title: string | null
+  artist: string | null
+}
+
+function sanitize(value: string, fallback = ""): string {
+  const clean = value
+    .normalize("NFC")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  return clean || fallback
+}
+
+function truncate(value: string, width: number): string {
+  if (Bun.stringWidth(value) <= width) return value
+  if (width <= 1) return "…"
+
+  let result = ""
+  for (const character of value) {
+    if (Bun.stringWidth(result + character) > width - 1) break
+    result += character
+  }
+  return `${result}…`
+}
+
+/** Allocate the compact row from its actual parent width, not renderer width. */
+export function compactPresentation(
+  width: number,
+  title: string,
+  artist: string,
+  playing: boolean,
+): CompactPresentation {
+  const available = Math.max(1, Math.floor(width))
+  const marker = playing ? Icon.pause : Icon.play
+  const cleanTitle = sanitize(title, "Unknown track")
+  const cleanArtist = sanitize(artist)
+
+  const tier: CompactTier =
+    available >= COMPACT_BUDGETS.wide.minWidth
+      ? "wide"
+      : available >= COMPACT_BUDGETS.medium.minWidth
+        ? "medium"
+        : available >= COMPACT_BUDGETS.narrow.minWidth
+          ? "narrow"
+          : "markerOnly"
+  const budget = COMPACT_BUDGETS[tier]
+  if (tier === "markerOnly") {
+    return { tier, marker, padding: budget.padding, title: null, artist: null }
+  }
+
+  const fixedWidth =
+    COMPACT_MARKER_WIDTH + COMPACT_TITLE_SEPARATOR.length + budget.padding * 2
+  const titleWidth =
+    tier === "narrow" ? available - fixedWidth : budget.titleWidth
+  return {
+    tier,
+    marker,
+    padding: budget.padding,
+    title: truncate(cleanTitle, titleWidth),
+    artist:
+      tier === "wide" && cleanArtist
+        ? truncate(cleanArtist, budget.artistWidth)
+        : null,
+  }
+}
+
+export function CompactPlayer(props: { context: Context; state: UiState }) {
+  const theme = () => props.context.theme
+  let row: BoxRenderable | undefined
+  let content: TextRenderable | undefined
+  let allocatedWidth = Number.MAX_SAFE_INTEGER
+  const track = createMemo(() => props.state.player?.track)
+  const renderLine = () => {
+    const current = track()
+    if (!current) return ""
+    const display = compactPresentation(
+      allocatedWidth,
+      current.name,
+      current.artists,
+      !!props.state.player?.is_playing,
+    )
+    const padding = " ".repeat(display.padding)
+    return `${padding}${display.marker}${
+      display.title ? `${COMPACT_TITLE_SEPARATOR}${display.title}` : ""
+    }${display.artist ? `${COMPACT_SEPARATOR}${display.artist}` : ""}${padding}`
+  }
+  const updateContent = () => {
+    if (content) content.content = renderLine()
+  }
+  const updateWidth = function (this: BoxRenderable) {
+    allocatedWidth = Math.max(1, this.width)
+    updateContent()
+  }
+  createEffect(updateContent)
+  onCleanup(() => {
+    if (row?.onSizeChange === updateWidth) row.onSizeChange = undefined
+  })
+
+  return (
+    <Show when={track()}>
+      {(_track) => (
+        <box
+          id="music-compact-player"
+          ref={(element) => {
+            row = element
+            element.onSizeChange = updateWidth
+          }}
+          width="100%"
+          alignSelf="stretch"
+          minWidth={0}
+          height={1}
+          flexDirection="row"
+          flexShrink={0}
+          overflow="hidden"
+        >
+          <text
+            ref={(element) => {
+              content = element
+              updateContent()
+            }}
+            wrapMode="none"
+            truncate
+            fg={theme().text.action.primary.default}
+          >
+            {renderLine()}
+          </text>
+        </box>
+      )}
+    </Show>
   )
 }
 

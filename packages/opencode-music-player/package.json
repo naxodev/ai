@@ -57,7 +57,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --preload @opentui/solid/preload",
     "pack:check": "bun run scripts/verify-pack.ts",
     "smoke:package": "bun run scripts/package-smoke.ts",
     "validate": "bun run format:check && bun run check && bun run test && bun run pack:check"

@@ -1,6 +1,6 @@
 # @naxodev/opencode-music-player
 
-A sidebar player for the OpenCode 2 TUI that displays and controls the active macOS system media session.
+A sidebar player and compact bottom bar for the OpenCode 2 TUI that display and control the active macOS system media session.
 
 It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed through [`media-control`](https://github.com/ungive/media-control). The player keeps the existing OpenCode theme and provides keyboard and mouse controls.
 
@@ -89,6 +89,8 @@ opencode2 api get /api/plugin
 The response should include `music-player`. If it does not, inspect `~/.local/share/opencode/log/opencode.log` for package resolution or setup errors.
 
 ## Controls
+
+The compact bar appears below the active route whenever a current track exists, including while playback is paused. It remains visible when the session sidebar is collapsed. Wide terminals show the playback marker, title, and artist. Medium terminals omit the artist. Narrow terminals truncate the title, then keep only the playback marker when metadata cannot fit safely. The bar always stays on one row.
 
 | Input              | Action         |
 | ------------------ | -------------- |

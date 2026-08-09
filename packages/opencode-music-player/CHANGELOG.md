@@ -7,6 +7,8 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 ### Changed
 
 - Move the player from the footer overlay into the OpenCode sidebar.
+- Keep a responsive one-row music bar below the active route when the sidebar is collapsed.
+- Simplify compact metadata from title and artist to title, truncated title, then playback marker as terminal width decreases.
 - Display native album artwork in Kitty-compatible terminals with a true-color fallback elsewhere.
 - Support native artwork through Herdr and tmux graphics passthrough.
 - Resolve missing system artwork through exact iTunes catalog matches.
