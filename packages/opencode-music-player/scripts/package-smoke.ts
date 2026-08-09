@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const manifest = (await Bun.file(
   new URL("../package.json", import.meta.url),
@@ -47,11 +48,33 @@ const archive = resolve(archiveName)
 const work = await mkdtemp(join(tmpdir(), "opencode-music-player-smoke-"))
 
 try {
+  const coreDir = fileURLToPath(new URL("../../music-core/", import.meta.url))
+  const packedCore = Bun.spawnSync(
+    ["npm", "pack", "--silent", "--pack-destination", work],
+    {
+      cwd: coreDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
+  if (!packedCore.success)
+    throw new Error(`music-core pack failed: ${packedCore.stderr.toString()}`)
+  const coreArchiveName = packedCore.stdout.toString().trim().split("\n").at(-1)
+  if (!coreArchiveName)
+    throw new Error("music-core pack did not produce an archive")
+  const installedCoreArchive = join(work, coreArchiveName)
+
   await writeFile(
     join(work, "package.json"),
     JSON.stringify({
       private: true,
-      dependencies: { "@naxodev/opencode-music-player": `file:${archive}` },
+      dependencies: {
+        "@naxodev/music-core": `file:${installedCoreArchive}`,
+        "@naxodev/opencode-music-player": `file:${archive}`,
+      },
+      overrides: {
+        "@naxodev/music-core": `file:${installedCoreArchive}`,
+      },
     }),
   )
 

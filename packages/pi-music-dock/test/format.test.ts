@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipWords, formatMs } from "../extensions/music-dock/format.ts";
+import { clipWords } from "../extensions/music-dock/format.ts";
 
 describe("clipWords", () => {
 	// Short titles must pass through unchanged so the footer stays readable.
@@ -25,13 +25,5 @@ describe("clipWords", () => {
 		expect(clipWords("Alice Bob Carol Dave Eve", 4)).toBe(
 			"Alice Bob Carol Dave…",
 		);
-	});
-});
-
-describe("formatMs", () => {
-	// Progress/duration display in footer must be m:ss and clamp negatives.
-	test("formats seconds and clamps negatives to 0:00", () => {
-		expect(formatMs(65_000)).toBe("1:05");
-		expect(formatMs(-1)).toBe("0:00");
 	});
 });

@@ -1,14 +1,12 @@
 # AI Packages
 
-This Nx workspace hosts focused packages for AI coding tools. Host packages publish TypeScript source because their hosts load source packages directly.
+This Nx workspace hosts a shared music core and two macOS integrations for AI coding tools. The npm packages publish TypeScript source because their hosts load source packages directly.
 
-## Apnea
+## Music Core
 
-`@naxodev/apnea` provides the standalone CLI, workflow engine, protocol resources, Herdr integration, briefs, and schemas.
+`@naxodev/music-core` provides the host-neutral media behavior used by both integrations.
 
-`@naxodev/pi-apnea` adapts the shared operation registry to Pi without subprocesses.
-
-[Read the core documentation](packages/apnea/README.md) or [install the Pi adapter](packages/pi-apnea/README.md).
+[Read the package documentation](packages/music-core/README.md)
 
 ## OpenCode Music Player
 

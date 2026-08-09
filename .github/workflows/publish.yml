@@ -3,6 +3,7 @@ name: Publish
 on:
   push:
     tags:
+      - "music-core@v*"
       - "opencode-music-player@v*"
       - "opencode-vim@v*"
       - "pi-music-dock@v*"
@@ -34,7 +35,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         run: |
-          if [[ "$RELEASE_TAG" =~ ^(apnea|opencode-music-player|opencode-vim|pi-apnea|pi-music-dock)@v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          if [[ "$RELEASE_TAG" =~ ^(apnea|music-core|opencode-music-player|opencode-vim|pi-apnea|pi-music-dock)@v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             PROJECT="${BASH_REMATCH[1]}"
             VERSION="${RELEASE_TAG#*@v}"
           else
@@ -44,6 +45,7 @@ jobs:
 
           case "$PROJECT" in
             apnea) PACKAGE='@naxodev/apnea' ;;
+            music-core) PACKAGE='@naxodev/music-core' ;;
             opencode-music-player) PACKAGE='@naxodev/opencode-music-player' ;;
             opencode-vim) PACKAGE='@naxodev/opencode-vim' ;;
             pi-apnea) PACKAGE='@naxodev/pi-apnea' ;;

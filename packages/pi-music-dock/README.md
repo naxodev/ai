@@ -4,6 +4,10 @@ A [Pi](https://github.com/earendil-works/pi) extension that shows macOS system N
 
 The extension only calls `ctx.ui.setStatus`. It does not replace Pi's footer, so it composes with the built-in footer and custom footers that render extension statuses.
 
+## Architecture
+
+`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns Pi registration, polling lifecycle, notifications, status composition, controls, and ANSI waveform rendering.
+
 ## Requirements
 
 - macOS

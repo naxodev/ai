@@ -55,6 +55,9 @@
     "pack:check": "npm pack --dry-run",
     "smoke:package": "bun scripts/package-smoke.ts"
   },
+  "dependencies": {
+    "@naxodev/music-core": "workspace:*"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0",
     "@earendil-works/pi-tui": ">=0.83.0 <0.85.0"
