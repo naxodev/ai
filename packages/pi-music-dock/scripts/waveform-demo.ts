@@ -2,12 +2,8 @@
  * Manual eyeball: calm blue bars while "playing", then decay to a still baseline.
  * Run: bun scripts/waveform-demo.ts
  */
-import {
-	createEngine,
-	isFlat,
-	renderWave,
-	stepEngine,
-} from "../extensions/music-dock/waveform.ts";
+import { createEngine, isFlat, stepEngine } from "@naxodev/music-core";
+import { renderWave } from "../extensions/music-dock/waveform.ts";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

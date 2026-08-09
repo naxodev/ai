@@ -1,12 +1,13 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode-ai/plugin/tui"
+import { mergePlayer } from "@naxodev/music-core"
 import {
   createSystemMedia,
   hasMediaControl,
   hasNowPlayingCli,
   openNowPlayingApp,
 } from "./system-media.ts"
-import { isMac, type MusicBackend, type PlayerState } from "./types.ts"
+import { isMac, type MusicBackend } from "./types.ts"
 import { SidebarPlayer, type UiState } from "./ui.tsx"
 
 const POLL_PLAYING_MS = 3000
@@ -78,42 +79,6 @@ function createController(context: Context): Controller {
         d.loading = false
       })
     }
-  }
-
-  /** Keep progress monotonic; never let a poll un-pause a held pause. */
-  const mergePlayer = (
-    prev: PlayerState | null,
-    next: PlayerState | null,
-  ): PlayerState | null => {
-    if (!next) return next
-    if (!prev?.track || !next.track) return next
-    if (
-      prev.track.id !== next.track.id &&
-      prev.track.name !== next.track.name
-    ) {
-      return next
-    }
-
-    const now = Date.now()
-    const prevLive = prev.is_playing
-      ? prev.progress_ms + (now - prev.fetched_at)
-      : prev.progress_ms
-
-    // Same track: ignore a sudden drop to ~0 while still playing.
-    if (
-      next.is_playing &&
-      prevLive > 2000 &&
-      next.progress_ms < 500 &&
-      next.track.duration_ms > 0 &&
-      next.progress_ms + 3000 < prevLive
-    ) {
-      return {
-        ...next,
-        progress_ms: Math.min(next.track.duration_ms, Math.round(prevLive)),
-        fetched_at: now,
-      }
-    }
-    return next
   }
 
   const refreshPlayer = async () => {

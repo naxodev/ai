@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-	createEngine,
-	isFlat,
-	renderWave,
-	stepEngine,
-	type WaveEngine,
-} from "../extensions/music-dock/waveform.ts";
+import { createEngine, stepEngine, type WaveEngine } from "@naxodev/music-core";
+import { renderWave } from "../extensions/music-dock/waveform.ts";
 
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -61,35 +56,8 @@ describe("renderWave", () => {
 	});
 });
 
-describe("stepEngine / isFlat", () => {
-	// Paused waveform must stop — levels decay below eps within ~1 s simulated.
-	test("paused decay goes flat within ~1.2 s simulated time", () => {
-		const eng = createEngine(16, "decay");
-		drive(eng, { steps: 30, playing: true });
-		// Confirm energy is present before pause.
-		expect(isFlat(eng)).toBe(false);
-		let max = 0;
-		for (let i = 0; i < eng.n; i++) max = Math.max(max, eng.levels[i] ?? 0);
-		expect(max).toBeGreaterThan(0.1);
-
-		drive(eng, { steps: 24, playing: false }); // 1.2 s
-		expect(isFlat(eng)).toBe(true);
-		for (let i = 0; i < eng.n; i++) {
-			expect(eng.levels[i] ?? 0).toBeLessThan(0.01);
-		}
-	});
-
-	// Phase 3 relies on isFlat to stop/start the animation timer.
-	test("flat detection: fresh engine true, after playing step false", () => {
-		const eng = createEngine(16, "flat-detect");
-		expect(isFlat(eng)).toBe(true);
-		stepEngine(eng, 50, true, 50);
-		expect(isFlat(eng)).toBe(false);
-	});
-});
-
-describe("determinism", () => {
-	// Stable tests and stable footer rendering require identical drive → identical ANSI.
+describe("ANSI determinism", () => {
+	// Stable footer rendering requires identical drive → identical ANSI (Pi presentation).
 	test("same seed + same drive yields byte-identical output; different seed differs", () => {
 		const a = createEngine(16, "same-track");
 		const b = createEngine(16, "same-track");

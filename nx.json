@@ -45,6 +45,9 @@
       "apnea": {
         "projects": ["apnea"]
       },
+      "music-core": {
+        "projects": ["music-core"]
+      },
       "opencode-music-player": {
         "projects": ["opencode-music-player"]
       },

@@ -1,0 +1,37 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "music-core",
+  "projectType": "library",
+  "sourceRoot": "packages/music-core",
+  "tags": ["scope:public", "type:package"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run typecheck",
+        "cwd": "packages/music-core"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun test",
+        "cwd": "packages/music-core"
+      }
+    },
+    "format:check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run format:check",
+        "cwd": "packages/music-core"
+      }
+    },
+    "package:check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run pack:check",
+        "cwd": "packages/music-core"
+      }
+    }
+  }
+}

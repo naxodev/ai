@@ -1,0 +1,65 @@
+{
+  "name": "@naxodev/music-core",
+  "version": "0.1.0",
+  "description": "Host-neutral macOS Now Playing core (types, clock, reconcile, waveform engine, system-media)",
+  "license": "MIT",
+  "author": {
+    "name": "Nacho Vazquez",
+    "url": "https://github.com/NachoVazquez"
+  },
+  "funding": "https://github.com/sponsors/NachoVazquez",
+  "homepage": "https://github.com/naxodev/ai/tree/main/packages/music-core#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/naxodev/ai.git",
+    "directory": "packages/music-core"
+  },
+  "bugs": {
+    "url": "https://github.com/naxodev/ai/issues"
+  },
+  "type": "module",
+  "keywords": [
+    "macos",
+    "now-playing",
+    "media-control",
+    "music",
+    "playback"
+  ],
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "clock.ts",
+    "format.ts",
+    "index.ts",
+    "package.json",
+    "reconcile.ts",
+    "run.ts",
+    "system-media.ts",
+    "types.ts",
+    "waveform.ts"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=22.19.0",
+    "bun": ">=1.3.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "pack:check": "bun run scripts/verify-pack.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "prettier": "3.9.6",
+    "typescript": "7.0.2"
+  }
+}

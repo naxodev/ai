@@ -1,3 +1,17 @@
+import type {
+  MusicBackend as CoreMusicBackend,
+  PlayerState as CorePlayerState,
+  Track as CoreTrack,
+} from "@naxodev/music-core"
+import {
+  emptyPlayer as emptyCorePlayer,
+  formatMs,
+  isMac,
+} from "@naxodev/music-core"
+
+export type { Device, MusicError } from "@naxodev/music-core"
+export { formatMs, isMac }
+
 export type Artwork = {
   id: string
   png_base64: string
@@ -5,76 +19,20 @@ export type Artwork = {
   cells: Array<Array<{ upper: string; lower: string }>>
 }
 
-export type Track = {
-  uri: string
-  id: string
-  name: string
-  artists: string
-  album: string
-  duration_ms: number
-  artwork: Artwork | null
-}
+export type Track = CoreTrack & { artwork: Artwork | null }
 
-export type Device = {
-  id: string
-  name: string
-  type: string
-  is_active: boolean
-  volume_percent: number | null
-  supports_volume: boolean
-}
-
-export type PlayerState = {
-  is_playing: boolean
-  progress_ms: number
-  shuffle: boolean
-  repeat: "off" | "track" | "context"
-  device: Device | null
+export type PlayerState = Omit<CorePlayerState, "track"> & {
   track: Track | null
-  fetched_at: number
 }
 
-export type MusicError = {
-  status: number
-  message: string
-}
-
-export type MusicBackend = {
-  readonly id: string
-  readonly label: string
-  readonly remoteControl: boolean
-  authenticated: () => boolean
+export type MusicBackend = Omit<CoreMusicBackend, "player" | "searchTracks"> & {
   player: () => Promise<PlayerState | null>
   searchTracks: (query: string, limit?: number) => Promise<Track[]>
-  play: (opts?: { uri?: string }) => Promise<void>
-  pause?: () => Promise<void>
-  next?: () => Promise<void>
-  previous?: () => Promise<void>
-  seek?: (positionMs: number) => Promise<void>
-  setVolume?: (percent: number) => Promise<void>
-  setShuffle?: (state: boolean) => Promise<void>
-  setRepeat?: (state: PlayerState["repeat"]) => Promise<void>
-}
-
-export function formatMs(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000))
-  const m = Math.floor(total / 60)
-  const s = total % 60
-  return `${m}:${String(s).padStart(2, "0")}`
 }
 
 export function emptyPlayer(): PlayerState {
   return {
-    is_playing: false,
-    progress_ms: 0,
-    shuffle: false,
-    repeat: "off",
-    device: null,
+    ...emptyCorePlayer(),
     track: null,
-    fetched_at: Date.now(),
   }
-}
-
-export function isMac(): boolean {
-  return process.platform === "darwin"
 }

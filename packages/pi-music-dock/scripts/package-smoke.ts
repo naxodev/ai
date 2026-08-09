@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const expectedCommands = ["music", "music-next", "music-prev"];
 const createdArchive = process.argv[2] === undefined;
@@ -23,17 +24,50 @@ archive = resolve(archive);
 const work = await mkdtemp(join(tmpdir(), "pi-music-dock-smoke-"));
 
 try {
-	const unpacked = Bun.spawnSync(["tar", "-xzf", archive, "-C", work], {
+	const coreDir = fileURLToPath(new URL("../../music-core/", import.meta.url));
+	const packedCore = Bun.spawnSync(
+		["npm", "pack", "--silent", "--pack-destination", work],
+		{
+			cwd: coreDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		},
+	);
+	if (!packedCore.success) {
+		throw new Error(`music-core pack failed: ${packedCore.stderr.toString()}`);
+	}
+	const coreArchiveName = packedCore.stdout
+		.toString()
+		.trim()
+		.split("\n")
+		.at(-1);
+	if (!coreArchiveName)
+		throw new Error("music-core pack did not produce an archive");
+	const installedCoreArchive = join(work, coreArchiveName);
+
+	await Bun.write(
+		join(work, "package.json"),
+		JSON.stringify({
+			private: true,
+			dependencies: {
+				"@naxodev/music-core": `file:${installedCoreArchive}`,
+				"@naxodev/pi-music-dock": `file:${archive}`,
+			},
+			overrides: {
+				"@naxodev/music-core": `file:${installedCoreArchive}`,
+			},
+		}),
+	);
+	const install = Bun.spawnSync(["bun", "install", "--silent"], {
+		cwd: work,
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	if (!unpacked.success) {
-		throw new Error(
-			`could not unpack ${basename(archive)}: ${unpacked.stderr}`,
-		);
+	if (!install.success) {
+		throw new Error(`package install failed: ${install.stderr.toString()}`);
 	}
 
-	const packageDir = join(work, "package");
+	const packageDir = join(work, "node_modules", "@naxodev", "pi-music-dock");
 	const manifest = JSON.parse(
 		await readFile(join(packageDir, "package.json"), "utf8"),
 	) as {

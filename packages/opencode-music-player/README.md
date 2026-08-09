@@ -4,6 +4,10 @@ A sidebar player for the OpenCode 2 TUI that displays and controls the active ma
 
 It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed through [`media-control`](https://github.com/ungive/media-control). The player keeps the existing OpenCode theme and provides keyboard and mouse controls.
 
+## Architecture
+
+`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns OpenCode registration, lifecycle, sidebar presentation, notifications, controls, artwork, and Kitty graphics.
+
 ## Artwork
 
 The player reads embedded artwork from `media-control` when the active app publishes it. When artwork is missing, it sends the track title, artist, and album to the public iTunes Search API and downloads an exact match from Apple's image CDN.
