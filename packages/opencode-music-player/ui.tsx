@@ -9,6 +9,7 @@ import {
 } from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import type { BoxRenderable, TextRenderable } from "@opentui/core"
+import { waveformSeedKey } from "@naxodev/music-core"
 import { formatMs } from "./types.ts"
 import { AlbumArtwork } from "./artwork.tsx"
 import { Waveform } from "./waveform.tsx"
@@ -449,9 +450,10 @@ export function SidebarPlayer(props: {
       <box flexDirection="row" justifyContent="center" overflow="hidden">
         <Waveform
           theme={theme()}
-          playing={playing()}
-          seedKey={track()?.id ?? track()?.name}
-          progressMs={progress()}
+          player={player()}
+          trackIdentity={
+            track() ? waveformSeedKey(track()!.name, track()!.id) : ""
+          }
           bars={24}
           variant="hero"
         />

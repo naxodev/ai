@@ -4,7 +4,6 @@
 import {
   createSystemMedia as createSystemMediaCore,
   run as defaultRun,
-  trackKey,
   type CommandResult,
   type SystemMediaDependencies,
 } from "@naxodev/music-core"
@@ -97,10 +96,8 @@ function identityFromTrack(track: {
   album: string
   duration_ms: number
 }): ArtworkIdentity {
-  const metaKey = trackKey(track.name, track.artists, "")
-  const uid = track.id === metaKey ? "" : track.id
   return {
-    uid,
+    uid: track.id,
     title: track.name,
     artist: track.artists,
     album: track.album,

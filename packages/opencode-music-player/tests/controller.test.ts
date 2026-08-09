@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { MusicBackend, PlayerState } from "../types.ts"
-import { createController } from "../index.tsx"
+import { createController, optimisticPlayerState } from "../index.tsx"
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -45,7 +45,11 @@ function flush() {
 }
 
 function createHarness(
-  options: { subscribe?: boolean; samples?: PlayerState[] } = {},
+  options: {
+    subscribe?: boolean
+    samples?: PlayerState[]
+    play?: () => Promise<void>
+  } = {},
 ) {
   const timers: Array<{
     callback: () => void
@@ -70,7 +74,7 @@ function createHarness(
       return request.promise
     },
     searchTracks: async () => [],
-    play: async () => {},
+    play: options.play ?? (async () => {}),
   }
   if (options.subscribe !== false) {
     backend.subscribe = (nextListener) => {
@@ -225,6 +229,30 @@ describe("OpenCode music controller", () => {
     expect(harness.activeTimers()[0]?.delay).toBe(8000)
   })
 
+  test("does not let a pre-transport sample undo optimistic playback", async () => {
+    const transport = deferred<void>()
+    const harness = createHarness({
+      samples: [player(false)],
+      play: () => transport.promise,
+    })
+    await flush()
+
+    harness.emit()
+    const stale = harness.requests[0]!
+    const command = harness.controller.playPause()
+    transport.resolve()
+    await flush()
+    expect(harness.mutations.at(-1)?.player?.is_playing).toBe(true)
+
+    stale.resolve(player(false))
+    await flush()
+    expect(harness.mutations.at(-1)?.player?.is_playing).toBe(true)
+
+    harness.requests[1]!.resolve(player(true))
+    await command
+    expect(harness.mutations.at(-1)?.player?.is_playing).toBe(true)
+  })
+
   test("retries failures and suppresses late completions after disposal", async () => {
     const harness = createHarness({ samples: [] })
     const pending = harness.requests[0]!
@@ -305,5 +333,41 @@ describe("OpenCode music controller", () => {
     expect(harness.requests).toHaveLength(1)
     expect(harness.activeTimers()).toHaveLength(0)
     expect(harness.mutations).toHaveLength(1)
+  })
+})
+
+const paused: PlayerState = {
+  is_playing: false,
+  progress_ms: 4_000,
+  shuffle: false,
+  repeat: "off",
+  device: null,
+  track: {
+    id: "track",
+    uri: "track",
+    name: "Track",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 10_000,
+    artwork: null,
+  },
+  fetched_at: 1_000,
+}
+
+test("optimistic resume updates playback state at command completion", () => {
+  expect(optimisticPlayerState(paused, true, 8_000)).toMatchObject({
+    is_playing: true,
+    progress_ms: 4_000,
+    fetched_at: 8_000,
+  })
+})
+
+test("optimistic pause freezes live progress before provider reconciliation", () => {
+  expect(
+    optimisticPlayerState({ ...paused, is_playing: true }, false, 2_500),
+  ).toMatchObject({
+    is_playing: false,
+    progress_ms: 5_500,
+    fetched_at: 2_500,
   })
 })

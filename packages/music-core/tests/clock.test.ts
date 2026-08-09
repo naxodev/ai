@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import {
   liveFromClock,
   resetClock,
+  seekClock,
+  setClockPlaying,
   syncFromSample,
   trackKey,
   type Clock,
@@ -190,12 +192,229 @@ describe("syncFromSample", () => {
     expect(next.progress_ms).toBe(1_000)
     expect(next.is_playing).toBe(true)
   })
+
+  test("an explicit zero sample re-anchors a seek to track start", () => {
+    syncFromSample({
+      key: "same",
+      reported_ms: 50_000,
+      reported: true,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_000_000,
+    })
+    const sought = syncFromSample({
+      key: "same",
+      reported_ms: 0,
+      reported: true,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_001_000,
+    })
+
+    expect(sought.progress_ms).toBe(0)
+  })
+
+  test("reused provider id with conflicting complete metadata resets the clock", () => {
+    syncFromSample({
+      key: trackKey("Old Song", "Old Artist", "reused"),
+      reported_ms: 50_000,
+      duration_ms: 200_000,
+      playing: true,
+      rate: 1,
+      now: 1_000_000,
+    })
+    const next = syncFromSample({
+      key: trackKey("New Song", "New Artist", "reused"),
+      reported_ms: 100,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_010_000,
+    })
+    expect(next.progress_ms).toBe(100)
+  })
+
+  test("provider metadata enrichment keeps the clock identity", () => {
+    syncFromSample({
+      key: trackKey("Song", "", "stable"),
+      reported_ms: 10_000,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_000_000,
+    })
+    const enriched = syncFromSample({
+      key: trackKey("Song", "Artist", "stable"),
+      reported_ms: 0,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_001_000,
+    })
+    expect(enriched.progress_ms).toBe(11_000)
+  })
+
+  test("metadata enrichment without a provider id preserves sticky pause", () => {
+    syncFromSample({
+      key: trackKey("Song", "", ""),
+      reported_ms: 10_000,
+      duration_ms: 180_000,
+      playing: false,
+      rate: 0,
+      now: 1_000_000,
+    })
+
+    const enriched = syncFromSample({
+      key: trackKey("Song", "Artist", ""),
+      reported_ms: 0,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_001_000,
+    })
+    const replacement = syncFromSample({
+      key: trackKey("Other Song", "Artist", ""),
+      reported_ms: 500,
+      duration_ms: 120_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_002_000,
+    })
+
+    expect(enriched).toEqual({ progress_ms: 10_000, is_playing: false })
+    expect(replacement).toEqual({ progress_ms: 500, is_playing: true })
+  })
+
+  test("a provider id can appear late or disappear without resetting a paused track", () => {
+    syncFromSample({
+      key: trackKey("Song", "Artist", ""),
+      reported_ms: 10_000,
+      duration_ms: 180_000,
+      playing: false,
+      rate: 0,
+      now: 1_000_000,
+    })
+    const identified = syncFromSample({
+      key: trackKey("Song", "Artist", "provider-id"),
+      reported_ms: 0,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_001_000,
+    })
+    const fallback = syncFromSample({
+      key: trackKey("Song", "Artist", ""),
+      reported_ms: 0,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_002_000,
+    })
+
+    expect(identified).toEqual({ progress_ms: 10_000, is_playing: false })
+    expect(fallback).toEqual({ progress_ms: 10_000, is_playing: false })
+  })
+
+  test("enrichment preserves sticky pause and makes a later reused-id replacement distinct", () => {
+    syncFromSample({
+      key: trackKey("Song", "", "reused"),
+      reported_ms: 10_000,
+      duration_ms: 180_000,
+      playing: false,
+      rate: 0,
+      now: 1_000_000,
+    })
+
+    const enriched = syncFromSample({
+      key: trackKey("Song", "Artist", "reused"),
+      reported_ms: 10_000,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_001_000,
+    })
+    expect(enriched).toEqual({ progress_ms: 10_000, is_playing: false })
+
+    const replacement = syncFromSample({
+      key: trackKey("Other Song", "Other Artist", "reused"),
+      reported_ms: 500,
+      duration_ms: 120_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_002_000,
+    })
+    expect(replacement).toEqual({ progress_ms: 500, is_playing: true })
+  })
+
+  test("partial enrichment records each known field before checking later conflicts", () => {
+    syncFromSample({
+      key: trackKey("", "", "reused"),
+      reported_ms: 10_000,
+      duration_ms: 180_000,
+      playing: false,
+      rate: 0,
+      now: 1_000_000,
+    })
+    const title = syncFromSample({
+      key: trackKey("Old Song", "", "reused"),
+      reported_ms: 0,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_001_000,
+    })
+    const replacement = syncFromSample({
+      key: trackKey("New Song", "Artist", "reused"),
+      reported_ms: 500,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_002_000,
+    })
+
+    expect(title).toEqual({ progress_ms: 10_000, is_playing: false })
+    expect(replacement).toEqual({ progress_ms: 500, is_playing: true })
+  })
 })
 
 describe("trackKey", () => {
-  test("prefers uid when present else title+artist", () => {
-    expect(trackKey("T", "A", "uid-1")).toBe("uid-1")
+  test("includes complete metadata with a provider id", () => {
+    expect(trackKey("T", "A", "uid-1")).toBe("uid-1\0T\0A")
     expect(trackKey("T", "A", "")).toBe("T\0A")
+  })
+})
+
+describe("transport clock seams", () => {
+  test("injected play/pause time freezes and resumes the clock", () => {
+    setClockPlaying(true, 1_000)
+    seekClock(500, 1_000)
+    setClockPlaying(false, 1_500)
+    setClockPlaying(true, 9_000)
+    const state = syncFromSample({
+      key: "",
+      reported_ms: 0,
+      duration_ms: 0,
+      playing: null,
+      rate: Number.NaN,
+      now: 9_100,
+    })
+    expect(state.progress_ms).toBe(1_100)
+  })
+
+  test("injected seeks re-anchor forward and backward", () => {
+    seekClock(5_000, 1_000)
+    seekClock(100, 2_000)
+    const state = syncFromSample({
+      key: "",
+      reported_ms: 0,
+      duration_ms: 0,
+      playing: null,
+      rate: Number.NaN,
+      now: 2_200,
+    })
+    expect(state.progress_ms).toBe(300)
   })
 })
 

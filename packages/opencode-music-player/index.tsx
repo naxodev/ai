@@ -35,6 +35,27 @@ export type ControllerDependencies = {
   delay: (ms: number) => Promise<void>
 }
 
+/** Apply successful transport state before the delayed provider refresh. */
+export function optimisticPlayerState(
+  player: SessionStore["player"],
+  playing: boolean,
+  now = Date.now(),
+): SessionStore["player"] {
+  if (!player) return player
+  const progress = player.is_playing
+    ? Math.min(
+        player.track?.duration_ms || Number.POSITIVE_INFINITY,
+        Math.max(0, player.progress_ms + (now - player.fetched_at)),
+      )
+    : player.progress_ms
+  return {
+    ...player,
+    progress_ms: progress,
+    is_playing: playing,
+    fetched_at: now,
+  }
+}
+
 const controllerDependencies: ControllerDependencies = {
   createBackend: createSystemMedia,
   scheduleTimeout: setTimeout,
@@ -73,6 +94,7 @@ export function createController(
   let sampling = false
   let pendingRefresh = false
   let drainPromise: Promise<void> | null = null
+  let transportRevision = 0
 
   const isActive = () => !disposed
 
@@ -138,12 +160,16 @@ export function createController(
         do {
           pendingRefresh = false
           try {
-            const player = mergePlayer(session.player, await backend.player())
+            const revision = transportRevision
+            const sampled = await backend.player()
             if (!isActive()) return
-            setSession((d) => {
-              d.player = player
-              d.error = null
-            })
+            if (revision === transportRevision) {
+              const player = mergePlayer(session.player, sampled)
+              setSession((d) => {
+                d.player = player
+                d.error = null
+              })
+            }
           } catch (e) {
             if (isActive()) setError(errMsg(e))
           }
@@ -186,6 +212,10 @@ export function createController(
       if (p?.is_playing) await backend.pause?.()
       else await backend.play()
       if (!isActive()) return
+      transportRevision++
+      setSession((d) => {
+        d.player = optimisticPlayerState(d.player, !p?.is_playing)
+      })
       await dependencies.delay(120)
       if (!isActive()) return
       await requestRefresh()
@@ -196,6 +226,7 @@ export function createController(
     await withLoading(async () => {
       await backend.next?.()
       if (!isActive()) return
+      transportRevision++
       await dependencies.delay(150)
       if (!isActive()) return
       await requestRefresh()
@@ -206,6 +237,7 @@ export function createController(
     await withLoading(async () => {
       await backend.previous?.()
       if (!isActive()) return
+      transportRevision++
       await dependencies.delay(150)
       if (!isActive()) return
       await requestRefresh()

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
-import { resetClock, trackKey } from "../clock.ts"
+import { resetClock, syncFromSample, trackKey } from "../clock.ts"
+import { mergePlayer } from "../reconcile.ts"
 import { run, startLineStream } from "../run.ts"
 import {
   bundleLabel,
@@ -78,7 +79,9 @@ describe("trackKey", () => {
   // Providers without content ids still need a stable playback key.
   test("uses stable metadata when the provider has no content identifier", () => {
     expect(trackKey("Song", "Artist", "")).toBe("Song\0Artist")
-    expect(trackKey("Song", "Artist", "provider-id")).toBe("provider-id")
+    expect(trackKey("Song", "Artist", "provider-id")).toBe(
+      "provider-id\0Song\0Artist",
+    )
   })
 })
 
@@ -116,6 +119,67 @@ describe("bundleLabel / effectiveBundle", () => {
 })
 
 describe("media command boundaries", () => {
+  test("keeps the raw provider id separate from the playback clock key", async () => {
+    const backend = createSystemMedia({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async () => ({
+        ok: true,
+        out: JSON.stringify({
+          contentItemIdentifier: "provider-id",
+          title: "Song",
+          artist: "Artist",
+          duration: 180,
+          elapsedTimeNow: 10,
+          playing: false,
+        }),
+      }),
+    })
+
+    const state = await backend.player()
+
+    expect(state?.track?.id).toBe("provider-id")
+    expect(
+      trackKey(state!.track!.name, state!.track!.artists, state!.track!.id),
+    ).toBe("provider-id\0Song\0Artist")
+  })
+
+  test("a blank title sample keeps provider identity for host reconciliation", async () => {
+    const samples = [
+      {
+        contentItemIdentifier: "provider-id",
+        title: "Song",
+        artist: "Artist",
+        duration: 180,
+        elapsedTimeNow: 10,
+        playing: false,
+      },
+      {
+        contentItemIdentifier: "provider-id",
+        title: "",
+        artist: "",
+        duration: 180,
+        elapsedTimeNow: 10,
+        playing: false,
+      },
+    ]
+    const backend = createSystemMedia({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async () => ({ ok: true, out: JSON.stringify(samples.shift()) }),
+    })
+
+    const initial = await backend.player()
+    const incomplete = await backend.player()
+    const reconciled = mergePlayer(initial, incomplete)
+
+    expect(incomplete?.track?.id).toBe("provider-id")
+    expect(reconciled?.track?.name).toBe("Song")
+    expect(reconciled?.track?.artists).toBe("Artist")
+    expect(reconciled?.progress_ms).toBe(10_000)
+    expect(reconciled?.is_playing).toBe(false)
+  })
+
   // A wedged provider must not hang the poll loop forever.
   test("default run times out with a stable timed_out result", async () => {
     const result = await run(["sleep", "1"], 50)
@@ -175,6 +239,51 @@ describe("media command boundaries", () => {
 
     await backend.play()
     expect(calls).toEqual([["media-control", "play"]])
+  })
+
+  test("failed transport commands do not corrupt the sampled clock", async () => {
+    const sample = {
+      contentItemIdentifier: "provider-id",
+      title: "Song",
+      artist: "Artist",
+      duration: 180,
+      elapsedTimeNow: 10,
+      playing: false,
+    }
+    const backend = createSystemMedia({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async (command) =>
+        command[1] === "get"
+          ? { ok: true, out: JSON.stringify(sample) }
+          : {
+              ok: false,
+              err: "provider rejected command",
+              timed_out: false,
+            },
+    })
+    await backend.player()
+
+    await expect(backend.play()).rejects.toEqual({
+      status: 500,
+      message: "provider rejected command",
+    })
+    await expect(backend.seek?.(50_000)).rejects.toEqual({
+      status: 500,
+      message: "provider rejected command",
+    })
+    const unchanged = syncFromSample({
+      key: trackKey("Song", "Artist", "provider-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: Date.now(),
+    })
+
+    expect(unchanged.is_playing).toBe(false)
+    expect(unchanged.progress_ms).toBe(10_000)
   })
 })
 

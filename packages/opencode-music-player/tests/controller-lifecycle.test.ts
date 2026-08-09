@@ -150,3 +150,43 @@ test("disposal clears the sole poll and ignores an in-flight refresh", async () 
   expect(session.player).toBeNull()
   expect(scheduled).toHaveLength(0)
 })
+
+test("disposal ignores an in-flight play command completion", async () => {
+  let resolvePlay: (() => void) | undefined
+  const session = {
+    loading: false,
+    error: null,
+    player: player("paused"),
+  }
+  session.player.is_playing = false
+  const context = {
+    storage: {
+      memory: () => [
+        session,
+        (update: (state: typeof session) => void) => update(session),
+      ],
+    },
+    ui: { toast: { show: () => {} } },
+  }
+  const controller = createController(context as any, {
+    createBackend: () =>
+      ({
+        player: async () => session.player,
+        play: () =>
+          new Promise<void>((resolve) => {
+            resolvePlay = resolve
+          }),
+      }) as any,
+    scheduleTimeout: (() => 1) as any,
+    clearScheduledTimeout: (() => {}) as any,
+    delay: async () => {},
+  })
+  await controller.refreshAll()
+  const command = controller.playPause()
+
+  controller.dispose()
+  resolvePlay?.()
+  await command
+
+  expect(session.player.is_playing).toBe(false)
+})

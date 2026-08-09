@@ -8,21 +8,16 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import {
-	createEngine,
 	createSystemMedia,
 	hasMediaControl,
 	hasNowPlayingCli,
-	isFlat,
 	isMac,
 	mergePlayer,
-	stepEngine,
-	trackKey,
 	type MusicBackend,
 	type PlayerState,
-	type WaveEngine,
 } from "@naxodev/music-core";
 import { clipWords } from "./format.ts";
-import { renderWave } from "./waveform.ts";
+import { createWaveformCoordinator, renderWave } from "./waveform.ts";
 
 // ctrl+alt+* — same pattern as pi plan-mode; avoids model-cycle and editor word-nav.
 const KEY_PLAY_PAUSE = Key.ctrlAlt("p");
@@ -31,8 +26,6 @@ const KEY_PREV = Key.ctrlAlt("b");
 const POLL_PLAYING_MS = 3000;
 const POLL_PAUSED_MS = 5000;
 const POLL_IDLE_MS = 8000;
-const ANIM_MS = 100;
-const WAVE_BARS = 16;
 const STATUS_KEY = "music-dock";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -76,11 +69,7 @@ export function createMusicDock(
 		...overrides,
 	};
 	let player: PlayerState | null = null;
-	let engine: WaveEngine | null = null;
-	let engineKey = "";
-	let originMs = 0;
 	let pollTimer: Timer | null = null;
-	let animTimer: Interval | null = null;
 	let eventDisposer: (() => void) | null = null;
 	let ui: ExtensionContext["ui"] | null = null;
 	let disposed = false;
@@ -88,21 +77,25 @@ export function createMusicDock(
 		sampling: boolean;
 		pending: boolean;
 		busy: symbol | null;
+		transportRevision: number;
 	};
 	let refreshSession: RefreshSession = {
 		sampling: false,
 		pending: false,
 		busy: null,
+		transportRevision: 0,
 	};
 	const backend = deps.backend;
 	const isCurrent = (session: RefreshSession) =>
 		session === refreshSession && !disposed;
-
-	const stopAnim = () => {
-		if (!animTimer) return;
-		deps.clearInterval(animTimer);
-		animTimer = null;
-	};
+	const waveform = createWaveformCoordinator({
+		now: Date.now,
+		scheduler: {
+			setInterval: (callback, ms) => deps.setInterval(callback, ms),
+			clearInterval: (timer) => deps.clearInterval(timer as Interval),
+		},
+		render: (current, engine) => renderStatus(current, engine),
+	});
 
 	const stopPoll = () => {
 		if (!pollTimer) return;
@@ -121,96 +114,51 @@ export function createMusicDock(
 		eventDisposer?.();
 		eventDisposer = null;
 		stopPoll();
-		stopAnim();
+		waveform.dispose();
 		player = null;
-		engine = null;
-		engineKey = "";
-		originMs = 0;
 		ui = null;
 		refreshSession.pending = false;
 	};
 
 	const dispose = () => disposeVia(ui);
 
-	const ensureEngine = (track: NonNullable<PlayerState["track"]>) => {
-		const key = trackKey(track.name, track.artists, track.id);
-		if (key !== engineKey || !engine) {
-			engine = createEngine(WAVE_BARS, key);
-			engineKey = key;
-			originMs = performance.now();
-		}
-	};
-
-	const renderStatus = () => {
+	const renderStatus = (
+		current: PlayerState,
+		engine: Parameters<typeof renderWave>[0],
+	) => {
 		if (!ui || disposed) return;
-		const track = player?.track;
-		if (!player || !track || !engine) {
+		const track = current.track;
+		if (!track) {
 			clearStatus();
-			stopAnim();
 			return;
 		}
 
-		ensureEngine(track);
-
 		// Action affordance: show what the control will do (pause while playing).
-		const icon = player.is_playing ? "⏸" : "▶";
+		const icon = current.is_playing ? "⏸" : "▶";
 		const dimText = ui.theme.fg(
 			"dim",
 			`${clipWords(track.name, 6)} · ${clipWords(track.artists, 4)}`,
 		);
-		const line = `${icon} ${renderWave(engine, player.is_playing)} ${dimText}`;
+		const line = `${icon} ${renderWave(engine, current.is_playing)} ${dimText}`;
 		ui.setStatus(STATUS_KEY, line);
-	};
-
-	const tick = () => {
-		if (!ui || disposed) {
-			stopAnim();
-			return;
-		}
-		if (!engine || !player?.track) {
-			clearStatus();
-			stopAnim();
-			return;
-		}
-
-		const playing = player.is_playing;
-		stepEngine(
-			engine,
-			performance.now() - originMs + player.progress_ms * 0.2,
-			playing,
-			performance.now(),
-		);
-		renderStatus();
-
-		// Stop re-rendering once paused levels are flat — footer stays still.
-		if (!playing && isFlat(engine)) {
-			stopAnim();
-		}
-	};
-
-	const startAnim = () => {
-		if (animTimer || disposed) return;
-		animTimer = deps.setInterval(tick, ANIM_MS);
 	};
 
 	const samplePlayer = async (session: RefreshSession) => {
 		try {
-			const next = mergePlayer(player, await backend.player());
+			const revision = session.transportRevision;
+			const sampled = await backend.player();
 			if (!isCurrent(session)) return;
+			if (revision !== session.transportRevision) return;
+			const next = mergePlayer(player, sampled);
 			player = next;
+			waveform.setPlayer(player);
 
-			const track = player?.track;
-			if (track) {
-				ensureEngine(track);
-				renderStatus();
-				if (player?.is_playing) startAnim();
-				else if (engine && isFlat(engine)) stopAnim();
-				else if (player && !player.is_playing) startAnim(); // decay to flat
+			if (player?.track) {
+				// Step before rendering so a replacement anchors its first visible frame.
+				waveform.frame();
 			} else {
-				engine = null;
-				engineKey = "";
 				clearStatus();
-				stopAnim();
+				waveform.stop();
 			}
 		} catch {
 			// Poll failures are transient; next cycle retries.
@@ -272,6 +220,7 @@ export function createMusicDock(
 			if (wasPlaying) await backend.pause?.();
 			else await backend.play();
 			if (!isCurrent(session)) return;
+			session.transportRevision++;
 
 			// Instant icon/wave feedback; backend setPlaying keeps the clock honest.
 			if (player) {
@@ -280,8 +229,9 @@ export function createMusicDock(
 					is_playing: !wasPlaying,
 					fetched_at: Date.now(),
 				};
-				startAnim(); // resumes motion on play; on pause, runs the decay-to-flat path
-				renderStatus();
+				waveform.setPlayer(player);
+				waveform.start(); // Starts before the refresh delay on resume.
+				waveform.frame();
 			}
 
 			await deps.sleep(120);
@@ -294,6 +244,8 @@ export function createMusicDock(
 		const session = refreshSession;
 		await withBusy(session, ctx, async () => {
 			await backend.next?.();
+			if (!isCurrent(session)) return;
+			session.transportRevision++;
 			await deps.sleep(150);
 			await requestRefresh(session);
 		});
@@ -304,6 +256,8 @@ export function createMusicDock(
 		const session = refreshSession;
 		await withBusy(session, ctx, async () => {
 			await backend.previous?.();
+			if (!isCurrent(session)) return;
+			session.transportRevision++;
 			await deps.sleep(150);
 			await requestRefresh(session);
 		});
@@ -370,6 +324,7 @@ export function createMusicDock(
 			sampling: false,
 			pending: false,
 			busy: null,
+			transportRevision: 0,
 		};
 		refreshSession = session;
 		eventDisposer =

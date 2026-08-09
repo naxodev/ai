@@ -15,9 +15,12 @@ describe("artwork identity", () => {
     duration_ms: 180_000,
   }
 
-  test("separates covers without changing the playback clock key", () => {
+  test("uses a narrower playback identity than the artwork identity", () => {
     expect(trackKey(identity.title, identity.artist, identity.uid)).toBe(
-      "provider-id",
+      "provider-id\0Song\0Artist",
+    )
+    expect(trackKey(identity.title, identity.artist, identity.uid)).not.toBe(
+      trackKey("Song (Remastered)", identity.artist, identity.uid),
     )
     for (const changed of [
       { uid: "other-id" },
@@ -65,6 +68,22 @@ describe("artwork identity", () => {
         artworkData: "matching-cover",
       }),
     ).toBe("matching-cover")
+  })
+
+  test("preserves raw provider ids when validating native artwork", () => {
+    expect(
+      artworkDataForIdentity(
+        { ...identity, uid: "provider-id\0Song\0Artist" },
+        {
+          contentItemIdentifier: "provider-id",
+          title: identity.title,
+          artist: identity.artist,
+          album: identity.album,
+          duration: identity.duration_ms / 1_000,
+          artworkData: "cover",
+        },
+      ),
+    ).toBeNull()
   })
 })
 
