@@ -1,6 +1,14 @@
 # AI Packages
 
-This Nx workspace hosts two macOS integrations for AI coding tools. Both npm packages publish their TypeScript source because their hosts load source packages directly.
+This Nx workspace hosts focused packages for AI coding tools. Host packages publish TypeScript source because their hosts load source packages directly.
+
+## Apnea
+
+`@naxodev/apnea` provides the standalone CLI, workflow engine, protocol resources, Herdr integration, briefs, and schemas.
+
+`@naxodev/pi-apnea` adapts the shared operation registry to Pi without subprocesses.
+
+[Read the core documentation](packages/apnea/README.md) or [install the Pi adapter](packages/pi-apnea/README.md).
 
 ## OpenCode Music Player
 

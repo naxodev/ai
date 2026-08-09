@@ -10,4 +10,4 @@ Do not open a public issue. Report vulnerabilities through [GitHub private vulne
 
 Include affected versions, impact, reproduction steps, and any suggested mitigation. You should receive an acknowledgement within seven days. We will coordinate disclosure after a fix is available.
 
-These packages invoke documented local media-control or clipboard commands with the current user's permissions. Reports must demonstrate an unexpected security boundary violation rather than documented local playback control or clipboard access.
+These packages invoke documented local commands with the current user's permissions. Apnea also sends repository-controlled text to configured agent CLIs and executes planner-authored verification commands. See [`packages/apnea/SECURITY.md`](packages/apnea/SECURITY.md) for that trust model.

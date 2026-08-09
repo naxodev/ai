@@ -1,0 +1,75 @@
+{
+  "name": "@naxodev/pi-apnea",
+  "version": "0.1.0",
+  "description": "Pi adapter for the Apnea multi-role workflow",
+  "license": "MIT",
+  "author": "Nacho Vazquez",
+  "funding": "https://github.com/sponsors/NachoVazquez",
+  "homepage": "https://github.com/naxodev/ai/tree/main/packages/pi-apnea#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/naxodev/ai.git",
+    "directory": "packages/pi-apnea"
+  },
+  "bugs": {
+    "url": "https://github.com/naxodev/ai/issues"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "apnea",
+    "herdr",
+    "workflow"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "extensions": [
+      "./extension"
+    ]
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "extension",
+    "prompts",
+    "skills",
+    "!extension/**/*.test.ts"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "packageManager": "bun@1.3.7",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "check": "bun run typecheck && bun run test && bun run format:check && bun run pack:check && bun run smoke:package",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test extension scripts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "pack:check": "bun scripts/verify-pack.ts",
+    "prepublish:core": "bun scripts/check-core-published.ts",
+    "smoke:package": "bun scripts/package-smoke.ts"
+  },
+  "dependencies": {
+    "@naxodev/apnea": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.1.2",
+    "prettier": "^3.9.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "pi-apnea",
+  "projectType": "library",
+  "sourceRoot": "packages/pi-apnea/extension",
+  "tags": ["scope:public", "type:package"],
+  "implicitDependencies": ["apnea"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run typecheck", "cwd": "packages/pi-apnea" }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run test", "cwd": "packages/pi-apnea" }
+    },
+    "format:check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run format:check",
+        "cwd": "packages/pi-apnea"
+      }
+    },
+    "package:check": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run pack:check", "cwd": "packages/pi-apnea" }
+    },
+    "smoke": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run smoke:package",
+        "cwd": "packages/pi-apnea"
+      }
+    }
+  }
+}
