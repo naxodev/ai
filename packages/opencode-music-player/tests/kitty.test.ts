@@ -9,6 +9,39 @@ import {
   writeGraphics,
 } from "../kitty-graphics.ts"
 
+function withEnv(
+  patch: { TMUX?: string | undefined; HERDR_ENV?: string | undefined },
+  run: () => void,
+) {
+  const previous = {
+    TMUX: process.env.TMUX,
+    HERDR_ENV: process.env.HERDR_ENV,
+  }
+  try {
+    if (patch.TMUX === undefined) delete process.env.TMUX
+    else process.env.TMUX = patch.TMUX
+    if (patch.HERDR_ENV === undefined) delete process.env.HERDR_ENV
+    else process.env.HERDR_ENV = patch.HERDR_ENV
+    run()
+  } finally {
+    if (previous.TMUX === undefined) delete process.env.TMUX
+    else process.env.TMUX = previous.TMUX
+    if (previous.HERDR_ENV === undefined) delete process.env.HERDR_ENV
+    else process.env.HERDR_ENV = previous.HERDR_ENV
+  }
+}
+
+function fakeRenderer() {
+  const writes: string[] = []
+  const renderer = {
+    stdout: {},
+    realStdoutWrite(data: string) {
+      writes.push(data)
+    },
+  }
+  return { writes, renderer }
+}
+
 describe("Kitty graphics commands", () => {
   test("chunks artwork without exceeding the protocol payload limit", () => {
     const commands = kittyTransmitPng("A".repeat(9_000), 42)
@@ -38,6 +71,7 @@ describe("Kitty graphics commands", () => {
     ])
   })
 
+  // Resize cleanup uses placement delete (d=i); full teardown uses image delete (d=I).
   test("deletes image data during cleanup", () => {
     expect(kittyDelete(42)).toBe("\x1b_Ga=d,d=I,i=42,q=2;\x1b\\")
   })
@@ -47,16 +81,27 @@ describe("Kitty graphics commands", () => {
   })
 
   test("uses OpenTUI's captured raw writer instead of its span feed", () => {
-    const writes: string[] = []
-    const renderer = {
-      stdout: {},
-      realStdoutWrite(data: string) {
-        writes.push(data)
-      },
-    }
+    withEnv({ TMUX: undefined, HERDR_ENV: undefined }, () => {
+      const { writes, renderer } = fakeRenderer()
+      expect(writeGraphics(renderer as never, "graphics")).toBe(true)
+      expect(writes).toEqual(["graphics"])
+    })
+  })
 
-    expect(writeGraphics(renderer as never, "graphics")).toBe(true)
-    expect(writes).toEqual(["graphics"])
+  test("wraps graphics for tmux without Herdr", () => {
+    withEnv({ TMUX: "1", HERDR_ENV: undefined }, () => {
+      const { writes, renderer } = fakeRenderer()
+      expect(writeGraphics(renderer as never, "graphics")).toBe(true)
+      expect(writes).toEqual([tmuxPassthrough("graphics")])
+    })
+  })
+
+  test("does not wrap graphics under Herdr even when TMUX is set", () => {
+    withEnv({ TMUX: "1", HERDR_ENV: "1" }, () => {
+      const { writes, renderer } = fakeRenderer()
+      expect(writeGraphics(renderer as never, "graphics")).toBe(true)
+      expect(writes).toEqual(["graphics"])
+    })
   })
 
   test("wraps graphics for tmux and doubles nested escapes", () => {

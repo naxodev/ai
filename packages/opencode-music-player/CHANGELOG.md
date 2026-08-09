@@ -11,6 +11,10 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 - Support native artwork through Herdr and tmux graphics passthrough.
 - Resolve missing system artwork through exact iTunes catalog matches.
 
+### Fixed
+
+- Re-anchor native album artwork and remove stale Kitty images when its sidebar slot moves or resizes.
+
 ## [0.1.0] - 2026-08-06
 
 ### Added
