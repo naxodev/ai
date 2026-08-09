@@ -26,6 +26,44 @@ const Icon = {
   scrub: "●",
 } as const
 
+/** Matches artwork / waveform / progress content width. */
+export const TRANSPORT_CONTENT_WIDTH = 24
+
+/** Pre-change baseline — documented for tests; do not use as live sizes. */
+export const TRANSPORT_BASELINE = {
+  prevWidth: 5,
+  playWidth: 7,
+  nextWidth: 5,
+  height: 1,
+  gap: 1,
+} as const
+
+export const TRANSPORT_LAYOUT = {
+  prevWidth: 6,
+  playWidth: 10,
+  nextWidth: 6,
+  /** Shared enlarged hit height for all three controls. */
+  height: 2,
+  gap: 1,
+} as const
+
+export function transportRowWidth(
+  layout: {
+    prevWidth: number
+    playWidth: number
+    nextWidth: number
+    gap: number
+  } = TRANSPORT_LAYOUT,
+): number {
+  return (
+    layout.prevWidth +
+    layout.gap +
+    layout.playWidth +
+    layout.gap +
+    layout.nextWidth
+  )
+}
+
 function liveProgress(player: UiState["player"]): number {
   if (!player?.track) return 0
   if (!player.is_playing) return player.progress_ms
@@ -88,6 +126,8 @@ function IconBtn(props: {
   accent?: string | undefined
   /** Fixed outer width in cells */
   width?: number
+  /** Fixed outer height in cells */
+  height?: number
   onClick: () => void
 }) {
   const [hover, setHover] = createSignal(false)
@@ -115,6 +155,7 @@ function IconBtn(props: {
   }
 
   const w = () => props.width ?? 3
+  const h = () => props.height ?? 1
 
   return (
     <box
@@ -130,7 +171,7 @@ function IconBtn(props: {
       }}
       flexShrink={0}
       width={w()}
-      height={1}
+      height={h()}
       alignItems="center"
       justifyContent="center"
       backgroundColor={bg()}
@@ -291,11 +332,16 @@ export function SidebarPlayer(props: {
         </box>
       </Show>
 
-      <box flexDirection="row" gap={1} justifyContent="center">
+      <box
+        flexDirection="row"
+        gap={TRANSPORT_LAYOUT.gap}
+        justifyContent="center"
+      >
         <IconBtn
           theme={theme()}
           icon={Icon.prev}
-          width={5}
+          width={TRANSPORT_LAYOUT.prevWidth}
+          height={TRANSPORT_LAYOUT.height}
           onClick={() => props.onPrev()}
         />
         <IconBtn
@@ -304,13 +350,15 @@ export function SidebarPlayer(props: {
           primary
           active={playing()}
           accent={track()?.artwork?.accent}
-          width={7}
+          width={TRANSPORT_LAYOUT.playWidth}
+          height={TRANSPORT_LAYOUT.height}
           onClick={() => props.onPlayPause()}
         />
         <IconBtn
           theme={theme()}
           icon={Icon.next}
-          width={5}
+          width={TRANSPORT_LAYOUT.nextWidth}
+          height={TRANSPORT_LAYOUT.height}
           onClick={() => props.onNext()}
         />
       </box>
