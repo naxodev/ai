@@ -138,7 +138,10 @@ Buffer jumps intentionally land on the first nonblank character. Headless Neovim
 
 ## Attribution
 
-The transition-engine design was informed by [`oribarilan/vimcode`](https://github.com/oribarilan/vimcode). This native V2 implementation preserves that project's license in [LICENSE.vimcode](LICENSE.vimcode).
+This package's design was informed by two prior projects:
+
+- [`oribarilan/vimcode`](https://github.com/oribarilan/vimcode) — an earlier OpenCode Vim plugin. The transition-engine design informed this native OpenCode 2 implementation. That project's license is preserved in [LICENSE.vimcode](LICENSE.vimcode).
+- [`lajarre/pi-vim`](https://github.com/lajarre/pi-vim) — Pi modal-editing design that also provided inspiration. Credit here is for **design inspiration** only; this package does not copy or ship `pi-vim` source.
 
 ## License
 
