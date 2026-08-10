@@ -302,6 +302,17 @@ export const waitWorkflow = (
     ): Effect.Effect<ToolResult, AppError> =>
       Effect.gen(function* () {
         if (
+          fm.rework !== undefined &&
+          (kind !== "code_review" || fm.verdict !== "CHANGES_REQUIRED")
+        ) {
+          return yield* new ArtifactInvalid({
+            artifact: pendingArtifact,
+            message:
+              "rework is valid only on a code_review artifact with verdict CHANGES_REQUIRED",
+          })
+        }
+
+        if (
           state.pending_role === "reviewer" &&
           state.reviewer_tree_fingerprint != null
         ) {
@@ -363,8 +374,6 @@ export const waitWorkflow = (
           state.phase_package_rework =
             fm.verdict === "CHANGES_REQUIRED" && rework === "phase_package"
         }
-        if (kind === "phase_package") state.phase_package_rework = false
-
         const verdict = asVerdict(fm.verdict)
         state.step = next
         state.pending_artifact = null

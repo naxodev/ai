@@ -333,6 +333,43 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
     },
   )
 
+  for (const invalid of [
+    {
+      name: "plan review rework metadata",
+      step: "plan_review" as const,
+      artifact: ".apnea/artifacts/plan-review/round-1.md",
+      frontmatter: "status: done\nverdict: CHANGES_REQUIRED\nrework: code",
+    },
+    {
+      name: "approved code review carrying rework metadata",
+      step: "code_review" as const,
+      artifact: ".apnea/artifacts/phase-01/round-1/code-review.md",
+      frontmatter: "status: done\nverdict: APPROVED\nrework: code",
+    },
+  ]) {
+    itEffect(`${invalid.name} is ArtifactInvalid and cannot advance`, () => {
+      const state = baseState({
+        step: invalid.step,
+        pending_artifact: invalid.artifact,
+        pending_role: "reviewer",
+        pending_started_at: 0,
+        pending_deadline_ms: 900_000,
+      })
+      const fsFake = seedFs(state, {
+        [`${ROOT}/${invalid.artifact}`]: `---\n${invalid.frontmatter}\n---\nreview body`,
+      })
+      const { layer, fakeFs } = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(waitWorkflow({}, ROOT))
+        const error = expectFailure(result, "ArtifactInvalid")
+        expect(error.message).toContain(
+          "only on a code_review artifact with verdict CHANGES_REQUIRED",
+        )
+        expect(savedState(fakeFs)).toEqual(state)
+      }).pipe(Effect.provide(layer))
+    })
+  }
+
   itEffect(
     "a stray non-review verdict on a code artifact still advances — validating it would wedge the run forever (state is not saved on failure, so every retry repeats)",
     () => {
