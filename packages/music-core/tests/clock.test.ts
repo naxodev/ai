@@ -1,22 +1,32 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import {
+  createPlaybackClock,
   liveFromClock,
-  resetClock,
-  seekClock,
-  setClockPlaying,
-  syncFromSample,
   trackKey,
   type Clock,
+  type PlaybackClock,
 } from "../clock.ts"
 
-beforeEach(() => {
-  resetClock()
-})
+function sample(
+  clock: PlaybackClock,
+  opts: {
+    key: string
+    reported_ms: number
+    reported?: boolean
+    duration_ms: number
+    playing: boolean | null
+    rate: number
+    now: number
+  },
+) {
+  return clock.syncFromSample(opts)
+}
 
 describe("syncFromSample", () => {
   // Footer must show truthful progress when a track first appears.
   test("new track anchors the clock at reported progress while playing", () => {
-    const r = syncFromSample({
+    const clock = createPlaybackClock()
+    const r = sample(clock, {
       key: "K",
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -30,7 +40,8 @@ describe("syncFromSample", () => {
 
   // Players that freeze elapsedTime still need wall-clock progress advance.
   test("playing advances between samples without snap-back", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: "K",
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -39,7 +50,7 @@ describe("syncFromSample", () => {
       now: 1_000_000,
     })
     // 2 s later; reported still within 400 ms of wall estimate (12_000 vs 12_000).
-    const r = syncFromSample({
+    const r = sample(clock, {
       key: "K",
       reported_ms: 12_000,
       duration_ms: 180_000,
@@ -51,7 +62,7 @@ describe("syncFromSample", () => {
     expect(r.is_playing).toBe(true)
 
     // Frozen reported elapsed while wall advances — no snap-back to stale value.
-    const r2 = syncFromSample({
+    const r2 = sample(clock, {
       key: "K",
       reported_ms: 12_000, // frozen CLI
       duration_ms: 180_000,
@@ -64,7 +75,8 @@ describe("syncFromSample", () => {
 
   // Paused footer must not keep ticking the waveform progress.
   test("pause freezes progress across later paused samples", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: "K",
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -72,7 +84,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const paused = syncFromSample({
+    const paused = sample(clock, {
       key: "K",
       reported_ms: 15_000,
       duration_ms: 180_000,
@@ -83,7 +95,7 @@ describe("syncFromSample", () => {
     expect(paused.is_playing).toBe(false)
     expect(paused.progress_ms).toBe(15_000)
 
-    const still = syncFromSample({
+    const still = sample(clock, {
       key: "K",
       reported_ms: 15_000,
       duration_ms: 180_000,
@@ -97,7 +109,8 @@ describe("syncFromSample", () => {
 
   // Resume must re-anchor so progress matches the player's reported position.
   test("resume re-anchors from reported position", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: "K",
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -105,7 +118,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    syncFromSample({
+    sample(clock, {
       key: "K",
       reported_ms: 20_000,
       duration_ms: 180_000,
@@ -113,7 +126,7 @@ describe("syncFromSample", () => {
       rate: 0,
       now: 1_010_000,
     })
-    const resumed = syncFromSample({
+    const resumed = sample(clock, {
       key: "K",
       reported_ms: 25_000,
       duration_ms: 180_000,
@@ -127,7 +140,8 @@ describe("syncFromSample", () => {
 
   // Seek detection: large drift must snap so footer doesn't lag behind reality.
   test("drift >= 400 ms resyncs to reported value", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: "K",
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -136,7 +150,7 @@ describe("syncFromSample", () => {
       now: 1_000_000,
     })
     // Wall +1 s → estimate 11_000; reported jumps to 20_000 (seek forward).
-    const r = syncFromSample({
+    const r = sample(clock, {
       key: "K",
       reported_ms: 20_000,
       duration_ms: 180_000,
@@ -149,7 +163,8 @@ describe("syncFromSample", () => {
 
   // nowplaying-cli often omits playing; rate must drive waveform animate/stop.
   test("missing playing falls back to rate", () => {
-    const playing = syncFromSample({
+    const playingClock = createPlaybackClock()
+    const playing = sample(playingClock, {
       key: "A",
       reported_ms: 5_000,
       duration_ms: 100_000,
@@ -159,8 +174,8 @@ describe("syncFromSample", () => {
     })
     expect(playing.is_playing).toBe(true)
 
-    resetClock()
-    const paused = syncFromSample({
+    const pausedClock = createPlaybackClock()
+    const paused = sample(pausedClock, {
       key: "B",
       reported_ms: 5_000,
       duration_ms: 100_000,
@@ -173,7 +188,8 @@ describe("syncFromSample", () => {
 
   // Track change must not carry previous progress into the new title's footer.
   test("track change resets clock from new sample", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: "old",
       reported_ms: 50_000,
       duration_ms: 200_000,
@@ -181,7 +197,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const next = syncFromSample({
+    const next = sample(clock, {
       key: "new",
       reported_ms: 1_000,
       duration_ms: 180_000,
@@ -194,7 +210,8 @@ describe("syncFromSample", () => {
   })
 
   test("an explicit zero sample re-anchors a seek to track start", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: "same",
       reported_ms: 50_000,
       reported: true,
@@ -203,7 +220,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const sought = syncFromSample({
+    const sought = sample(clock, {
       key: "same",
       reported_ms: 0,
       reported: true,
@@ -217,7 +234,8 @@ describe("syncFromSample", () => {
   })
 
   test("reused provider id with conflicting complete metadata resets the clock", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Old Song", "Old Artist", "reused"),
       reported_ms: 50_000,
       duration_ms: 200_000,
@@ -225,7 +243,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const next = syncFromSample({
+    const next = sample(clock, {
       key: trackKey("New Song", "New Artist", "reused"),
       reported_ms: 100,
       duration_ms: 180_000,
@@ -237,7 +255,8 @@ describe("syncFromSample", () => {
   })
 
   test("provider metadata enrichment keeps the clock identity", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "", "stable"),
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -245,7 +264,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const enriched = syncFromSample({
+    const enriched = sample(clock, {
       key: trackKey("Song", "Artist", "stable"),
       reported_ms: 0,
       duration_ms: 180_000,
@@ -257,7 +276,8 @@ describe("syncFromSample", () => {
   })
 
   test("metadata enrichment without a provider id preserves sticky pause", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "", ""),
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -266,7 +286,7 @@ describe("syncFromSample", () => {
       now: 1_000_000,
     })
 
-    const enriched = syncFromSample({
+    const enriched = sample(clock, {
       key: trackKey("Song", "Artist", ""),
       reported_ms: 0,
       duration_ms: 180_000,
@@ -274,7 +294,7 @@ describe("syncFromSample", () => {
       rate: Number.NaN,
       now: 1_001_000,
     })
-    const replacement = syncFromSample({
+    const replacement = sample(clock, {
       key: trackKey("Other Song", "Artist", ""),
       reported_ms: 500,
       duration_ms: 120_000,
@@ -288,7 +308,8 @@ describe("syncFromSample", () => {
   })
 
   test("a provider id can appear late or disappear without resetting a paused track", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "Artist", ""),
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -296,7 +317,7 @@ describe("syncFromSample", () => {
       rate: 0,
       now: 1_000_000,
     })
-    const identified = syncFromSample({
+    const identified = sample(clock, {
       key: trackKey("Song", "Artist", "provider-id"),
       reported_ms: 0,
       duration_ms: 180_000,
@@ -304,7 +325,7 @@ describe("syncFromSample", () => {
       rate: Number.NaN,
       now: 1_001_000,
     })
-    const fallback = syncFromSample({
+    const fallback = sample(clock, {
       key: trackKey("Song", "Artist", ""),
       reported_ms: 0,
       duration_ms: 180_000,
@@ -318,7 +339,8 @@ describe("syncFromSample", () => {
   })
 
   test("a volatile provider id does not reset complete matching metadata", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "Artist", "playing-id"),
       reported_ms: 0,
       reported: false,
@@ -327,7 +349,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const paused = syncFromSample({
+    const paused = sample(clock, {
       key: trackKey("Song", "Artist", "paused-id"),
       reported_ms: 0,
       reported: false,
@@ -336,7 +358,7 @@ describe("syncFromSample", () => {
       rate: 0,
       now: 1_010_000,
     })
-    const resumed = syncFromSample({
+    const resumed = sample(clock, {
       key: trackKey("Song", "Artist", "resumed-id"),
       reported_ms: 0,
       reported: false,
@@ -351,7 +373,8 @@ describe("syncFromSample", () => {
   })
 
   test("a changed provider id and known duration resets an otherwise matching recording", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "Artist", "short-id"),
       reported_ms: 50_000,
       duration_ms: 180_000,
@@ -359,7 +382,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const replacement = syncFromSample({
+    const replacement = sample(clock, {
       key: trackKey("Song", "Artist", "long-id"),
       reported_ms: 100,
       duration_ms: 240_000,
@@ -435,7 +458,8 @@ describe("syncFromSample", () => {
   })
 
   test("enrichment preserves sticky pause and makes a later reused-id replacement distinct", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "", "reused"),
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -444,7 +468,7 @@ describe("syncFromSample", () => {
       now: 1_000_000,
     })
 
-    const enriched = syncFromSample({
+    const enriched = sample(clock, {
       key: trackKey("Song", "Artist", "reused"),
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -454,7 +478,7 @@ describe("syncFromSample", () => {
     })
     expect(enriched).toEqual({ progress_ms: 10_000, is_playing: false })
 
-    const replacement = syncFromSample({
+    const replacement = sample(clock, {
       key: trackKey("Other Song", "Other Artist", "reused"),
       reported_ms: 500,
       duration_ms: 120_000,
@@ -466,7 +490,8 @@ describe("syncFromSample", () => {
   })
 
   test("partial enrichment records each known field before checking later conflicts", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("", "", "reused"),
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -474,7 +499,7 @@ describe("syncFromSample", () => {
       rate: 0,
       now: 1_000_000,
     })
-    const title = syncFromSample({
+    const title = sample(clock, {
       key: trackKey("Old Song", "", "reused"),
       reported_ms: 0,
       duration_ms: 180_000,
@@ -482,7 +507,7 @@ describe("syncFromSample", () => {
       rate: Number.NaN,
       now: 1_001_000,
     })
-    const replacement = syncFromSample({
+    const replacement = sample(clock, {
       key: trackKey("New Song", "Artist", "reused"),
       reported_ms: 500,
       duration_ms: 180_000,
@@ -505,11 +530,12 @@ describe("trackKey", () => {
 
 describe("transport clock seams", () => {
   test("injected play/pause time freezes and resumes the clock", () => {
-    setClockPlaying(true, 1_000)
-    seekClock(500, 1_000)
-    setClockPlaying(false, 1_500)
-    setClockPlaying(true, 9_000)
-    const state = syncFromSample({
+    const clock = createPlaybackClock()
+    clock.setPlaying(true, 1_000)
+    clock.seek(500, 1_000)
+    clock.setPlaying(false, 1_500)
+    clock.setPlaying(true, 9_000)
+    const state = sample(clock, {
       key: "",
       reported_ms: 0,
       duration_ms: 0,
@@ -521,9 +547,10 @@ describe("transport clock seams", () => {
   })
 
   test("injected seeks re-anchor forward and backward", () => {
-    seekClock(5_000, 1_000)
-    seekClock(100, 2_000)
-    const state = syncFromSample({
+    const clock = createPlaybackClock()
+    clock.seek(5_000, 1_000)
+    clock.seek(100, 2_000)
+    const state = sample(clock, {
       key: "",
       reported_ms: 0,
       duration_ms: 0,
@@ -532,6 +559,80 @@ describe("transport clock seams", () => {
       now: 2_200,
     })
     expect(state.progress_ms).toBe(300)
+  })
+})
+
+describe("playback clock isolation", () => {
+  // Two backends must not share progress or play state through a hidden singleton.
+  test("two clocks keep independent tracks, play state, and transport mutations", () => {
+    const left = createPlaybackClock()
+    const right = createPlaybackClock()
+
+    sample(left, {
+      key: trackKey("Left Song", "Left Artist", "left-id"),
+      reported_ms: 10_000,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_000_000,
+    })
+    sample(right, {
+      key: trackKey("Right Song", "Right Artist", "right-id"),
+      reported_ms: 40_000,
+      duration_ms: 240_000,
+      playing: false,
+      rate: 0,
+      now: 1_000_000,
+    })
+
+    left.setPlaying(false, 1_001_000)
+    right.setPlaying(true, 1_001_000)
+    left.seek(2_000, 1_002_000)
+    right.seek(55_000, 1_002_000)
+
+    const leftAfter = sample(left, {
+      key: trackKey("Left Song", "Left Artist", "left-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 180_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_002_500,
+    })
+    const rightAfter = sample(right, {
+      key: trackKey("Right Song", "Right Artist", "right-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 240_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_002_500,
+    })
+
+    expect(leftAfter).toEqual({ progress_ms: 2_000, is_playing: false })
+    expect(rightAfter).toEqual({ progress_ms: 55_500, is_playing: true })
+
+    left.reset()
+    const leftReset = sample(left, {
+      key: trackKey("Fresh", "Artist", "fresh"),
+      reported_ms: 100,
+      duration_ms: 90_000,
+      playing: true,
+      rate: 1,
+      now: 1_003_000,
+    })
+    const rightUnchanged = sample(right, {
+      key: trackKey("Right Song", "Right Artist", "right-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 240_000,
+      playing: null,
+      rate: Number.NaN,
+      now: 1_003_000,
+    })
+
+    expect(leftReset).toEqual({ progress_ms: 100, is_playing: true })
+    expect(rightUnchanged).toEqual({ progress_ms: 56_000, is_playing: true })
   })
 })
 

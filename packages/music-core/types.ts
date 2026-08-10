@@ -34,8 +34,29 @@ export type MusicError = {
 /** Releases resources owned by a provider-change subscription. */
 export type MusicChangeDisposer = () => void
 
-/** Signals that a provider may have changed and should be sampled again. */
-export type MusicChangeListener = () => void
+/** Authoritative normalized playback state from a complete stream sample. */
+export type MusicChangeSnapshotEvent = {
+  type: "snapshot"
+  state: PlayerState
+}
+
+/**
+ * Signals that the active media-control stream generation ended.
+ * Hosts should recover by sampling through `player()`.
+ */
+export type MusicChangeInvalidationEvent = {
+  type: "invalidation"
+  reason: "stream-terminated"
+}
+
+export type MusicChangeEvent =
+  MusicChangeSnapshotEvent | MusicChangeInvalidationEvent
+
+/**
+ * Optional event argument is additive: existing `() => void` listeners remain
+ * valid and may ignore the payload.
+ */
+export type MusicChangeListener = (event?: MusicChangeEvent) => void
 
 export type MusicBackend = {
   readonly id: string

@@ -7,6 +7,9 @@ export type {
   MusicBackend,
   MusicChangeDisposer,
   MusicChangeListener,
+  MusicChangeEvent,
+  MusicChangeSnapshotEvent,
+  MusicChangeInvalidationEvent,
 } from "./types.ts"
 export { emptyPlayer, isMac } from "./types.ts"
 
@@ -14,15 +17,13 @@ export { emptyPlayer, isMac } from "./types.ts"
 export { formatMs } from "./format.ts"
 
 // clock
-export type { Clock } from "./clock.ts"
-export {
-  liveFromClock,
-  trackKey,
-  syncFromSample,
-  resetClock,
-  setClockPlaying,
-  seekClock,
+export type {
+  Clock,
+  PlaybackClock,
+  SampleSyncInput,
+  SampleSyncResult,
 } from "./clock.ts"
+export { createPlaybackClock, liveFromClock, trackKey } from "./clock.ts"
 
 // reconcile
 export { mergePlayer, sameTrackIdentity } from "./reconcile.ts"

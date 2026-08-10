@@ -6,13 +6,7 @@
  *
  * Host-neutral: no artwork, no Bun-only APIs. Inject `run` for tests.
  */
-import {
-  resetClock,
-  seekClock,
-  setClockPlaying,
-  syncFromSample,
-  trackKey,
-} from "./clock.ts"
+import { createPlaybackClock, trackKey, type PlaybackClock } from "./clock.ts"
 import {
   run as defaultRun,
   startLineStream,
@@ -88,10 +82,15 @@ export function effectiveBundle(data: {
   return null
 }
 
-function idleState(name: string): PlayerState {
-  resetClock()
+function idleState(
+  name: string,
+  clock: PlaybackClock,
+  now: number = Date.now(),
+): PlayerState {
+  clock.reset()
   return {
     ...emptyPlayer(),
+    fetched_at: now,
     device: {
       id: "system",
       name,
@@ -139,19 +138,59 @@ function buildState(opts: {
   }
 }
 
-async function playerViaMediaControl(
-  runCommand: (cmd: string[], timeoutMs?: number) => Promise<CommandResult>,
-): Promise<PlayerState | null> {
-  const r = await runCommand(["media-control", "get", "--no-artwork", "--now"])
-  if (!r.ok) return null
+function isStringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === "string"
+}
 
-  let data: MediaGet | null
-  try {
-    data = JSON.parse(r.out) as MediaGet | null
-  } catch {
-    return null
+function isFiniteNumberOrNull(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value))
+}
+
+function isContentItemIdentifier(value: unknown): boolean {
+  return (
+    value === null || typeof value === "string" || typeof value === "number"
+  )
+}
+
+/**
+ * True when a stream payload has the complete sample shape with correct types.
+ * Values may be empty or null (idle). Partial objects must not emit.
+ */
+function isAuthoritativeMediaPayload(
+  data: Record<string, unknown>,
+): data is MediaGet & Record<string, unknown> {
+  if (!("title" in data) || !isStringOrNull(data.title)) return false
+  if (!("artist" in data) || !isStringOrNull(data.artist)) return false
+  if (!("album" in data) || !isStringOrNull(data.album)) return false
+  if (!("duration" in data) || !isFiniteNumberOrNull(data.duration))
+    return false
+  if (!("playing" in data) || typeof data.playing !== "boolean") return false
+  if (
+    !("contentItemIdentifier" in data) ||
+    !isContentItemIdentifier(data.contentItemIdentifier)
+  ) {
+    return false
   }
-  if (!data) return idleState("Nothing playing")
+
+  const hasElapsedNow = "elapsedTimeNow" in data
+  const hasElapsed = "elapsedTime" in data
+  if (!hasElapsedNow && !hasElapsed) return false
+  if (hasElapsedNow && !isFiniteNumberOrNull(data.elapsedTimeNow)) return false
+  if (hasElapsed && !isFiniteNumberOrNull(data.elapsedTime)) return false
+
+  return true
+}
+
+/**
+ * Shared media-control decoder for `get` objects and complete stream payloads.
+ * Captures one arrival timestamp for clock reconciliation and `fetched_at`.
+ */
+function decodeMediaControlSample(
+  data: MediaGet | null,
+  clock: PlaybackClock,
+  now: number,
+): PlayerState {
+  if (!data) return idleState("Nothing playing", clock, now)
 
   const title = data.title != null ? String(data.title) : ""
   const artist = data.artist != null ? String(data.artist) : ""
@@ -180,14 +219,13 @@ async function playerViaMediaControl(
   const uid =
     data.contentItemIdentifier != null ? String(data.contentItemIdentifier) : ""
   if (!title && !artist && !album && !uid && data.playing !== true)
-    return idleState("Nothing playing")
+    return idleState("Nothing playing", clock, now)
   const bundle = effectiveBundle(data)
 
   const duration_ms = Math.round(durationSec * 1000)
   const reported_ms = Math.round(elapsedSec * 1000)
-  const now = Date.now()
   const key = trackKey(title, artist, uid)
-  const { progress_ms, is_playing } = syncFromSample({
+  const { progress_ms, is_playing } = clock.syncFromSample({
     key,
     reported_ms,
     reported: hasReported,
@@ -210,9 +248,28 @@ async function playerViaMediaControl(
   })
 }
 
+async function playerViaMediaControl(
+  runCommand: (cmd: string[], timeoutMs?: number) => Promise<CommandResult>,
+  clock: PlaybackClock,
+  now: () => number,
+): Promise<PlayerState | null> {
+  const r = await runCommand(["media-control", "get", "--no-artwork", "--now"])
+  if (!r.ok) return null
+
+  let data: MediaGet | null
+  try {
+    data = JSON.parse(r.out) as MediaGet | null
+  } catch {
+    return null
+  }
+  return decodeMediaControlSample(data, clock, now())
+}
+
 /** Fallback when media-control is missing — weaker play-state. */
 async function playerViaNowPlayingCli(
   runCommand: (cmd: string[], timeoutMs?: number) => Promise<CommandResult>,
+  clock: PlaybackClock,
+  now: () => number,
 ): Promise<PlayerState | null> {
   const r = await runCommand([
     "nowplaying-cli",
@@ -226,13 +283,14 @@ async function playerViaNowPlayingCli(
     "playbackRate",
     "isPlaying",
   ])
-  if (!r.ok) return idleState("nowplaying-cli error")
+  const arrival = now()
+  if (!r.ok) return idleState("nowplaying-cli error", clock, arrival)
 
   let data: Record<string, unknown>
   try {
     data = JSON.parse(r.out) as Record<string, unknown>
   } catch {
-    return idleState("nowplaying-cli error")
+    return idleState("nowplaying-cli error", clock, arrival)
   }
 
   const title =
@@ -264,20 +322,19 @@ async function playerViaNowPlayingCli(
     playing = false
   }
   if (!title && !artist && !album && playing !== true)
-    return idleState("Nothing playing")
+    return idleState("Nothing playing", clock, arrival)
 
   const duration_ms = Math.round(durationSec * 1000)
   const reported_ms = Math.round(elapsedSec * 1000)
-  const now = Date.now()
   const key = trackKey(title, artist, "")
-  const { progress_ms, is_playing } = syncFromSample({
+  const { progress_ms, is_playing } = clock.syncFromSample({
     key,
     reported_ms,
     reported: hasReported,
     duration_ms,
     playing,
     rate: Number.isFinite(rate) ? rate : NaN,
-    now,
+    now: arrival,
   })
 
   return buildState({
@@ -288,7 +345,7 @@ async function playerViaNowPlayingCli(
     duration_ms,
     progress_ms,
     is_playing,
-    now,
+    now: arrival,
     bundle: null,
   })
 }
@@ -303,12 +360,15 @@ export type SystemMediaDependencies = {
     delayMs: number,
   ) => ReturnType<typeof setTimeout>
   clearRetryTimer?: (timer: ReturnType<typeof setTimeout>) => void
+  /** Test seam: fixed arrival time for deterministic stream/player samples. */
+  now?: () => number
 }
 
 type ResolvedSystemMediaDependencies = SystemMediaDependencies & {
   startLineStream: LineStreamStarter
   setRetryTimer: NonNullable<SystemMediaDependencies["setRetryTimer"]>
   clearRetryTimer: NonNullable<SystemMediaDependencies["clearRetryTimer"]>
+  now: () => number
 }
 
 const retryInitialDelayMs = 1_000
@@ -331,6 +391,7 @@ function isDataEnvelope(
 function subscribeToMediaControl(
   listener: MusicChangeListener,
   deps: ResolvedSystemMediaDependencies,
+  clock: PlaybackClock,
 ): MusicChangeDisposer {
   let disposed = false
   let streamDisposer: MusicChangeDisposer | null = null
@@ -342,37 +403,50 @@ function subscribeToMediaControl(
     if (disposed) return
     const currentGeneration = ++generation
     let sourceDisposer: MusicChangeDisposer | null = null
+    let terminalHandled = false
+
+    const handleTerminal = () => {
+      if (
+        disposed ||
+        currentGeneration !== generation ||
+        terminalHandled ||
+        retryTimer !== null
+      ) {
+        return
+      }
+      terminalHandled = true
+      const terminalGeneration = ++generation
+      sourceDisposer?.()
+      if (streamDisposer === sourceDisposer) streamDisposer = null
+      listener({ type: "invalidation", reason: "stream-terminated" })
+      if (disposed || generation !== terminalGeneration) return
+      const delayMs = retryDelayMs
+      retryDelayMs = Math.min(retryDelayMs * 2, retryMaximumDelayMs)
+      retryTimer = deps.setRetryTimer(() => {
+        retryTimer = null
+        start()
+      }, delayMs)
+    }
+
     sourceDisposer = deps.startLineStream(
       ["media-control", "stream", "--no-diff", "--no-artwork"],
       {
         onLine(line) {
           if (disposed || currentGeneration !== generation) return
+          let parsed: unknown
           try {
-            if (!isDataEnvelope(JSON.parse(line))) return
+            parsed = JSON.parse(line)
           } catch {
             return
           }
+          if (!isDataEnvelope(parsed)) return
+          if (!isAuthoritativeMediaPayload(parsed.payload)) return
+          const now = deps.now()
+          const state = decodeMediaControlSample(parsed.payload, clock, now)
           retryDelayMs = retryInitialDelayMs
-          listener()
+          listener({ type: "snapshot", state })
         },
-        onTerminal() {
-          if (
-            disposed ||
-            currentGeneration !== generation ||
-            retryTimer !== null
-          ) {
-            return
-          }
-          generation++
-          sourceDisposer?.()
-          if (streamDisposer === sourceDisposer) streamDisposer = null
-          const delayMs = retryDelayMs
-          retryDelayMs = Math.min(retryDelayMs * 2, retryMaximumDelayMs)
-          retryTimer = deps.setRetryTimer(() => {
-            retryTimer = null
-            start()
-          }, delayMs)
-        },
+        onTerminal: handleTerminal,
       },
     )
     if (disposed || currentGeneration !== generation) {
@@ -444,7 +518,9 @@ export function createSystemMedia(
     startLineStream: overrides.startLineStream ?? startLineStream,
     setRetryTimer: overrides.setRetryTimer ?? setTimeout,
     clearRetryTimer: overrides.clearRetryTimer ?? clearTimeout,
+    now: overrides.now ?? Date.now,
   }
+  const clock = createPlaybackClock()
 
   const kind = deps.detectBackend()
   const backend: MusicBackend = {
@@ -456,33 +532,35 @@ export function createSystemMedia(
     async player(): Promise<PlayerState | null> {
       const kind = deps.detectBackend()
       if (kind === "media-control") {
-        const player = await playerViaMediaControl(deps.run)
+        const player = await playerViaMediaControl(deps.run, clock, deps.now)
         if (player) return player
-        if (deps.hasNowPlayingCli()) return playerViaNowPlayingCli(deps.run)
-        return idleState("media-control error")
+        if (deps.hasNowPlayingCli())
+          return playerViaNowPlayingCli(deps.run, clock, deps.now)
+        return idleState("media-control error", clock, deps.now())
       }
-      if (kind === "nowplaying-cli") return playerViaNowPlayingCli(deps.run)
-      return idleState("install media-control")
+      if (kind === "nowplaying-cli")
+        return playerViaNowPlayingCli(deps.run, clock, deps.now)
+      return idleState("install media-control", clock, deps.now())
     },
 
     async play() {
       await cmd("play", deps)
-      setClockPlaying(true)
+      clock.setPlaying(true)
     },
 
     async pause() {
       await cmd("pause", deps)
-      setClockPlaying(false)
+      clock.setPlaying(false)
     },
 
     async next() {
       await cmd("next", deps)
-      resetClock()
+      clock.reset()
     },
 
     async previous() {
       await cmd("previous", deps)
-      resetClock()
+      clock.reset()
     },
 
     async seek(positionMs: number) {
@@ -491,7 +569,7 @@ export function createSystemMedia(
       if (kind === "media-control") {
         const r = await deps.run(["media-control", "seek", String(sec)])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
-        seekClock(positionMs)
+        clock.seek(positionMs)
         return
       }
       if (kind === "nowplaying-cli") {
@@ -501,13 +579,14 @@ export function createSystemMedia(
           String(Math.floor(sec)),
         ])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
-        seekClock(positionMs)
+        clock.seek(positionMs)
       }
     },
   }
 
   if (kind === "media-control") {
-    backend.subscribe = (listener) => subscribeToMediaControl(listener, deps)
+    backend.subscribe = (listener) =>
+      subscribeToMediaControl(listener, deps, clock)
   }
   return backend
 }
