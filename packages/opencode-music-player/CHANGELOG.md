@@ -12,6 +12,7 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 - Display native album artwork in Kitty-compatible terminals with a true-color fallback elsewhere.
 - Support native artwork through Herdr and tmux graphics passthrough.
 - Resolve missing system artwork through exact iTunes catalog matches.
+- Refresh promptly for provider changes, retain bounded polling fallback, and clean up subscriptions on plugin disposal.
 
 ### Fixed
 

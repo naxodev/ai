@@ -4,7 +4,13 @@ import { createController } from "../index.tsx"
 import { CompactPlayer, SidebarPlayer } from "../ui.tsx"
 
 const player = (id: string) => ({
-  track: { id, name: id, artists: "Artist", duration_ms: 1000 },
+  track: {
+    id,
+    name: id,
+    artists: "Artist",
+    duration_ms: 1000,
+    artwork: null,
+  },
   is_playing: true,
   progress_ms: 0,
   fetched_at: Date.now(),
@@ -127,9 +133,10 @@ test("disposal clears the sole poll and ignores an in-flight refresh", async () 
   })
 
   expect(reads).toBe(1)
-  expect(scheduled).toHaveLength(1)
+  // No fallback poll competes with the provider sample already in flight.
+  expect(scheduled).toHaveLength(0)
   controller.dispose()
-  expect(cleared).toEqual([1])
+  expect(cleared).toEqual([])
 
   resolvePlayer?.({
     track: { id: "late", name: "Late", artists: "Artist", duration_ms: 1 },
@@ -141,5 +148,5 @@ test("disposal clears the sole poll and ignores an in-flight refresh", async () 
   await Promise.resolve()
 
   expect(session.player).toBeNull()
-  expect(scheduled).toHaveLength(1)
+  expect(scheduled).toHaveLength(0)
 })

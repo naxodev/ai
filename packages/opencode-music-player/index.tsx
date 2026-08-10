@@ -11,6 +11,7 @@ import { isMac, type MusicBackend } from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
 
 const POLL_PLAYING_MS = 3000
+const POLL_PAUSED_MS = 5000
 const POLL_IDLE_MS = 8000
 
 type Context = Plugin.Context
@@ -66,18 +67,24 @@ export function createController(
   const backend = dependencies.createBackend()
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let eventDisposer: (() => void) | null = null
   let disposed = false
   let busy = false
-  let polling = false
+  let sampling = false
+  let pendingRefresh = false
+  let drainPromise: Promise<void> | null = null
+
+  const isActive = () => !disposed
 
   const setError = (message: string | null) => {
+    if (!isActive()) return
     setSession((d) => {
       d.error = message
     })
   }
 
   const withLoading = async (fn: () => Promise<void>, toast = true) => {
-    if (busy || disposed) return
+    if (!isActive() || busy) return
     busy = true
     setSession((d) => {
       d.loading = true
@@ -86,13 +93,14 @@ export function createController(
     try {
       await fn()
     } catch (e) {
+      if (!isActive()) return
       const message = errMsg(e)
       setError(message)
       if (toast)
         context.ui.toast.show({ title: "Music", message, variant: "error" })
     } finally {
       busy = false
-      if (!disposed) {
+      if (isActive()) {
         setSession((d) => {
           d.loading = false
         })
@@ -100,49 +108,62 @@ export function createController(
     }
   }
 
-  const refreshPlayer = async () => {
-    if (polling) return
-    polling = true
-    try {
-      const player = mergePlayer(session.player, await backend.player())
-      if (disposed) return
-      setSession((d) => {
-        d.player = player
-      })
-    } catch (e) {
-      if (!disposed) setError(errMsg(e))
-    } finally {
-      polling = false
-    }
-  }
-
-  const refreshAll = async () => {
-    await withLoading(async () => {
-      await refreshPlayer()
-    }, false)
-  }
-
-  const schedulePoll = () => {
-    if (disposed) return
-    if (pollTimer) dependencies.clearScheduledTimeout(pollTimer)
-    const playing = !!session.player?.is_playing
-    const idle = !session.player?.track
-    const ms = playing ? POLL_PLAYING_MS : idle ? POLL_IDLE_MS : 5000
-    pollTimer = dependencies.scheduleTimeout(() => {
-      pollTimer = null
-      void refreshPlayer().finally(() => schedulePoll())
-    }, ms)
-  }
-
-  const startPoll = () => {
-    if (pollTimer) return
-    schedulePoll()
-  }
-
   const stopPoll = () => {
     if (!pollTimer) return
     dependencies.clearScheduledTimeout(pollTimer)
     pollTimer = null
+  }
+
+  const schedulePoll = () => {
+    if (!isActive()) return
+    stopPoll()
+    const playing = !!session.player?.is_playing
+    const idle = !session.player?.track
+    const ms = playing ? POLL_PLAYING_MS : idle ? POLL_IDLE_MS : POLL_PAUSED_MS
+    pollTimer = dependencies.scheduleTimeout(() => {
+      pollTimer = null
+      void requestRefresh()
+    }, ms)
+  }
+
+  const requestRefresh = (): Promise<void> => {
+    if (!isActive()) return Promise.resolve()
+    pendingRefresh = true
+    stopPoll()
+    if (sampling) return drainPromise ?? Promise.resolve()
+
+    sampling = true
+    const drain = (async () => {
+      try {
+        do {
+          pendingRefresh = false
+          try {
+            const player = mergePlayer(session.player, await backend.player())
+            if (!isActive()) return
+            setSession((d) => {
+              d.player = player
+              d.error = null
+            })
+          } catch (e) {
+            if (isActive()) setError(errMsg(e))
+          }
+        } while (isActive() && pendingRefresh)
+      } finally {
+        sampling = false
+        if (isActive()) schedulePoll()
+      }
+    })()
+    drainPromise = drain
+    void drain.finally(() => {
+      if (drainPromise === drain) drainPromise = null
+    })
+    return drain
+  }
+
+  const refreshAll = async () => {
+    await withLoading(async () => {
+      await requestRefresh()
+    }, false)
   }
 
   const openApp = async () => {
@@ -154,7 +175,8 @@ export function createController(
         variant: "info",
       })
       await dependencies.delay(400)
-      await refreshPlayer()
+      if (!isActive()) return
+      await requestRefresh()
     }, false)
   }
 
@@ -163,29 +185,35 @@ export function createController(
       const p = session.player
       if (p?.is_playing) await backend.pause?.()
       else await backend.play()
+      if (!isActive()) return
       await dependencies.delay(120)
-      await refreshPlayer()
+      if (!isActive()) return
+      await requestRefresh()
     })
   }
 
   const next = async () => {
     await withLoading(async () => {
       await backend.next?.()
+      if (!isActive()) return
       await dependencies.delay(150)
-      await refreshPlayer()
+      if (!isActive()) return
+      await requestRefresh()
     })
   }
 
   const prev = async () => {
     await withLoading(async () => {
       await backend.previous?.()
+      if (!isActive()) return
       await dependencies.delay(150)
-      await refreshPlayer()
+      if (!isActive()) return
+      await requestRefresh()
     })
   }
 
+  eventDisposer = backend.subscribe?.(() => void requestRefresh()) ?? null
   void refreshAll()
-  startPoll()
 
   return {
     session,
@@ -195,8 +223,12 @@ export function createController(
     next,
     prev,
     dispose: () => {
+      if (disposed) return
       disposed = true
+      eventDisposer?.()
+      eventDisposer = null
       stopPoll()
+      pendingRefresh = false
     },
   }
 }

@@ -31,12 +31,19 @@ export type MusicError = {
   message: string
 }
 
+/** Releases resources owned by a provider-change subscription. */
+export type MusicChangeDisposer = () => void
+
+/** Signals that a provider may have changed and should be sampled again. */
+export type MusicChangeListener = () => void
+
 export type MusicBackend = {
   readonly id: string
   readonly label: string
   readonly remoteControl: boolean
   authenticated: () => boolean
   player: () => Promise<PlayerState | null>
+  subscribe?: (listener: MusicChangeListener) => MusicChangeDisposer
   searchTracks?: (query: string, limit?: number) => Promise<Track[]>
   play: (opts?: { uri?: string }) => Promise<void>
   pause?: () => Promise<void>

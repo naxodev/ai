@@ -4,6 +4,10 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh promptly for provider changes, retain bounded polling fallback, and clean up subscriptions on reload and shutdown.
+
 ## [0.1.0] - 2026-08-06
 
 ### Added

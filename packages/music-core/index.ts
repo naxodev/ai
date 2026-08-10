@@ -5,6 +5,8 @@ export type {
   PlayerState,
   MusicError,
   MusicBackend,
+  MusicChangeDisposer,
+  MusicChangeListener,
 } from "./types.ts"
 export { emptyPlayer, isMac } from "./types.ts"
 
@@ -30,8 +32,13 @@ export type { WaveEngine } from "./waveform.ts"
 export { createEngine, stepEngine, isFlat } from "./waveform.ts"
 
 // CLI runner
-export type { CommandResult } from "./run.ts"
-export { run, whichOk } from "./run.ts"
+export type {
+  CommandResult,
+  LineStreamCallbacks,
+  LineStreamDisposer,
+  LineStreamStarter,
+} from "./run.ts"
+export { run, startLineStream, whichOk } from "./run.ts"
 
 // system media
 export type { SystemMediaDependencies } from "./system-media.ts"

@@ -37,6 +37,21 @@ const STATUS_KEY = "music-dock";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+type Timer = ReturnType<typeof setTimeout>;
+type Interval = ReturnType<typeof setInterval>;
+
+export type MusicDockDependencies = {
+	backend: MusicBackend;
+	isMac: () => boolean;
+	hasMediaControl: () => boolean;
+	hasNowPlayingCli: () => boolean;
+	setTimeout: (callback: () => void, delayMs: number) => Timer;
+	clearTimeout: (timer: Timer) => void;
+	setInterval: (callback: () => void, delayMs: number) => Interval;
+	clearInterval: (timer: Interval) => void;
+	sleep: (ms: number) => Promise<void>;
+};
+
 function errMsg(e: unknown): string {
 	if (e && typeof e === "object" && "message" in e) {
 		return String((e as { message: unknown }).message);
@@ -44,28 +59,54 @@ function errMsg(e: unknown): string {
 	return String(e);
 }
 
-export default function (pi: ExtensionAPI) {
+export function createMusicDock(
+	pi: ExtensionAPI,
+	overrides: Partial<MusicDockDependencies> = {},
+) {
+	const deps: MusicDockDependencies = {
+		backend: overrides.backend ?? createSystemMedia(),
+		isMac,
+		hasMediaControl,
+		hasNowPlayingCli,
+		setTimeout,
+		clearTimeout,
+		setInterval,
+		clearInterval,
+		sleep,
+		...overrides,
+	};
 	let player: PlayerState | null = null;
 	let engine: WaveEngine | null = null;
 	let engineKey = "";
 	let originMs = 0;
-	let pollTimer: ReturnType<typeof setTimeout> | null = null;
-	let animTimer: ReturnType<typeof setInterval> | null = null;
+	let pollTimer: Timer | null = null;
+	let animTimer: Interval | null = null;
+	let eventDisposer: (() => void) | null = null;
 	let ui: ExtensionContext["ui"] | null = null;
 	let disposed = false;
-	let busy = false;
-	let polling = false;
-	const backend: MusicBackend = createSystemMedia();
+	type RefreshSession = {
+		sampling: boolean;
+		pending: boolean;
+		busy: symbol | null;
+	};
+	let refreshSession: RefreshSession = {
+		sampling: false,
+		pending: false,
+		busy: null,
+	};
+	const backend = deps.backend;
+	const isCurrent = (session: RefreshSession) =>
+		session === refreshSession && !disposed;
 
 	const stopAnim = () => {
 		if (!animTimer) return;
-		clearInterval(animTimer);
+		deps.clearInterval(animTimer);
 		animTimer = null;
 	};
 
 	const stopPoll = () => {
 		if (!pollTimer) return;
-		clearTimeout(pollTimer);
+		deps.clearTimeout(pollTimer);
 		pollTimer = null;
 	};
 
@@ -74,17 +115,19 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const disposeVia = (target: ExtensionContext["ui"] | null) => {
+		target?.setStatus(STATUS_KEY, undefined);
+		if (disposed) return;
 		disposed = true;
+		eventDisposer?.();
+		eventDisposer = null;
 		stopPoll();
 		stopAnim();
-		target?.setStatus(STATUS_KEY, undefined);
 		player = null;
 		engine = null;
 		engineKey = "";
 		originMs = 0;
 		ui = null;
-		busy = false;
-		polling = false;
+		refreshSession.pending = false;
 	};
 
 	const dispose = () => disposeVia(ui);
@@ -147,15 +190,13 @@ export default function (pi: ExtensionAPI) {
 
 	const startAnim = () => {
 		if (animTimer || disposed) return;
-		animTimer = setInterval(tick, ANIM_MS);
+		animTimer = deps.setInterval(tick, ANIM_MS);
 	};
 
-	const refreshPlayer = async () => {
-		if (polling) return;
-		polling = true;
+	const samplePlayer = async (session: RefreshSession) => {
 		try {
 			const next = mergePlayer(player, await backend.player());
-			if (disposed) return;
+			if (!isCurrent(session)) return;
 			player = next;
 
 			const track = player?.track;
@@ -173,40 +214,64 @@ export default function (pi: ExtensionAPI) {
 			}
 		} catch {
 			// Poll failures are transient; next cycle retries.
-		} finally {
-			polling = false;
 		}
 	};
 
-	const schedulePoll = () => {
-		if (disposed) return;
-		if (pollTimer) clearTimeout(pollTimer);
+	const requestRefresh = async (session = refreshSession) => {
+		if (!isCurrent(session)) return;
+		session.pending = true;
+		if (session.sampling) return;
+		session.sampling = true;
+		try {
+			do {
+				session.pending = false;
+				await samplePlayer(session);
+			} while (isCurrent(session) && session.pending);
+		} finally {
+			session.sampling = false;
+			if (isCurrent(session)) schedulePoll(session);
+		}
+	};
+
+	const schedulePoll = (session = refreshSession) => {
+		if (!isCurrent(session)) return;
+		if (pollTimer) deps.clearTimeout(pollTimer);
 		const playing = !!player?.is_playing;
 		const idle = !player?.track;
 		const ms = playing ? POLL_PLAYING_MS : idle ? POLL_IDLE_MS : POLL_PAUSED_MS;
-		pollTimer = setTimeout(() => {
-			void refreshPlayer().finally(() => schedulePoll());
+		pollTimer = deps.setTimeout(() => {
+			pollTimer = null;
+			void requestRefresh(session);
 		}, ms);
 	};
 
-	const withBusy = async (ctx: ExtensionContext, fn: () => Promise<void>) => {
-		if (busy) return;
-		busy = true;
+	const withBusy = async (
+		session: RefreshSession,
+		ctx: ExtensionContext,
+		fn: () => Promise<void>,
+	) => {
+		if (!isCurrent(session) || session.busy) return;
+		const operation = Symbol();
+		session.busy = operation;
 		try {
 			await fn();
 		} catch (e) {
-			ctx.ui.notify(errMsg(e), "error");
+			if (isCurrent(session)) ctx.ui.notify(errMsg(e), "error");
 		} finally {
-			busy = false;
+			if (isCurrent(session) && session.busy === operation) {
+				session.busy = null;
+			}
 		}
 	};
 
 	const playPause = async (ctx: ExtensionContext) => {
 		if (ui === null) return;
-		await withBusy(ctx, async () => {
+		const session = refreshSession;
+		await withBusy(session, ctx, async () => {
 			const wasPlaying = !!player?.is_playing;
 			if (wasPlaying) await backend.pause?.();
 			else await backend.play();
+			if (!isCurrent(session)) return;
 
 			// Instant icon/wave feedback; backend setPlaying keeps the clock honest.
 			if (player) {
@@ -219,29 +284,28 @@ export default function (pi: ExtensionAPI) {
 				renderStatus();
 			}
 
-			await sleep(120);
-			await refreshPlayer();
-			schedulePoll();
+			await deps.sleep(120);
+			await requestRefresh(session);
 		});
 	};
 
 	const skipNext = async (ctx: ExtensionContext) => {
 		if (ui === null) return;
-		await withBusy(ctx, async () => {
+		const session = refreshSession;
+		await withBusy(session, ctx, async () => {
 			await backend.next?.();
-			await sleep(150);
-			await refreshPlayer();
-			schedulePoll();
+			await deps.sleep(150);
+			await requestRefresh(session);
 		});
 	};
 
 	const skipPrev = async (ctx: ExtensionContext) => {
 		if (ui === null) return;
-		await withBusy(ctx, async () => {
+		const session = refreshSession;
+		await withBusy(session, ctx, async () => {
 			await backend.previous?.();
-			await sleep(150);
-			await refreshPlayer();
-			schedulePoll();
+			await deps.sleep(150);
+			await requestRefresh(session);
 		});
 	};
 
@@ -285,14 +349,14 @@ export default function (pi: ExtensionAPI) {
 		// /reload refires session_start — tear down first so timers don't stack.
 		dispose();
 
-		if (!isMac()) {
+		if (!deps.isMac()) {
 			ctx.ui.notify(
 				"music-dock: system media control is macOS-only",
 				"warning",
 			);
 			return;
 		}
-		if (!hasMediaControl() && !hasNowPlayingCli()) {
+		if (!deps.hasMediaControl() && !deps.hasNowPlayingCli()) {
 			ctx.ui.notify(
 				"music-dock: brew tap ungive/media-control && brew install media-control",
 				"warning",
@@ -302,7 +366,15 @@ export default function (pi: ExtensionAPI) {
 
 		ui = ctx.ui;
 		disposed = false;
-		void refreshPlayer().finally(() => schedulePoll());
+		const session: RefreshSession = {
+			sampling: false,
+			pending: false,
+			busy: null,
+		};
+		refreshSession = session;
+		eventDisposer =
+			backend.subscribe?.(() => void requestRefresh(session)) ?? null;
+		await requestRefresh(session);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -310,4 +382,8 @@ export default function (pi: ExtensionAPI) {
 		// Clear via ctx.ui in case dispose already nulled the capture.
 		disposeVia(ctx.ui);
 	});
+}
+
+export default function (pi: ExtensionAPI) {
+	createMusicDock(pi);
 }
