@@ -22,6 +22,21 @@ type Context = Plugin.Context
 
 type SessionStore = UiState
 
+type TransportIntent =
+  | {
+      kind: "play" | "pause" | "next" | "previous"
+      resolves: Array<() => void>
+    }
+  | {
+      kind: "seek"
+      positionMs: number
+      resolves: Array<() => void>
+    }
+
+type TransportIntentInput =
+  | { kind: "play" | "pause" | "next" | "previous" }
+  | { kind: "seek"; positionMs: number }
+
 export type Controller = {
   session: SessionStore
   openApp: () => Promise<void>
@@ -123,46 +138,41 @@ export function createController(
   let eventDisposer: (() => void) | null = null
   let presentationDisposer: (() => void) | null = null
   let disposed = false
-  let busy = false
+  let lifecycleGeneration = 0
   let sampling = false
-  let pendingRefresh = false
-  let drainPromise: Promise<void> | null = null
+  let pendingSample = false
+  let sampleRequestSequence = 0
+  let samplingPromise: Promise<void> | null = null
   let transportRevision = 0
-  let pendingSeekRevision: number | null = null
-  let seekBusy = false
+  let pendingIntents: TransportIntent[] = []
+  let activeIntent: TransportIntent | null = null
+  let errorFromTransport = false
 
   const isActive = () => !disposed
 
-  const setError = (message: string | null) => {
+  const setError = (message: string | null, fromTransport = false) => {
     if (!isActive()) return
+    errorFromTransport = message !== null && fromTransport
     setSession((d) => {
       d.error = message
     })
   }
 
-  const withLoading = async (fn: () => Promise<void>, toast = true) => {
-    if (!isActive() || busy) return
-    busy = true
+  const updateLoading = () => {
+    if (!isActive()) return
+    const unfinished =
+      (activeIntent?.resolves.length ?? 0) +
+      pendingIntents.reduce(
+        (count, intent) => count + intent.resolves.length,
+        0,
+      )
     setSession((d) => {
-      d.loading = true
-      d.error = null
+      d.loading = unfinished > 0
     })
-    try {
-      await fn()
-    } catch (e) {
-      if (!isActive()) return
-      const message = errMsg(e)
-      setError(message)
-      if (toast)
-        context.ui.toast.show({ title: "Music", message, variant: "error" })
-    } finally {
-      busy = false
-      if (isActive()) {
-        setSession((d) => {
-          d.loading = false
-        })
-      }
-    }
+  }
+
+  const settleIntent = (intent: TransportIntent) => {
+    for (const resolve of intent.resolves.splice(0)) resolve()
   }
 
   const stopPoll = () => {
@@ -185,53 +195,62 @@ export function createController(
 
   const requestRefresh = (): Promise<void> => {
     if (!isActive()) return Promise.resolve()
-    pendingRefresh = true
+    sampleRequestSequence++
     stopPoll()
-    if (sampling) return drainPromise ?? Promise.resolve()
+    if (sampling) {
+      pendingSample = true
+      return samplingPromise ?? Promise.resolve()
+    }
 
     sampling = true
     const drain = (async () => {
       try {
         do {
-          pendingRefresh = false
+          pendingSample = false
+          const generation = lifecycleGeneration
+          const requestSequence = sampleRequestSequence
+          const revision = transportRevision
           try {
-            const revision = transportRevision
             const sampled = await backend.player()
-            if (!isActive()) return
+            if (!isActive() || generation !== lifecycleGeneration) continue
             if (
-              revision === transportRevision &&
-              pendingSeekRevision === null
+              requestSequence === sampleRequestSequence &&
+              revision === transportRevision
             ) {
               const player = mergePlayerPresentation(session.player, sampled)
               setSession((d) => {
                 d.player = player
-                d.error = null
+                if (!errorFromTransport) d.error = null
               })
             }
           } catch (e) {
-            if (isActive()) setError(errMsg(e))
+            if (
+              isActive() &&
+              generation === lifecycleGeneration &&
+              requestSequence === sampleRequestSequence &&
+              revision === transportRevision
+            ) {
+              setError(errMsg(e))
+            }
           }
-        } while (isActive() && pendingRefresh)
+        } while (isActive() && pendingSample)
       } finally {
         sampling = false
         if (isActive()) schedulePoll()
       }
     })()
-    drainPromise = drain
-    void drain.finally(() => {
-      if (drainPromise === drain) drainPromise = null
+    samplingPromise = drain
+    void drain.then(() => {
+      if (samplingPromise === drain) samplingPromise = null
     })
     return drain
   }
 
-  const refreshAll = async () => {
-    await withLoading(async () => {
-      await requestRefresh()
-    }, false)
-  }
+  const refreshAll = () => requestRefresh()
 
   const openApp = async () => {
-    await withLoading(async () => {
+    if (!isActive()) return
+    try {
       openNowPlayingApp()
       context.ui.toast.show({
         title: "Music",
@@ -241,99 +260,132 @@ export function createController(
       await dependencies.delay(400)
       if (!isActive()) return
       await requestRefresh()
-    }, false)
-  }
-
-  const playPause = async () => {
-    await withLoading(async () => {
-      const p = session.player
-      if (p?.is_playing) await backend.pause?.()
-      else await backend.play()
-      if (!isActive()) return
-      transportRevision++
-      setSession((d) => {
-        d.player = optimisticPlayerState(d.player, !p?.is_playing)
-      })
-      await dependencies.delay(120)
-      if (!isActive()) return
-      await requestRefresh()
-    })
-  }
-
-  const seek = async (positionMs: number) => {
-    const previous = session.player
-    const target = seekTarget(positionMs, previous?.track?.duration_ms)
-    if (!previous?.track || !backend.seek || target === null || seekBusy) return
-
-    seekBusy = true
-    setError(null)
-    transportRevision++
-    const revision = transportRevision
-    pendingSeekRevision = revision
-    setSession((d) => {
-      d.player = optimisticSeekPlayerState(d.player, target)
-    })
-
-    try {
-      await backend.seek(target)
-      if (!isActive()) return
-      if (revision !== transportRevision) {
-        if (pendingSeekRevision === revision) pendingSeekRevision = null
-        await requestRefresh()
-        return
-      }
-      await dependencies.delay(120)
-      if (!isActive()) return
-      if (revision !== transportRevision) {
-        if (pendingSeekRevision === revision) pendingSeekRevision = null
-        await requestRefresh()
-        return
-      }
-
-      transportRevision++
-      pendingSeekRevision = null
-      await requestRefresh()
-    } catch (error) {
-      if (!isActive()) return
-      if (pendingSeekRevision === revision) pendingSeekRevision = null
-      const superseded = revision !== transportRevision
-      if (!superseded) {
-        transportRevision++
-        setSession((d) => {
-          d.player = previous
-        })
-      }
-      const message = errMsg(error)
-      context.ui.toast.show({ title: "Music", message, variant: "error" })
-      await requestRefresh()
-      setError(message)
-    } finally {
-      if (pendingSeekRevision === revision) pendingSeekRevision = null
-      seekBusy = false
+    } catch (e) {
+      setError(errMsg(e))
     }
   }
 
-  const next = async () => {
-    await withLoading(async () => {
-      await backend.next?.()
-      if (!isActive()) return
-      transportRevision++
-      await dependencies.delay(150)
-      if (!isActive()) return
-      await requestRefresh()
+  const scheduleReconciliation = (delay: number) => {
+    void dependencies.delay(delay).then(
+      () => {
+        if (isActive()) void requestRefresh()
+      },
+      () => {},
+    )
+  }
+
+  const runTransport = () => {
+    if (!isActive() || activeIntent || pendingIntents.length === 0) return
+    const intent = pendingIntents.shift()!
+    activeIntent = intent
+    const generation = lifecycleGeneration
+    const command = Promise.resolve().then(() => {
+      // Disposal can happen before this deferred runner turn starts.
+      if (!isActive() || generation !== lifecycleGeneration) return
+      return intent.kind === "play"
+        ? backend.play()
+        : intent.kind === "pause"
+          ? backend.pause!()
+          : intent.kind === "seek"
+            ? backend.seek!(intent.positionMs)
+            : intent.kind === "next"
+              ? backend.next!()
+              : backend.previous!()
+    })
+
+    void Promise.resolve(command)
+      .then(
+        () => {
+          if (!isActive() || generation !== lifecycleGeneration) return
+          transportRevision++
+          setError(null)
+          if (intent.kind === "play" || intent.kind === "pause") {
+            setSession((d) => {
+              d.player = optimisticPlayerState(d.player, intent.kind === "play")
+            })
+          } else if (intent.kind === "seek") {
+            setSession((d) => {
+              d.player = optimisticSeekPlayerState(d.player, intent.positionMs)
+            })
+          }
+          scheduleReconciliation(
+            intent.kind === "next" || intent.kind === "previous" ? 150 : 120,
+          )
+        },
+        (error) => {
+          if (!isActive() || generation !== lifecycleGeneration) return
+          const message = errMsg(error)
+          setError(message, true)
+          context.ui.toast.show({ title: "Music", message, variant: "error" })
+          scheduleReconciliation(0)
+        },
+      )
+      .then(() => {
+        if (activeIntent === intent) activeIntent = null
+        settleIntent(intent)
+        updateLoading()
+        if (isActive()) queueMicrotask(runTransport)
+      })
+  }
+
+  const enqueueTransport = (intent: TransportIntentInput) => {
+    if (!isActive()) return Promise.resolve()
+    if (
+      (intent.kind === "pause" && !backend.pause) ||
+      (intent.kind === "seek" && !backend.seek) ||
+      (intent.kind === "next" && !backend.next) ||
+      (intent.kind === "previous" && !backend.previous)
+    ) {
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) => {
+      if (intent.kind === "seek") {
+        const tail = pendingIntents.at(-1)
+        if (tail?.kind === "seek") {
+          tail.positionMs = intent.positionMs
+          tail.resolves.push(resolve)
+        } else {
+          pendingIntents.push({ ...intent, resolves: [resolve] })
+        }
+      } else {
+        pendingIntents.push({ ...intent, resolves: [resolve] })
+      }
+      updateLoading()
+      runTransport()
     })
   }
 
-  const prev = async () => {
-    await withLoading(async () => {
-      await backend.previous?.()
-      if (!isActive()) return
-      transportRevision++
-      await dependencies.delay(150)
-      if (!isActive()) return
-      await requestRefresh()
-    })
+  const precedingPlaybackTarget = () => {
+    const intents = activeIntent
+      ? [activeIntent, ...pendingIntents]
+      : pendingIntents
+    for (let index = intents.length - 1; index >= 0; index--) {
+      const intent = intents[index]!
+      if (intent.kind === "play") return true
+      if (intent.kind === "pause") return false
+    }
+    return !!session.player?.is_playing
   }
+
+  const playPause = () => {
+    const kind = precedingPlaybackTarget() ? "pause" : "play"
+    return enqueueTransport({ kind })
+  }
+
+  const seek = (positionMs: number) => {
+    const target = seekTarget(positionMs, session.player?.track?.duration_ms)
+    if (!session.player?.track || !backend.seek || target === null)
+      return Promise.resolve()
+    return enqueueTransport({ kind: "seek", positionMs: target })
+  }
+
+  const next = () =>
+    backend.next ? enqueueTransport({ kind: "next" }) : Promise.resolve()
+
+  const prev = () =>
+    backend.previous
+      ? enqueueTransport({ kind: "previous" })
+      : Promise.resolve()
 
   eventDisposer =
     backend.subscribe?.((event) => {
@@ -343,6 +395,10 @@ export function createController(
           d.player = event.state
           d.error = null
         })
+        errorFromTransport = false
+        // A snapshot is authoritative, so older provider reads cannot restore it.
+        sampleRequestSequence++
+        schedulePoll()
         return
       }
       void requestRefresh()
@@ -367,12 +423,21 @@ export function createController(
     dispose: () => {
       if (disposed) return
       disposed = true
+      lifecycleGeneration++
       eventDisposer?.()
       eventDisposer = null
       presentationDisposer?.()
       presentationDisposer = null
       stopPoll()
-      pendingRefresh = false
+      pendingSample = false
+      for (const intent of pendingIntents) settleIntent(intent)
+      pendingIntents = []
+      if (activeIntent) settleIntent(activeIntent)
+      if (session.loading) {
+        setSession((d) => {
+          d.loading = false
+        })
+      }
     },
   }
 }

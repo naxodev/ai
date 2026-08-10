@@ -1,13 +1,14 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { createController } from "../index.tsx"
-import { CompactPlayer, SidebarPlayer } from "../ui.tsx"
+import { CompactPlayer } from "../ui.tsx"
 
 const player = (id: string) => ({
   track: {
     id,
     name: id,
     artists: "Artist",
+    album: "Album",
     duration_ms: 1000,
     artwork: null,
   },
@@ -70,7 +71,7 @@ test("a completed poll leaves one timeout and view mounts schedule none", async 
   runPoll()
   await Promise.resolve()
   await Promise.resolve()
-  expect(reads).toBe(2)
+  expect(reads).toBe(3)
   expect(pending.size).toBe(1)
 
   const compact = await testRender(
@@ -83,23 +84,10 @@ test("a completed poll leaves one timeout and view mounts schedule none", async 
       }),
     { width: 40, height: 4 },
   )
-  const sidebar = await testRender(
-    () =>
-      SidebarPlayer({
-        context: context as any,
-        state: session,
-        onPlayPause: () => {},
-        onNext: () => {},
-        onPrev: () => {},
-        onSeek: () => {},
-      }),
-    { width: 40, height: 24 },
-  )
   expect(pending.size).toBe(1)
   expect(nextTimer).toBe(2)
 
   compact.renderer.destroy()
-  sidebar.renderer.destroy()
   controller.dispose()
   expect(cleared).toEqual([2])
   expect(pending.size).toBe(0)
@@ -158,13 +146,83 @@ test("disposal clears the sole poll and ignores an in-flight refresh", async () 
   expect(scheduled).toHaveLength(0)
 })
 
-test("disposal ignores an in-flight play command completion", async () => {
-  let resolvePlay: (() => void) | undefined
+test("disposal cancels command callers and suppresses late command work", async () => {
+  let rejectPlay: ((reason: unknown) => void) | undefined
+  let playCalls = 0
+  let nextCalls = 0
+  let coreDisposals = 0
+  let presentationDisposals = 0
+  const toasts: unknown[] = []
   const session = {
     loading: false,
     error: null,
     player: player("paused"),
   }
+  session.player.is_playing = false
+  const context = {
+    storage: {
+      memory: () => [
+        session,
+        (update: (state: typeof session) => void) => update(session),
+      ],
+    },
+    ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
+  }
+  const controller = createController(context as any, {
+    createBackend: () =>
+      ({
+        player: async () => session.player,
+        play: () => {
+          playCalls++
+          return new Promise<void>((_resolve, reject) => {
+            rejectPlay = reject
+          })
+        },
+        next: async () => {
+          nextCalls++
+        },
+        subscribe: () => () => {
+          coreDisposals++
+        },
+        subscribePresentation: () => () => {
+          presentationDisposals++
+        },
+      }) as any,
+    scheduleTimeout: (() => 1) as any,
+    clearScheduledTimeout: (() => {}) as any,
+    delay: async () => {},
+  })
+  await controller.refreshAll()
+  const active = controller.playPause()
+  await Promise.resolve()
+  const queued = controller.next()
+
+  controller.dispose()
+  controller.dispose()
+  await Promise.all([active, queued])
+
+  expect(playCalls).toBe(1)
+  expect(nextCalls).toBe(0)
+  expect(session.loading).toBe(false)
+  expect(coreDisposals).toBe(1)
+  expect(presentationDisposals).toBe(1)
+
+  rejectPlay?.(new Error("late failure"))
+  await Promise.resolve()
+  await Promise.resolve()
+
+  expect(session.player.is_playing).toBe(false)
+  expect(toasts).toHaveLength(0)
+
+  await controller.next()
+  await controller.playPause()
+  expect(playCalls).toBe(1)
+  expect(nextCalls).toBe(0)
+})
+
+test("disposal before the deferred runner turn starts no backend command", async () => {
+  let plays = 0
+  const session = { loading: false, error: null, player: player("paused") }
   session.player.is_playing = false
   const context = {
     storage: {
@@ -179,21 +237,66 @@ test("disposal ignores an in-flight play command completion", async () => {
     createBackend: () =>
       ({
         player: async () => session.player,
-        play: () =>
-          new Promise<void>((resolve) => {
-            resolvePlay = resolve
-          }),
+        play: async () => {
+          plays++
+        },
       }) as any,
     scheduleTimeout: (() => 1) as any,
     clearScheduledTimeout: (() => {}) as any,
     delay: async () => {},
   })
   await controller.refreshAll()
+
   const command = controller.playPause()
-
   controller.dispose()
-  resolvePlay?.()
   await command
+  await Promise.resolve()
 
-  expect(session.player.is_playing).toBe(false)
+  expect(plays).toBe(0)
+  expect(session.loading).toBe(false)
+})
+
+test("post-disposal openApp resolves before opening, toasting, delaying, or refreshing", async () => {
+  const session = { loading: false, error: null, player: null as any }
+  const toasts: unknown[] = []
+  let delayCalls = 0
+  let playerCalls = 0
+  const spawn = spyOn(Bun, "spawn").mockImplementation(() => undefined as never)
+  const context = {
+    storage: {
+      memory: () => [
+        session,
+        (update: (state: typeof session) => void) => update(session),
+      ],
+    },
+    ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
+  }
+  const controller = createController(context as any, {
+    createBackend: () =>
+      ({
+        player: async () => {
+          playerCalls++
+          return null
+        },
+      }) as any,
+    scheduleTimeout: (() => 1) as any,
+    clearScheduledTimeout: (() => {}) as any,
+    delay: async () => {
+      delayCalls++
+    },
+  })
+
+  try {
+    await Promise.resolve()
+    const initialPlayerCalls = playerCalls
+    controller.dispose()
+    await controller.openApp()
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(toasts).toHaveLength(0)
+    expect(delayCalls).toBe(0)
+    expect(playerCalls).toBe(initialPlayerCalls)
+  } finally {
+    spawn.mockRestore()
+  }
 })

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type {
   ArtworkCompletionEvent,
   MusicBackend,
+  MusicChangeEvent,
   PlayerState,
 } from "../types.ts"
 import { createSystemMedia } from "../system-media.ts"
@@ -58,6 +59,9 @@ function createHarness(
     subscribe?: boolean
     samples?: PlayerState[]
     play?: () => Promise<void>
+    pause?: () => Promise<void>
+    next?: () => Promise<void>
+    previous?: () => Promise<void>
     seek?: (positionMs: number) => Promise<void>
     includeSeek?: boolean
     delay?: (ms: number) => Promise<void>
@@ -71,7 +75,7 @@ function createHarness(
   }> = []
   const samples = options.samples ?? [player()]
   const requests: Array<Deferred<PlayerState | null>> = []
-  let listener: (() => void) | null = null
+  let listener: ((event?: MusicChangeEvent) => void) | null = null
   let presentationListener: ((event: ArtworkCompletionEvent) => void) | null =
     null
   let subscriptions = 0
@@ -95,6 +99,9 @@ function createHarness(
         searchTracks: async () => [],
         play: options.play ?? (async () => {}),
       }
+      if (options.pause) fake.pause = options.pause
+      if (options.next) fake.next = options.next
+      if (options.previous) fake.previous = options.previous
       if (options.includeSeek !== false)
         fake.seek = options.seek ?? (async () => {})
       if (options.subscribe !== false) {
@@ -152,7 +159,7 @@ function createHarness(
   })
   return {
     controller,
-    emit: () => listener?.(),
+    emit: (event?: MusicChangeEvent) => listener?.(event),
     emitPresentation: (event: ArtworkCompletionEvent) =>
       presentationListener?.(event),
     mutations,
@@ -191,6 +198,189 @@ describe("OpenCode music controller", () => {
     harness.requests[0]!.resolve(player())
     await flush()
     expect(harness.activeTimers()[0]?.delay).toBe(3000)
+  })
+
+  test("applies an authoritative pause before a held sample can settle", async () => {
+    const harness = createHarness({ samples: [] })
+    const held = harness.requests[0]!
+    const paused = player(false)
+
+    harness.emit({ type: "snapshot", state: paused })
+    expect(harness.controller.session.player?.is_playing).toBe(false)
+    held.resolve(player(true))
+    await flush()
+
+    expect(harness.controller.session.player?.is_playing).toBe(false)
+    expect(harness.activeTimers()).toHaveLength(1)
+    expect(harness.activeTimers()[0]?.delay).toBe(5000)
+  })
+
+  test("samples immediately after stream termination and restores one recovery poll", async () => {
+    const harness = createHarness({ samples: [player()] })
+    await flush()
+
+    harness.emit({ type: "invalidation", reason: "stream-terminated" })
+    expect(harness.requests).toHaveLength(1)
+    harness.requests[0]!.resolve(player(false))
+    await flush()
+
+    expect(harness.activeTimers()).toHaveLength(1)
+    expect(harness.activeTimers()[0]?.delay).toBe(5000)
+
+    harness.fire(harness.activeTimers()[0]!)
+    expect(harness.requests).toHaveLength(2)
+    harness.requests[1]!.resolve(player(false))
+    await flush()
+    expect(harness.activeTimers()).toHaveLength(1)
+  })
+
+  test("serializes captured transport intents while sampling is unresolved", async () => {
+    const calls: string[] = []
+    const play = deferred<void>()
+    const pause = deferred<void>()
+    const next = deferred<void>()
+    const previous = deferred<void>()
+    const harness = createHarness({
+      samples: [],
+      play: () => {
+        calls.push("play")
+        return play.promise
+      },
+      pause: () => {
+        calls.push("pause")
+        return pause.promise
+      },
+      next: () => {
+        calls.push("next")
+        return next.promise
+      },
+      previous: () => {
+        calls.push("previous")
+        return previous.promise
+      },
+    })
+
+    const commands = [
+      harness.controller.playPause(),
+      harness.controller.playPause(),
+      harness.controller.next(),
+      harness.controller.prev(),
+    ]
+    await flush()
+    expect(calls).toEqual(["play"])
+    play.resolve()
+    await flush()
+    await flush()
+    expect(calls).toEqual(["play", "pause"])
+    pause.resolve()
+    await flush()
+    await flush()
+    expect(calls).toEqual(["play", "pause", "next"])
+    next.resolve()
+    await flush()
+    await flush()
+    expect(calls).toEqual(["play", "pause", "next", "previous"])
+    previous.resolve()
+    await Promise.all(commands)
+
+    expect(harness.requests).toHaveLength(1)
+  })
+
+  test("coalesces only adjacent pending seeks and settles every seek caller", async () => {
+    const gate = deferred<void>()
+    const seek = deferred<void>()
+    const calls: Array<string | number> = []
+    const harness = createHarness({
+      samples: [player(false)],
+      play: () => {
+        calls.push("play")
+        return gate.promise
+      },
+      seek: (positionMs) => {
+        calls.push(positionMs)
+        return seek.promise
+      },
+    })
+    await flush()
+
+    const playing = harness.controller.playPause()
+    const firstSeek = harness.controller.seek(10_000)
+    const latestSeek = harness.controller.seek(20_000)
+    let firstSettled = false
+    let latestSettled = false
+    void firstSeek.then(() => (firstSettled = true))
+    void latestSeek.then(() => (latestSettled = true))
+    gate.resolve()
+    await flush()
+    await flush()
+
+    expect(calls).toEqual(["play", 20_000])
+    expect(firstSettled).toBe(false)
+    expect(latestSettled).toBe(false)
+    seek.resolve()
+    await Promise.all([playing, firstSeek, latestSeek])
+    expect(firstSettled).toBe(true)
+    expect(latestSettled).toBe(true)
+  })
+
+  test("does not coalesce seeks separated by a discrete intent", async () => {
+    const gate = deferred<void>()
+    const calls: Array<string | number> = []
+    const harness = createHarness({
+      samples: [player(false)],
+      play: () => gate.promise,
+      next: async () => {
+        calls.push("next")
+      },
+      seek: async (positionMs) => {
+        calls.push(positionMs)
+      },
+    })
+    await flush()
+
+    const commands = [
+      harness.controller.playPause(),
+      harness.controller.seek(10_000),
+      harness.controller.next(),
+      harness.controller.seek(20_000),
+    ]
+    gate.resolve()
+    await Promise.all(commands)
+
+    expect(calls).toEqual([10_000, "next", 20_000])
+  })
+
+  test("continues queued work and clears transport failure after a later success", async () => {
+    const calls: string[] = []
+    const harness = createHarness({
+      samples: [player(false)],
+      play: async () => {
+        calls.push("play")
+        throw new Error("play failed")
+      },
+      pause: async () => {
+        calls.push("pause")
+      },
+    })
+    await flush()
+
+    // UI callbacks discard this promise, so a command failure must remain handled.
+    void harness.controller.playPause()
+    const pause = harness.controller.playPause()
+    await pause
+
+    expect(calls).toEqual(["play", "pause"])
+    expect(harness.controller.session.error).toBeNull()
+    expect(harness.toasts).toHaveLength(1)
+  })
+
+  test("does not queue an unsupported captured pause", async () => {
+    const harness = createHarness({ samples: [player(true)] })
+    await flush()
+
+    await harness.controller.playPause()
+    expect(harness.controller.session.loading).toBe(false)
+    expect(harness.toasts).toHaveLength(0)
   })
 
   test("applies facade snapshots and artwork completions without resampling", async () => {
@@ -460,13 +650,11 @@ describe("OpenCode music controller", () => {
     const seeking = harness.controller.seek(90_000)
     await flush()
     expect(calls).toEqual([90_000])
-    expect(harness.controller.session.player).toMatchObject({
-      progress_ms: 90_000,
-      is_playing: false,
-    })
+    expect(harness.controller.session.player?.progress_ms).toBe(30_000)
 
     command.resolve()
     await flush()
+    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
     harness.requests[0]!.resolve(confirmed)
     await seeking
     expect(harness.controller.session.player).toMatchObject({
@@ -486,7 +674,7 @@ describe("OpenCode music controller", () => {
 
     const seeking = harness.controller.seek(90_000)
     await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+    expect(harness.controller.session.player?.progress_ms).toBe(30_000)
     command.reject(new Error("seek failed"))
     await flush()
     expect(harness.controller.session.player).toMatchObject({
@@ -553,7 +741,7 @@ describe("OpenCode music controller", () => {
     await flush()
     stale.resolve({ ...player(false), progress_ms: 5_000 })
     await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+    expect(harness.controller.session.player?.progress_ms).toBe(5_000)
 
     transport.resolve()
     await flush()
@@ -581,21 +769,24 @@ describe("OpenCode music controller", () => {
     harness.emit()
     harness.requests[0]!.resolve({ ...player(false), progress_ms: 5_000 })
     await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+    expect(harness.controller.session.player?.progress_ms).toBe(5_000)
 
     const playing = harness.controller.playPause()
     await flush()
     expect(plays).toBe(1)
     expect(harness.controller.session.player?.is_playing).toBe(true)
+    await flush()
+    expect(harness.requests).toHaveLength(2)
     harness.requests[1]!.resolve({
       ...player(true),
-      progress_ms: 5_000,
+      progress_ms: 90_000,
     })
     await playing
     expect(harness.controller.session.player?.progress_ms).toBe(90_000)
 
     settling.resolve()
     await flush()
+    expect(harness.requests).toHaveLength(3)
     harness.requests[2]!.resolve({
       ...player(true),
       progress_ms: 90_000,
@@ -617,7 +808,7 @@ describe("OpenCode music controller", () => {
 
     expect(harness.subscriptionDisposals()).toBe(1)
     expect(harness.activeTimers()).toHaveLength(0)
-    expect(harness.mutations).toHaveLength(1)
+    expect(harness.mutations).toHaveLength(0)
     expect(harness.toasts).toHaveLength(0)
   })
 
@@ -671,7 +862,7 @@ describe("OpenCode music controller", () => {
     pending.resolve(player())
     await flush()
 
-    expect(harness.mutations).toHaveLength(1)
+    expect(harness.mutations).toHaveLength(0)
     expect(harness.toasts).toHaveLength(0)
     expect(harness.activeTimers()).toHaveLength(0)
   })
@@ -686,7 +877,7 @@ describe("OpenCode music controller", () => {
 
     expect(harness.requests).toHaveLength(1)
     expect(harness.activeTimers()).toHaveLength(0)
-    expect(harness.mutations).toHaveLength(1)
+    expect(harness.mutations).toHaveLength(0)
   })
 })
 
