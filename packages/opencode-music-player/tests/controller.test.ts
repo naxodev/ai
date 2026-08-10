@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import type { MusicBackend, PlayerState } from "../types.ts"
-import { createController, optimisticPlayerState } from "../index.tsx"
+import {
+  createController,
+  optimisticPlayerState,
+  optimisticSeekPlayerState,
+} from "../index.tsx"
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -49,6 +53,9 @@ function createHarness(
     subscribe?: boolean
     samples?: PlayerState[]
     play?: () => Promise<void>
+    seek?: (positionMs: number) => Promise<void>
+    includeSeek?: boolean
+    delay?: (ms: number) => Promise<void>
   } = {},
 ) {
   const timers: Array<{
@@ -76,6 +83,8 @@ function createHarness(
     searchTracks: async () => [],
     play: options.play ?? (async () => {}),
   }
+  if (options.includeSeek !== false)
+    backend.seek = options.seek ?? (async () => {})
   if (options.subscribe !== false) {
     backend.subscribe = (nextListener) => {
       subscriptions++
@@ -118,7 +127,7 @@ function createHarness(
     clearScheduledTimeout: ((timer: ReturnType<typeof setTimeout>) => {
       ;(timer as unknown as { active: boolean }).active = false
     }) as any,
-    delay: async () => {},
+    delay: options.delay ?? (async () => {}),
   })
   return {
     controller,
@@ -253,6 +262,174 @@ describe("OpenCode music controller", () => {
     expect(harness.mutations.at(-1)?.player?.is_playing).toBe(true)
   })
 
+  test("seeks optimistically and reconciles with the provider", async () => {
+    const command = deferred<void>()
+    const calls: number[] = []
+    const initial = { ...player(false), progress_ms: 30_000, fetched_at: 1_000 }
+    const confirmed = {
+      ...player(false),
+      progress_ms: 89_750,
+      fetched_at: 2_000,
+    }
+    const harness = createHarness({
+      samples: [initial],
+      seek: (positionMs) => {
+        calls.push(positionMs)
+        return command.promise
+      },
+    })
+    await flush()
+
+    const seeking = harness.controller.seek(90_000)
+    await flush()
+    expect(calls).toEqual([90_000])
+    expect(harness.controller.session.player).toMatchObject({
+      progress_ms: 90_000,
+      is_playing: false,
+    })
+
+    command.resolve()
+    await flush()
+    harness.requests[0]!.resolve(confirmed)
+    await seeking
+    expect(harness.controller.session.player).toMatchObject({
+      progress_ms: 89_750,
+      fetched_at: 2_000,
+    })
+  })
+
+  test("restores progress and reports a provider seek failure", async () => {
+    const command = deferred<void>()
+    const initial = { ...player(false), progress_ms: 30_000, fetched_at: 1_000 }
+    const harness = createHarness({
+      samples: [initial],
+      seek: () => command.promise,
+    })
+    await flush()
+
+    const seeking = harness.controller.seek(90_000)
+    await flush()
+    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+    command.reject(new Error("seek failed"))
+    await flush()
+    expect(harness.controller.session.player).toMatchObject({
+      progress_ms: 30_000,
+      fetched_at: 1_000,
+    })
+    harness.requests[0]!.resolve(initial)
+    await seeking
+
+    expect(harness.controller.session.player).toMatchObject({
+      progress_ms: 30_000,
+      fetched_at: 1_000,
+    })
+    expect(harness.controller.session.error).toBe("seek failed")
+    expect(harness.toasts).toHaveLength(1)
+    expect(harness.requests).toHaveLength(1)
+  })
+
+  test("ignores seeks without a track, duration, or backend support", async () => {
+    const noTrack = createHarness({ samples: [player(false, false)] })
+    await flush()
+    await noTrack.controller.seek(10_000)
+    expect(noTrack.mutations.at(-1)?.loading).toBe(false)
+
+    const noDuration = player(false)
+    noDuration.track!.duration_ms = 0
+    const invalidDuration = createHarness({ samples: [noDuration] })
+    await flush()
+    await invalidDuration.controller.seek(10_000)
+    expect(invalidDuration.mutations.at(-1)?.loading).toBe(false)
+
+    const unsupported = createHarness({
+      samples: [player(false)],
+      includeSeek: false,
+    })
+    await flush()
+    await unsupported.controller.seek(10_000)
+    expect(unsupported.mutations.at(-1)?.loading).toBe(false)
+    expect(unsupported.toasts).toHaveLength(0)
+
+    const invalidPositionCalls: number[] = []
+    const invalidPosition = createHarness({
+      samples: [player(false)],
+      seek: async (position) => {
+        invalidPositionCalls.push(position)
+      },
+    })
+    await flush()
+    await invalidPosition.controller.seek(Number.NaN)
+    expect(invalidPositionCalls).toHaveLength(0)
+  })
+
+  test("does not let an overlapping sample undo an optimistic seek", async () => {
+    const transport = deferred<void>()
+    const harness = createHarness({
+      samples: [player(false)],
+      seek: () => transport.promise,
+    })
+    await flush()
+
+    harness.emit()
+    const stale = harness.requests[0]!
+    const seeking = harness.controller.seek(90_000)
+    await flush()
+    stale.resolve({ ...player(false), progress_ms: 5_000 })
+    await flush()
+    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+
+    transport.resolve()
+    await flush()
+    harness.requests[1]!.resolve({ ...player(false), progress_ms: 89_500 })
+    await seeking
+    expect(harness.controller.session.player?.progress_ms).toBe(89_500)
+  })
+
+  test("blocks stale samples through settling without blocking transport", async () => {
+    const settling = deferred<void>()
+    let plays = 0
+    let delays = 0
+    const harness = createHarness({
+      samples: [player(false)],
+      play: async () => {
+        plays++
+      },
+      seek: async () => {},
+      delay: () => (++delays === 1 ? settling.promise : Promise.resolve()),
+    })
+    await flush()
+
+    const seeking = harness.controller.seek(90_000)
+    await flush()
+    harness.emit()
+    harness.requests[0]!.resolve({ ...player(false), progress_ms: 5_000 })
+    await flush()
+    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+
+    const playing = harness.controller.playPause()
+    await flush()
+    expect(plays).toBe(1)
+    expect(harness.controller.session.player?.is_playing).toBe(true)
+    harness.requests[1]!.resolve({
+      ...player(true),
+      progress_ms: 5_000,
+    })
+    await playing
+    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+
+    settling.resolve()
+    await flush()
+    harness.requests[2]!.resolve({
+      ...player(true),
+      progress_ms: 90_000,
+    })
+    await seeking
+    expect(harness.controller.session.player).toMatchObject({
+      is_playing: true,
+      progress_ms: 90_000,
+    })
+  })
+
   test("retries failures and suppresses late completions after disposal", async () => {
     const harness = createHarness({ samples: [] })
     const pending = harness.requests[0]!
@@ -369,5 +546,17 @@ test("optimistic pause freezes live progress before provider reconciliation", ()
     is_playing: false,
     progress_ms: 5_500,
     fetched_at: 2_500,
+  })
+})
+
+test("optimistic seek clamps and preserves playback state", () => {
+  expect(optimisticSeekPlayerState(paused, 20_000, 8_000)).toMatchObject({
+    is_playing: false,
+    progress_ms: 10_000,
+    fetched_at: 8_000,
+  })
+  expect(optimisticSeekPlayerState({ ...paused, track: null }, 5_000)).toEqual({
+    ...paused,
+    track: null,
   })
 })

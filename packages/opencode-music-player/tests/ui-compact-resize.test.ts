@@ -38,7 +38,7 @@ const contentRows = (frame: string) =>
 
 test("CompactPlayer follows its allocated width across repeated resizes", async () => {
   const app = await testRender(
-    () => CompactPlayer({ context: { theme } as any, state }),
+    () => CompactPlayer({ context: { theme } as any, state, onSeek: () => {} }),
     { width: 80, height: 4 },
   )
 
