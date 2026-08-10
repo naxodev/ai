@@ -25,6 +25,7 @@ export const RoleSchema = Schema.Literals([
 const PaneRefSchema = Schema.Struct({
   pane_id: Schema.String,
   label: Schema.String,
+  profile_fingerprint: Schema.optionalKey(Schema.NullOr(Schema.String)),
 })
 
 /**
@@ -59,6 +60,7 @@ export const RunStateSchema = Schema.Struct({
   reviewer_tree_fingerprint: Schema.NullOr(Schema.String),
   current_phase_package: Schema.NullOr(Schema.String),
   current_code_review: Schema.NullOr(Schema.String),
+  phase_package_rework: Schema.optionalKey(Schema.Boolean),
 })
 
 export type DecodedRunState = typeof RunStateSchema.Type
@@ -99,11 +101,17 @@ export function decodeRunState(
     pending_nudged_at: d.pending_nudged_at ?? null,
     pending_final_grace: d.pending_final_grace ?? false,
     pending_extended: d.pending_extended ?? false,
-    role_panes: { ...(d.role_panes ?? {}) },
+    role_panes: Object.fromEntries(
+      Object.entries(d.role_panes ?? {}).map(([role, pane]) => [
+        role,
+        { ...pane, profile_fingerprint: pane.profile_fingerprint ?? null },
+      ]),
+    ),
     package_root: d.package_root,
     reviewer_tree_fingerprint: d.reviewer_tree_fingerprint,
     current_phase_package: d.current_phase_package,
     current_code_review: d.current_code_review,
+    phase_package_rework: d.phase_package_rework ?? false,
   }
   return Result.succeed(state)
 }

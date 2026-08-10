@@ -61,6 +61,7 @@ Machine channel: **artifact front-matter only**.
 ---
 status: done
 verdict: APPROVED # or CHANGES_REQUIRED; omit for non-review artifacts
+rework: code # optional on code-review CHANGES_REQUIRED; code or phase_package
 nits: | # optional; never blocks alone
   Consider renaming foo later.
 ---

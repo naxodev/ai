@@ -17,10 +17,11 @@ You schedule an Apnea **Run**. You do not implement product code, edit app sourc
 5. On `APPROVED`, dispatch planner for **phase package**.
 6. Dispatch **coder** with phase package path.
 7. Dispatch **reviewer** (code review) → wait.
-8. On `CHANGES_REQUIRED`, re-dispatch coder (live if pane alive) then reviewer.
-9. On `APPROVED`, commit phase (run verify commands first).
-10. Repeat from phase packaging until planner reports no remaining phases.
-11. Dispatch planner for `pr-description.md`.
+8. On `CHANGES_REQUIRED` with `rework: code` or no rework field, re-dispatch coder with `rework=true`, then reviewer.
+9. On `CHANGES_REQUIRED` with `rework: phase_package`, dispatch planner for the revised phase package, then coder and reviewer. The package dispatch advances the review round automatically.
+10. On `APPROVED`, commit phase (run verify commands first).
+11. Repeat from phase packaging until planner reports no remaining phases.
+12. Dispatch planner for `pr-description.md`.
 
 ## Rules
 

@@ -16,6 +16,8 @@ export type PaneStyle = "regular" | "floating"
 
 export type Verdict = "APPROVED" | "CHANGES_REQUIRED"
 
+export type ReworkTarget = "code" | "phase_package"
+
 export type VcsBackend = "jj" | "git"
 
 export interface Profile {
@@ -89,9 +91,15 @@ export interface RunState {
   pending_extended: boolean
   /**
    * Last known live pane per role, keyed by role name.
-   * Reuse is by pane_id only (never by scanning ambiguous labels).
+   * Reuse requires its pane_id and effective profile fingerprint.
+   * Labels are never scanned because they are ambiguous.
    */
-  role_panes: Partial<Record<Role, { pane_id: string; label: string }>>
+  role_panes: Partial<
+    Record<
+      Role,
+      { pane_id: string; label: string; profile_fingerprint: string | null }
+    >
+  >
   /** Absolute path to package root (briefs) */
   package_root: string
   /** Tree snapshot fingerprint before reviewer dispatch */
@@ -100,12 +108,15 @@ export interface RunState {
   current_phase_package: string | null
   /** Last code-review path for commit gate */
   current_code_review: string | null
+  /** The next phase-package dispatch must consume planner-owned rework. */
+  phase_package_rework: boolean
 }
 
 export interface FrontMatter {
   status?: string
   verdict?: string
   nits?: string
+  rework?: string
   raw: string
   body: string
 }

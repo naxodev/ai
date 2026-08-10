@@ -32,6 +32,9 @@ describe("state machine", () => {
   test("code_review APPROVED → committing", () => {
     expect(stepAfterArtifact("code_review", "APPROVED")).toBe("committing")
     expect(stepAfterArtifact("code_review", "CHANGES_REQUIRED")).toBe("coding")
+    expect(
+      stepAfterArtifact("code_review", "CHANGES_REQUIRED", "phase_package"),
+    ).toBe("phase_packaging")
   })
 
   test("allowed kinds at plan_review include plan rework", () => {

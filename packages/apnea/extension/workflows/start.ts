@@ -125,6 +125,7 @@ export const startWorkflow = (
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
+      phase_package_rework: false,
     }
     // The literal above assigns the ladder's fields; this re-asserts them
     // through the shared helper so a rung added there cannot be missed here.

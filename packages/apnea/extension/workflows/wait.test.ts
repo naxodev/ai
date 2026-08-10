@@ -53,6 +53,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: null,
     current_code_review: null,
+    phase_package_rework: false,
     ...overrides,
   }
 }
@@ -273,6 +274,61 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
           ".apnea/artifacts/phase-01/round-1/code-review.md",
         )
         expect(savedState(fakeFs).step).toBe("code_review")
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "code review can return package ownership to the planner without replacing prior artifacts",
+    () => {
+      const review = ".apnea/artifacts/phase-01/round-1/code-review.md"
+      const pkg = ".apnea/artifacts/phase-01/round-1/phase-package.md"
+      const state = baseState({
+        step: "code_review",
+        pending_artifact: review,
+        pending_role: "reviewer",
+        current_phase_package: pkg,
+      })
+      const fsFake = seedFs(state, {
+        [`${ROOT}/${review}`]:
+          "---\nstatus: done\nverdict: CHANGES_REQUIRED\nrework: phase_package\n---\nPackage contradicts plan.",
+        [`${ROOT}/${pkg}`]: "---\nstatus: done\n---\nOriginal package",
+      })
+      const { layer, fakeFs } = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const result = yield* waitWorkflow({}, ROOT)
+        expect(result.data?.step).toBe("phase_packaging")
+        expect(result.data?.rework).toBe("phase_package")
+        expect(result.legal_next).toEqual(["dispatch_role", "workflow_wait"])
+        const saved = savedState(fakeFs)
+        expect(saved.phase_package_rework).toBe(true)
+        expect(saved.current_phase_package).toBe(pkg)
+        expect(saved.current_code_review).toBe(review)
+        expect(fakeFs.files.get(`${ROOT}/${pkg}`)).toContain("Original package")
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "a legacy code review without rework signal still returns to coding",
+    () => {
+      const review = ".apnea/artifacts/phase-01/round-1/code-review.md"
+      const fsFake = seedFs(
+        baseState({
+          step: "code_review",
+          pending_artifact: review,
+          pending_role: "reviewer",
+        }),
+        {
+          [`${ROOT}/${review}`]:
+            "---\nstatus: done\nverdict: CHANGES_REQUIRED\n---\nFix code.",
+        },
+      )
+      const { layer, fakeFs } = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const result = yield* waitWorkflow({}, ROOT)
+        expect(result.data?.step).toBe("coding")
+        expect(savedState(fakeFs).phase_package_rework).toBe(false)
       }).pipe(Effect.provide(layer))
     },
   )
@@ -1201,6 +1257,7 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
         Herdr,
         Herdr.of({
           enabled: Effect.succeed(true),
+          availability: Effect.succeed("available"),
           version: Effect.succeed(null),
           hasApneaPlugin: Effect.succeed(true),
           paneGet: () => Effect.succeed({ ok: true, agent_status: "idle" }),

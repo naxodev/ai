@@ -17,6 +17,7 @@ import {
   type PromptProbes,
   ensurePromptSubmitted,
   floatingPanePath,
+  probeHerdrAvailability,
   resolveExecutable,
 } from "./herdr.ts"
 
@@ -128,6 +129,35 @@ describe("resolveExecutable", () => {
     fs.chmodSync(bin, 0o755)
     expect(resolveExecutable("mytool", d)).toBe(bin)
     expect(resolveExecutable("mytool", "/no/such/bin")).toBeNull()
+  })
+})
+
+describe("probeHerdrAvailability", () => {
+  test("a stale claimed current pane is unavailable", () => {
+    expect(
+      probeHerdrAvailability(
+        { HERDR_ENV: "1", HERDR_PANE_ID: "w1:gone" },
+        () => ({ ok: false, raw: '{"error":{"code":"pane_not_found"}}' }),
+      ),
+    ).toBe("unavailable")
+  })
+
+  test("a valid current pane keeps Herdr available", () => {
+    expect(
+      probeHerdrAvailability(
+        { HERDR_ENV: "1", HERDR_PANE_ID: "w1:live" },
+        () => ({ ok: true, raw: "{}" }),
+      ),
+    ).toBe("available")
+  })
+
+  test("a genuine Herdr failure is not hidden as unavailability", () => {
+    expect(() =>
+      probeHerdrAvailability(
+        { HERDR_ENV: "1", HERDR_PANE_ID: "w1:maybe" },
+        () => ({ ok: false, raw: "connection refused" }),
+      ),
+    ).toThrow("failed to verify current Herdr pane")
   })
 })
 

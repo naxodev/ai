@@ -15,12 +15,16 @@ status: done
 ```yaml
 status: done
 verdict: APPROVED | CHANGES_REQUIRED
+rework: code | phase_package # code-review CHANGES_REQUIRED only
 nits: | # optional string; meaningful only with APPROVED
   ...
 ```
 
 - Missing `verdict` on a review artifact → invalid.
 - `nits` with `CHANGES_REQUIRED` is allowed but ignored by the commit gate.
+- A code-review `CHANGES_REQUIRED` may set `rework` to `code` or `phase_package`.
+- Missing `rework` means `code` for compatibility with existing reviews.
+- Omit `rework` from plan reviews and approved code reviews.
 - Commit gate cares only: `verdict == APPROVED` and verify commands exit 0.
 
 ## Non-review artifacts

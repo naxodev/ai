@@ -69,6 +69,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: null,
     current_code_review: null,
+    phase_package_rework: false,
     ...overrides,
   }
 }
@@ -342,7 +343,153 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(saved.role_panes.planner).toEqual({
           pane_id: "pane-42",
           label: "apnea:planner:abc",
+          profile_fingerprint: '["pi",["pi"]]',
         })
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "reuses a role pane only while its effective profile and command match",
+    () => {
+      const matching = {
+        pane_id: "pane-old",
+        label: "apnea:planner:old",
+        profile_fingerprint: '["pi",["pi"]]',
+      }
+      const matchingFs = seedFs(
+        baseState({ step: "planning", role_panes: { planner: matching } }),
+      )
+      const profileChangedFs = seedFs(
+        baseState({ step: "planning", role_panes: { planner: matching } }),
+      )
+      const commandChangedFs = seedFs(
+        baseState({ step: "planning", role_panes: { planner: matching } }),
+      )
+      const same = layerOf(matchingFs)
+      const profileChanged = layerOf(profileChangedFs, {
+        cfg: {
+          profiles: { alternate: { cmd_interactive: ["pi"] } },
+          roles: {
+            planner: { profile: "alternate" },
+            reviewer: { profile: "alternate" },
+            coder: { profile: "alternate" },
+          },
+          review_round_cap: 3,
+          timeouts_ms: {},
+          pane_style: "regular",
+        },
+      })
+      const commandChanged = layerOf(commandChangedFs, {
+        cfg: {
+          profiles: { pi: { cmd_interactive: ["pi", "--new"] } },
+          roles: {
+            planner: { profile: "pi" },
+            reviewer: { profile: "pi" },
+            coder: { profile: "pi" },
+          },
+          review_round_cap: 3,
+          timeouts_ms: {},
+          pane_style: "regular",
+        },
+      })
+      return Effect.gen(function* () {
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+          Effect.provide(same.layer),
+        )
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+          Effect.provide(profileChanged.layer),
+        )
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+          Effect.provide(commandChanged.layer),
+        )
+        expect(same.herdr.interactiveCalls[0]?.prefer).toEqual(matching)
+        expect(profileChanged.herdr.interactiveCalls[0]?.prefer).toBeNull()
+        expect(commandChanged.herdr.interactiveCalls[0]?.prefer).toBeNull()
+        expect(
+          savedState(profileChanged.fakeFs).role_panes.planner
+            ?.profile_fingerprint,
+        ).toBe('["alternate",["pi"]]')
+        expect(
+          savedState(commandChanged.fakeFs).role_panes.planner
+            ?.profile_fingerprint,
+        ).toBe('["pi",["pi","--new"]]')
+      })
+    },
+  )
+
+  itEffect(
+    "a stale current Herdr pane falls back to one manual-launch task",
+    () => {
+      const fsFake = seedFs(baseState({ step: "planning" }))
+      const { layer, fakeFs, herdr } = layerOf(fsFake, {
+        herdr: { enabled: true, availability: "unavailable" },
+      })
+      return Effect.gen(function* () {
+        const result = yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+        expect(result.ok).toBe(true)
+        if (result.ok) expect(result.message).toContain("no Herdr")
+        expect(herdr.interactiveCalls).toHaveLength(0)
+        expect(
+          [...fakeFs.files.keys()].filter((file) =>
+            file.includes("/.apnea/tasks/"),
+          ),
+        ).toHaveLength(1)
+        expect(savedState(fakeFs).pending_pane_id).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect("a genuine Herdr preflight failure writes no task", () => {
+    const fsFake = seedFs(baseState({ step: "planning" }))
+    const { layer, fakeFs } = layerOf(fsFake, {
+      herdr: {
+        availability: new HerdrError({ message: "herdr daemon unavailable" }),
+      },
+    })
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan" }, ROOT),
+      )
+      expect(expectFailure(result, "HerdrError").message).toBe(
+        "herdr daemon unavailable",
+      )
+      expect(
+        [...fakeFs.files.keys()].some((file) =>
+          file.includes("/.apnea/tasks/"),
+        ),
+      ).toBe(false)
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect(
+    "package rework advances the review round and preserves the prior package",
+    () => {
+      const oldPackage = `${ROOT}/.apnea/artifacts/phase-01/round-1/phase-package.md`
+      const fsFake = seedFs(
+        baseState({
+          step: "phase_packaging",
+          rounds: { "phase-01/code_review": 1 },
+          current_phase_package:
+            ".apnea/artifacts/phase-01/round-1/phase-package.md",
+          current_code_review:
+            ".apnea/artifacts/phase-01/round-1/code-review.md",
+          phase_package_rework: true,
+        }),
+        { [oldPackage]: "old package" },
+      )
+      const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+      return Effect.gen(function* () {
+        const result = yield* dispatchWorkflow({ kind: "phase_package" }, ROOT)
+        expect(result.ok).toBe(true)
+        expect(result.data?.round).toBe(2)
+        expect(result.data?.artifact).toBe(
+          ".apnea/artifacts/phase-01/round-2/phase-package.md",
+        )
+        expect(fakeFs.files.get(oldPackage)).toBe("old package")
+        const saved = savedState(fakeFs)
+        expect(saved.rounds["phase-01/code_review"]).toBe(2)
+        expect(saved.phase_package_rework).toBe(false)
       }).pipe(Effect.provide(layer))
     },
   )

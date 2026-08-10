@@ -19,6 +19,7 @@ export type PaneInfo = {
   agent?: string
 }
 export type RolePaneRef = { pane_id: string; label: string }
+export type HerdrAvailability = "available" | "unavailable"
 export type InteractiveLaunch = {
   pane_id: string
   label: string
@@ -30,6 +31,8 @@ export type InteractiveLaunch = {
 
 export interface HerdrService {
   readonly enabled: Effect.Effect<boolean>
+  /** Dispatch preflight that distinguishes a stale pane from CLI failures. */
+  readonly availability: Effect.Effect<HerdrAvailability, HerdrError>
   readonly version: Effect.Effect<[number, number, number] | null>
   readonly hasApneaPlugin: Effect.Effect<boolean>
   readonly paneGet: (paneId: string) => Effect.Effect<PaneInfo>
@@ -155,6 +158,32 @@ export function floatingPanePath(
 
 function herdrEnabledSync(): boolean {
   return process.env.HERDR_ENV === "1"
+}
+
+export function probeHerdrAvailability(
+  env: { HERDR_ENV?: string; HERDR_PANE_ID?: string },
+  paneGet: (paneId: string) => { ok: boolean; raw: string },
+): HerdrAvailability {
+  if (env.HERDR_ENV !== "1") return "unavailable"
+  const current = env.HERDR_PANE_ID
+  if (!current) return "unavailable"
+  const r = paneGet(current)
+  if (r.ok) return "available"
+  if (/pane_not_found|pane not found/i.test(r.raw)) return "unavailable"
+  throw new HerdrError({
+    message: `failed to verify current Herdr pane ${current}: ${r.raw.trim() || "unknown herdr error"}`,
+    command: "herdr pane get",
+  })
+}
+
+function herdrAvailabilitySync(): HerdrAvailability {
+  return probeHerdrAvailability(
+    {
+      HERDR_ENV: process.env.HERDR_ENV,
+      HERDR_PANE_ID: process.env.HERDR_PANE_ID,
+    },
+    (paneId) => herdrCli(["pane", "get", paneId]),
+  )
 }
 
 function paneGetSync(paneId: string): PaneInfo {
@@ -613,6 +642,11 @@ export const makeHerdrLive = (hostAdapter: ApneaHostAdapter) =>
     Effect.sync(() =>
       Herdr.of({
         enabled: Effect.sync(herdrEnabledSync),
+
+        availability: Effect.try({
+          try: herdrAvailabilitySync,
+          catch: toHerdrError,
+        }),
 
         version: Effect.sync(herdrVersionSync),
 

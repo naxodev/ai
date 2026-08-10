@@ -1,6 +1,6 @@
 import { Result } from "effect"
 import { IllegalTool } from "../errors.ts"
-import type { Role, Step } from "./types.ts"
+import type { ReworkTarget, Role, Step } from "./types.ts"
 
 /** Legal next steps after a successful transition from `step`. */
 export const LEGAL_TOOLS: Record<
@@ -87,6 +87,7 @@ export function allowedKinds(step: Step): DispatchKind[] {
 export function stepAfterArtifact(
   kind: DispatchKind,
   verdict: string | undefined,
+  rework?: ReworkTarget,
 ): Step | { error: string } {
   switch (kind) {
     case "plan":
@@ -101,7 +102,8 @@ export function stepAfterArtifact(
       return "code_review"
     case "code_review":
       if (verdict === "APPROVED") return "committing"
-      if (verdict === "CHANGES_REQUIRED") return "coding"
+      if (verdict === "CHANGES_REQUIRED")
+        return rework === "phase_package" ? "phase_packaging" : "coding"
       return { error: "code_review artifact missing verdict" }
     case "pr_description":
       return "done"

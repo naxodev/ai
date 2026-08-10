@@ -49,13 +49,15 @@
         "required": ["pane_id", "label"],
         "properties": {
           "pane_id": { "type": "string" },
-          "label": { "type": "string" }
+          "label": { "type": "string" },
+          "profile_fingerprint": { "type": ["string", "null"] }
         }
       }
     },
     "package_root": { "type": "string" },
     "reviewer_tree_fingerprint": { "type": ["string", "null"] },
     "current_phase_package": { "type": ["string", "null"] },
-    "current_code_review": { "type": ["string", "null"] }
+    "current_code_review": { "type": ["string", "null"] },
+    "phase_package_rework": { "type": "boolean" }
   }
 }

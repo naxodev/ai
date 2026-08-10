@@ -73,7 +73,7 @@ Write **exactly**:
 
 \`${opts.artifactRel}\`
 
-Front-matter must include \`status: done\`. Review artifacts also need \`verdict: APPROVED | CHANGES_REQUIRED\` and optional \`nits\`.
+Front-matter must include \`status: done\`. Review artifacts also need \`verdict: APPROVED | CHANGES_REQUIRED\` and optional \`nits\`. A code-review \`CHANGES_REQUIRED\` must use \`rework: code | phase_package\`; absent means code for compatibility.
 
 ## Details
 
@@ -162,6 +162,9 @@ export const dispatchWorkflow = (
       const okRework =
         (params.kind === "plan" && state.step === "planning") ||
         (params.kind === "code" && state.step === "coding") ||
+        (params.kind === "phase_package" &&
+          state.step === "phase_packaging" &&
+          state.phase_package_rework) ||
         (params.kind === "plan_review" && state.step === "plan_review") ||
         (params.kind === "code_review" && state.step === "code_review")
       // After CHANGES_REQUIRED, step moves back to planning/coding; rework
@@ -178,6 +181,10 @@ export const dispatchWorkflow = (
     const role = expectedRole(params.kind)
     const cfg = yield* config.load(root)
     const roleTimeoutMs = timeoutMsForKind(params.kind, cfg.timeouts_ms)
+    // Validate the orchestrator's current pane before creating task artifacts.
+    // A stale inherited environment is equivalent to running outside Herdr;
+    // other CLI failures remain typed errors and stop dispatch.
+    const herdrAvailability = yield* herdr.availability
 
     // --- Round numbers (increment ONLY on rework after CHANGES_REQUIRED) ---
     let round = 1
@@ -198,6 +205,11 @@ export const dispatchWorkflow = (
       const key = codeReviewRoundKey(state.phase_index)
       if (params.rework && params.kind === "code") {
         setRound(state, key, getRound(state, key) + 1)
+      } else if (
+        params.kind === "phase_package" &&
+        state.phase_package_rework
+      ) {
+        setRound(state, key, getRound(state, key) + 1)
       } else if (!state.rounds[key]) {
         setRound(state, key, 1)
       }
@@ -212,6 +224,7 @@ export const dispatchWorkflow = (
     if (
       (params.kind === "plan" ||
         params.kind === "code" ||
+        params.kind === "phase_package" ||
         params.kind === "plan_review" ||
         params.kind === "code_review") &&
       getRound(state, capKey) > cfg.review_round_cap
@@ -241,11 +254,13 @@ export const dispatchWorkflow = (
           `Review plan at \`${rel(planPath(root), root)}\`.\nWrite verdict front-matter.`
         break
       case "phase_package": {
-        const d = phaseDir(state.phase_index, 1, root)
+        const d = phaseDir(state.phase_index, round, root)
         artifactAbs = path.join(d, "phase-package.md")
         extra =
           extra ||
-          `Emit phase package for phase ${state.phase_index} only from approved plan \`${rel(planPath(root), root)}\`.`
+          (state.phase_package_rework
+            ? `Revise the phase ${state.phase_index} package after code review \`${state.current_code_review}\`. Preserve approved-plan scope and address package findings.`
+            : `Emit phase package for phase ${state.phase_index} only from approved plan \`${rel(planPath(root), root)}\`.`)
         break
       }
       case "code": {
@@ -372,7 +387,7 @@ export const dispatchWorkflow = (
       pane_style_effective: paneStyle.effective,
     }
 
-    if (!(yield* herdr.enabled)) {
+    if (herdrAvailability === "unavailable") {
       // Stamped here, not at the top of the workflow: `pending_started_at` is
       // the anchor for both the role's deadline and wait's liveness grace, so
       // it must mean "the role has the prompt", not "dispatch began".
@@ -384,6 +399,7 @@ export const dispatchWorkflow = (
       state.pending_floating_exit = null
       state.pending_started_at = launchedAt
       state.pending_deadline_ms = launchedAt + roleTimeoutMs
+      if (params.kind === "phase_package") state.phase_package_rework = false
       resetRecoveryLadder(state)
       yield* store.save(state, root)
       return ok(
@@ -473,11 +489,19 @@ export const dispatchWorkflow = (
         prompt,
       }
     } else {
-      const prefer = state.role_panes[role] ?? null
       // Interactive TUI: open harness, wait idle, submit pointer via pane run.
       const cmd = yield* config
         .resolveRoleCmd(cfg, role, "interactive")
         .pipe(Effect.mapError((e) => configWithTaskRef(e, taskRef)))
+      const profileFingerprint = JSON.stringify([
+        cfg.roles[role]?.profile ?? null,
+        cmd,
+      ])
+      const remembered = state.role_panes[role] ?? null
+      const prefer =
+        remembered?.profile_fingerprint === profileFingerprint
+          ? remembered
+          : null
       const r = yield* herdr
         .runInteractivePrompt(role, cmd, prompt, prefer)
         .pipe(Effect.mapError((e) => herdrWithTaskRef(e, taskRef)))
@@ -497,7 +521,11 @@ export const dispatchWorkflow = (
       state.pending_pane_id = r.pane_id
       state.pending_pane_label = r.label
       state.pending_floating_exit = null
-      state.role_panes[role] = { pane_id: r.pane_id, label: r.label }
+      state.role_panes[role] = {
+        pane_id: r.pane_id,
+        label: r.label,
+        profile_fingerprint: profileFingerprint,
+      }
     }
 
     // After the launch, not before it: `runInteractivePrompt` blocks in
@@ -509,6 +537,7 @@ export const dispatchWorkflow = (
     state.pending_role = role
     state.pending_started_at = launchedAt
     state.pending_deadline_ms = launchedAt + roleTimeoutMs
+    if (params.kind === "phase_package") state.phase_package_rework = false
     resetRecoveryLadder(state)
     yield* store.save(state, root)
 

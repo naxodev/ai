@@ -141,7 +141,7 @@ function createRegisteredOperations(
       usage: "<kind> [--rework]",
       summary: "Write the task file and launch a role in a Herdr pane.",
       guidance:
-        "One outstanding dispatch at a time. Pass rework=true only after CHANGES_REQUIRED on the same gate — that is what increments the round counter.",
+        "One outstanding dispatch at a time. Pass rework=true for plan/code after CHANGES_REQUIRED. Phase-package rework advances its round automatically from review frontmatter.",
       params: operationParams({
         kind: DispatchKind,
         task_markdown: Type.Optional(

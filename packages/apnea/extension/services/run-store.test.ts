@@ -37,6 +37,7 @@ const sampleState = {
   reviewer_tree_fingerprint: null,
   current_phase_package: null,
   current_code_review: null,
+  phase_package_rework: false,
 }
 
 describe("RunStore (fake FileSystem)", () => {

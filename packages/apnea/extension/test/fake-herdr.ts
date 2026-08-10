@@ -11,6 +11,7 @@ import {
 
 export type FakeHerdrOptions = {
   enabled?: boolean
+  availability?: "available" | "unavailable" | HerdrError
   version?: [number, number, number] | null
   hasPlugin?: boolean
   /** Function so a test can flip a pane's status between polls. */
@@ -72,6 +73,16 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
 
   const service: HerdrService = {
     enabled: Effect.sync(() => opts.enabled ?? true),
+
+    availability: Effect.gen(function* () {
+      if (opts.availability instanceof HerdrError) {
+        return yield* opts.availability
+      }
+      return (
+        opts.availability ??
+        (opts.enabled === false ? "unavailable" : "available")
+      )
+    }),
 
     version: Effect.sync(() =>
       opts.version === undefined ? [0, 7, 4] : opts.version,

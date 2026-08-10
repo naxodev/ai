@@ -46,6 +46,7 @@ export function parseFrontMatter(text: string): FrontMatter | null {
     status: fields.status,
     verdict: fields.verdict,
     nits: fields.nits,
+    rework: fields.rework,
     raw,
     body,
   }
