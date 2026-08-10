@@ -8,7 +8,11 @@ import {
   onMount,
 } from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
-import type { BoxRenderable, TextRenderable } from "@opentui/core"
+import {
+  MouseButton,
+  type BoxRenderable,
+  type TextRenderable,
+} from "@opentui/core"
 import { waveformSeedKey } from "@naxodev/music-core"
 import { formatMs } from "./types.ts"
 import { AlbumArtwork } from "./artwork.tsx"
@@ -74,6 +78,35 @@ export function transportRowWidth(
 export const COMPACT_MARKER_WIDTH = 1
 export const COMPACT_TITLE_SEPARATOR = " "
 export const COMPACT_SEPARATOR = " - "
+export const COMPACT_SEEK_FRACTION = 0.8
+
+export function compactSeekRegionWidth(width: number): number {
+  if (!Number.isFinite(width) || width <= 0) return 0
+  const available = Math.floor(width)
+  return Math.max(
+    0,
+    Math.min(available, Math.round(available * COMPACT_SEEK_FRACTION)),
+  )
+}
+
+export function seekPositionForCell(
+  cell: number,
+  width: number,
+  durationMs: number,
+): number | null {
+  if (
+    !Number.isFinite(width) ||
+    width <= 0 ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0
+  ) {
+    return null
+  }
+  const lastCell = Math.max(0, Math.floor(width) - 1)
+  const clampedCell = Math.max(0, Math.min(lastCell, Math.floor(cell)))
+  const ratio = lastCell === 0 ? 0 : clampedCell / lastCell
+  return Math.round(ratio * durationMs)
+}
 
 export const COMPACT_BUDGETS = {
   wide: {
@@ -174,7 +207,11 @@ export function compactPresentation(
   }
 }
 
-export function CompactPlayer(props: { context: Context; state: UiState }) {
+export function CompactPlayer(props: {
+  context: Context
+  state: UiState
+  onSeek: (positionMs: number) => void
+}) {
   const theme = () => props.context.theme
   let row: BoxRenderable | undefined
   let content: TextRenderable | undefined
@@ -222,6 +259,26 @@ export function CompactPlayer(props: { context: Context; state: UiState }) {
           flexDirection="row"
           flexShrink={0}
           overflow="hidden"
+          onMouseDown={(event) => {
+            if (event.button !== MouseButton.LEFT) return
+            const current = props.state.player?.track
+            if (!current || !row) return
+
+            const seekWidth = compactSeekRegionWidth(row.width)
+            const cell = Math.floor(event.x - row.x)
+            if (cell < 0 || cell >= seekWidth) return
+
+            const position = seekPositionForCell(
+              cell,
+              seekWidth,
+              current.duration_ms,
+            )
+            if (position === null) return
+
+            event.preventDefault()
+            event.stopPropagation()
+            props.onSeek(position)
+          }}
         >
           <text
             ref={(element) => {

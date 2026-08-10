@@ -23,6 +23,7 @@ export type Controller = {
   openApp: () => Promise<void>
   refreshAll: () => Promise<void>
   playPause: () => Promise<void>
+  seek: (positionMs: number) => Promise<void>
   next: () => Promise<void>
   prev: () => Promise<void>
   dispose: () => void
@@ -54,6 +55,33 @@ export function optimisticPlayerState(
     is_playing: playing,
     fetched_at: now,
   }
+}
+
+export function optimisticSeekPlayerState(
+  player: SessionStore["player"],
+  positionMs: number,
+  now = Date.now(),
+): SessionStore["player"] {
+  const duration = player?.track?.duration_ms
+  const target = seekTarget(positionMs, duration)
+  if (!player?.track || target === null) return player
+  return {
+    ...player,
+    progress_ms: target,
+    fetched_at: now,
+  }
+}
+
+function seekTarget(positionMs: number, durationMs?: number): number | null {
+  if (
+    !Number.isFinite(positionMs) ||
+    typeof durationMs !== "number" ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0
+  ) {
+    return null
+  }
+  return Math.max(0, Math.min(durationMs, Math.round(positionMs)))
 }
 
 const controllerDependencies: ControllerDependencies = {
@@ -95,6 +123,8 @@ export function createController(
   let pendingRefresh = false
   let drainPromise: Promise<void> | null = null
   let transportRevision = 0
+  let pendingSeekRevision: number | null = null
+  let seekBusy = false
 
   const isActive = () => !disposed
 
@@ -163,7 +193,10 @@ export function createController(
             const revision = transportRevision
             const sampled = await backend.player()
             if (!isActive()) return
-            if (revision === transportRevision) {
+            if (
+              revision === transportRevision &&
+              pendingSeekRevision === null
+            ) {
               const player = mergePlayer(session.player, sampled)
               setSession((d) => {
                 d.player = player
@@ -222,6 +255,59 @@ export function createController(
     })
   }
 
+  const seek = async (positionMs: number) => {
+    const previous = session.player
+    const target = seekTarget(positionMs, previous?.track?.duration_ms)
+    if (!previous?.track || !backend.seek || target === null || seekBusy) return
+
+    seekBusy = true
+    setError(null)
+    transportRevision++
+    const revision = transportRevision
+    pendingSeekRevision = revision
+    setSession((d) => {
+      d.player = optimisticSeekPlayerState(d.player, target)
+    })
+
+    try {
+      await backend.seek(target)
+      if (!isActive()) return
+      if (revision !== transportRevision) {
+        if (pendingSeekRevision === revision) pendingSeekRevision = null
+        await requestRefresh()
+        return
+      }
+      await dependencies.delay(120)
+      if (!isActive()) return
+      if (revision !== transportRevision) {
+        if (pendingSeekRevision === revision) pendingSeekRevision = null
+        await requestRefresh()
+        return
+      }
+
+      transportRevision++
+      pendingSeekRevision = null
+      await requestRefresh()
+    } catch (error) {
+      if (!isActive()) return
+      if (pendingSeekRevision === revision) pendingSeekRevision = null
+      const superseded = revision !== transportRevision
+      if (!superseded) {
+        transportRevision++
+        setSession((d) => {
+          d.player = previous
+        })
+      }
+      const message = errMsg(error)
+      context.ui.toast.show({ title: "Music", message, variant: "error" })
+      await requestRefresh()
+      setError(message)
+    } finally {
+      if (pendingSeekRevision === revision) pendingSeekRevision = null
+      seekBusy = false
+    }
+  }
+
   const next = async () => {
     await withLoading(async () => {
       await backend.next?.()
@@ -252,6 +338,7 @@ export function createController(
     openApp,
     refreshAll,
     playPause,
+    seek,
     next,
     prev,
     dispose: () => {
@@ -307,7 +394,13 @@ function AppHost(props: { context: Context; ctrl: Controller }) {
     ],
   }))
 
-  return <CompactPlayer context={context} state={ctrl.session} />
+  return (
+    <CompactPlayer
+      context={context}
+      state={ctrl.session}
+      onSeek={(positionMs) => void ctrl.seek(positionMs)}
+    />
+  )
 }
 
 export function createMusicPlayerPlugin(options?: {

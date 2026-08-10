@@ -74,7 +74,12 @@ test("a completed poll leaves one timeout and view mounts schedule none", async 
   expect(pending.size).toBe(1)
 
   const compact = await testRender(
-    () => CompactPlayer({ context: context as any, state: session }),
+    () =>
+      CompactPlayer({
+        context: context as any,
+        state: session,
+        onSeek: () => {},
+      }),
     { width: 40, height: 4 },
   )
   const sidebar = await testRender(

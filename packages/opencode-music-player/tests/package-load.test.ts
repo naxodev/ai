@@ -56,6 +56,7 @@ test("setup shares one session and persistent keymap across sidebar remounts", a
     openApp: async () => {},
     refreshAll: async () => {},
     playPause: async () => {},
+    seek: async () => {},
     next: async () => {},
     prev: async () => {},
     dispose: () => {

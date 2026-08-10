@@ -8,6 +8,8 @@ import {
   COMPACT_SEPARATOR,
   COMPACT_TITLE_SEPARATOR,
   compactPresentation,
+  compactSeekRegionWidth,
+  seekPositionForCell,
   transportRowWidth,
 } from "../ui.tsx"
 
@@ -149,6 +151,33 @@ describe("compact row width policy", () => {
     expect(renderedWidth(result)).toBeLessThanOrEqual(
       COMPACT_BUDGETS.wide.minWidth,
     )
+  })
+})
+
+describe("compact seek geometry", () => {
+  test("reserves approximately eighty percent for seeking", () => {
+    expect(compactSeekRegionWidth(100)).toBe(80)
+    expect(compactSeekRegionWidth(55)).toBe(44)
+    expect(compactSeekRegionWidth(10)).toBe(8)
+  })
+
+  test("maps the first, middle, and final cells across the duration", () => {
+    expect(seekPositionForCell(0, 11, 100_000)).toBe(0)
+    expect(seekPositionForCell(5, 11, 100_000)).toBe(50_000)
+    expect(seekPositionForCell(10, 11, 100_000)).toBe(100_000)
+  })
+
+  test("clamps click positions to the track bounds", () => {
+    expect(seekPositionForCell(-20, 11, 100_000)).toBe(0)
+    expect(seekPositionForCell(40, 11, 100_000)).toBe(100_000)
+  })
+
+  test("rejects unavailable durations and widths", () => {
+    expect(seekPositionForCell(2, 10, 0)).toBeNull()
+    expect(seekPositionForCell(2, 10, -1)).toBeNull()
+    expect(seekPositionForCell(2, 10, Number.NaN)).toBeNull()
+    expect(seekPositionForCell(2, 0, 100_000)).toBeNull()
+    expect(seekPositionForCell(0, 1, 100_000)).toBe(0)
   })
 })
 
