@@ -10,6 +10,8 @@
       "{workspaceRoot}/bun.lock",
       "{workspaceRoot}/nx.json",
       "{workspaceRoot}/tsconfig.base.json",
+      "{workspaceRoot}/.github/workflows/*.yml",
+      "{workspaceRoot}/.gitattributes",
       "{workspaceRoot}/.editorconfig",
       "{workspaceRoot}/.prettierignore",
       "{workspaceRoot}/.prettierrc.json",
@@ -18,6 +20,11 @@
     ]
   },
   "targetDefaults": {
+    "build": {
+      "cache": true,
+      "inputs": ["default", "^default"],
+      "outputs": ["{projectRoot}/dist"]
+    },
     "typecheck": {
       "cache": true,
       "inputs": ["default", "^default"]
