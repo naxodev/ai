@@ -5,6 +5,10 @@
   "sourceRoot": "packages/apnea/extension",
   "tags": ["scope:public", "type:package"],
   "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": { "command": "bun run build", "cwd": "packages/apnea" }
+    },
     "typecheck": {
       "executor": "nx:run-commands",
       "options": { "command": "bun run typecheck", "cwd": "packages/apnea" }
