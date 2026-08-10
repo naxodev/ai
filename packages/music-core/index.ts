@@ -25,11 +25,18 @@ export {
 } from "./clock.ts"
 
 // reconcile
-export { mergePlayer } from "./reconcile.ts"
+export { mergePlayer, sameTrackIdentity } from "./reconcile.ts"
 
 // waveform engine
-export type { WaveEngine } from "./waveform.ts"
-export { createEngine, stepEngine, isFlat } from "./waveform.ts"
+export type { WaveEngine, WaveFrame } from "./waveform.ts"
+export {
+  createEngine,
+  displayLevel,
+  isFlat,
+  livePlaybackPosition,
+  stepEngine,
+  waveformSeedKey,
+} from "./waveform.ts"
 
 // CLI runner
 export type {

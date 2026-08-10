@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mergePlayer } from "../reconcile.ts"
+import { mergePlayer, sameTrackIdentity } from "../reconcile.ts"
 import type { PlayerState, Track } from "../types.ts"
 
 function track(partial: Partial<Track> & Pick<Track, "id" | "name">): Track {
@@ -65,6 +65,90 @@ describe("mergePlayer", () => {
       fetched_at: Date.now(),
     })
     expect(mergePlayer(prev, next)).toBe(next)
+  })
+
+  test("provider identity survives metadata enrichment", () => {
+    const prev = player({
+      track: track({ id: "reused", name: "", artists: "" }),
+      progress_ms: 50_000,
+      is_playing: true,
+      fetched_at: Date.now(),
+    })
+    const next = player({
+      track: track({ id: "reused", name: "Same", artists: "Artist" }),
+      progress_ms: 50_100,
+      is_playing: true,
+      fetched_at: Date.now(),
+    })
+    expect(mergePlayer(prev, next)).toBe(next)
+  })
+
+  test("a provider id can enrich a matching track and survive fallback", () => {
+    const unidentified = player({
+      track: track({ id: "", name: "Song", artists: "Artist" }),
+      progress_ms: 10_000,
+      is_playing: false,
+      fetched_at: 1_000_000,
+    })
+    const identified = player({
+      track: track({ id: "provider-id", name: "Song", artists: "Artist" }),
+      progress_ms: 10_000,
+      is_playing: false,
+      fetched_at: 1_001_000,
+    })
+    const fallback = player({
+      track: track({ id: "", name: "Song", artists: "Artist" }),
+      progress_ms: 10_000,
+      is_playing: false,
+      fetched_at: 1_002_000,
+    })
+
+    expect(mergePlayer(unidentified, identified)).toBe(identified)
+    expect(mergePlayer(identified, fallback)?.track?.id).toBe("provider-id")
+  })
+
+  test("reused provider id with conflicting complete metadata accepts replacement", () => {
+    const prev = player({
+      track: track({ id: "reused", name: "Old Song", artists: "Old Artist" }),
+      progress_ms: 50_000,
+      is_playing: true,
+      fetched_at: Date.now(),
+    })
+    const next = player({
+      track: track({ id: "reused", name: "New Song", artists: "New Artist" }),
+      progress_ms: 100,
+      is_playing: true,
+      fetched_at: Date.now(),
+    })
+
+    expect(mergePlayer(prev, next)).toBe(next)
+  })
+
+  test("a blank sample cannot erase identity before a reused-id replacement", () => {
+    const initial = player({
+      track: track({ id: "reused", name: "Song", artists: "Old Artist" }),
+      progress_ms: 50_000,
+      is_playing: false,
+      fetched_at: 1_000_000,
+    })
+    const blank = player({
+      track: track({ id: "reused", name: "", artists: "" }),
+      progress_ms: 50_000,
+      is_playing: false,
+      fetched_at: 1_001_000,
+    })
+    const replacement = player({
+      track: track({ id: "reused", name: "Song", artists: "New Artist" }),
+      progress_ms: 500,
+      is_playing: true,
+      fetched_at: 1_002_000,
+    })
+
+    const retained = mergePlayer(initial, blank)
+
+    expect(retained?.track?.name).toBe("Song")
+    expect(retained?.track?.artists).toBe("Old Artist")
+    expect(mergePlayer(retained, replacement)).toBe(replacement)
   })
 
   // Poll glitches that report ~0 while still playing must not rewind the bar.
@@ -156,5 +240,26 @@ describe("mergePlayer", () => {
     expect(merged).not.toBeNull()
     expect(merged!.track!.artwork).toBe("new-cover")
     expect(merged!.progress_ms).toBeGreaterThan(30_000)
+  })
+})
+
+describe("sameTrackIdentity", () => {
+  test("accepts missing-to-known enrichment without hiding known conflicts", () => {
+    const incomplete = track({ id: "reused", name: "Song", artists: "" })
+    const enriched = track({ id: "reused", name: "Song", artists: "Artist" })
+
+    expect(sameTrackIdentity(incomplete, enriched)).toBe(true)
+    expect(
+      sameTrackIdentity(
+        track({ id: "reused", name: "Old Song", artists: "" }),
+        track({ id: "reused", name: "New Song", artists: "Artist" }),
+      ),
+    ).toBe(false)
+    expect(
+      sameTrackIdentity(
+        track({ id: "reused", name: "", artists: "Old Artist" }),
+        track({ id: "reused", name: "Song", artists: "New Artist" }),
+      ),
+    ).toBe(false)
   })
 })

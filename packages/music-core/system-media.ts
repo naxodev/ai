@@ -104,7 +104,7 @@ function idleState(name: string): PlayerState {
 }
 
 function buildState(opts: {
-  key: string
+  provider_id: string
   title: string
   artist: string
   album: string
@@ -128,7 +128,7 @@ function buildState(opts: {
       supports_volume: false,
     },
     track: {
-      id: opts.key,
+      id: opts.provider_id,
       uri: `system:now:${encodeURIComponent(opts.title)}`,
       name: opts.title,
       artists: opts.artist,
@@ -151,15 +151,19 @@ async function playerViaMediaControl(
   } catch {
     return null
   }
-  if (!data || !data.title) return idleState("Nothing playing")
+  if (!data) return idleState("Nothing playing")
 
-  const title = String(data.title)
+  const title = data.title != null ? String(data.title) : ""
   const artist = data.artist != null ? String(data.artist) : ""
   const album = data.album != null ? String(data.album) : ""
   const durationSec =
     typeof data.duration === "number" && Number.isFinite(data.duration)
       ? data.duration
       : 0
+  const hasReported =
+    (typeof data.elapsedTimeNow === "number" &&
+      Number.isFinite(data.elapsedTimeNow)) ||
+    (typeof data.elapsedTime === "number" && Number.isFinite(data.elapsedTime))
   const elapsedSec =
     typeof data.elapsedTimeNow === "number" &&
     Number.isFinite(data.elapsedTimeNow)
@@ -175,6 +179,8 @@ async function playerViaMediaControl(
   const playing = typeof data.playing === "boolean" ? data.playing : null
   const uid =
     data.contentItemIdentifier != null ? String(data.contentItemIdentifier) : ""
+  if (!title && !artist && !album && !uid && data.playing !== true)
+    return idleState("Nothing playing")
   const bundle = effectiveBundle(data)
 
   const duration_ms = Math.round(durationSec * 1000)
@@ -184,6 +190,7 @@ async function playerViaMediaControl(
   const { progress_ms, is_playing } = syncFromSample({
     key,
     reported_ms,
+    reported: hasReported,
     duration_ms,
     playing,
     rate,
@@ -191,7 +198,7 @@ async function playerViaMediaControl(
   })
 
   return buildState({
-    key,
+    provider_id: uid,
     title,
     artist,
     album,
@@ -230,14 +237,17 @@ async function playerViaNowPlayingCli(
 
   const title =
     data.title != null && data.title !== "null" ? String(data.title) : ""
-  if (!title) return idleState("Nothing playing")
-
   const artist =
     data.artist != null && data.artist !== "null" ? String(data.artist) : ""
   const album =
     data.album != null && data.album !== "null" ? String(data.album) : ""
   const durationSec = Number(data.duration) || 0
-  const elapsedSec = Number(data.elapsedTime) || 0
+  const elapsedValue = Number(data.elapsedTime)
+  const hasReported =
+    data.elapsedTime != null &&
+    data.elapsedTime !== "null" &&
+    Number.isFinite(elapsedValue)
+  const elapsedSec = hasReported ? elapsedValue : 0
   const rate = Number(data.playbackRate)
   let playing: boolean | null = null
   if (
@@ -253,6 +263,8 @@ async function playerViaNowPlayingCli(
   ) {
     playing = false
   }
+  if (!title && !artist && !album && playing !== true)
+    return idleState("Nothing playing")
 
   const duration_ms = Math.round(durationSec * 1000)
   const reported_ms = Math.round(elapsedSec * 1000)
@@ -261,6 +273,7 @@ async function playerViaNowPlayingCli(
   const { progress_ms, is_playing } = syncFromSample({
     key,
     reported_ms,
+    reported: hasReported,
     duration_ms,
     playing,
     rate: Number.isFinite(rate) ? rate : NaN,
@@ -268,7 +281,7 @@ async function playerViaNowPlayingCli(
   })
 
   return buildState({
-    key,
+    provider_id: "",
     title,
     artist,
     album,
@@ -453,32 +466,32 @@ export function createSystemMedia(
     },
 
     async play() {
-      setClockPlaying(true)
       await cmd("play", deps)
+      setClockPlaying(true)
     },
 
     async pause() {
-      setClockPlaying(false)
       await cmd("pause", deps)
+      setClockPlaying(false)
     },
 
     async next() {
-      resetClock()
       await cmd("next", deps)
+      resetClock()
     },
 
     async previous() {
-      resetClock()
       await cmd("previous", deps)
+      resetClock()
     },
 
     async seek(positionMs: number) {
       const sec = Math.max(0, positionMs / 1000)
-      seekClock(positionMs)
       const kind = deps.detectBackend()
       if (kind === "media-control") {
         const r = await deps.run(["media-control", "seek", String(sec)])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
+        seekClock(positionMs)
         return
       }
       if (kind === "nowplaying-cli") {
@@ -488,6 +501,7 @@ export function createSystemMedia(
           String(Math.floor(sec)),
         ])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
+        seekClock(positionMs)
       }
     },
   }

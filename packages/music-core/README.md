@@ -10,7 +10,7 @@ Shared Now Playing behavior so both hosts consume one implementation:
 - `formatMs` progress formatting
 - playback clock (`syncFromSample`, `liveFromClock`, `trackKey`, `resetClock`, `setClockPlaying`, `seekClock`)
 - track reconciliation (`mergePlayer`)
-- waveform engine primitives (`createEngine`, `stepEngine`, `isFlat`)
+- frame-driven playback visualization (`createEngine`, `stepEngine`, `displayLevel`, `isFlat`); it generates levels and does not analyse audio
 - portable CLI runner (`run`) and system-media provider (`createSystemMedia`, bundle labels, backend detection)
 - optional provider-change subscriptions (`MusicBackend.subscribe`)
 
@@ -44,8 +44,11 @@ import {
   mergePlayer,
   // waveform engine
   type WaveEngine,
+  type WaveFrame,
   createEngine,
   stepEngine,
+  livePlaybackPosition,
+  displayLevel,
   isFlat,
   // runner + system media
   type CommandResult,

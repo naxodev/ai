@@ -186,6 +186,43 @@ test("reschedules polling for event-driven paused and idle states", async () => 
 	expect(dock.activeTimeouts().map((timer) => timer.delay)).toEqual([8_000]);
 });
 
+test("a pre-transport event sample cannot undo optimistic playback", async () => {
+	let listener: (() => void) | undefined;
+	const stale = deferred<PlayerState | null>();
+	const fresh = deferred<PlayerState | null>();
+	let calls = 0;
+	const backend: MusicBackend = {
+		id: "fake",
+		label: "Fake",
+		remoteControl: false,
+		authenticated: () => true,
+		player: () => {
+			calls++;
+			if (calls === 1) return Promise.resolve(state("paused"));
+			return calls === 2 ? stale.promise : fresh.promise;
+		},
+		play: async () => listener?.(),
+		subscribe: (next) => {
+			listener = next;
+			return () => {};
+		},
+	};
+	const dock = setup(backend);
+	await dock.start();
+
+	const command = dock.command("music");
+	await flushRefresh();
+	expect(dock.statuses.at(-1)).toContain("⏸");
+
+	stale.resolve(state("paused"));
+	await flushRefresh();
+	expect(dock.statuses.at(-1)).toContain("⏸");
+
+	fresh.resolve(state());
+	await command;
+	expect(dock.statuses.at(-1)).toContain("⏸");
+});
+
 test("polling works without events and shutdown releases all resources", async () => {
 	let disposed = 0;
 	const pending = deferred<PlayerState | null>();
