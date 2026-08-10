@@ -15,7 +15,7 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "bun test",
+        "command": "bun test --preload @opentui/solid/preload",
         "cwd": "packages/opencode-music-player"
       }
     },

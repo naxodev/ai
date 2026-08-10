@@ -8,7 +8,7 @@ import {
   openNowPlayingApp,
 } from "./system-media.ts"
 import { isMac, type MusicBackend } from "./types.ts"
-import { SidebarPlayer, type UiState } from "./ui.tsx"
+import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
 
 const POLL_PLAYING_MS = 3000
 const POLL_IDLE_MS = 8000
@@ -17,7 +17,7 @@ type Context = Plugin.Context
 
 type SessionStore = UiState
 
-type Controller = {
+export type Controller = {
   session: SessionStore
   openApp: () => Promise<void>
   refreshAll: () => Promise<void>
@@ -27,6 +27,20 @@ type Controller = {
   dispose: () => void
 }
 
+export type ControllerDependencies = {
+  createBackend: () => MusicBackend
+  scheduleTimeout: typeof setTimeout
+  clearScheduledTimeout: typeof clearTimeout
+  delay: (ms: number) => Promise<void>
+}
+
+const controllerDependencies: ControllerDependencies = {
+  createBackend: createSystemMedia,
+  scheduleTimeout: setTimeout,
+  clearScheduledTimeout: clearTimeout,
+  delay: Bun.sleep,
+}
+
 function errMsg(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) {
     return String((e as { message: unknown }).message)
@@ -34,7 +48,10 @@ function errMsg(e: unknown): string {
   return String(e)
 }
 
-function createController(context: Context): Controller {
+export function createController(
+  context: Context,
+  dependencies: ControllerDependencies = controllerDependencies,
+): Controller {
   const [session, setSession] = context.storage.memory<SessionStore>(
     "music-player.session.v5",
     {
@@ -46,7 +63,7 @@ function createController(context: Context): Controller {
     },
   )
 
-  const backend: MusicBackend = createSystemMedia()
+  const backend = dependencies.createBackend()
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
@@ -60,7 +77,7 @@ function createController(context: Context): Controller {
   }
 
   const withLoading = async (fn: () => Promise<void>, toast = true) => {
-    if (busy) return
+    if (busy || disposed) return
     busy = true
     setSession((d) => {
       d.loading = true
@@ -75,9 +92,11 @@ function createController(context: Context): Controller {
         context.ui.toast.show({ title: "Music", message, variant: "error" })
     } finally {
       busy = false
-      setSession((d) => {
-        d.loading = false
-      })
+      if (!disposed) {
+        setSession((d) => {
+          d.loading = false
+        })
+      }
     }
   }
 
@@ -105,11 +124,12 @@ function createController(context: Context): Controller {
 
   const schedulePoll = () => {
     if (disposed) return
-    if (pollTimer) clearTimeout(pollTimer)
+    if (pollTimer) dependencies.clearScheduledTimeout(pollTimer)
     const playing = !!session.player?.is_playing
     const idle = !session.player?.track
     const ms = playing ? POLL_PLAYING_MS : idle ? POLL_IDLE_MS : 5000
-    pollTimer = setTimeout(() => {
+    pollTimer = dependencies.scheduleTimeout(() => {
+      pollTimer = null
       void refreshPlayer().finally(() => schedulePoll())
     }, ms)
   }
@@ -121,7 +141,7 @@ function createController(context: Context): Controller {
 
   const stopPoll = () => {
     if (!pollTimer) return
-    clearTimeout(pollTimer)
+    dependencies.clearScheduledTimeout(pollTimer)
     pollTimer = null
   }
 
@@ -133,7 +153,7 @@ function createController(context: Context): Controller {
         message: "Play in any app — the sidebar uses system media",
         variant: "info",
       })
-      await Bun.sleep(400)
+      await dependencies.delay(400)
       await refreshPlayer()
     }, false)
   }
@@ -143,7 +163,7 @@ function createController(context: Context): Controller {
       const p = session.player
       if (p?.is_playing) await backend.pause?.()
       else await backend.play()
-      await Bun.sleep(120)
+      await dependencies.delay(120)
       await refreshPlayer()
     })
   }
@@ -151,7 +171,7 @@ function createController(context: Context): Controller {
   const next = async () => {
     await withLoading(async () => {
       await backend.next?.()
-      await Bun.sleep(150)
+      await dependencies.delay(150)
       await refreshPlayer()
     })
   }
@@ -159,7 +179,7 @@ function createController(context: Context): Controller {
   const prev = async () => {
     await withLoading(async () => {
       await backend.previous?.()
-      await Bun.sleep(150)
+      await dependencies.delay(150)
       await refreshPlayer()
     })
   }
@@ -181,7 +201,7 @@ function createController(context: Context): Controller {
   }
 }
 
-function Host(props: { context: Context; ctrl: Controller }) {
+function AppHost(props: { context: Context; ctrl: Controller }) {
   const { context, ctrl } = props
 
   context.keymap.layer(() => ({
@@ -223,41 +243,51 @@ function Host(props: { context: Context; ctrl: Controller }) {
     ],
   }))
 
-  return (
-    <SidebarPlayer
-      context={context}
-      state={ctrl.session}
-      onPlayPause={() => void ctrl.playPause()}
-      onNext={() => void ctrl.next()}
-      onPrev={() => void ctrl.prev()}
-    />
-  )
+  return <CompactPlayer context={context} state={ctrl.session} />
 }
 
-export default Plugin.define({
-  id: "music-player",
-  setup(context: Context) {
-    if (!isMac()) {
-      context.ui.toast.show({
-        title: "Music",
-        message: "System media control is macOS-only",
-        variant: "warning",
-      })
-    } else if (!hasMediaControl() && !hasNowPlayingCli()) {
-      context.ui.toast.show({
-        title: "Music",
-        message: "brew tap ungive/media-control && brew install media-control",
-        variant: "warning",
-      })
-    }
+export function createMusicPlayerPlugin(options?: {
+  createController?: (context: Context) => Controller
+}) {
+  return Plugin.define({
+    id: "music-player",
+    setup(context: Context) {
+      if (!isMac()) {
+        context.ui.toast.show({
+          title: "Music",
+          message: "System media control is macOS-only",
+          variant: "warning",
+        })
+      } else if (!hasMediaControl() && !hasNowPlayingCli()) {
+        context.ui.toast.show({
+          title: "Music",
+          message:
+            "brew tap ungive/media-control && brew install media-control",
+          variant: "warning",
+        })
+      }
 
-    const ctrl = createController(context)
-    const unsub = context.ui.slot("sidebar.content", () => (
-      <Host context={context} ctrl={ctrl} />
-    ))
-    return () => {
-      ctrl.dispose()
-      unsub()
-    }
-  },
-})
+      const ctrl =
+        options?.createController?.(context) ?? createController(context)
+      const unsubApp = context.ui.slot("app", () => (
+        <AppHost context={context} ctrl={ctrl} />
+      ))
+      const unsubSidebar = context.ui.slot("sidebar.content", () => (
+        <SidebarPlayer
+          context={context}
+          state={ctrl.session}
+          onPlayPause={() => void ctrl.playPause()}
+          onNext={() => void ctrl.next()}
+          onPrev={() => void ctrl.prev()}
+        />
+      ))
+      return () => {
+        unsubApp()
+        unsubSidebar()
+        ctrl.dispose()
+      }
+    },
+  })
+}
+
+export default createMusicPlayerPlugin()
