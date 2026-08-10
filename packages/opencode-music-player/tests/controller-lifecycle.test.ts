@@ -78,6 +78,7 @@ test("a completed poll leaves one timeout and view mounts schedule none", async 
       CompactPlayer({
         context: context as any,
         state: session,
+        onPlayPause: () => {},
         onSeek: () => {},
       }),
     { width: 40, height: 4 },
@@ -90,6 +91,7 @@ test("a completed poll leaves one timeout and view mounts schedule none", async 
         onPlayPause: () => {},
         onNext: () => {},
         onPrev: () => {},
+        onSeek: () => {},
       }),
     { width: 40, height: 24 },
   )

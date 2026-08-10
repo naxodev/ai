@@ -13,6 +13,7 @@ const FETCH_TIMEOUT_MS = 4_000
 const CONVERSION_TIMEOUT_MS = 3_000
 // MediaRemote may expose whole seconds while catalogs retain milliseconds.
 const DURATION_TOLERANCE_MS = 1_000
+const MAX_CATALOG_DURATION_MS = 24 * 60 * 60 * 1_000
 
 type TrackIdentity = {
   title: string
@@ -21,7 +22,7 @@ type TrackIdentity = {
   duration_ms: number
 }
 
-type CatalogTrack = {
+export type CatalogTrack = {
   trackName?: string
   artistName?: string
   collectionName?: string
@@ -47,24 +48,100 @@ export function selectArtworkUrl(
   target: TrackIdentity,
   results: CatalogTrack[],
 ): string | null {
+  return selectCatalogResolution(target, results).artworkUrl
+}
+
+function matchingCatalogTracks(
+  target: TrackIdentity,
+  results: CatalogTrack[],
+): CatalogTrack[] {
   const title = normalized(target.title)
   const artist = normalized(target.artist)
   const album = normalized(target.album)
-  if (!title || !artist || !album || target.duration_ms <= 0) return null
+  if (!title || !artist) return []
 
-  const match = results.find(
+  let matches = results.filter(
     (item) =>
       normalized(item.trackName) === title &&
-      normalized(item.artistName) === artist &&
-      normalized(item.collectionName) === album &&
-      typeof item.trackTimeMillis === "number" &&
-      Number.isFinite(item.trackTimeMillis) &&
-      Math.abs(item.trackTimeMillis - target.duration_ms) <=
-        DURATION_TOLERANCE_MS &&
-      typeof item.artworkUrl100 === "string",
+      normalized(item.artistName) === artist,
   )
+  if (album) {
+    matches = matches.filter(
+      (item) => normalized(item.collectionName) === album,
+    )
+  }
+  return matches
+}
 
-  return match?.artworkUrl100?.replace(/100x100(?=[a-z]*\.)/, "300x300") ?? null
+function selectArtworkTrack(
+  target: TrackIdentity,
+  results: CatalogTrack[],
+): CatalogTrack | null {
+  let matches = matchingCatalogTracks(target, results).filter(
+    (item) => typeof item.artworkUrl100 === "string",
+  )
+  if (target.duration_ms > 0) {
+    matches = matches.filter(
+      (item) =>
+        validCatalogDuration(item.trackTimeMillis) &&
+        Math.abs(item.trackTimeMillis! - target.duration_ms) <=
+          DURATION_TOLERANCE_MS,
+    )
+  }
+  return matches[0] ?? null
+}
+
+function validCatalogDuration(value: number | undefined): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= MAX_CATALOG_DURATION_MS
+  )
+}
+
+export function selectCatalogTrack(
+  target: TrackIdentity,
+  results: CatalogTrack[],
+): CatalogTrack | null {
+  let matches = matchingCatalogTracks(target, results).filter((item) =>
+    validCatalogDuration(item.trackTimeMillis),
+  )
+  if (target.duration_ms > 0) {
+    matches = matches.filter(
+      (item) =>
+        Math.abs(item.trackTimeMillis! - target.duration_ms) <=
+        DURATION_TOLERANCE_MS,
+    )
+  }
+  if ((!target.album || target.duration_ms <= 0) && matches.length > 1) {
+    const firstDuration = matches[0]!.trackTimeMillis!
+    if (
+      matches.some(
+        (item) =>
+          Math.abs(item.trackTimeMillis! - firstDuration) >
+          DURATION_TOLERANCE_MS,
+      )
+    ) {
+      return null
+    }
+  }
+
+  return matches[0] ?? null
+}
+
+export function selectCatalogResolution(
+  target: TrackIdentity,
+  results: CatalogTrack[],
+): { artworkUrl: string | null; duration_ms: number } {
+  const artworkMatch = selectArtworkTrack(target, results)
+  const durationMatch = selectCatalogTrack(target, results)
+  return {
+    artworkUrl:
+      artworkMatch?.artworkUrl100?.replace(/100x100(?=[a-z]*\.)/, "300x300") ??
+      null,
+    duration_ms: durationMatch?.trackTimeMillis ?? target.duration_ms,
+  }
 }
 
 function allowedCatalogImageUrl(raw: string | URL): URL | null {
@@ -129,16 +206,11 @@ export async function downloadCatalogImage(
 
 async function catalogArtwork(
   target: TrackIdentity,
-): Promise<Uint8Array | null> {
-  if (
-    !target.title ||
-    !target.artist ||
-    !target.album ||
-    target.duration_ms <= 0
-  ) {
-    return null
-  }
-  const term = [target.artist, target.title, target.album].join(" ")
+): Promise<{ bytes: Uint8Array; duration_ms: number } | null> {
+  if (!target.title || !target.artist) return null
+  const term = [target.artist, target.title, target.album]
+    .filter(Boolean)
+    .join(" ")
   const url = new URL("https://itunes.apple.com/search")
   url.searchParams.set("term", term)
   url.searchParams.set("entity", "song")
@@ -158,8 +230,17 @@ async function catalogArtwork(
     const payload = JSON.parse(new TextDecoder().decode(responseBytes)) as {
       results?: CatalogTrack[]
     }
-    const artworkUrl = selectArtworkUrl(target, payload.results ?? [])
-    return artworkUrl ? downloadCatalogImage(artworkUrl) : null
+    const results = payload.results ?? []
+    const resolution = selectCatalogResolution(target, results)
+    const bytes = resolution.artworkUrl
+      ? await downloadCatalogImage(resolution.artworkUrl)
+      : null
+    return bytes
+      ? {
+          bytes,
+          duration_ms: resolution.duration_ms,
+        }
+      : null
   } catch {
     return null
   }
@@ -287,11 +368,16 @@ function presentation(pngBytes: Uint8Array): Pick<Artwork, "cells" | "accent"> {
   return { cells, accent }
 }
 
-export async function resolveArtwork(
+export type ArtworkResolution = {
+  artwork: Artwork | null
+  duration_ms: number
+}
+
+export async function resolveArtworkDetails(
   id: string,
   target: TrackIdentity,
   nativeBase64: string | null,
-): Promise<Artwork | null> {
+): Promise<ArtworkResolution> {
   const candidates: Uint8Array[] = []
   if (nativeBase64) {
     try {
@@ -311,9 +397,12 @@ export async function resolveArtwork(
       const thumbnail = nativePng ? await squarePng(nativePng, 24) : null
       if (nativePng && thumbnail) {
         return {
-          id,
-          png_base64: Buffer.from(nativePng).toString("base64"),
-          ...presentation(thumbnail),
+          artwork: {
+            id,
+            png_base64: Buffer.from(nativePng).toString("base64"),
+            ...presentation(thumbnail),
+          },
+          duration_ms: target.duration_ms,
         }
       }
     } catch {
@@ -322,17 +411,30 @@ export async function resolveArtwork(
   }
 
   const catalog = await catalogArtwork(target)
-  if (!catalog) return null
+  if (!catalog) return { artwork: null, duration_ms: target.duration_ms }
   try {
-    const nativePng = await squarePng(catalog, 300)
+    const nativePng = await squarePng(catalog.bytes, 300)
     const thumbnail = nativePng ? await squarePng(nativePng, 24) : null
-    if (!nativePng || !thumbnail) return null
+    if (!nativePng || !thumbnail) {
+      return { artwork: null, duration_ms: catalog.duration_ms }
+    }
     return {
-      id,
-      png_base64: Buffer.from(nativePng).toString("base64"),
-      ...presentation(thumbnail),
+      artwork: {
+        id,
+        png_base64: Buffer.from(nativePng).toString("base64"),
+        ...presentation(thumbnail),
+      },
+      duration_ms: catalog.duration_ms,
     }
   } catch {
-    return null
+    return { artwork: null, duration_ms: catalog.duration_ms }
   }
+}
+
+export async function resolveArtwork(
+  id: string,
+  target: TrackIdentity,
+  nativeBase64: string | null,
+): Promise<Artwork | null> {
+  return (await resolveArtworkDetails(id, target, nativeBase64)).artwork
 }

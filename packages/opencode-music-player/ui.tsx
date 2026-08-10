@@ -210,6 +210,7 @@ export function compactPresentation(
 export function CompactPlayer(props: {
   context: Context
   state: UiState
+  onPlayPause: () => void
   onSeek: (positionMs: number) => void
 }) {
   const theme = () => props.context.theme
@@ -232,7 +233,8 @@ export function CompactPlayer(props: {
     }${display.artist ? `${COMPACT_SEPARATOR}${display.artist}` : ""}${padding}`
   }
   const updateContent = () => {
-    if (content) content.content = renderLine()
+    const line = renderLine()
+    if (content) content.content = line
   }
   const updateWidth = function (this: BoxRenderable) {
     allocatedWidth = Math.max(1, this.width)
@@ -266,6 +268,18 @@ export function CompactPlayer(props: {
 
             const seekWidth = compactSeekRegionWidth(row.width)
             const cell = Math.floor(event.x - row.x)
+            const markerCell = compactPresentation(
+              row.width,
+              current.name,
+              current.artists,
+              !!props.state.player?.is_playing,
+            ).padding
+            if (cell === markerCell) {
+              event.preventDefault()
+              event.stopPropagation()
+              props.onPlayPause()
+              return
+            }
             if (cell < 0 || cell >= seekWidth) return
 
             const position = seekPositionForCell(
@@ -312,9 +326,12 @@ function ProgressBar(props: {
   duration: number
   width?: number
   accent?: string | undefined
+  onSeek: (positionMs: number) => void
 }) {
+  let bar: BoxRenderable | undefined
+  const width = () => Math.max(8, props.width ?? 28)
   const rendered = createMemo(() => {
-    const w = Math.max(8, props.width ?? 28)
+    const w = width()
     if (props.duration <= 0) {
       return { left: "", thumb: "", right: "─".repeat(w) }
     }
@@ -330,19 +347,42 @@ function ProgressBar(props: {
   })
 
   return (
-    <text>
-      <span
-        style={{ fg: props.accent ?? props.theme.text.action.primary.default }}
-      >
-        {rendered().left}
-      </span>
-      <span
-        style={{ fg: props.accent ?? props.theme.text.action.primary.default }}
-      >
-        {rendered().thumb}
-      </span>
-      <span style={{ fg: props.theme.text.subdued }}>{rendered().right}</span>
-    </text>
+    <box
+      id="music-sidebar-seek"
+      ref={(element) => (bar = element)}
+      width={width()}
+      height={1}
+      onMouseDown={(event) => {
+        if (event.button !== MouseButton.LEFT || !bar) return
+        const position = seekPositionForCell(
+          event.x - bar.x,
+          bar.width,
+          props.duration,
+        )
+        if (position === null) return
+        event.preventDefault()
+        event.stopPropagation()
+        props.onSeek(position)
+      }}
+    >
+      <text>
+        <span
+          style={{
+            fg: props.accent ?? props.theme.text.action.primary.default,
+          }}
+        >
+          {rendered().left}
+        </span>
+        <span
+          style={{
+            fg: props.accent ?? props.theme.text.action.primary.default,
+          }}
+        >
+          {rendered().thumb}
+        </span>
+        <span style={{ fg: props.theme.text.subdued }}>{rendered().right}</span>
+      </text>
+    </box>
   )
 }
 
@@ -420,6 +460,7 @@ export function SidebarPlayer(props: {
   onPlayPause: () => void
   onNext: () => void
   onPrev: () => void
+  onSeek: (positionMs: number) => void
 }) {
   const theme = () => props.context.theme
   const player = createMemo(() => props.state.player)
@@ -473,7 +514,25 @@ export function SidebarPlayer(props: {
 
       <box flexDirection="row" justifyContent="center">
         <box width={24} height={12} overflow="hidden">
-          <Show when={track()?.artwork}>
+          <Show
+            when={track()?.artwork}
+            fallback={
+              <box
+                width={24}
+                height={12}
+                alignItems="center"
+                justifyContent="center"
+              >
+                <text fg={theme().text.subdued}>
+                  {track()
+                    ? track()?.artwork_loading
+                      ? "Loading artwork…"
+                      : "Artwork unavailable"
+                    : ""}
+                </text>
+              </box>
+            }
+          >
             {(artwork) => (
               <AlbumArtwork context={props.context} artwork={artwork()} />
             )}
@@ -524,6 +583,7 @@ export function SidebarPlayer(props: {
             duration={duration()}
             width={24}
             accent={track()?.artwork?.accent}
+            onSeek={props.onSeek}
           />
           <box flexDirection="row" justifyContent="space-between">
             <text fg={theme().text.subdued}>{formatMs(progress())}</text>

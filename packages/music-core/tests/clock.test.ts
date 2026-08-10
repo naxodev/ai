@@ -317,6 +317,60 @@ describe("syncFromSample", () => {
     expect(fallback).toEqual({ progress_ms: 10_000, is_playing: false })
   })
 
+  test("a volatile provider id does not reset complete matching metadata", () => {
+    syncFromSample({
+      key: trackKey("Song", "Artist", "playing-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_000_000,
+    })
+    const paused = syncFromSample({
+      key: trackKey("Song", "Artist", "paused-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 180_000,
+      playing: false,
+      rate: 0,
+      now: 1_010_000,
+    })
+    const resumed = syncFromSample({
+      key: trackKey("Song", "Artist", "resumed-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_020_000,
+    })
+
+    expect(paused).toEqual({ progress_ms: 10_000, is_playing: false })
+    expect(resumed).toEqual({ progress_ms: 10_000, is_playing: true })
+  })
+
+  test("a changed provider id and known duration resets an otherwise matching recording", () => {
+    syncFromSample({
+      key: trackKey("Song", "Artist", "short-id"),
+      reported_ms: 50_000,
+      duration_ms: 180_000,
+      playing: true,
+      rate: 1,
+      now: 1_000_000,
+    })
+    const replacement = syncFromSample({
+      key: trackKey("Song", "Artist", "long-id"),
+      reported_ms: 100,
+      duration_ms: 240_000,
+      playing: true,
+      rate: 1,
+      now: 1_001_000,
+    })
+
+    expect(replacement.progress_ms).toBe(100)
+  })
+
   test("enrichment preserves sticky pause and makes a later reused-id replacement distinct", () => {
     syncFromSample({
       key: trackKey("Song", "", "reused"),

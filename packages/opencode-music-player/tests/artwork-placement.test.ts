@@ -131,6 +131,7 @@ describe("planNativeArtworkPlacement", () => {
       height: a.height,
     })
     expect(first.actions).toEqual([
+      { type: "delete-image", imageId: 1 },
       {
         type: "transmit-and-display",
         imageId: 1,
@@ -211,7 +212,7 @@ describe("planNativeArtworkPlacement", () => {
     })
   })
 
-  test("first paint transmits without delete", () => {
+  test("first paint clears an orphaned placement before transmitting", () => {
     const result = plan({
       state: emptyState(),
       imageId: 7,
@@ -222,6 +223,7 @@ describe("planNativeArtworkPlacement", () => {
     })
 
     expect(result.actions).toEqual([
+      { type: "delete-image", imageId: 7 },
       {
         type: "transmit-and-display",
         imageId: 7,

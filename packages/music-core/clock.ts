@@ -6,10 +6,12 @@ export type Clock = {
 }
 
 let clock: Clock | null = null
+let clockDurationMs = 0
 
 /** Clear module-level playback clock between tests or sessions. */
 export function resetClock(): void {
   clock = null
+  clockDurationMs = 0
 }
 
 export function liveFromClock(
@@ -58,7 +60,12 @@ export function trackKey(title: string, artist: string, uid: string): string {
   return uid ? `${uid}\0${title}\0${artist}` : `${title}\0${artist}`
 }
 
-function sameTrackKeyIdentity(left: string, right: string): boolean {
+function sameTrackKeyIdentity(
+  left: string,
+  right: string,
+  leftDurationMs: number,
+  rightDurationMs: number,
+): boolean {
   const leftParts = left.split("\0")
   const rightParts = right.split("\0")
   if (
@@ -71,9 +78,26 @@ function sameTrackKeyIdentity(left: string, right: string): boolean {
     leftParts.length === 3 ? leftParts : ["", ...leftParts]
   const [rightId, rightTitle, rightArtist] =
     rightParts.length === 3 ? rightParts : ["", ...rightParts]
-  if (leftId && rightId && leftId !== rightId) return false
   if (leftTitle && rightTitle && leftTitle !== rightTitle) return false
   if (leftArtist && rightArtist && leftArtist !== rightArtist) return false
+  if (
+    leftTitle &&
+    rightTitle &&
+    leftArtist &&
+    rightArtist &&
+    leftTitle === rightTitle &&
+    leftArtist === rightArtist
+  ) {
+    return (
+      !leftId ||
+      !rightId ||
+      leftId === rightId ||
+      leftDurationMs <= 0 ||
+      rightDurationMs <= 0 ||
+      Math.abs(leftDurationMs - rightDurationMs) <= 1_000
+    )
+  }
+  if (leftId && rightId && leftId !== rightId) return false
   return true
 }
 
@@ -113,7 +137,9 @@ export function syncFromSample(opts: {
 }): { progress_ms: number; is_playing: boolean } {
   const { key, reported_ms, duration_ms, now } = opts
   const hasReported = opts.reported ?? reported_ms > 0
-  const matchesClock = clock ? sameTrackKeyIdentity(clock.trackKey, key) : false
+  const matchesClock = clock
+    ? sameTrackKeyIdentity(clock.trackKey, key, clockDurationMs, duration_ms)
+    : false
 
   let isPlaying: boolean
   if (opts.playing === true || opts.playing === false) {
@@ -131,6 +157,7 @@ export function syncFromSample(opts: {
       wall_ms: now,
       playing: isPlaying,
     }
+    clockDurationMs = duration_ms
     return {
       progress_ms: liveFromClock(clock, now, duration_ms),
       is_playing: isPlaying,
@@ -138,6 +165,7 @@ export function syncFromSample(opts: {
   }
 
   clock.trackKey = enrichTrackKey(clock.trackKey, key)
+  if (duration_ms > 0) clockDurationMs = duration_ms
 
   if (isPlaying !== clock.playing) {
     freezeClock(now)
