@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   emptyPlayer,
   formatMs,
+  mergeArtworkCompletion,
   mergePlayerPresentation,
   type PlayerState,
 } from "../types.ts"
@@ -114,4 +115,68 @@ test("volatile provider ids do not discard matching artwork metadata", () => {
   expect(
     mergePlayerPresentation(previous, replacementDuration)?.track?.artwork,
   ).toBeNull()
+})
+
+test("artwork completion decorates only the matching recording", () => {
+  const current = {
+    ...emptyPlayer(),
+    is_playing: true,
+    progress_ms: 12_000,
+    shuffle: true,
+    repeat: "context" as const,
+    track: {
+      id: "new-provider-id",
+      uri: "system:song",
+      name: "Song",
+      artists: "Artist",
+      album: "Album",
+      duration_ms: 0,
+      artwork: null,
+      artwork_loading: true,
+    },
+  }
+  const event = {
+    type: "artwork-completion" as const,
+    identity: {
+      uid: "old-provider-id",
+      title: "Song",
+      artist: "Artist",
+      album: "Album",
+      duration_ms: 180_000,
+    },
+    artwork: { id: "cover", png_base64: "png", accent: "blue", cells: [] },
+    duration_ms: 180_000,
+  }
+
+  expect(mergeArtworkCompletion(current, event)).toMatchObject({
+    is_playing: true,
+    progress_ms: 12_000,
+    shuffle: true,
+    repeat: "context",
+    track: {
+      artwork: event.artwork,
+      artwork_loading: false,
+      duration_ms: 180_000,
+    },
+  })
+  const knownDuration = {
+    ...current,
+    track: { ...current.track, duration_ms: 180_000 },
+  }
+  for (const identity of [
+    { ...event.identity, title: "Replacement" },
+    { ...event.identity, artist: "Other" },
+    { ...event.identity, album: "Other" },
+    { ...event.identity, duration_ms: 200_000 },
+  ]) {
+    expect(mergeArtworkCompletion(knownDuration, { ...event, identity })).toBe(
+      knownDuration,
+    )
+  }
+  expect(
+    mergeArtworkCompletion(
+      { ...current, track: { ...current.track, duration_ms: 120_000 } },
+      event,
+    )?.track?.duration_ms,
+  ).toBe(120_000)
 })

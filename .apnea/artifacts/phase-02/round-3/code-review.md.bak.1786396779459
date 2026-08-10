@@ -1,0 +1,10 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Medium: The end-to-end regression does not hold the fallback player refresh pending
+
+The corrected package requires the controller regression to leave both artwork resolution and a fallback `player()` refresh unresolved when an authoritative snapshot arrives (`.apnea/artifacts/phase-02/round-1/phase-package.md:132-137`, `.apnea/artifacts/phase-02/round-1/phase-package.md:142`). The real-facade test resolves the initial playback sample before emitting the stream snapshot, as shown by the established player state and `playbackSamples === 1` assertions after two flushes (`packages/opencode-music-player/tests/controller.test.ts:234-242`). It therefore proves that artwork does not block snapshot projection, but it does not prove that an in-flight provider sample cannot block the same producer-to-controller path. Keep the facade's initial `player()` promise pending, emit the stream snapshot, and verify immediate session projection and later artwork completion without another playback sample.

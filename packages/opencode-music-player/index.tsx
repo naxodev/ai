@@ -6,7 +6,12 @@ import {
   hasNowPlayingCli,
   openNowPlayingApp,
 } from "./system-media.ts"
-import { isMac, mergePlayerPresentation, type MusicBackend } from "./types.ts"
+import {
+  isMac,
+  mergeArtworkCompletion,
+  mergePlayerPresentation,
+  type MusicBackend,
+} from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
 
 const POLL_PLAYING_MS = 3000
@@ -116,6 +121,7 @@ export function createController(
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let eventDisposer: (() => void) | null = null
+  let presentationDisposer: (() => void) | null = null
   let disposed = false
   let busy = false
   let sampling = false
@@ -329,7 +335,25 @@ export function createController(
     })
   }
 
-  eventDisposer = backend.subscribe?.(() => void requestRefresh()) ?? null
+  eventDisposer =
+    backend.subscribe?.((event) => {
+      if (!isActive()) return
+      if (event?.type === "snapshot") {
+        setSession((d) => {
+          d.player = event.state
+          d.error = null
+        })
+        return
+      }
+      void requestRefresh()
+    }) ?? null
+  presentationDisposer =
+    backend.subscribePresentation?.((event) => {
+      if (!isActive()) return
+      setSession((d) => {
+        d.player = mergeArtworkCompletion(d.player, event)
+      })
+    }) ?? null
   void refreshAll()
 
   return {
@@ -345,6 +369,8 @@ export function createController(
       disposed = true
       eventDisposer?.()
       eventDisposer = null
+      presentationDisposer?.()
+      presentationDisposer = null
       stopPoll()
       pendingRefresh = false
     },

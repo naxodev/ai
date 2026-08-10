@@ -114,12 +114,13 @@ Use stable discriminant and field names that later host phases can narrow withou
    - Preserve coverage that `nowplaying-cli` omits `subscribe` and returns normalized polled state.
 
 10. Update `packages/music-core/README.md`.
-   - Document backend-owned playback clocks and the public explicit clock API.
-   - Document both subscription event variants and show safe discriminated handling.
-   - State that media-control snapshots are already normalized and authoritative, while invalidation asks a host to recover by sampling.
-   - State that `nowplaying-cli` remains polling-only.
-   - Document disposer ownership and suppression of late callbacks.
-   - Remove wording that says every stream event is only an invalidation or always requires `player()`.
+
+- Document backend-owned playback clocks and the public explicit clock API.
+- Document both subscription event variants and show safe discriminated handling.
+- State that media-control snapshots are already normalized and authoritative, while invalidation asks a host to recover by sampling.
+- State that `nowplaying-cli` remains polling-only.
+- Document disposer ownership and suppression of late callbacks.
+- Remove wording that says every stream event is only an invalidation or always requires `player()`.
 
 ## Acceptance Checks
 

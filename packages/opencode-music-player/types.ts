@@ -1,4 +1,6 @@
 import type {
+  MusicChangeDisposer,
+  MusicChangeEvent as CoreMusicChangeEvent,
   MusicBackend as CoreMusicBackend,
   PlayerState as CorePlayerState,
   Track as CoreTrack,
@@ -22,6 +24,26 @@ export type Artwork = {
   cells: Array<Array<{ upper: string; lower: string }>>
 }
 
+/** Native IDs validate artwork samples; recording metadata keys artwork work. */
+export type ArtworkIdentity = {
+  uid: string
+  title: string
+  artist: string
+  album: string
+  duration_ms: number
+}
+
+export type ArtworkCompletionEvent = {
+  type: "artwork-completion"
+  identity: ArtworkIdentity
+  artwork: Artwork | null
+  duration_ms: number
+}
+
+export type ArtworkPresentationListener = (
+  event: ArtworkCompletionEvent,
+) => void
+
 export type Track = CoreTrack & {
   artwork: Artwork | null
   artwork_loading?: boolean
@@ -31,15 +53,57 @@ export type PlayerState = Omit<CorePlayerState, "track"> & {
   track: Track | null
 }
 
-export type MusicBackend = Omit<CoreMusicBackend, "player" | "searchTracks"> & {
+export type MusicChangeEvent =
+  | (Omit<Extract<CoreMusicChangeEvent, { type: "snapshot" }>, "state"> & {
+      state: PlayerState
+    })
+  | Exclude<CoreMusicChangeEvent, { type: "snapshot" }>
+
+export type MusicChangeListener = (event?: MusicChangeEvent) => void
+
+export type MusicBackend = Omit<
+  CoreMusicBackend,
+  "player" | "searchTracks" | "subscribe"
+> & {
   player: () => Promise<PlayerState | null>
   searchTracks: (query: string, limit?: number) => Promise<Track[]>
+  subscribe?: (listener: MusicChangeListener) => MusicChangeDisposer
+  subscribePresentation?: (
+    listener: ArtworkPresentationListener,
+  ) => MusicChangeDisposer
 }
 
 export function emptyPlayer(): PlayerState {
   return {
     ...emptyCorePlayer(),
     track: null,
+  }
+}
+
+/** Merge an independent artwork result without accepting stale playback data. */
+export function mergeArtworkCompletion(
+  player: PlayerState | null,
+  event: ArtworkCompletionEvent,
+): PlayerState | null {
+  const track = player?.track
+  if (
+    !track ||
+    track.name !== event.identity.title ||
+    track.artists !== event.identity.artist ||
+    track.album !== event.identity.album ||
+    (track.duration_ms > 0 && track.duration_ms !== event.identity.duration_ms)
+  ) {
+    return player
+  }
+  return {
+    ...player,
+    track: {
+      ...track,
+      artwork: event.artwork,
+      artwork_loading: false,
+      duration_ms:
+        track.duration_ms > 0 ? track.duration_ms : event.duration_ms,
+    },
   }
 }
 

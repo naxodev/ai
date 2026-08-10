@@ -1,0 +1,29 @@
+---
+status: done
+---
+
+Implemented the rework finding within phase 2.
+
+Changed:
+
+- `packages/opencode-music-player/index.tsx`: apply facade snapshot events to `session.player` synchronously; keep invalidation and legacy no-argument events on the refresh path.
+- `packages/opencode-music-player/tests/controller.test.ts`: added a real facade-to-controller regression with unresolved artwork, a paused stream snapshot, and artwork completion. It verifies no second playback sample occurs.
+
+Files touched:
+
+- `packages/opencode-music-player/index.tsx`
+- `packages/opencode-music-player/tests/controller.test.ts`
+
+Verify transcript:
+
+```text
+$ bunx nx run-many -t typecheck test format:check --projects=opencode-music-player
+exit: 0
+136 pass
+0 fail
+NX Successfully ran targets typecheck, test, format:check for project opencode-music-player
+```
+
+Residual risks:
+
+- The snapshot application intentionally preserves the existing polling and transport scheduler behavior outside this rework scope.
