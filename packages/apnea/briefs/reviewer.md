@@ -27,11 +27,11 @@ Body: findings, ordered by severity.
 
 Order matters:
 
-1. Read **phase package** and compare to approved **plan** — if the package drifts, `CHANGES_REQUIRED` against the package **before** deep code review.
+1. Read **phase package** and compare to approved **plan**. If the package drifts, return `CHANGES_REQUIRED` with `rework: phase_package` before deep code review.
 2. Review diff / coder result against the phase package only (no scope expansion).
 3. Check claimed verify output if present; you do not need to re-run tests if readonly, but flag missing evidence.
 
-Same front-matter as plan review.
+Use `rework: code | phase_package` with a code-review `CHANGES_REQUIRED` verdict. Use `code` for implementation defects and `phase_package` for planner-owned package defects. Omit `rework` on `APPROVED`.
 
 ## Rules
 

@@ -39,6 +39,14 @@ Review artifacts also require:
 | --------- | -------------------------------- |
 | `verdict` | `APPROVED` \| `CHANGES_REQUIRED` |
 
+Code-review artifacts with `CHANGES_REQUIRED` may also declare:
+
+| Field    | Values                    |
+| -------- | ------------------------- |
+| `rework` | `code` \| `phase_package` |
+
+Missing `rework` means `code`, preserving existing review artifacts. `phase_package` returns the run to phase packaging. The revised package is written under the next `round-N` directory, so the rejected package and review remain available.
+
 Optional:
 
 | Field  | Values                                           |

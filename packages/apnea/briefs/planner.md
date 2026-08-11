@@ -41,6 +41,8 @@ Only the **current** phase, detailed enough for a weaker coder:
 
 Front-matter: `status: done` only.
 
+When code review requests `rework: phase_package`, revise the package at the newly tasked round path. Read the cited review, preserve approved-plan scope, and do not overwrite the prior round's package.
+
 ### PR description (`pr-description.md`)
 
 When tasked at terminus: summarize phases delivered, test plan, residual risk. Front-matter: `status: done` only.

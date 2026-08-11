@@ -156,6 +156,7 @@ describe("startWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
+      phase_package_rework: false,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,
@@ -212,6 +213,7 @@ describe("startWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
+      phase_package_rework: false,
     })
 
     return Effect.gen(function* () {
@@ -289,6 +291,7 @@ describe("statusWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
+      phase_package_rework: false,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,
@@ -345,6 +348,7 @@ describe("resetRoundsWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
+      phase_package_rework: false,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,

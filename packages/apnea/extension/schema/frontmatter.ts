@@ -2,6 +2,7 @@ import { Result, Schema } from "effect"
 import { ArtifactInvalid } from "../errors.ts"
 
 const VerdictSchema = Schema.Literals(["APPROVED", "CHANGES_REQUIRED"] as const)
+const ReworkTargetSchema = Schema.Literals(["code", "phase_package"] as const)
 
 /**
  * Schema for the parsed front-matter result shape (after the line parser).
@@ -11,6 +12,7 @@ export const FrontMatterResultSchema = Schema.Struct({
   status: Schema.String,
   verdict: Schema.optional(VerdictSchema),
   nits: Schema.optional(Schema.String),
+  rework: Schema.optional(ReworkTargetSchema),
 })
 
 export type FrontMatterResult = typeof FrontMatterResultSchema.Type

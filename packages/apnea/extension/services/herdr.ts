@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { Clock, Context, Effect, Layer, Option } from "effect"
+import { Clock, Context, Effect, Layer, Option, Result } from "effect"
 import {
   floatingTaskScriptBody,
   parseHerdrVersion,
@@ -19,6 +19,7 @@ export type PaneInfo = {
   agent?: string
 }
 export type RolePaneRef = { pane_id: string; label: string }
+export type HerdrAvailability = "available" | "unavailable"
 export type InteractiveLaunch = {
   pane_id: string
   label: string
@@ -30,6 +31,8 @@ export type InteractiveLaunch = {
 
 export interface HerdrService {
   readonly enabled: Effect.Effect<boolean>
+  /** Dispatch preflight that distinguishes a stale pane from CLI failures. */
+  readonly availability: Effect.Effect<HerdrAvailability, HerdrError>
   readonly version: Effect.Effect<[number, number, number] | null>
   readonly hasApneaPlugin: Effect.Effect<boolean>
   readonly paneGet: (paneId: string) => Effect.Effect<PaneInfo>
@@ -155,6 +158,32 @@ export function floatingPanePath(
 
 function herdrEnabledSync(): boolean {
   return process.env.HERDR_ENV === "1"
+}
+
+export function probeHerdrAvailability(
+  env: { HERDR_ENV?: string; HERDR_PANE_ID?: string },
+  paneGet: (paneId: string) => { ok: boolean; raw: string },
+): HerdrAvailability {
+  if (env.HERDR_ENV !== "1") return "unavailable"
+  const current = env.HERDR_PANE_ID
+  if (!current) return "unavailable"
+  const r = paneGet(current)
+  if (r.ok) return "available"
+  if (/pane_not_found|pane not found/i.test(r.raw)) return "unavailable"
+  throw new HerdrError({
+    message: `failed to verify current Herdr pane ${current}: ${r.raw.trim() || "unknown herdr error"}`,
+    command: "herdr pane get",
+  })
+}
+
+function herdrAvailabilitySync(): HerdrAvailability {
+  return probeHerdrAvailability(
+    {
+      HERDR_ENV: process.env.HERDR_ENV,
+      HERDR_PANE_ID: process.env.HERDR_PANE_ID,
+    },
+    (paneId) => herdrCli(["pane", "get", paneId]),
+  )
 }
 
 function paneGetSync(paneId: string): PaneInfo {
@@ -307,6 +336,52 @@ function paneRun(
   return Effect.try({
     try: () => paneRunSync(paneId, command),
     catch: toHerdrError,
+  })
+}
+
+function paneClose(paneId: string): Effect.Effect<void, HerdrError> {
+  return Effect.try({
+    try: () => {
+      const r = herdrCli(["pane", "close", paneId])
+      if (!r.ok) {
+        throw new HerdrError({
+          message: `herdr pane close failed: ${r.raw}`,
+          command: "herdr pane close",
+        })
+      }
+    },
+    catch: toHerdrError,
+  })
+}
+
+function withLaunchDetails(
+  error: HerdrError,
+  details: Record<string, unknown>,
+): HerdrError {
+  return new HerdrError({
+    message: error.message,
+    ...(error.command !== undefined ? { command: error.command } : {}),
+    details: { ...(error.details ?? {}), ...details },
+  })
+}
+
+/** Close a pane that cannot have received the task prompt without hiding the launch error. */
+export function cleanupFailedInteractiveLaunch(
+  error: HerdrError,
+  paneId: string,
+  close: (paneId: string) => Effect.Effect<void, HerdrError> = paneClose,
+): Effect.Effect<never, HerdrError> {
+  return Effect.gen(function* () {
+    const cleanup = yield* Effect.result(close(paneId))
+    return yield* withLaunchDetails(error, {
+      delivery: "not_delivered",
+      pane_id: paneId,
+      newly_created: true,
+      pane_cleanup: Result.isSuccess(cleanup) ? "closed" : "failed",
+      ...(Result.isFailure(cleanup)
+        ? { pane_cleanup_error: cleanup.failure.message }
+        : {}),
+    })
   })
 }
 
@@ -505,28 +580,43 @@ function acquireRolePane(
 
     const millis = yield* Clock.currentTimeMillis
     const label = roleLabel(role, millis)
-    const paneId = yield* Effect.try({
-      try: () => splitPaneSync(),
-      catch: toHerdrError,
-    })
-    yield* Effect.try({
-      try: () => renamePaneSync(paneId, label),
-      catch: toHerdrError,
-    })
-    if (opts?.interactiveCmd?.length) {
-      // Launch the interactive harness only (no task argv).
-      // Pi roles get PI_CODING_AGENT_DIR without pi-vimmode so pane-run pastes
-      // are not trapped in modal INSERT. Materializing that dir touches the
-      // filesystem, so keep its failure a typed HerdrError, not a defect.
-      const interactiveCmd = opts.interactiveCmd
-      const launchCmd = yield* Effect.try({
-        try: () =>
-          hostAdapter.prepareInteractiveCommand?.(interactiveCmd) ??
-          interactiveCmd,
+    const split = yield* Effect.result(
+      Effect.try({
+        try: () => splitPaneSync(),
         catch: toHerdrError,
+      }),
+    )
+    if (Result.isFailure(split)) {
+      return yield* withLaunchDetails(split.failure, {
+        delivery: "not_delivered",
+        newly_created: false,
       })
-      const cmd = shellJoin(["cd", process.cwd(), "&&", "exec", ...launchCmd])
-      yield* paneRun(paneId, cmd)
+    }
+    const paneId = split.success
+    const prepared = yield* Effect.result(
+      Effect.gen(function* () {
+        yield* Effect.try({
+          try: () => renamePaneSync(paneId, label),
+          catch: toHerdrError,
+        })
+        if (!opts?.interactiveCmd?.length) return
+        // Launch the interactive harness only (no task argv).
+        // Pi roles get PI_CODING_AGENT_DIR without pi-vimmode so pane-run pastes
+        // are not trapped in modal INSERT. Materializing that dir touches the
+        // filesystem, so keep its failure a typed HerdrError, not a defect.
+        const interactiveCmd = opts.interactiveCmd
+        const launchCmd = yield* Effect.try({
+          try: () =>
+            hostAdapter.prepareInteractiveCommand?.(interactiveCmd) ??
+            interactiveCmd,
+          catch: toHerdrError,
+        })
+        const cmd = shellJoin(["cd", process.cwd(), "&&", "exec", ...launchCmd])
+        yield* paneRun(paneId, cmd)
+      }),
+    )
+    if (Result.isFailure(prepared)) {
+      return yield* cleanupFailedInteractiveLaunch(prepared.failure, paneId)
     }
     return { pane_id: paneId, label, reused: false }
   })
@@ -589,7 +679,17 @@ function runInteractivePromptImpl(
 
     // Submit pointer into the live TUI (Herdr: pane run = text + Enter),
     // then confirm the agent actually started — do not trust fire-and-forget.
-    yield* paneRun(acquired.pane_id, prompt)
+    const submitted = yield* Effect.result(paneRun(acquired.pane_id, prompt))
+    if (Result.isFailure(submitted)) {
+      return yield* withLaunchDetails(submitted.failure, {
+        // The Herdr CLI can lose its response after the pane accepted text.
+        // Closing or retrying here could kill or duplicate a live worker.
+        delivery: "unknown",
+        pane_id: acquired.pane_id,
+        pane_label: acquired.label,
+        reused: acquired.reused,
+      })
+    }
     const submit = yield* ensurePromptSubmitted(acquired.pane_id, prompt)
     return {
       pane_id: acquired.pane_id,
@@ -613,6 +713,11 @@ export const makeHerdrLive = (hostAdapter: ApneaHostAdapter) =>
     Effect.sync(() =>
       Herdr.of({
         enabled: Effect.sync(herdrEnabledSync),
+
+        availability: Effect.try({
+          try: herdrAvailabilitySync,
+          catch: toHerdrError,
+        }),
 
         version: Effect.sync(herdrVersionSync),
 

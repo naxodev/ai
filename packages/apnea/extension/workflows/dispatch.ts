@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import { Clock, Effect, Result } from "effect"
+import { Cause, Clock, Effect, Exit, Result } from "effect"
 import { effectivePaneStyle, supportsFloating } from "../domain/herdr.ts"
 import {
   abs,
@@ -21,7 +21,6 @@ import {
 } from "../domain/state-machine.ts"
 import { timeoutMsForKind } from "../domain/timeouts.ts"
 import {
-  ConfigError,
   GateRefused,
   HerdrError,
   IllegalKind,
@@ -73,7 +72,7 @@ Write **exactly**:
 
 \`${opts.artifactRel}\`
 
-Front-matter must include \`status: done\`. Review artifacts also need \`verdict: APPROVED | CHANGES_REQUIRED\` and optional \`nits\`.
+Front-matter must include \`status: done\`. Review artifacts also need \`verdict: APPROVED | CHANGES_REQUIRED\` and optional \`nits\`. A code-review \`CHANGES_REQUIRED\` may use \`rework: code | phase_package\`; absent means code.
 
 ## Details
 
@@ -91,27 +90,22 @@ function codeReviewRoundKey(phaseIndex: number): string {
   return roundKey(phaseIndex, "code_review")
 }
 
-/** Repo-relative pointer to the task file + artifact a failed launch orphaned. */
-type TaskRef = { readonly task: string; readonly artifact: string }
-
-/**
- * Re-raise a service failure with the orphaned task/artifact attached.
- * Tagged errors are immutable, so rebuild rather than mutate; `ref` wins over
- * any pre-existing details key.
- */
-function herdrWithTaskRef(e: HerdrError, ref: TaskRef): HerdrError {
+function herdrAfterRollback(
+  e: HerdrError,
+  context: { readonly task_attempted: string; readonly artifact: string },
+  rollbackErrors: readonly string[],
+): HerdrError {
   return new HerdrError({
     message: e.message,
     ...(e.command !== undefined ? { command: e.command } : {}),
-    details: { ...(e.details ?? {}), ...ref },
-  })
-}
-
-function configWithTaskRef(e: ConfigError, ref: TaskRef): ConfigError {
-  return new ConfigError({
-    message: e.message,
-    ...(e.path !== undefined ? { path: e.path } : {}),
-    details: { ...(e.details ?? {}), ...ref },
+    details: {
+      ...(e.details ?? {}),
+      ...context,
+      rolled_back: rollbackErrors.length === 0,
+      ...(rollbackErrors.length > 0
+        ? { rollback_errors: [...rollbackErrors] }
+        : {}),
+    },
   })
 }
 
@@ -142,10 +136,24 @@ export const dispatchWorkflow = (
     const herdr = yield* Herdr
 
     const state = yield* store.require(root)
+    const stateBeforeDispatch = structuredClone(state)
 
     const allowed = toolAllowed(state.step, "dispatch_role")
     if (Result.isFailure(allowed)) {
       return yield* allowed.failure
+    }
+
+    if (state.pending_artifact != null) {
+      return yield* new GateRefused({
+        gate: "dispatch_pending",
+        message:
+          "a role dispatch is already pending; call workflow_wait before dispatching again",
+        details: {
+          pending_artifact: state.pending_artifact,
+          pending_role: state.pending_role,
+          pending_pane_id: state.pending_pane_id,
+        },
+      })
     }
 
     const kinds = allowedKinds(state.step)
@@ -162,6 +170,9 @@ export const dispatchWorkflow = (
       const okRework =
         (params.kind === "plan" && state.step === "planning") ||
         (params.kind === "code" && state.step === "coding") ||
+        (params.kind === "phase_package" &&
+          state.step === "phase_packaging" &&
+          state.phase_package_rework) ||
         (params.kind === "plan_review" && state.step === "plan_review") ||
         (params.kind === "code_review" && state.step === "code_review")
       // After CHANGES_REQUIRED, step moves back to planning/coding; rework
@@ -170,7 +181,7 @@ export const dispatchWorkflow = (
         return yield* new GateRefused({
           gate: "rework",
           message:
-            "rework=true only valid for plan/code (after CHANGES_REQUIRED) or same-gate re-review",
+            "rework=true only valid for plan/code after CHANGES_REQUIRED, phase_package after package rework, or same-gate re-review",
         })
       }
     }
@@ -178,6 +189,10 @@ export const dispatchWorkflow = (
     const role = expectedRole(params.kind)
     const cfg = yield* config.load(root)
     const roleTimeoutMs = timeoutMsForKind(params.kind, cfg.timeouts_ms)
+    // Validate the orchestrator's current pane before creating task artifacts.
+    // A stale inherited environment is equivalent to running outside Herdr;
+    // other CLI failures remain typed errors and stop dispatch.
+    const herdrAvailability = yield* herdr.availability
 
     // --- Round numbers (increment ONLY on rework after CHANGES_REQUIRED) ---
     let round = 1
@@ -198,6 +213,11 @@ export const dispatchWorkflow = (
       const key = codeReviewRoundKey(state.phase_index)
       if (params.rework && params.kind === "code") {
         setRound(state, key, getRound(state, key) + 1)
+      } else if (
+        params.kind === "phase_package" &&
+        state.phase_package_rework
+      ) {
+        setRound(state, key, getRound(state, key) + 1)
       } else if (!state.rounds[key]) {
         setRound(state, key, 1)
       }
@@ -212,6 +232,7 @@ export const dispatchWorkflow = (
     if (
       (params.kind === "plan" ||
         params.kind === "code" ||
+        params.kind === "phase_package" ||
         params.kind === "plan_review" ||
         params.kind === "code_review") &&
       getRound(state, capKey) > cfg.review_round_cap
@@ -241,11 +262,13 @@ export const dispatchWorkflow = (
           `Review plan at \`${rel(planPath(root), root)}\`.\nWrite verdict front-matter.`
         break
       case "phase_package": {
-        const d = phaseDir(state.phase_index, 1, root)
+        const d = phaseDir(state.phase_index, round, root)
         artifactAbs = path.join(d, "phase-package.md")
         extra =
           extra ||
-          `Emit phase package for phase ${state.phase_index} only from approved plan \`${rel(planPath(root), root)}\`.`
+          (state.phase_package_rework
+            ? `Revise the phase ${state.phase_index} package after code review \`${state.current_code_review}\`. Preserve approved-plan scope and address package findings.`
+            : `Emit phase package for phase ${state.phase_index} only from approved plan \`${rel(planPath(root), root)}\`.`)
         break
       }
       case "code": {
@@ -322,11 +345,72 @@ export const dispatchWorkflow = (
       })
     }
 
+    const paneStyle = effectivePaneStyle(cfg.pane_style, role)
+    let roleCmd: string[] | null = null
+    let profileFingerprint: string | null = null
+
+    // Everything that can be checked without a task path runs before any
+    // artifact mutation. Only the pane/script launch race remains afterward.
+    if (herdrAvailability !== "unavailable") {
+      if (paneStyle.style === "floating") {
+        const version = yield* herdr.version
+        if (!supportsFloating(version)) {
+          return yield* new HerdrError({
+            message:
+              "floating panes need herdr >= 0.7.4 — run `herdr update`, or set pane_style=regular",
+          })
+        }
+        if (!(yield* herdr.hasApneaPlugin)) {
+          return yield* new HerdrError({
+            message: `apnea herdr plugin not linked. Run /apnea setup, or: herdr plugin link ${livePackageRoot}/herdr-plugin`,
+          })
+        }
+        if (state.pending_floating_exit) {
+          const prevExitAbs = abs(state.pending_floating_exit, root)
+          if (!(yield* fs.exists(prevExitAbs))) {
+            return yield* new GateRefused({
+              gate: "floating_in_flight",
+              message:
+                "floating oneshot already in flight (popup still open). Call workflow_wait, or dismiss the popup and re-dispatch after it exits",
+              details: {
+                pending_artifact: state.pending_artifact,
+                pending_floating_exit: state.pending_floating_exit,
+              },
+            })
+          }
+        }
+        const cmdResult = yield* Effect.result(
+          config.resolveRoleCmd(cfg, role, "oneshot"),
+        )
+        if (Result.isFailure(cmdResult)) {
+          return yield* new HerdrError({
+            message: `floating dispatch requires cmd_oneshot on the role profile: ${cmdResult.failure.message}`,
+          })
+        }
+        roleCmd = cmdResult.success
+      } else {
+        roleCmd = yield* config.resolveRoleCmd(cfg, role, "interactive")
+        profileFingerprint = JSON.stringify([
+          cfg.roles[role]?.profile ?? null,
+          roleCmd,
+        ])
+      }
+    }
+
+    if (role === "reviewer") {
+      state.reviewer_tree_fingerprint = yield* vcsSvc.treeFingerprint(
+        root,
+        state.vcs,
+      )
+    }
+
     // clear-before-dispatch
     yield* fs.mkdir(path.dirname(artifactAbs), { recursive: true })
+    let backupAbs: string | null = null
     if (yield* fs.exists(artifactAbs)) {
       const backupMillis = yield* Clock.currentTimeMillis
-      yield* fs.rename(artifactAbs, `${artifactAbs}.bak.${backupMillis}`)
+      backupAbs = `${artifactAbs}.bak.${backupMillis}`
+      yield* fs.rename(artifactAbs, backupAbs)
     }
 
     const artifactRel = rel(artifactAbs, root)
@@ -339,25 +423,24 @@ export const dispatchWorkflow = (
       extra,
     })
 
-    const taskFileMillis = yield* Clock.currentTimeMillis
-    const taskFile = path.join(
+    let taskFileMillis = yield* Clock.currentTimeMillis
+    let taskFile = path.join(
       tasksDir(root),
       `${params.kind}-p${state.phase_index}-r${round}-${taskFileMillis}.md`,
     )
+    while (yield* fs.exists(taskFile)) {
+      taskFileMillis += 1
+      taskFile = path.join(
+        tasksDir(root),
+        `${params.kind}-p${state.phase_index}-r${round}-${taskFileMillis}.md`,
+      )
+    }
     yield* fs.writeFile(taskFile, body)
-    const taskRef: TaskRef = {
+    const taskRef = {
       task: rel(taskFile, root),
       artifact: artifactRel,
     }
 
-    if (role === "reviewer") {
-      state.reviewer_tree_fingerprint = yield* vcsSvc.treeFingerprint(
-        root,
-        state.vcs,
-      )
-    }
-
-    const paneStyle = effectivePaneStyle(cfg.pane_style, role)
     const prompt = [
       `You are the ${role}.`,
       `Read brief: ${briefAbs}`,
@@ -372,20 +455,77 @@ export const dispatchWorkflow = (
       pane_style_effective: paneStyle.effective,
     }
 
-    if (!(yield* herdr.enabled)) {
+    const rollbackLaunch = (restoreState = true) =>
+      Effect.gen(function* () {
+        const errors: string[] = []
+        const attempt = (label: string, operation: Effect.Effect<void>) =>
+          Effect.gen(function* () {
+            const exit = yield* Effect.exit(operation)
+            if (Exit.isFailure(exit)) {
+              errors.push(`${label}: ${Cause.pretty(exit.cause)}`)
+            }
+          })
+        yield* attempt("remove task", fs.remove(taskFile))
+        yield* attempt(
+          "remove floating script",
+          fs.remove(taskFile.replace(/\.md$/, ".sh")),
+        )
+        yield* attempt(
+          "remove floating exit marker",
+          fs.remove(taskFile.replace(/\.md$/, ".exit")),
+        )
+        yield* attempt("remove replacement artifact", fs.remove(artifactAbs))
+        if (backupAbs != null) {
+          yield* attempt(
+            "restore prior artifact",
+            fs.rename(backupAbs, artifactAbs),
+          )
+        }
+        if (restoreState) {
+          yield* attempt(
+            "restore workflow state",
+            store.save(stateBeforeDispatch, root),
+          )
+        }
+        return errors
+      })
+
+    const markPending = (launchedAt: number): void => {
+      state.pending_artifact = artifactRel
+      state.pending_role = role
+      state.pending_started_at = launchedAt
+      state.pending_deadline_ms = launchedAt + roleTimeoutMs
+      if (params.kind === "phase_package") state.phase_package_rework = false
+      resetRecoveryLadder(state)
+    }
+
+    // Persist ownership before crossing an external launch boundary. If this
+    // process dies after Herdr accepts work, a retry must not start a duplicate.
+    const preparedAt = yield* Clock.currentTimeMillis
+    markPending(preparedAt)
+    state.pending_pane_id = null
+    state.pending_pane_label = null
+    state.pending_floating_exit = null
+    const preparedState = yield* Effect.exit(store.save(state, root))
+    if (Exit.isFailure(preparedState)) {
+      const persistenceError = new HerdrError({
+        message: `failed to persist pending dispatch before launch: ${Cause.pretty(preparedState.cause)}`,
+      })
+      const rollbackErrors = yield* rollbackLaunch(false)
+      return yield* herdrAfterRollback(
+        persistenceError,
+        {
+          task_attempted: taskRef.task,
+          artifact: artifactRel,
+        },
+        rollbackErrors,
+      )
+    }
+
+    if (herdrAvailability === "unavailable") {
       // Stamped here, not at the top of the workflow: `pending_started_at` is
       // the anchor for both the role's deadline and wait's liveness grace, so
       // it must mean "the role has the prompt", not "dispatch began".
-      const launchedAt = yield* Clock.currentTimeMillis
-      state.pending_artifact = artifactRel
-      state.pending_role = role
-      state.pending_pane_id = null
-      state.pending_pane_label = null
-      state.pending_floating_exit = null
-      state.pending_started_at = launchedAt
-      state.pending_deadline_ms = launchedAt + roleTimeoutMs
-      resetRecoveryLadder(state)
-      yield* store.save(state, root)
       return ok(
         `task written (no Herdr). Launch ${role} yourself; then workflow_wait.`,
         {
@@ -405,64 +545,48 @@ export const dispatchWorkflow = (
     }
 
     if (paneStyle.style === "floating") {
-      const version = yield* herdr.version
-      if (!supportsFloating(version)) {
-        return yield* new HerdrError({
-          message:
-            "floating panes need herdr >= 0.7.4 — run `herdr update`, or set pane_style=regular",
-          details: { ...taskRef },
-        })
-      }
-      if (!(yield* herdr.hasApneaPlugin)) {
-        return yield* new HerdrError({
-          // Live root, not `state.package_root`: the frozen value is the
-          // one this file just stopped trusting for briefs, and a stale
-          // one here tells the user to link a plugin directory that does
-          // not exist.
-          message: `apnea herdr plugin not linked. Run /apnea setup, or: herdr plugin link ${livePackageRoot}/herdr-plugin`,
-          details: { ...taskRef },
-        })
-      }
-      // Herdr allows one popup. Refuse while a prior floating oneshot is still live.
-      if (state.pending_floating_exit) {
-        const prevExitAbs = abs(state.pending_floating_exit, root)
-        if (!(yield* fs.exists(prevExitAbs))) {
-          return yield* new GateRefused({
-            gate: "floating_in_flight",
-            message:
-              "floating oneshot already in flight (popup still open). Call workflow_wait, or dismiss the popup and re-dispatch after it exits",
-            details: {
-              pending_artifact: state.pending_artifact,
-              pending_floating_exit: state.pending_floating_exit,
-              ...taskRef,
-            },
-          })
-        }
-      }
-      const cmdResult = yield* Effect.result(
-        config.resolveRoleCmd(cfg, role, "oneshot"),
-      )
-      if (Result.isFailure(cmdResult)) {
-        return yield* new HerdrError({
-          message: `floating dispatch requires cmd_oneshot on the role profile: ${cmdResult.failure.message}`,
-          details: { ...taskRef },
-        })
-      }
-      const cmd = cmdResult.success
+      const cmd = roleCmd!
       const scriptAbs = taskFile.replace(/\.md$/, ".sh")
       const exitAbs = taskFile.replace(/\.md$/, ".exit")
       // Drop stale exit marker so wait cannot see a previous run's code.
       yield* fs.remove(exitAbs)
-      yield* herdr
-        .writeFloatingTaskScript(scriptAbs, root, cmd, prompt, exitAbs)
-        .pipe(Effect.mapError((e) => herdrWithTaskRef(e, taskRef)))
-      yield* herdr
-        .openFloatingPane(scriptAbs, root)
-        .pipe(Effect.mapError((e) => herdrWithTaskRef(e, taskRef)))
+      const scriptWritten = yield* Effect.result(
+        herdr.writeFloatingTaskScript(scriptAbs, root, cmd, prompt, exitAbs),
+      )
+      if (Result.isFailure(scriptWritten)) {
+        const rollbackErrors = yield* rollbackLaunch()
+        return yield* herdrAfterRollback(
+          scriptWritten.failure,
+          {
+            task_attempted: taskRef.task,
+            artifact: artifactRel,
+          },
+          rollbackErrors,
+        )
+      }
       // Popups have no pane id — liveness is the exit file; leave role_panes alone.
       state.pending_pane_id = null
       state.pending_pane_label = null
       state.pending_floating_exit = rel(exitAbs, root)
+      yield* store.save(state, root)
+      const opened = yield* Effect.result(
+        herdr.openFloatingPane(scriptAbs, root),
+      )
+      if (Result.isFailure(opened)) {
+        return yield* new HerdrError({
+          message: opened.failure.message,
+          ...(opened.failure.command !== undefined
+            ? { command: opened.failure.command }
+            : {}),
+          details: {
+            ...(opened.failure.details ?? {}),
+            delivery: "unknown",
+            task_attempted: taskRef.task,
+            artifact: artifactRel,
+            pending_preserved: true,
+          },
+        })
+      }
       launch = {
         mode: "oneshot",
         pane_style: cfg.pane_style,
@@ -473,14 +597,53 @@ export const dispatchWorkflow = (
         prompt,
       }
     } else {
-      const prefer = state.role_panes[role] ?? null
       // Interactive TUI: open harness, wait idle, submit pointer via pane run.
-      const cmd = yield* config
-        .resolveRoleCmd(cfg, role, "interactive")
-        .pipe(Effect.mapError((e) => configWithTaskRef(e, taskRef)))
-      const r = yield* herdr
-        .runInteractivePrompt(role, cmd, prompt, prefer)
-        .pipe(Effect.mapError((e) => herdrWithTaskRef(e, taskRef)))
+      const cmd = roleCmd!
+      const remembered = state.role_panes[role] ?? null
+      const prefer =
+        remembered?.profile_fingerprint === profileFingerprint
+          ? remembered
+          : null
+      const launched = yield* Effect.result(
+        herdr.runInteractivePrompt(role, cmd, prompt, prefer),
+      )
+      if (Result.isFailure(launched)) {
+        if (launched.failure.details?.delivery === "unknown") {
+          const paneId = String(launched.failure.details.pane_id)
+          const paneLabel = String(launched.failure.details.pane_label)
+          state.pending_pane_id = paneId
+          state.pending_pane_label = paneLabel
+          state.pending_floating_exit = null
+          state.role_panes[role] = {
+            pane_id: paneId,
+            label: paneLabel,
+            profile_fingerprint: profileFingerprint,
+          }
+          yield* store.save(state, root)
+          return yield* new HerdrError({
+            message: launched.failure.message,
+            ...(launched.failure.command !== undefined
+              ? { command: launched.failure.command }
+              : {}),
+            details: {
+              ...(launched.failure.details ?? {}),
+              task_attempted: taskRef.task,
+              artifact: artifactRel,
+              pending_preserved: true,
+            },
+          })
+        }
+        const rollbackErrors = yield* rollbackLaunch()
+        return yield* herdrAfterRollback(
+          launched.failure,
+          {
+            task_attempted: taskRef.task,
+            artifact: artifactRel,
+          },
+          rollbackErrors,
+        )
+      }
+      const r = launched.success
       launch = {
         mode: "interactive",
         pane_id: r.pane_id,
@@ -497,7 +660,11 @@ export const dispatchWorkflow = (
       state.pending_pane_id = r.pane_id
       state.pending_pane_label = r.label
       state.pending_floating_exit = null
-      state.role_panes[role] = { pane_id: r.pane_id, label: r.label }
+      state.role_panes[role] = {
+        pane_id: r.pane_id,
+        label: r.label,
+        profile_fingerprint: profileFingerprint,
+      }
     }
 
     // After the launch, not before it: `runInteractivePrompt` blocks in
@@ -505,11 +672,7 @@ export const dispatchWorkflow = (
     // the top of the workflow charged that startup against the role's own
     // deadline and burned wait's 12s liveness grace before the first poll.
     const launchedAt = yield* Clock.currentTimeMillis
-    state.pending_artifact = artifactRel
-    state.pending_role = role
-    state.pending_started_at = launchedAt
-    state.pending_deadline_ms = launchedAt + roleTimeoutMs
-    resetRecoveryLadder(state)
+    markPending(launchedAt)
     yield* store.save(state, root)
 
     return ok(

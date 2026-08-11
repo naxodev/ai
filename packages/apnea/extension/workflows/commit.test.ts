@@ -39,6 +39,7 @@ function baseState(over: Partial<RunState> = {}): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: ".apnea/artifacts/phase-01/round-1/phase-package.md",
     current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+    phase_package_rework: false,
     ...over,
   }
 }

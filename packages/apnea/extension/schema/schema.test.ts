@@ -28,11 +28,18 @@ const fullState = {
   pending_pane_id: "p1",
   pending_pane_label: "apnea:coder:abc",
   pending_floating_exit: null,
-  role_panes: { coder: { pane_id: "p1", label: "apnea:coder:abc" } },
+  role_panes: {
+    coder: {
+      pane_id: "p1",
+      label: "apnea:coder:abc",
+      profile_fingerprint: '["pi",["pi"]]',
+    },
+  },
   package_root: "/tmp/apnea",
   reviewer_tree_fingerprint: null,
   current_phase_package: ".apnea/artifacts/phase-01/round-1/phase-package.md",
   current_code_review: null,
+  phase_package_rework: false,
 }
 
 describe("RunStateSchema", () => {
@@ -74,6 +81,18 @@ describe("RunStateSchema", () => {
       expect(r.success.pending_pane_label).toBeNull()
       expect(r.success.pending_floating_exit).toBeNull()
       expect(r.success.role_panes).toEqual({})
+      expect(r.success.phase_package_rework).toBe(false)
+    }
+  })
+
+  test("legacy remembered panes get a null profile fingerprint", () => {
+    const r = decodeRunState({
+      ...fullState,
+      role_panes: { coder: { pane_id: "old", label: "apnea:coder:old" } },
+    })
+    expect(Result.isSuccess(r)).toBe(true)
+    if (Result.isSuccess(r)) {
+      expect(r.success.role_panes.coder?.profile_fingerprint).toBeNull()
     }
   })
 
@@ -160,6 +179,24 @@ describe("frontmatter result schema", () => {
   test("accepts APPROVED verdict", () => {
     const r = decodeFrontMatterResult({ status: "done", verdict: "APPROVED" })
     expect(Result.isSuccess(r)).toBe(true)
+  })
+
+  test("accepts an explicit phase-package rework target", () => {
+    const r = decodeFrontMatterResult({
+      status: "done",
+      verdict: "CHANGES_REQUIRED",
+      rework: "phase_package",
+    })
+    expect(Result.isSuccess(r)).toBe(true)
+  })
+
+  test("rejects an unknown rework target", () => {
+    const r = decodeFrontMatterResult({
+      status: "done",
+      verdict: "CHANGES_REQUIRED",
+      rework: "planner",
+    })
+    expect(Result.isFailure(r)).toBe(true)
   })
 
   test("rejects verdict LGTM", () => {

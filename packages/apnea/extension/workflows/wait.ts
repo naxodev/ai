@@ -302,6 +302,17 @@ export const waitWorkflow = (
     ): Effect.Effect<ToolResult, AppError> =>
       Effect.gen(function* () {
         if (
+          fm.rework !== undefined &&
+          (kind !== "code_review" || fm.verdict !== "CHANGES_REQUIRED")
+        ) {
+          return yield* new ArtifactInvalid({
+            artifact: pendingArtifact,
+            message:
+              "rework is valid only on a code_review artifact with verdict CHANGES_REQUIRED",
+          })
+        }
+
+        if (
           state.pending_role === "reviewer" &&
           state.reviewer_tree_fingerprint != null
         ) {
@@ -322,14 +333,6 @@ export const waitWorkflow = (
           }
         }
 
-        const next = stepAfterArtifact(kind, fm.verdict)
-        if (typeof next === "object") {
-          return yield* new ArtifactInvalid({
-            artifact: pendingArtifact,
-            message: next.error,
-          })
-        }
-
         // Post-completion Schema guard only — isCompleteArtifact above is the
         // completeness test. A bad/absent verdict must keep waiting, not fail
         // here (that already happened before advanceOnComplete was called).
@@ -343,6 +346,9 @@ export const waitWorkflow = (
             status: fm.status,
             ...(requireVerdict ? { verdict: fm.verdict } : {}),
             nits: fm.nits,
+            ...(kind === "code_review" && fm.rework
+              ? { rework: fm.rework }
+              : {}),
           },
           pendingArtifact,
         )
@@ -350,13 +356,24 @@ export const waitWorkflow = (
           return yield* decoded.failure
         }
 
+        const rework =
+          kind === "code_review" ? decoded.success.rework : undefined
+        const next = stepAfterArtifact(kind, fm.verdict, rework)
+        if (typeof next === "object") {
+          return yield* new ArtifactInvalid({
+            artifact: pendingArtifact,
+            message: next.error,
+          })
+        }
+
         if (kind === "phase_package") {
           state.current_phase_package = pendingArtifact
         }
         if (kind === "code_review") {
           state.current_code_review = pendingArtifact
+          state.phase_package_rework =
+            fm.verdict === "CHANGES_REQUIRED" && rework === "phase_package"
         }
-
         const verdict = asVerdict(fm.verdict)
         state.step = next
         state.pending_artifact = null
@@ -378,6 +395,7 @@ export const waitWorkflow = (
             kind,
             verdict,
             nits: fm.nits ?? null,
+            rework: rework ?? null,
             step: next,
           },
           nextAfter(next),

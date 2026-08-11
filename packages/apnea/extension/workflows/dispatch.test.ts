@@ -1,7 +1,6 @@
 import { Effect, Layer } from "effect"
 import { TestClock } from "effect/testing"
 import { describe, expect, test } from "bun:test"
-import * as path from "node:path"
 import { statePath } from "../domain/paths.ts"
 import type { ApneaConfig, RunState } from "../domain/types.ts"
 import { HerdrError, toToolResult } from "../errors.ts"
@@ -69,6 +68,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: null,
     current_code_review: null,
+    phase_package_rework: false,
     ...overrides,
   }
 }
@@ -106,16 +106,10 @@ function savedState(fakeFs: ReturnType<typeof makeFakeFileSystem>): RunState {
   return JSON.parse(fakeFs.files.get(statePath(ROOT))!) as RunState
 }
 
-function assertTaskRef(
-  details: Record<string, unknown> | undefined,
-  fakeFs: ReturnType<typeof makeFakeFileSystem>,
-): void {
-  expect(details?.artifact).toBe(".apnea/artifacts/plan.md")
-  const task = details?.task
-  expect(typeof task).toBe("string")
-  expect(task as string).toMatch(/^\.apnea\/tasks\/plan-p1-r1-\d+\.md$/)
-  // The whole point: the orchestrator can find the file dispatch orphaned.
-  expect(fakeFs.files.has(path.join(ROOT, task as string))).toBe(true)
+function taskFiles(fakeFs: ReturnType<typeof makeFakeFileSystem>): string[] {
+  return [...fakeFs.files.keys()].filter((file) =>
+    file.includes("/.apnea/tasks/"),
+  )
 }
 
 /** Runs dispatchWorkflow against a TestClock pinned to nowMs. */
@@ -342,7 +336,186 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(saved.role_panes.planner).toEqual({
           pane_id: "pane-42",
           label: "apnea:planner:abc",
+          profile_fingerprint: '["pi",["pi"]]',
         })
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "reuses a role pane only while its effective profile and command match",
+    () => {
+      const matching = {
+        pane_id: "pane-old",
+        label: "apnea:planner:old",
+        profile_fingerprint: '["pi",["pi"]]',
+      }
+      const matchingFs = seedFs(
+        baseState({ step: "planning", role_panes: { planner: matching } }),
+      )
+      const profileChangedFs = seedFs(
+        baseState({ step: "planning", role_panes: { planner: matching } }),
+      )
+      const commandChangedFs = seedFs(
+        baseState({ step: "planning", role_panes: { planner: matching } }),
+      )
+      const same = layerOf(matchingFs)
+      const profileChanged = layerOf(profileChangedFs, {
+        cfg: {
+          profiles: { alternate: { cmd_interactive: ["pi"] } },
+          roles: {
+            planner: { profile: "alternate" },
+            reviewer: { profile: "alternate" },
+            coder: { profile: "alternate" },
+          },
+          review_round_cap: 3,
+          timeouts_ms: {},
+          pane_style: "regular",
+        },
+      })
+      const commandChanged = layerOf(commandChangedFs, {
+        cfg: {
+          profiles: { pi: { cmd_interactive: ["pi", "--new"] } },
+          roles: {
+            planner: { profile: "pi" },
+            reviewer: { profile: "pi" },
+            coder: { profile: "pi" },
+          },
+          review_round_cap: 3,
+          timeouts_ms: {},
+          pane_style: "regular",
+        },
+      })
+      return Effect.gen(function* () {
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+          Effect.provide(same.layer),
+        )
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+          Effect.provide(profileChanged.layer),
+        )
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+          Effect.provide(commandChanged.layer),
+        )
+        expect(same.herdr.interactiveCalls[0]?.prefer).toEqual(matching)
+        expect(profileChanged.herdr.interactiveCalls[0]?.prefer).toBeNull()
+        expect(commandChanged.herdr.interactiveCalls[0]?.prefer).toBeNull()
+        expect(
+          savedState(profileChanged.fakeFs).role_panes.planner
+            ?.profile_fingerprint,
+        ).toBe('["alternate",["pi"]]')
+        expect(
+          savedState(commandChanged.fakeFs).role_panes.planner
+            ?.profile_fingerprint,
+        ).toBe('["pi",["pi","--new"]]')
+      })
+    },
+  )
+
+  itEffect(
+    "a stale current Herdr pane falls back to one manual-launch task",
+    () => {
+      const fsFake = seedFs(baseState({ step: "planning" }))
+      const { layer, fakeFs, herdr } = layerOf(fsFake, {
+        herdr: { enabled: true, availability: "unavailable" },
+      })
+      return Effect.gen(function* () {
+        const result = yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+        expect(result.ok).toBe(true)
+        if (result.ok) expect(result.message).toContain("no Herdr")
+        expect(herdr.interactiveCalls).toHaveLength(0)
+        expect(
+          [...fakeFs.files.keys()].filter((file) =>
+            file.includes("/.apnea/tasks/"),
+          ),
+        ).toHaveLength(1)
+        expect(savedState(fakeFs).pending_pane_id).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect("a genuine Herdr preflight failure writes no task", () => {
+    const fsFake = seedFs(baseState({ step: "planning" }))
+    const { layer, fakeFs } = layerOf(fsFake, {
+      herdr: {
+        availability: new HerdrError({ message: "herdr daemon unavailable" }),
+      },
+    })
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan" }, ROOT),
+      )
+      expect(expectFailure(result, "HerdrError").message).toBe(
+        "herdr daemon unavailable",
+      )
+      expect(
+        [...fakeFs.files.keys()].some((file) =>
+          file.includes("/.apnea/tasks/"),
+        ),
+      ).toBe(false)
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect(
+    "package rework advances the review round and preserves the prior package",
+    () => {
+      const oldPackage = `${ROOT}/.apnea/artifacts/phase-01/round-1/phase-package.md`
+      const fsFake = seedFs(
+        baseState({
+          step: "phase_packaging",
+          rounds: { "phase-01/code_review": 1 },
+          current_phase_package:
+            ".apnea/artifacts/phase-01/round-1/phase-package.md",
+          current_code_review:
+            ".apnea/artifacts/phase-01/round-1/code-review.md",
+          phase_package_rework: true,
+        }),
+        { [oldPackage]: "old package" },
+      )
+      const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+      return Effect.gen(function* () {
+        const result = yield* dispatchWorkflow({ kind: "phase_package" }, ROOT)
+        expect(result.ok).toBe(true)
+        expect(result.data?.round).toBe(2)
+        expect(result.data?.artifact).toBe(
+          ".apnea/artifacts/phase-01/round-2/phase-package.md",
+        )
+        expect(fakeFs.files.get(oldPackage)).toBe("old package")
+        const saved = savedState(fakeFs)
+        expect(saved.rounds["phase-01/code_review"]).toBe(2)
+        expect(saved.phase_package_rework).toBe(false)
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "package rework at the round cap refuses without changing any workflow artifact or state",
+    () => {
+      const oldPackage = `${ROOT}/.apnea/artifacts/phase-01/round-3/phase-package.md`
+      const state = baseState({
+        step: "phase_packaging",
+        rounds: { "phase-01/code_review": 3 },
+        current_phase_package:
+          ".apnea/artifacts/phase-01/round-3/phase-package.md",
+        current_code_review: ".apnea/artifacts/phase-01/round-3/code-review.md",
+        phase_package_rework: true,
+      })
+      const fsFake = seedFs(state, { [oldPackage]: "prior package" })
+      const before = new Map(fsFake.files)
+      const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "phase_package" }, ROOT),
+        )
+        const error = expectFailure(result, "GateRefused")
+        expect(error.gate).toBe("round_cap")
+        expect(fakeFs.files).toEqual(before)
+        const saved = savedState(fakeFs)
+        expect(saved.rounds["phase-01/code_review"]).toBe(3)
+        expect(saved.phase_package_rework).toBe(true)
+        expect(saved.current_phase_package).toBe(
+          ".apnea/artifacts/phase-01/round-3/phase-package.md",
+        )
+        expect(taskFiles(fakeFs)).toEqual([])
       }).pipe(Effect.provide(layer))
     },
   )
@@ -389,7 +562,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(e.message).toBe(
           "floating panes need herdr >= 0.7.4 — run `herdr update`, or set pane_style=regular",
         )
-        assertTaskRef(e.details, fakeFs)
+        expect(taskFiles(fakeFs)).toEqual([])
       }).pipe(Effect.provide(layer))
     },
   )
@@ -418,12 +591,11 @@ describe("dispatchWorkflow (fake layers)", () => {
       const e = expectFailure(r, "HerdrError")
       expect(e.message).toContain("apnea herdr plugin not linked")
       expect(e.message).toContain("herdr plugin link /live-pkg/herdr-plugin")
-      assertTaskRef(e.details, fakeFs)
+      expect(taskFiles(fakeFs)).toEqual([])
 
       const out = toToolResult(e)
       expect(out.ok).toBe(false)
-      expect(out.data?.task).toBe(e.details?.task)
-      expect(out.data?.artifact).toBe(".apnea/artifacts/plan.md")
+      expect(out.data?.task).toBeUndefined()
     }).pipe(Effect.provide(layer))
   })
 
@@ -448,7 +620,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(e.details?.pending_floating_exit).toBe(
           ".apnea/tasks/plan-p1-r1-111.exit",
         )
-        assertTaskRef(e.details, fakeFs)
+        expect(taskFiles(fakeFs)).toEqual([])
       }).pipe(Effect.provide(layer))
     },
   )
@@ -479,49 +651,49 @@ describe("dispatchWorkflow (fake layers)", () => {
     },
   )
 
-  itEffect(
-    "floating with no cmd_oneshot on the role profile → HerdrError carries the orphaned task",
-    () => {
-      const fsFake = seedFs(baseState({ step: "planning" }))
-      const { layer, fakeFs } = layerOf(fsFake, {
-        herdr: { enabled: true, version: [0, 7, 4], hasPlugin: true },
-        cfg: FLOATING_NO_ONESHOT,
-      })
-      return Effect.gen(function* () {
-        const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
-        const e = expectFailure(r, "HerdrError")
-        expect(e.message).toContain("cmd_oneshot")
-        assertTaskRef(e.details, fakeFs)
-      }).pipe(Effect.provide(layer))
-    },
-  )
+  itEffect("floating with no cmd_oneshot refuses before writing a task", () => {
+    const fsFake = seedFs(baseState({ step: "planning" }))
+    const { layer, fakeFs } = layerOf(fsFake, {
+      herdr: { enabled: true, version: [0, 7, 4], hasPlugin: true },
+      cfg: FLOATING_NO_ONESHOT,
+    })
+    return Effect.gen(function* () {
+      const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
+      const e = expectFailure(r, "HerdrError")
+      expect(e.message).toContain("cmd_oneshot")
+      expect(taskFiles(fakeFs)).toEqual([])
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("floating script write failure rolls back the task", () => {
+    const fsFake = seedFs(baseState({ step: "planning" }))
+    const { layer, fakeFs } = layerOf(fsFake, {
+      herdr: {
+        enabled: true,
+        version: [0, 7, 4],
+        hasPlugin: true,
+        failWriteScript: new HerdrError({ message: "disk full" }),
+      },
+      cfg: FLOATING_CFG,
+    })
+    return Effect.gen(function* () {
+      const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
+      const e = expectFailure(r, "HerdrError")
+      expect(e.message).toBe("disk full")
+      expect(e.details?.rolled_back).toBe(true)
+      expect(taskFiles(fakeFs)).toEqual([])
+    }).pipe(Effect.provide(layer))
+  })
 
   itEffect(
-    "floating script write fails → HerdrError message preserved, task carried",
+    "floating open failure preserves pending ownership because delivery is ambiguous",
     () => {
-      const fsFake = seedFs(baseState({ step: "planning" }))
-      const { layer, fakeFs } = layerOf(fsFake, {
-        herdr: {
-          enabled: true,
-          version: [0, 7, 4],
-          hasPlugin: true,
-          failWriteScript: new HerdrError({ message: "disk full" }),
-        },
-        cfg: FLOATING_CFG,
+      const artifact = `${ROOT}/.apnea/artifacts/plan.md`
+      const existingTask = `${ROOT}/.apnea/tasks/plan-p1-r1-0.md`
+      const fsFake = seedFs(baseState({ step: "planning" }), {
+        [artifact]: "prior plan",
+        [existingTask]: "prior task",
       })
-      return Effect.gen(function* () {
-        const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
-        const e = expectFailure(r, "HerdrError")
-        expect(e.message).toBe("disk full")
-        assertTaskRef(e.details, fakeFs)
-      }).pipe(Effect.provide(layer))
-    },
-  )
-
-  itEffect(
-    "floating open pane fails → HerdrError message preserved, task carried",
-    () => {
-      const fsFake = seedFs(baseState({ step: "planning" }))
       const { layer, fakeFs } = layerOf(fsFake, {
         herdr: {
           enabled: true,
@@ -535,13 +707,24 @@ describe("dispatchWorkflow (fake layers)", () => {
         const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
         const e = expectFailure(r, "HerdrError")
         expect(e.message).toBe("popup already open")
-        assertTaskRef(e.details, fakeFs)
+        expect(e.details).toMatchObject({
+          artifact: ".apnea/artifacts/plan.md",
+          delivery: "unknown",
+          pending_preserved: true,
+        })
+        expect(e.details?.task_attempted).toMatch(
+          /^\.apnea\/tasks\/plan-p1-r1-\d+\.md$/,
+        )
+        expect(savedState(fakeFs).pending_artifact).toBe(
+          ".apnea/artifacts/plan.md",
+        )
+        expect(taskFiles(fakeFs)).toHaveLength(2)
       }).pipe(Effect.provide(layer))
     },
   )
 
   itEffect(
-    "interactive with no cmd_interactive on the role profile → ConfigError carries the orphaned task",
+    "interactive with no cmd_interactive refuses before writing a task",
     () => {
       const fsFake = seedFs(baseState({ step: "planning" }))
       const { layer, fakeFs } = layerOf(fsFake, {
@@ -552,20 +735,23 @@ describe("dispatchWorkflow (fake layers)", () => {
         const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
         const e = expectFailure(r, "ConfigError")
         expect(e.message).toContain("cmd_interactive")
-        assertTaskRef(e.details, fakeFs)
+        expect(taskFiles(fakeFs)).toEqual([])
 
         const out = toToolResult(e)
         expect(out.ok).toBe(false)
-        expect(out.data?.task).toBe(e.details?.task)
-        expect(out.data?.artifact).toBe(".apnea/artifacts/plan.md")
+        expect(out.data?.task).toBeUndefined()
       }).pipe(Effect.provide(layer))
     },
   )
 
   itEffect(
-    "interactive runInteractivePrompt fails → HerdrError message preserved, task carried",
+    "late interactive launch failure restores the exact pre-dispatch files",
     () => {
-      const fsFake = seedFs(baseState({ step: "planning" }))
+      const artifact = `${ROOT}/.apnea/artifacts/plan.md`
+      const fsFake = seedFs(baseState({ step: "planning" }), {
+        [artifact]: "prior plan",
+      })
+      const before = new Map(fsFake.files)
       const { layer, fakeFs } = layerOf(fsFake, {
         herdr: {
           enabled: true,
@@ -576,7 +762,125 @@ describe("dispatchWorkflow (fake layers)", () => {
         const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
         const e = expectFailure(r, "HerdrError")
         expect(e.message).toBe("pane split failed")
-        assertTaskRef(e.details, fakeFs)
+        expect(e.details).toMatchObject({
+          artifact: ".apnea/artifacts/plan.md",
+          rolled_back: true,
+        })
+        expect(fakeFs.files).toEqual(before)
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "ambiguous pane-run failure preserves task, pending state, and retry ownership",
+    () => {
+      const error = new HerdrError({
+        message: "herdr pane run failed: response lost",
+        command: "herdr pane run",
+        details: {
+          delivery: "unknown",
+          pane_id: "pane-42",
+          pane_label: "apnea:planner:abc",
+          reused: false,
+        },
+      })
+      const fsFake = seedFs(baseState({ step: "planning" }))
+      const first = layerOf(fsFake, { herdr: { interactive: error } })
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        const failure = expectFailure(result, "HerdrError")
+        expect(failure.message).toContain("response lost")
+        expect(failure.details).toMatchObject({
+          delivery: "unknown",
+          pending_preserved: true,
+        })
+        const saved = savedState(fsFake)
+        expect(saved.pending_artifact).toBe(".apnea/artifacts/plan.md")
+        expect(saved.pending_pane_id).toBe("pane-42")
+        expect(taskFiles(fsFake)).toHaveLength(1)
+
+        const retry = layerOf(fsFake)
+        const retried = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+            Effect.provide(retry.layer),
+          ),
+        )
+        const retryFailure = expectFailure(retried, "GateRefused")
+        expect(retryFailure.gate).toBe("dispatch_pending")
+        expect(retry.herdr.interactiveCalls).toHaveLength(0)
+        expect(taskFiles(fsFake)).toHaveLength(1)
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect(
+    "definite launch failure reports rollback cleanup failure without hiding launch error",
+    () => {
+      const fsFake = makeFakeFileSystem(
+        {
+          [statePath(ROOT)]: `${JSON.stringify(baseState(), null, 2)}\n`,
+          ...briefFiles("/pkg"),
+        },
+        {
+          failRemove: (path) =>
+            path.includes("/.apnea/tasks/") && path.endsWith(".md")
+              ? new Error("cleanup disk failure")
+              : null,
+        },
+      )
+      const { layer } = layerOf(fsFake, {
+        herdr: {
+          interactive: new HerdrError({
+            message: "pane split failed",
+            details: { delivery: "not_delivered" },
+          }),
+        },
+      })
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        const failure = expectFailure(result, "HerdrError")
+        expect(failure.message).toBe("pane split failed")
+        expect(failure.details?.rolled_back).toBe(false)
+        expect(failure.details?.rollback_errors).toEqual([
+          expect.stringContaining("cleanup disk failure"),
+        ])
+        expect(savedState(fsFake).pending_artifact).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "pending-state persistence failure restores files and never launches a worker",
+    () => {
+      const artifact = `${ROOT}/.apnea/artifacts/plan.md`
+      const state = baseState()
+      const fsFake = makeFakeFileSystem(
+        {
+          [statePath(ROOT)]: `${JSON.stringify(state, null, 2)}\n`,
+          [artifact]: "prior plan",
+          ...briefFiles("/pkg"),
+        },
+        {
+          failWrite: (path) =>
+            path === statePath(ROOT) ? new Error("state disk full") : null,
+        },
+      )
+      const { layer, herdr } = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        const failure = expectFailure(result, "HerdrError")
+        expect(failure.message).toContain("state disk full")
+        expect(failure.details?.rolled_back).toBe(true)
+        expect(herdr.interactiveCalls).toHaveLength(0)
+        expect(fsFake.files.get(artifact)).toBe("prior plan")
+        expect(taskFiles(fsFake)).toEqual([])
+        expect(savedState(fsFake)).toEqual(state)
       }).pipe(Effect.provide(layer))
     },
   )

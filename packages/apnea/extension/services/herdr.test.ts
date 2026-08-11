@@ -15,8 +15,10 @@ import {
   Herdr,
   HerdrLive,
   type PromptProbes,
+  cleanupFailedInteractiveLaunch,
   ensurePromptSubmitted,
   floatingPanePath,
+  probeHerdrAvailability,
   resolveExecutable,
 } from "./herdr.ts"
 
@@ -128,6 +130,35 @@ describe("resolveExecutable", () => {
     fs.chmodSync(bin, 0o755)
     expect(resolveExecutable("mytool", d)).toBe(bin)
     expect(resolveExecutable("mytool", "/no/such/bin")).toBeNull()
+  })
+})
+
+describe("probeHerdrAvailability", () => {
+  test("a stale claimed current pane is unavailable", () => {
+    expect(
+      probeHerdrAvailability(
+        { HERDR_ENV: "1", HERDR_PANE_ID: "w1:gone" },
+        () => ({ ok: false, raw: '{"error":{"code":"pane_not_found"}}' }),
+      ),
+    ).toBe("unavailable")
+  })
+
+  test("a valid current pane keeps Herdr available", () => {
+    expect(
+      probeHerdrAvailability(
+        { HERDR_ENV: "1", HERDR_PANE_ID: "w1:live" },
+        () => ({ ok: true, raw: "{}" }),
+      ),
+    ).toBe("available")
+  })
+
+  test("a genuine Herdr failure is not hidden as unavailability", () => {
+    expect(() =>
+      probeHerdrAvailability(
+        { HERDR_ENV: "1", HERDR_PANE_ID: "w1:maybe" },
+        () => ({ ok: false, raw: "connection refused" }),
+      ),
+    ).toThrow("failed to verify current Herdr pane")
   })
 })
 
@@ -245,6 +276,50 @@ describe("ensurePromptSubmitted recovery", () => {
     expect(out.accepted).toBe(false)
     expect(out.attempts).toBe(3)
     expect(rec.runs).toEqual([])
+  })
+})
+
+describe("interactive launch cleanup", () => {
+  test("closes a new pane after definite pre-delivery failure", async () => {
+    const closed: string[] = []
+    const result = await Effect.runPromise(
+      Effect.result(
+        cleanupFailedInteractiveLaunch(
+          new HerdrError({ message: "harness launch failed" }),
+          "pane-new",
+          (paneId) => Effect.sync(() => closed.push(paneId)),
+        ),
+      ),
+    )
+    expect(closed).toEqual(["pane-new"])
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure.message).toBe("harness launch failed")
+      expect(result.failure.details).toMatchObject({
+        delivery: "not_delivered",
+        pane_cleanup: "closed",
+      })
+    }
+  })
+
+  test("preserves the launch error when closing the new pane also fails", async () => {
+    const result = await Effect.runPromise(
+      Effect.result(
+        cleanupFailedInteractiveLaunch(
+          new HerdrError({ message: "harness launch failed" }),
+          "pane-new",
+          () => Effect.fail(new HerdrError({ message: "pane close failed" })),
+        ),
+      ),
+    )
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure.message).toBe("harness launch failed")
+      expect(result.failure.details).toMatchObject({
+        pane_cleanup: "failed",
+        pane_cleanup_error: "pane close failed",
+      })
+    }
   })
 })
 
