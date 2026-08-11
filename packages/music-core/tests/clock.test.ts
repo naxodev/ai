@@ -395,7 +395,8 @@ describe("syncFromSample", () => {
   })
 
   test("a stable provider id cannot hide conflicting known durations", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "Artist", "stable-id"),
       reported_ms: 50_000,
       duration_ms: 180_000,
@@ -403,7 +404,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const replacement = syncFromSample({
+    const replacement = sample(clock, {
       key: trackKey("Song", "Artist", "stable-id"),
       reported_ms: 100,
       duration_ms: 240_000,
@@ -416,7 +417,8 @@ describe("syncFromSample", () => {
   })
 
   test("different provider ids do not match when either duration is unknown", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "Artist", "first-id"),
       reported_ms: 50_000,
       duration_ms: 180_000,
@@ -424,7 +426,7 @@ describe("syncFromSample", () => {
       rate: 1,
       now: 1_000_000,
     })
-    const replacement = syncFromSample({
+    const replacement = sample(clock, {
       key: trackKey("Song", "Artist", "second-id"),
       reported_ms: 100,
       duration_ms: 0,
@@ -437,7 +439,8 @@ describe("syncFromSample", () => {
   })
 
   test("a sparse sample with the same provider id preserves the clock", () => {
-    syncFromSample({
+    const clock = createPlaybackClock()
+    sample(clock, {
       key: trackKey("Song", "Artist", "stable-id"),
       reported_ms: 10_000,
       duration_ms: 180_000,
@@ -445,7 +448,7 @@ describe("syncFromSample", () => {
       rate: 0,
       now: 1_000_000,
     })
-    const sparse = syncFromSample({
+    const sparse = sample(clock, {
       key: trackKey("", "", "stable-id"),
       reported_ms: 0,
       duration_ms: 0,

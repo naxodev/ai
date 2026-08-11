@@ -223,3 +223,25 @@ export function createPlaybackClock(): PlaybackClock {
     },
   }
 }
+
+const legacyClock = createPlaybackClock()
+
+/** @deprecated Create an independent clock with `createPlaybackClock()` instead. */
+export function syncFromSample(opts: SampleSyncInput): SampleSyncResult {
+  return legacyClock.syncFromSample(opts)
+}
+
+/** @deprecated Reset the independent clock owned by your backend instead. */
+export function resetClock(): void {
+  legacyClock.reset()
+}
+
+/** @deprecated Update the independent clock owned by your backend instead. */
+export function setClockPlaying(playing: boolean, now = Date.now()): void {
+  legacyClock.setPlaying(playing, now)
+}
+
+/** @deprecated Seek the independent clock owned by your backend instead. */
+export function seekClock(positionMs: number, now = Date.now()): void {
+  legacyClock.seek(positionMs, now)
+}

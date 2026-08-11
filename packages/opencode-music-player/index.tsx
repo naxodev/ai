@@ -398,6 +398,7 @@ export function createController(
         errorFromTransport = false
         // A snapshot is authoritative, so older provider reads cannot restore it.
         sampleRequestSequence++
+        pendingSample = false
         schedulePoll()
         return
       }

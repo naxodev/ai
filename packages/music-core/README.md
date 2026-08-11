@@ -91,7 +91,7 @@ clock.seek(20_000)
 clock.reset()
 ```
 
-`liveFromClock` and `trackKey` stay stateless helpers. There is no module-global playback clock.
+`liveFromClock` and `trackKey` stay stateless helpers. New backends own independent clocks. The deprecated clock functions use an isolated module-global compatibility clock and do not affect backend instances.
 
 ## Provider changes
 

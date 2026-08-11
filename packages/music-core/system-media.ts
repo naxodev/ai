@@ -545,12 +545,12 @@ export function createSystemMedia(
 
     async play() {
       await cmd("play", deps)
-      clock.setPlaying(true)
+      clock.setPlaying(true, deps.now())
     },
 
     async pause() {
       await cmd("pause", deps)
-      clock.setPlaying(false)
+      clock.setPlaying(false, deps.now())
     },
 
     async next() {
@@ -569,7 +569,7 @@ export function createSystemMedia(
       if (kind === "media-control") {
         const r = await deps.run(["media-control", "seek", String(sec)])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
-        clock.seek(positionMs)
+        clock.seek(positionMs, deps.now())
         return
       }
       if (kind === "nowplaying-cli") {
@@ -579,7 +579,7 @@ export function createSystemMedia(
           String(Math.floor(sec)),
         ])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
-        clock.seek(positionMs)
+        clock.seek(positionMs, deps.now())
       }
     },
   }

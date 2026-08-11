@@ -23,7 +23,15 @@ export type {
   SampleSyncInput,
   SampleSyncResult,
 } from "./clock.ts"
-export { createPlaybackClock, liveFromClock, trackKey } from "./clock.ts"
+export {
+  createPlaybackClock,
+  liveFromClock,
+  resetClock,
+  seekClock,
+  setClockPlaying,
+  syncFromSample,
+  trackKey,
+} from "./clock.ts"
 
 // reconcile
 export { mergePlayer, sameTrackIdentity } from "./reconcile.ts"

@@ -200,17 +200,19 @@ describe("OpenCode music controller", () => {
     expect(harness.activeTimers()[0]?.delay).toBe(3000)
   })
 
-  test("applies an authoritative pause before a held sample can settle", async () => {
+  test("a snapshot cancels an invalidation queued behind an older sample", async () => {
     const harness = createHarness({ samples: [] })
     const held = harness.requests[0]!
     const paused = player(false)
 
+    harness.emit({ type: "invalidation", reason: "stream-terminated" })
     harness.emit({ type: "snapshot", state: paused })
     expect(harness.controller.session.player?.is_playing).toBe(false)
     held.resolve(player(true))
     await flush()
 
     expect(harness.controller.session.player?.is_playing).toBe(false)
+    expect(harness.requests).toHaveLength(1)
     expect(harness.activeTimers()).toHaveLength(1)
     expect(harness.activeTimers()[0]?.delay).toBe(5000)
   })

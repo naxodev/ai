@@ -663,6 +663,7 @@ describe("media-control stream subscription", () => {
     const left = createSystemMedia({
       detectBackend: () => "media-control",
       hasNowPlayingCli: () => false,
+      now: () => 1_000_000,
       run: async (command) =>
         command[1] === "get"
           ? { ok: true, out: JSON.stringify(leftSample) }
@@ -671,6 +672,7 @@ describe("media-control stream subscription", () => {
     const right = createSystemMedia({
       detectBackend: () => "media-control",
       hasNowPlayingCli: () => false,
+      now: () => 1_000_000,
       run: async (command) =>
         command[1] === "get"
           ? { ok: true, out: JSON.stringify(rightSample) }
@@ -765,6 +767,7 @@ describe("media-control stream subscription", () => {
     const left = createSystemMedia({
       detectBackend: () => "media-control",
       hasNowPlayingCli: () => false,
+      now: () => 1_000_000,
       run: async (command) =>
         command[1] === "get"
           ? { ok: true, out: JSON.stringify(leftPayload) }
@@ -773,6 +776,7 @@ describe("media-control stream subscription", () => {
     const right = createSystemMedia({
       detectBackend: () => "media-control",
       hasNowPlayingCli: () => false,
+      now: () => 1_000_000,
       run: async (command) =>
         command[1] === "get"
           ? { ok: true, out: JSON.stringify(rightPayload) }
