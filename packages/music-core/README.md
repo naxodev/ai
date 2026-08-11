@@ -8,11 +8,11 @@ Shared Now Playing behavior so both hosts consume one implementation:
 
 - player/track types and helpers
 - `formatMs` progress formatting
-- playback clock (`syncFromSample`, `liveFromClock`, `trackKey`, `resetClock`, `setClockPlaying`, `seekClock`)
+- backend-owned playback clocks (`createPlaybackClock`, `liveFromClock`, `trackKey`)
 - track reconciliation (`mergePlayer`)
 - frame-driven playback visualization (`createEngine`, `stepEngine`, `displayLevel`, `isFlat`); it generates levels and does not analyse audio
 - portable CLI runner (`run`) and system-media provider (`createSystemMedia`, bundle labels, backend detection)
-- optional provider-change subscriptions (`MusicBackend.subscribe`)
+- optional provider-change subscriptions (`MusicBackend.subscribe`) with authoritative snapshots and stream-termination invalidations
 
 Pi and OpenCode keep presentation, registration, lifecycle, and notifications in their host packages. Pi keeps ANSI waveform rendering. OpenCode keeps Solid presentation, artwork, and Kitty graphics.
 
@@ -28,18 +28,21 @@ import {
   type MusicBackend,
   type MusicChangeDisposer,
   type MusicChangeListener,
+  type MusicChangeEvent,
+  type MusicChangeSnapshotEvent,
+  type MusicChangeInvalidationEvent,
   emptyPlayer,
   isMac,
   // format
   formatMs,
   // clock
   type Clock,
+  type PlaybackClock,
+  type SampleSyncInput,
+  type SampleSyncResult,
+  createPlaybackClock,
   liveFromClock,
   trackKey,
-  syncFromSample,
-  resetClock,
-  setClockPlaying,
-  seekClock,
   // reconcile
   mergePlayer,
   // waveform engine
@@ -67,12 +70,52 @@ import {
 } from "@naxodev/music-core"
 ```
 
-## Status
+## Playback clocks
 
-Pi and OpenCode consume this package for provider discovery and commands, normalized state, playback clocks, reconciliation, formatting, and waveform engine behavior.
+Each `createSystemMedia()` backend owns one `PlaybackClock`. Sampling, idle transitions, and successful play, pause, seek, next, and previous commands mutate only that instance.
+
+For tests or custom providers, create an explicit clock:
+
+```ts
+const clock = createPlaybackClock()
+clock.syncFromSample({
+  key: trackKey("Song", "Artist", "id"),
+  reported_ms: 10_000,
+  duration_ms: 180_000,
+  playing: true,
+  rate: 1,
+  now: Date.now(),
+})
+clock.setPlaying(false)
+clock.seek(20_000)
+clock.reset()
+```
+
+`liveFromClock` and `trackKey` stay stateless helpers. New backends own independent clocks. The deprecated clock functions use an isolated module-global compatibility clock and do not affect backend instances.
 
 ## Provider changes
 
-`media-control` backends provide `subscribe` for prompt invalidation when Now Playing may have changed. A listener does not receive provider data. It calls `player()` to obtain normalized state through the usual clock-reconciliation path.
+`media-control` backends provide `subscribe` for immediate playback updates. Complete stream payloads are already normalized into authoritative `PlayerState` snapshots. Hosts project those snapshots directly. Stream termination emits one invalidation so a host can recover by calling `player()` if needed.
 
-`nowplaying-cli` remains polling-only and omits `subscribe`. The disposer returned by `subscribe` owns the `media-control stream` process and any pending retry timer. Call it during host teardown.
+```ts
+const stop = backend.subscribe?.((event) => {
+  if (!event) return
+  if (event.type === "snapshot") {
+    applyPlayer(event.state)
+    return
+  }
+  if (event.type === "invalidation" && event.reason === "stream-terminated") {
+    void refreshFromPlayer()
+  }
+})
+```
+
+Existing `() => void` listeners remain valid and may ignore the event argument.
+
+`nowplaying-cli` remains polling-only and omits `subscribe`.
+
+The disposer returned by `subscribe` owns the active `media-control stream` process and any pending restart timer. Call it during host teardown. Disposal is idempotent: it invalidates the active generation, clears the retry timer once, disposes the stream once, and suppresses every late line, terminal callback, snapshot, invalidation, and restart.
+
+## Status
+
+Pi and OpenCode consume this package for provider discovery and commands, normalized state, playback clocks, reconciliation, formatting, and waveform engine behavior.

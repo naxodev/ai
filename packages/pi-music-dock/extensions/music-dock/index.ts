@@ -19,7 +19,6 @@ import {
 import { clipWords } from "./format.ts";
 import { createWaveformCoordinator, renderWave } from "./waveform.ts";
 
-// ctrl+alt+* — same pattern as pi plan-mode; avoids model-cycle and editor word-nav.
 const KEY_PLAY_PAUSE = Key.ctrlAlt("p");
 const KEY_NEXT = Key.ctrlAlt("n");
 const KEY_PREV = Key.ctrlAlt("b");
@@ -32,6 +31,29 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 type Timer = ReturnType<typeof setTimeout>;
 type Interval = ReturnType<typeof setInterval>;
+type Waveform = ReturnType<typeof createWaveformCoordinator>;
+type TransportKind = "play" | "pause" | "next" | "previous";
+type TransportIntent = {
+	kind: TransportKind;
+	ctx: ExtensionContext;
+	resolve: () => void;
+};
+type LiveSession = {
+	id: symbol;
+	active: boolean;
+	ui: ExtensionContext["ui"];
+	player: PlayerState | null;
+	pollTimer: Timer | null;
+	eventDisposer: (() => void) | null;
+	waveform: Waveform;
+	sampling: boolean;
+	pendingSample: boolean;
+	sampleRequestSequence: number;
+	samplingPromise: Promise<void> | null;
+	transportRevision: number;
+	pendingIntents: TransportIntent[];
+	activeIntent: TransportIntent | null;
+};
 
 export type MusicDockDependencies = {
 	backend: MusicBackend;
@@ -68,199 +90,235 @@ export function createMusicDock(
 		sleep,
 		...overrides,
 	};
-	let player: PlayerState | null = null;
-	let pollTimer: Timer | null = null;
-	let eventDisposer: (() => void) | null = null;
-	let ui: ExtensionContext["ui"] | null = null;
-	let disposed = false;
-	type RefreshSession = {
-		sampling: boolean;
-		pending: boolean;
-		busy: symbol | null;
-		transportRevision: number;
-	};
-	let refreshSession: RefreshSession = {
-		sampling: false,
-		pending: false,
-		busy: null,
-		transportRevision: 0,
-	};
 	const backend = deps.backend;
-	const isCurrent = (session: RefreshSession) =>
-		session === refreshSession && !disposed;
-	const waveform = createWaveformCoordinator({
-		now: Date.now,
-		scheduler: {
-			setInterval: (callback, ms) => deps.setInterval(callback, ms),
-			clearInterval: (timer) => deps.clearInterval(timer as Interval),
-		},
-		render: (current, engine) => renderStatus(current, engine),
-	});
+	let currentSession: LiveSession | null = null;
 
-	const stopPoll = () => {
-		if (!pollTimer) return;
-		deps.clearTimeout(pollTimer);
-		pollTimer = null;
+	const isLive = (session: LiveSession) =>
+		session.active && currentSession === session;
+	const stopPoll = (session: LiveSession) => {
+		if (!session.pollTimer) return;
+		deps.clearTimeout(session.pollTimer);
+		session.pollTimer = null;
 	};
-
-	const clearStatus = () => {
-		ui?.setStatus(STATUS_KEY, undefined);
-	};
-
-	const disposeVia = (target: ExtensionContext["ui"] | null) => {
-		target?.setStatus(STATUS_KEY, undefined);
-		if (disposed) return;
-		disposed = true;
-		eventDisposer?.();
-		eventDisposer = null;
-		stopPoll();
-		waveform.dispose();
-		player = null;
-		ui = null;
-		refreshSession.pending = false;
-	};
-
-	const dispose = () => disposeVia(ui);
-
+	const clearStatus = (session: LiveSession) =>
+		session.ui.setStatus(STATUS_KEY, undefined);
 	const renderStatus = (
+		session: LiveSession,
 		current: PlayerState,
 		engine: Parameters<typeof renderWave>[0],
 	) => {
-		if (!ui || disposed) return;
+		if (!isLive(session)) return;
 		const track = current.track;
 		if (!track) {
-			clearStatus();
+			clearStatus(session);
 			return;
 		}
-
-		// Action affordance: show what the control will do (pause while playing).
 		const icon = current.is_playing ? "⏸" : "▶";
-		const dimText = ui.theme.fg(
+		const dimText = session.ui.theme.fg(
 			"dim",
 			`${clipWords(track.name, 6)} · ${clipWords(track.artists, 4)}`,
 		);
-		const line = `${icon} ${renderWave(engine, current.is_playing)} ${dimText}`;
-		ui.setStatus(STATUS_KEY, line);
+		session.ui.setStatus(
+			STATUS_KEY,
+			`${icon} ${renderWave(engine, current.is_playing)} ${dimText}`,
+		);
 	};
-
-	const samplePlayer = async (session: RefreshSession) => {
-		try {
-			const revision = session.transportRevision;
-			const sampled = await backend.player();
-			if (!isCurrent(session)) return;
-			if (revision !== session.transportRevision) return;
-			const next = mergePlayer(player, sampled);
-			player = next;
-			waveform.setPlayer(player);
-
-			if (player?.track) {
-				// Step before rendering so a replacement anchors its first visible frame.
-				waveform.frame();
-			} else {
-				clearStatus();
-				waveform.stop();
-			}
-		} catch {
-			// Poll failures are transient; next cycle retries.
+	const project = (
+		session: LiveSession,
+		next: PlayerState | null,
+		authoritative = false,
+	) => {
+		if (!isLive(session)) return;
+		session.player = authoritative ? next : mergePlayer(session.player, next);
+		session.waveform.setPlayer(session.player);
+		if (session.player?.track) session.waveform.frame();
+		else {
+			clearStatus(session);
+			session.waveform.stop();
 		}
 	};
-
-	const requestRefresh = async (session = refreshSession) => {
-		if (!isCurrent(session)) return;
-		session.pending = true;
-		if (session.sampling) return;
-		session.sampling = true;
-		try {
-			do {
-				session.pending = false;
-				await samplePlayer(session);
-			} while (isCurrent(session) && session.pending);
-		} finally {
-			session.sampling = false;
-			if (isCurrent(session)) schedulePoll(session);
-		}
-	};
-
-	const schedulePoll = (session = refreshSession) => {
-		if (!isCurrent(session)) return;
-		if (pollTimer) deps.clearTimeout(pollTimer);
-		const playing = !!player?.is_playing;
-		const idle = !player?.track;
-		const ms = playing ? POLL_PLAYING_MS : idle ? POLL_IDLE_MS : POLL_PAUSED_MS;
-		pollTimer = deps.setTimeout(() => {
-			pollTimer = null;
-			void requestRefresh(session);
+	const schedulePoll = (session: LiveSession) => {
+		if (!isLive(session)) return;
+		stopPoll(session);
+		const ms = session.player?.is_playing
+			? POLL_PLAYING_MS
+			: session.player?.track
+				? POLL_PAUSED_MS
+				: POLL_IDLE_MS;
+		session.pollTimer = deps.setTimeout(() => {
+			session.pollTimer = null;
+			void requestSample(session);
 		}, ms);
 	};
-
-	const withBusy = async (
-		session: RefreshSession,
-		ctx: ExtensionContext,
-		fn: () => Promise<void>,
-	) => {
-		if (!isCurrent(session) || session.busy) return;
-		const operation = Symbol();
-		session.busy = operation;
-		try {
-			await fn();
-		} catch (e) {
-			if (isCurrent(session)) ctx.ui.notify(errMsg(e), "error");
-		} finally {
-			if (isCurrent(session) && session.busy === operation) {
-				session.busy = null;
-			}
+	const requestSample = (session: LiveSession): Promise<void> => {
+		if (!isLive(session)) return Promise.resolve();
+		session.sampleRequestSequence++;
+		stopPoll(session);
+		if (session.sampling) {
+			session.pendingSample = true;
+			return session.samplingPromise ?? Promise.resolve();
 		}
-	};
-
-	const playPause = async (ctx: ExtensionContext) => {
-		if (ui === null) return;
-		const session = refreshSession;
-		await withBusy(session, ctx, async () => {
-			const wasPlaying = !!player?.is_playing;
-			if (wasPlaying) await backend.pause?.();
-			else await backend.play();
-			if (!isCurrent(session)) return;
-			session.transportRevision++;
-
-			// Instant icon/wave feedback; backend setPlaying keeps the clock honest.
-			if (player) {
-				player = {
-					...player,
-					is_playing: !wasPlaying,
-					fetched_at: Date.now(),
-				};
-				waveform.setPlayer(player);
-				waveform.start(); // Starts before the refresh delay on resume.
-				waveform.frame();
+		session.sampling = true;
+		const drain = (async () => {
+			try {
+				do {
+					session.pendingSample = false;
+					const sequence = session.sampleRequestSequence;
+					const revision = session.transportRevision;
+					try {
+						const sampled = await backend.player();
+						if (
+							isLive(session) &&
+							sequence === session.sampleRequestSequence &&
+							revision === session.transportRevision
+						) {
+							project(session, sampled);
+						}
+					} catch {
+						// Sampling is recovery work. A later bounded poll retries failures.
+					}
+				} while (isLive(session) && session.pendingSample);
+			} finally {
+				session.sampling = false;
+				if (isLive(session)) schedulePoll(session);
 			}
-
-			await deps.sleep(120);
-			await requestRefresh(session);
+		})();
+		session.samplingPromise = drain;
+		void drain.then(() => {
+			if (session.samplingPromise === drain) session.samplingPromise = null;
+		});
+		return drain;
+	};
+	const scheduleReconciliation = (session: LiveSession, delay: number) => {
+		void deps.sleep(delay).then(
+			() => {
+				if (isLive(session)) void requestSample(session);
+			},
+			() => {},
+		);
+	};
+	const runTransport = (session: LiveSession) => {
+		if (
+			!isLive(session) ||
+			session.activeIntent ||
+			!session.pendingIntents.length
+		)
+			return;
+		const intent = session.pendingIntents.shift()!;
+		session.activeIntent = intent;
+		void Promise.resolve()
+			.then(() => {
+				if (!isLive(session) || session.activeIntent !== intent) return;
+				return intent.kind === "play"
+					? backend.play()
+					: intent.kind === "pause"
+						? backend.pause!()
+						: intent.kind === "next"
+							? backend.next!()
+							: backend.previous!();
+			})
+			.then(
+				() => {
+					if (!isLive(session) || session.activeIntent !== intent) return;
+					session.transportRevision++;
+					if (intent.kind === "play" || intent.kind === "pause") {
+						if (session.player) {
+							project(
+								session,
+								{
+									...session.player,
+									is_playing: intent.kind === "play",
+									fetched_at: Date.now(),
+								},
+								true,
+							);
+							session.waveform.start();
+						}
+					}
+					scheduleReconciliation(
+						session,
+						intent.kind === "next" || intent.kind === "previous" ? 150 : 120,
+					);
+				},
+				(error) => {
+					if (isLive(session) && session.activeIntent === intent)
+						intent.ctx.ui.notify(errMsg(error), "error");
+				},
+			)
+			.then(() => {
+				if (session.activeIntent === intent) session.activeIntent = null;
+				intent.resolve();
+				if (isLive(session)) queueMicrotask(() => runTransport(session));
+			});
+	};
+	const enqueueTransport = (
+		session: LiveSession,
+		ctx: ExtensionContext,
+		kind: TransportKind,
+	) => {
+		if (!isLive(session)) return Promise.resolve();
+		if (
+			(kind === "pause" && !backend.pause) ||
+			(kind === "next" && !backend.next) ||
+			(kind === "previous" && !backend.previous)
+		)
+			return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			session.pendingIntents.push({ kind, ctx, resolve });
+			runTransport(session);
 		});
 	};
-
-	const skipNext = async (ctx: ExtensionContext) => {
-		if (ui === null) return;
-		const session = refreshSession;
-		await withBusy(session, ctx, async () => {
-			await backend.next?.();
-			if (!isCurrent(session)) return;
-			session.transportRevision++;
-			await deps.sleep(150);
-			await requestRefresh(session);
-		});
+	const precedingPlaybackTarget = (session: LiveSession) => {
+		const intents = session.activeIntent
+			? [session.activeIntent, ...session.pendingIntents]
+			: session.pendingIntents;
+		for (let index = intents.length - 1; index >= 0; index--) {
+			const kind = intents[index]!.kind;
+			if (kind === "play") return true;
+			if (kind === "pause") return false;
+		}
+		return !!session.player?.is_playing;
 	};
-
-	const skipPrev = async (ctx: ExtensionContext) => {
-		if (ui === null) return;
-		const session = refreshSession;
-		await withBusy(session, ctx, async () => {
-			await backend.previous?.();
-			if (!isCurrent(session)) return;
-			session.transportRevision++;
-			await deps.sleep(150);
-			await requestRefresh(session);
-		});
+	const playPause = (ctx: ExtensionContext) => {
+		const session = currentSession;
+		if (!session || !isLive(session)) return Promise.resolve();
+		return enqueueTransport(
+			session,
+			ctx,
+			precedingPlaybackTarget(session) ? "pause" : "play",
+		);
+	};
+	const skipNext = (ctx: ExtensionContext) => {
+		const session = currentSession;
+		return session ? enqueueTransport(session, ctx, "next") : Promise.resolve();
+	};
+	const skipPrev = (ctx: ExtensionContext) => {
+		const session = currentSession;
+		return session
+			? enqueueTransport(session, ctx, "previous")
+			: Promise.resolve();
+	};
+	const dispose = (
+		session: LiveSession | null,
+		clearUi?: ExtensionContext["ui"],
+	) => {
+		if (!session || !session.active) {
+			clearUi?.setStatus(STATUS_KEY, undefined);
+			return;
+		}
+		session.active = false;
+		if (currentSession === session) currentSession = null;
+		for (const intent of session.pendingIntents.splice(0)) intent.resolve();
+		session.activeIntent?.resolve();
+		session.activeIntent = null;
+		session.pendingSample = false;
+		session.eventDisposer?.();
+		session.eventDisposer = null;
+		stopPoll(session);
+		session.waveform.dispose();
+		if (clearUi) clearUi.setStatus(STATUS_KEY, undefined);
+		else clearStatus(session);
+		session.player = null;
 	};
 
 	pi.registerShortcut(KEY_PLAY_PAUSE, {
@@ -275,9 +333,6 @@ export function createMusicDock(
 		description: "Music: previous track",
 		handler: skipPrev,
 	});
-
-	// Slash commands always work (no terminal chord issues).
-	// Handler signature is (args, ctx) — not (ctx).
 	pi.registerCommand("music", {
 		description: "Music: play/pause",
 		handler: async (_args, ctx) => {
@@ -299,10 +354,7 @@ export function createMusicDock(
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
-
-		// /reload refires session_start — tear down first so timers don't stack.
-		dispose();
-
+		dispose(currentSession);
 		if (!deps.isMac()) {
 			ctx.ui.notify(
 				"music-dock: system media control is macOS-only",
@@ -317,25 +369,46 @@ export function createMusicDock(
 			);
 			return;
 		}
-
-		ui = ctx.ui;
-		disposed = false;
-		const session: RefreshSession = {
-			sampling: false,
-			pending: false,
-			busy: null,
-			transportRevision: 0,
-		};
-		refreshSession = session;
-		eventDisposer =
-			backend.subscribe?.(() => void requestRefresh(session)) ?? null;
-		await requestRefresh(session);
+		const session = {} as LiveSession;
+		session.id = Symbol();
+		session.active = true;
+		session.ui = ctx.ui;
+		session.player = null;
+		session.pollTimer = null;
+		session.eventDisposer = null;
+		session.sampling = false;
+		session.pendingSample = false;
+		session.sampleRequestSequence = 0;
+		session.samplingPromise = null;
+		session.transportRevision = 0;
+		session.pendingIntents = [];
+		session.activeIntent = null;
+		session.waveform = createWaveformCoordinator({
+			now: Date.now,
+			scheduler: {
+				setInterval: (callback, ms) => deps.setInterval(callback, ms),
+				clearInterval: (timer) => deps.clearInterval(timer as Interval),
+			},
+			render: (current, engine) => renderStatus(session, current, engine),
+		});
+		currentSession = session;
+		session.eventDisposer =
+			backend.subscribe?.((event) => {
+				if (!isLive(session)) return;
+				if (event?.type === "snapshot") {
+					session.sampleRequestSequence++;
+					session.pendingSample = false;
+					project(session, event.state, true);
+					if (!session.sampling) schedulePoll(session);
+					return;
+				}
+				void requestSample(session);
+			}) ?? null;
+		await requestSample(session);
 	});
-
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
-		// Clear via ctx.ui in case dispose already nulled the capture.
-		disposeVia(ctx.ui);
+		dispose(currentSession, ctx.ui);
 	});
 }
 

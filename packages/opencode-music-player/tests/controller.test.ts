@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import type { MusicBackend, PlayerState } from "../types.ts"
+import type {
+  ArtworkCompletionEvent,
+  MusicBackend,
+  MusicChangeEvent,
+  PlayerState,
+} from "../types.ts"
+import { createSystemMedia } from "../system-media.ts"
 import {
   createController,
   optimisticPlayerState,
@@ -53,9 +59,13 @@ function createHarness(
     subscribe?: boolean
     samples?: PlayerState[]
     play?: () => Promise<void>
+    pause?: () => Promise<void>
+    next?: () => Promise<void>
+    previous?: () => Promise<void>
     seek?: (positionMs: number) => Promise<void>
     includeSeek?: boolean
     delay?: (ms: number) => Promise<void>
+    backend?: MusicBackend
   } = {},
 ) {
   const timers: Array<{
@@ -65,35 +75,53 @@ function createHarness(
   }> = []
   const samples = options.samples ?? [player()]
   const requests: Array<Deferred<PlayerState | null>> = []
-  let listener: (() => void) | null = null
+  let listener: ((event?: MusicChangeEvent) => void) | null = null
+  let presentationListener: ((event: ArtworkCompletionEvent) => void) | null =
+    null
   let subscriptions = 0
   let subscriptionDisposals = 0
-  const backend: MusicBackend = {
-    id: "fake",
-    label: "Fake",
-    remoteControl: true,
-    authenticated: () => true,
-    player: () => {
-      const next = samples.shift()
-      if (next) return Promise.resolve(next)
-      const request = deferred<PlayerState | null>()
-      requests.push(request)
-      return request.promise
-    },
-    searchTracks: async () => [],
-    play: options.play ?? (async () => {}),
-  }
-  if (options.includeSeek !== false)
-    backend.seek = options.seek ?? (async () => {})
-  if (options.subscribe !== false) {
-    backend.subscribe = (nextListener) => {
-      subscriptions++
-      listener = nextListener
-      return () => {
-        subscriptionDisposals++
+  let presentationDisposals = 0
+  const backend =
+    options.backend ??
+    (() => {
+      const fake: MusicBackend = {
+        id: "fake",
+        label: "Fake",
+        remoteControl: true,
+        authenticated: () => true,
+        player: () => {
+          const next = samples.shift()
+          if (next) return Promise.resolve(next)
+          const request = deferred<PlayerState | null>()
+          requests.push(request)
+          return request.promise
+        },
+        searchTracks: async () => [],
+        play: options.play ?? (async () => {}),
       }
-    }
-  }
+      if (options.pause) fake.pause = options.pause
+      if (options.next) fake.next = options.next
+      if (options.previous) fake.previous = options.previous
+      if (options.includeSeek !== false)
+        fake.seek = options.seek ?? (async () => {})
+      if (options.subscribe !== false) {
+        fake.subscribe = (nextListener) => {
+          subscriptions++
+          listener = nextListener
+          return () => {
+            subscriptionDisposals++
+          }
+        }
+      }
+      fake.subscribePresentation = (nextListener) => {
+        presentationListener = nextListener
+        return () => {
+          presentationDisposals++
+          presentationListener = null
+        }
+      }
+      return fake
+    })()
   const mutations: Array<{
     loading: boolean
     error: string | null
@@ -131,11 +159,14 @@ function createHarness(
   })
   return {
     controller,
-    emit: () => listener?.(),
+    emit: (event?: MusicChangeEvent) => listener?.(event),
+    emitPresentation: (event: ArtworkCompletionEvent) =>
+      presentationListener?.(event),
     mutations,
     requests,
     subscriptions: () => subscriptions,
     subscriptionDisposals: () => subscriptionDisposals,
+    presentationDisposals: () => presentationDisposals,
     timers,
     activeTimers: () => timers.filter((timer) => timer.active),
     fire(timer: (typeof timers)[number]) {
@@ -167,6 +198,344 @@ describe("OpenCode music controller", () => {
     harness.requests[0]!.resolve(player())
     await flush()
     expect(harness.activeTimers()[0]?.delay).toBe(3000)
+  })
+
+  test("a snapshot cancels an invalidation queued behind an older sample", async () => {
+    const harness = createHarness({ samples: [] })
+    const held = harness.requests[0]!
+    const paused = player(false)
+
+    harness.emit({ type: "invalidation", reason: "stream-terminated" })
+    harness.emit({ type: "snapshot", state: paused })
+    expect(harness.controller.session.player?.is_playing).toBe(false)
+    held.resolve(player(true))
+    await flush()
+
+    expect(harness.controller.session.player?.is_playing).toBe(false)
+    expect(harness.requests).toHaveLength(1)
+    expect(harness.activeTimers()).toHaveLength(1)
+    expect(harness.activeTimers()[0]?.delay).toBe(5000)
+  })
+
+  test("samples immediately after stream termination and restores one recovery poll", async () => {
+    const harness = createHarness({ samples: [player()] })
+    await flush()
+
+    harness.emit({ type: "invalidation", reason: "stream-terminated" })
+    expect(harness.requests).toHaveLength(1)
+    harness.requests[0]!.resolve(player(false))
+    await flush()
+
+    expect(harness.activeTimers()).toHaveLength(1)
+    expect(harness.activeTimers()[0]?.delay).toBe(5000)
+
+    harness.fire(harness.activeTimers()[0]!)
+    expect(harness.requests).toHaveLength(2)
+    harness.requests[1]!.resolve(player(false))
+    await flush()
+    expect(harness.activeTimers()).toHaveLength(1)
+  })
+
+  test("serializes captured transport intents while sampling is unresolved", async () => {
+    const calls: string[] = []
+    const play = deferred<void>()
+    const pause = deferred<void>()
+    const next = deferred<void>()
+    const previous = deferred<void>()
+    const harness = createHarness({
+      samples: [],
+      play: () => {
+        calls.push("play")
+        return play.promise
+      },
+      pause: () => {
+        calls.push("pause")
+        return pause.promise
+      },
+      next: () => {
+        calls.push("next")
+        return next.promise
+      },
+      previous: () => {
+        calls.push("previous")
+        return previous.promise
+      },
+    })
+
+    const commands = [
+      harness.controller.playPause(),
+      harness.controller.playPause(),
+      harness.controller.next(),
+      harness.controller.prev(),
+    ]
+    await flush()
+    expect(calls).toEqual(["play"])
+    play.resolve()
+    await flush()
+    await flush()
+    expect(calls).toEqual(["play", "pause"])
+    pause.resolve()
+    await flush()
+    await flush()
+    expect(calls).toEqual(["play", "pause", "next"])
+    next.resolve()
+    await flush()
+    await flush()
+    expect(calls).toEqual(["play", "pause", "next", "previous"])
+    previous.resolve()
+    await Promise.all(commands)
+
+    expect(harness.requests).toHaveLength(1)
+  })
+
+  test("coalesces only adjacent pending seeks and settles every seek caller", async () => {
+    const gate = deferred<void>()
+    const seek = deferred<void>()
+    const calls: Array<string | number> = []
+    const harness = createHarness({
+      samples: [player(false)],
+      play: () => {
+        calls.push("play")
+        return gate.promise
+      },
+      seek: (positionMs) => {
+        calls.push(positionMs)
+        return seek.promise
+      },
+    })
+    await flush()
+
+    const playing = harness.controller.playPause()
+    const firstSeek = harness.controller.seek(10_000)
+    const latestSeek = harness.controller.seek(20_000)
+    let firstSettled = false
+    let latestSettled = false
+    void firstSeek.then(() => (firstSettled = true))
+    void latestSeek.then(() => (latestSettled = true))
+    gate.resolve()
+    await flush()
+    await flush()
+
+    expect(calls).toEqual(["play", 20_000])
+    expect(firstSettled).toBe(false)
+    expect(latestSettled).toBe(false)
+    seek.resolve()
+    await Promise.all([playing, firstSeek, latestSeek])
+    expect(firstSettled).toBe(true)
+    expect(latestSettled).toBe(true)
+  })
+
+  test("does not coalesce seeks separated by a discrete intent", async () => {
+    const gate = deferred<void>()
+    const calls: Array<string | number> = []
+    const harness = createHarness({
+      samples: [player(false)],
+      play: () => gate.promise,
+      next: async () => {
+        calls.push("next")
+      },
+      seek: async (positionMs) => {
+        calls.push(positionMs)
+      },
+    })
+    await flush()
+
+    const commands = [
+      harness.controller.playPause(),
+      harness.controller.seek(10_000),
+      harness.controller.next(),
+      harness.controller.seek(20_000),
+    ]
+    gate.resolve()
+    await Promise.all(commands)
+
+    expect(calls).toEqual([10_000, "next", 20_000])
+  })
+
+  test("continues queued work and clears transport failure after a later success", async () => {
+    const calls: string[] = []
+    const harness = createHarness({
+      samples: [player(false)],
+      play: async () => {
+        calls.push("play")
+        throw new Error("play failed")
+      },
+      pause: async () => {
+        calls.push("pause")
+      },
+    })
+    await flush()
+
+    // UI callbacks discard this promise, so a command failure must remain handled.
+    void harness.controller.playPause()
+    const pause = harness.controller.playPause()
+    await pause
+
+    expect(calls).toEqual(["play", "pause"])
+    expect(harness.controller.session.error).toBeNull()
+    expect(harness.toasts).toHaveLength(1)
+  })
+
+  test("does not queue an unsupported captured pause", async () => {
+    const harness = createHarness({ samples: [player(true)] })
+    await flush()
+
+    await harness.controller.playPause()
+    expect(harness.controller.session.loading).toBe(false)
+    expect(harness.toasts).toHaveLength(0)
+  })
+
+  test("applies facade snapshots and artwork completions without resampling", async () => {
+    const artwork = deferred<{
+      artwork: { id: string; png_base64: string; accent: string; cells: [] }
+      duration_ms: number
+    }>()
+    const playback = deferred<{ ok: true; out: string }>()
+    const stream = {
+      listener: null as ((line: string) => void) | null,
+      disposals: 0,
+    }
+    let playbackSamples = 0
+    const basePayload = {
+      contentItemIdentifier: "controller-artwork-lane",
+      title: "Controller Artwork Lane",
+      artist: "Artist",
+      album: "Album",
+      duration: 180,
+      elapsedTimeNow: 12,
+      bundleIdentifier: "com.Spotify.client",
+    }
+    const backend = createSystemMedia({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async (command) => {
+        if (command.includes("--no-artwork")) {
+          playbackSamples++
+          return playback.promise
+        }
+        return {
+          ok: true,
+          out: JSON.stringify({
+            ...basePayload,
+            playing: true,
+            artworkData: command.includes("--no-artwork") ? undefined : "cover",
+          }),
+        }
+      },
+      resolveArtworkDetails: () => artwork.promise,
+      startLineStream: (_command, callbacks) => {
+        stream.listener = callbacks.onLine
+        return () => stream.disposals++
+      },
+      setRetryTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
+      clearRetryTimer: () => {},
+    })
+    const harness = createHarness({ backend })
+    await flush()
+
+    expect(harness.controller.session.player).toBeNull()
+    expect(playbackSamples).toBe(1)
+
+    stream.listener?.(
+      JSON.stringify({
+        type: "data",
+        payload: { ...basePayload, elapsedTimeNow: 0, playing: true },
+      }),
+    )
+    expect(harness.controller.session.player).toMatchObject({
+      is_playing: true,
+      progress_ms: 0,
+      track: { artwork: null, artwork_loading: true },
+    })
+    expect(playbackSamples).toBe(1)
+
+    artwork.resolve({
+      artwork: { id: "cover", png_base64: "png", accent: "blue", cells: [] },
+      duration_ms: 180_000,
+    })
+    await flush()
+    await flush()
+
+    expect(harness.controller.session.player).toMatchObject({
+      is_playing: true,
+      track: { artwork_loading: false, artwork: { id: "cover" } },
+    })
+    expect(playbackSamples).toBe(1)
+
+    const mutations = harness.mutations.length
+    harness.controller.dispose()
+    playback.resolve({
+      ok: true,
+      out: JSON.stringify({ ...basePayload, playing: false }),
+    })
+    await flush()
+
+    expect(stream.disposals).toBe(1)
+    expect(harness.mutations).toHaveLength(mutations)
+    expect(playbackSamples).toBe(1)
+    expect(harness.toasts).toHaveLength(0)
+  })
+
+  test("merges artwork completion without sampling or changing playback", async () => {
+    const initial = player(false)
+    initial.track!.artwork_loading = true
+    const harness = createHarness({ samples: [initial] })
+    await flush()
+
+    harness.emitPresentation({
+      type: "artwork-completion",
+      identity: {
+        uid: "previous-provider-id",
+        title: "Song",
+        artist: "Artist",
+        album: "Album",
+        duration_ms: 180_000,
+      },
+      artwork: { id: "cover", png_base64: "png", accent: "blue", cells: [] },
+      duration_ms: 180_000,
+    })
+
+    expect(harness.requests).toHaveLength(0)
+    expect(harness.controller.session.player).toMatchObject({
+      is_playing: false,
+      track: { artwork_loading: false, artwork: { id: "cover" } },
+    })
+  })
+
+  test("rejects replaced artwork and drops it after controller disposal", async () => {
+    const trackA = player(false)
+    trackA.track!.artwork_loading = true
+    const trackB = player(true)
+    trackB.track = { ...trackB.track!, id: "b", name: "Replacement" }
+    const harness = createHarness({ samples: [trackA, trackB] })
+    await flush()
+    await harness.controller.refreshAll()
+
+    const event: ArtworkCompletionEvent = {
+      type: "artwork-completion",
+      identity: {
+        uid: "a",
+        title: "Song",
+        artist: "Artist",
+        album: "Album",
+        duration_ms: 180_000,
+      },
+      artwork: { id: "cover", png_base64: "png", accent: "blue", cells: [] },
+      duration_ms: 180_000,
+    }
+    harness.emitPresentation(event)
+    expect(harness.controller.session.player?.track).toMatchObject({
+      name: "Replacement",
+      artwork: null,
+    })
+
+    const mutations = harness.mutations.length
+    harness.controller.dispose()
+    harness.controller.dispose()
+    harness.emitPresentation(event)
+    expect(harness.mutations).toHaveLength(mutations)
+    expect(harness.presentationDisposals()).toBe(1)
+    expect(harness.toasts).toHaveLength(0)
   })
 
   test("serializes event refreshes into one catch-up sample", async () => {
@@ -283,13 +652,11 @@ describe("OpenCode music controller", () => {
     const seeking = harness.controller.seek(90_000)
     await flush()
     expect(calls).toEqual([90_000])
-    expect(harness.controller.session.player).toMatchObject({
-      progress_ms: 90_000,
-      is_playing: false,
-    })
+    expect(harness.controller.session.player?.progress_ms).toBe(30_000)
 
     command.resolve()
     await flush()
+    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
     harness.requests[0]!.resolve(confirmed)
     await seeking
     expect(harness.controller.session.player).toMatchObject({
@@ -309,7 +676,7 @@ describe("OpenCode music controller", () => {
 
     const seeking = harness.controller.seek(90_000)
     await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+    expect(harness.controller.session.player?.progress_ms).toBe(30_000)
     command.reject(new Error("seek failed"))
     await flush()
     expect(harness.controller.session.player).toMatchObject({
@@ -376,7 +743,7 @@ describe("OpenCode music controller", () => {
     await flush()
     stale.resolve({ ...player(false), progress_ms: 5_000 })
     await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+    expect(harness.controller.session.player?.progress_ms).toBe(5_000)
 
     transport.resolve()
     await flush()
@@ -404,21 +771,24 @@ describe("OpenCode music controller", () => {
     harness.emit()
     harness.requests[0]!.resolve({ ...player(false), progress_ms: 5_000 })
     await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
+    expect(harness.controller.session.player?.progress_ms).toBe(5_000)
 
     const playing = harness.controller.playPause()
     await flush()
     expect(plays).toBe(1)
     expect(harness.controller.session.player?.is_playing).toBe(true)
+    await flush()
+    expect(harness.requests).toHaveLength(2)
     harness.requests[1]!.resolve({
       ...player(true),
-      progress_ms: 5_000,
+      progress_ms: 90_000,
     })
     await playing
     expect(harness.controller.session.player?.progress_ms).toBe(90_000)
 
     settling.resolve()
     await flush()
+    expect(harness.requests).toHaveLength(3)
     harness.requests[2]!.resolve({
       ...player(true),
       progress_ms: 90_000,
@@ -440,7 +810,7 @@ describe("OpenCode music controller", () => {
 
     expect(harness.subscriptionDisposals()).toBe(1)
     expect(harness.activeTimers()).toHaveLength(0)
-    expect(harness.mutations).toHaveLength(1)
+    expect(harness.mutations).toHaveLength(0)
     expect(harness.toasts).toHaveLength(0)
   })
 
@@ -494,7 +864,7 @@ describe("OpenCode music controller", () => {
     pending.resolve(player())
     await flush()
 
-    expect(harness.mutations).toHaveLength(1)
+    expect(harness.mutations).toHaveLength(0)
     expect(harness.toasts).toHaveLength(0)
     expect(harness.activeTimers()).toHaveLength(0)
   })
@@ -509,7 +879,7 @@ describe("OpenCode music controller", () => {
 
     expect(harness.requests).toHaveLength(1)
     expect(harness.activeTimers()).toHaveLength(0)
-    expect(harness.mutations).toHaveLength(1)
+    expect(harness.mutations).toHaveLength(0)
   })
 })
 
