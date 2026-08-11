@@ -8,7 +8,7 @@ It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed throug
 
 `@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns OpenCode registration, lifecycle, sidebar presentation, notifications, controls, artwork, and Kitty graphics.
 
-With `media-control`, provider changes refresh the sidebar promptly. Bounded 3/5/8-second polling remains active for stream recovery and `nowplaying-cli` compatibility. Plugin teardown releases both the provider subscription and poll timer.
+With `media-control`, authoritative provider snapshots project to the sidebar immediately. Transport execution stays independent from bounded recovery sampling and artwork work. Bounded 3/5/8-second polling remains active for stream recovery and `nowplaying-cli` compatibility. Plugin teardown releases both the provider subscription and poll timer.
 
 ## Artwork
 

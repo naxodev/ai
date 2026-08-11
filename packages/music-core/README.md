@@ -95,7 +95,7 @@ clock.reset()
 
 ## Provider changes
 
-`media-control` backends provide `subscribe` for immediate playback updates. Complete stream payloads are already normalized into authoritative `PlayerState` snapshots. Stream termination emits one invalidation so a host can recover by calling `player()`.
+`media-control` backends provide `subscribe` for immediate playback updates. Complete stream payloads are already normalized into authoritative `PlayerState` snapshots. Hosts project those snapshots directly. Stream termination emits one invalidation so a host can recover by calling `player()` if needed.
 
 ```ts
 const stop = backend.subscribe?.((event) => {

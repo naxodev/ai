@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import type { MusicBackend, PlayerState } from "@naxodev/music-core";
+import type {
+	MusicBackend,
+	MusicChangeEvent,
+	PlayerState,
+} from "@naxodev/music-core";
 import { createMusicDock } from "../extensions/music-dock/index.ts";
 
 type Timer = { callback: () => void; delay: number; active: boolean };
@@ -28,11 +32,15 @@ function state(kind: "playing" | "paused" | "idle" = "playing"): PlayerState {
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((done) => {
+	let reject!: (reason: unknown) => void;
+	const promise = new Promise<T>((done, fail) => {
 		resolve = done;
+		reject = fail;
 	});
-	return { promise, resolve };
+	return { promise, resolve, reject };
 }
+
+type SetupOptions = { controllableSleep?: boolean };
 
 async function flushRefresh(): Promise<void> {
 	await Promise.resolve();
@@ -40,17 +48,23 @@ async function flushRefresh(): Promise<void> {
 	await Promise.resolve();
 }
 
-function setup(backend: MusicBackend) {
+function setup(backend: MusicBackend, options: SetupOptions = {}) {
 	let start: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
 	let shutdown: ((event: unknown, ctx: unknown) => Promise<void>) | undefined;
 	const timeouts: Timer[] = [];
 	const intervals: Timer[] = [];
+	const sleeps: Array<{
+		delay: number;
+		resolve: () => void;
+		reject: (reason: unknown) => void;
+	}> = [];
 	const statuses: Array<string | undefined> = [];
 	const notifications: string[] = [];
 	const commands: Record<
 		string,
 		{ handler: (args: string, ctx: unknown) => Promise<void> }
 	> = {};
+	const shortcuts: Array<{ handler: (ctx: unknown) => Promise<void> }> = [];
 	const ui = {
 		setStatus: (_key: string, value: string | undefined) =>
 			statuses.push(value),
@@ -58,7 +72,9 @@ function setup(backend: MusicBackend) {
 		notify: (message: string) => notifications.push(message),
 	};
 	const api = {
-		registerShortcut: () => {},
+		registerShortcut: (_key: unknown, shortcut: (typeof shortcuts)[number]) => {
+			shortcuts.push(shortcut);
+		},
 		registerCommand: (name: string, command: (typeof commands)[string]) => {
 			commands[name] = command;
 		},
@@ -91,19 +107,39 @@ function setup(backend: MusicBackend) {
 		clearInterval: (timer) => {
 			(timer as unknown as Timer).active = false;
 		},
-		sleep: async () => {},
+		sleep: (delay) => {
+			if (!options.controllableSleep) return Promise.resolve();
+			const pending = deferred<void>();
+			sleeps.push({
+				delay,
+				resolve: () => pending.resolve(),
+				reject: pending.reject,
+			});
+			return pending.promise;
+		},
 	});
 	const ctx = { mode: "tui", hasUI: true, ui };
 	return {
-		start: () => start?.({}, ctx),
-		shutdown: () => shutdown?.({}, ctx),
+		start: (context: unknown = ctx) => start?.({}, context),
+		shutdown: (context: unknown = ctx) => shutdown?.({}, context),
 		timeouts,
 		intervals,
+		sleeps,
 		statuses,
 		notifications,
 		command: (name: string) => commands[name]!.handler("", ctx),
+		shortcut: (index: number) => shortcuts[index]!.handler(ctx),
 		activeTimeouts: () => timeouts.filter((timer) => timer.active),
 	};
+}
+
+async function expectSettled(promise: Promise<void>) {
+	let settled = false;
+	void promise.then(() => {
+		settled = true;
+	});
+	await flushRefresh();
+	expect(settled).toBeTrue();
 }
 
 test("starts, subscribes, and polls at the playing bound", async () => {
@@ -323,8 +359,10 @@ test("reload isolates pending transport commands and their errors", async () => 
 	const dock = setup(backend);
 	await dock.start();
 	const oldCommand = dock.command("music");
+	await flushRefresh();
 	await dock.start();
 	const newCommand = dock.command("music");
+	await flushRefresh();
 	expect(playCalls).toBe(2);
 	rejectOld(new Error("old command failed"));
 	await oldCommand;
@@ -356,4 +394,311 @@ test("poll-only backends retain the three, five, and eight second bounds", async
 			expected,
 		]);
 	}
+});
+
+test("authoritative snapshots render synchronously and invalidate older samples", async () => {
+	let listener: ((event?: MusicChangeEvent) => void) | undefined;
+	const held = deferred<PlayerState | null>();
+	let calls = 0;
+	const backend: MusicBackend = {
+		id: "fake",
+		label: "Fake",
+		remoteControl: false,
+		authenticated: () => true,
+		player: () => {
+			calls++;
+			return held.promise;
+		},
+		play: async () => {},
+		subscribe: (next) => {
+			listener = next;
+			return () => {};
+		},
+	};
+	const dock = setup(backend);
+	const started = dock.start();
+	const snapshot = {
+		...state("paused"),
+		track: { ...state("paused").track!, name: "Changed" },
+	};
+	listener?.({ type: "invalidation", reason: "stream-terminated" });
+	listener?.({ type: "snapshot", state: snapshot });
+	expect(calls).toBe(1);
+	expect(dock.statuses.at(-1)).toContain("▶");
+	expect(dock.statuses.at(-1)).toContain("Changed");
+	held.resolve(state());
+	await started;
+	expect(calls).toBe(1);
+	expect(dock.statuses.at(-1)).toContain("Changed");
+});
+
+test("stream termination uses the coalesced sampling lane and one recovery poll", async () => {
+	let listener: ((event?: MusicChangeEvent) => void) | undefined;
+	const recovery = deferred<PlayerState | null>();
+	let calls = 0;
+	const backend: MusicBackend = {
+		id: "fake",
+		label: "Fake",
+		remoteControl: false,
+		authenticated: () => true,
+		player: () =>
+			++calls === 1 ? Promise.resolve(state("paused")) : recovery.promise,
+		play: async () => {},
+		subscribe: (next) => {
+			listener = next;
+			return () => {};
+		},
+	};
+	const dock = setup(backend);
+	await dock.start();
+	listener?.({ type: "invalidation", reason: "stream-terminated" });
+	expect(calls).toBe(2);
+	recovery.resolve(state("paused"));
+	await flushRefresh();
+	expect(dock.activeTimeouts().map((timer) => timer.delay)).toEqual([5_000]);
+	const poll = dock.activeTimeouts()[0]!;
+	poll.active = false;
+	poll.callback();
+	expect(calls).toBe(3);
+});
+
+test("shortcuts retain FIFO order and release commands before reconciliation", async () => {
+	const heldSample = deferred<PlayerState | null>();
+	const commands: string[] = [];
+	const deferredCommands = [
+		deferred<void>(),
+		deferred<void>(),
+		deferred<void>(),
+		deferred<void>(),
+	];
+	let commandIndex = 0;
+	const backend: MusicBackend = {
+		id: "fake",
+		label: "Fake",
+		remoteControl: false,
+		authenticated: () => true,
+		player: () => heldSample.promise,
+		play: () => {
+			commands.push("play");
+			return deferredCommands[commandIndex++]!.promise;
+		},
+		pause: () => {
+			commands.push("pause");
+			return deferredCommands[commandIndex++]!.promise;
+		},
+		next: () => {
+			commands.push("next");
+			return deferredCommands[commandIndex++]!.promise;
+		},
+		previous: () => {
+			commands.push("previous");
+			return deferredCommands[commandIndex++]!.promise;
+		},
+	};
+	const dock = setup(backend, { controllableSleep: true });
+	void dock.start();
+	const accepted = [
+		dock.shortcut(0),
+		dock.shortcut(0),
+		dock.shortcut(1),
+		dock.shortcut(2),
+	];
+	await flushRefresh();
+	expect(commands).toEqual(["play"]);
+	deferredCommands[0]!.resolve();
+	await accepted[0];
+	await flushRefresh();
+	expect(commands).toEqual(["play", "pause"]);
+	expect(dock.sleeps.map((sleep) => sleep.delay)).toEqual([120]);
+	deferredCommands[1]!.resolve();
+	await accepted[1];
+	await flushRefresh();
+	expect(commands).toEqual(["play", "pause", "next"]);
+	expect(dock.sleeps.map((sleep) => sleep.delay)).toEqual([120, 120]);
+	deferredCommands[2]!.resolve();
+	await accepted[2];
+	await flushRefresh();
+	expect(commands).toEqual(["play", "pause", "next", "previous"]);
+	expect(dock.sleeps.map((sleep) => sleep.delay)).toEqual([120, 120, 150]);
+	deferredCommands[3]!.resolve();
+	await accepted[3];
+	await Promise.all(accepted);
+	expect(commands).toEqual(["play", "pause", "next", "previous"]);
+	heldSample.resolve(state("paused"));
+});
+
+test("reload settles callers and suppresses every late old-session effect", async () => {
+	const sample = deferred<PlayerState | null>();
+	const replacementSample = deferred<PlayerState | null>();
+	const activeCommand = deferred<void>();
+	const listeners: Array<(event?: MusicChangeEvent) => void> = [];
+	const commands: string[] = [];
+	let playerCalls = 0;
+	const backend: MusicBackend = {
+		id: "fake",
+		label: "Fake",
+		remoteControl: false,
+		authenticated: () => true,
+		player: () =>
+			++playerCalls === 2
+				? sample.promise
+				: playerCalls === 3
+					? replacementSample.promise
+					: Promise.resolve(state("paused")),
+		play: async () => {},
+		next: () => {
+			commands.push("next");
+			return activeCommand.promise;
+		},
+		previous: async () => {
+			commands.push("previous");
+		},
+		subscribe: (listener) => {
+			listeners.push(listener);
+			return () => {};
+		},
+	};
+	const dock = setup(backend, { controllableSleep: true });
+	await dock.start();
+	const oldPoll = dock.activeTimeouts()[0]!;
+	const reconcile = dock.command("music");
+	await reconcile;
+	const oldInterval = dock.intervals.find((timer) => timer.active)!;
+	const active = dock.command("music-next");
+	const queued = [dock.command("music-prev"), dock.command("music")];
+	listeners[0]?.({ type: "invalidation", reason: "stream-terminated" });
+	await flushRefresh();
+	expect(commands).toEqual(["next"]);
+	expect(dock.sleeps).toHaveLength(1);
+
+	const reloaded = dock.start()!;
+	expect(playerCalls).toBe(3);
+	await expectSettled(active);
+	await Promise.all(queued);
+	let reloadComplete = false;
+	void reloaded.then(() => {
+		reloadComplete = true;
+	});
+	await flushRefresh();
+	expect(reloadComplete).toBeFalse();
+	replacementSample.resolve(state("paused"));
+	await reloaded;
+	expect(commands).toEqual(["next"]);
+	expect(oldPoll.active).toBeFalse();
+	expect(oldInterval.active).toBeFalse();
+	const statusCount = dock.statuses.length;
+	const notificationCount = dock.notifications.length;
+	listeners[0]?.({ type: "snapshot", state: state() });
+	oldPoll.callback();
+	oldInterval.callback();
+	dock.sleeps[0]!.resolve();
+	sample.resolve(state());
+	activeCommand.reject(new Error("old failure"));
+	await flushRefresh();
+	expect(commands).toEqual(["next"]);
+	expect(dock.statuses).toHaveLength(statusCount);
+	expect(dock.notifications).toHaveLength(notificationCount);
+});
+
+test("shutdown settles callers, clears the event UI, and suppresses late effects", async () => {
+	const sample = deferred<PlayerState | null>();
+	const activeCommand = deferred<void>();
+	const listeners: Array<(event?: MusicChangeEvent) => void> = [];
+	const commands: string[] = [];
+	let playerCalls = 0;
+	const backend: MusicBackend = {
+		id: "fake",
+		label: "Fake",
+		remoteControl: false,
+		authenticated: () => true,
+		player: () =>
+			++playerCalls === 2 ? sample.promise : Promise.resolve(state("paused")),
+		play: async () => {},
+		next: () => {
+			commands.push("next");
+			return activeCommand.promise;
+		},
+		previous: async () => {
+			commands.push("previous");
+		},
+		subscribe: (listener) => {
+			listeners.push(listener);
+			return () => {};
+		},
+	};
+	const dock = setup(backend, { controllableSleep: true });
+	await dock.start();
+	const oldPoll = dock.activeTimeouts()[0]!;
+	await dock.command("music");
+	const oldInterval = dock.intervals.find((timer) => timer.active)!;
+	const active = dock.command("music-next");
+	const queued = [dock.command("music-prev"), dock.command("music")];
+	listeners[0]?.({ type: "invalidation", reason: "stream-terminated" });
+	await flushRefresh();
+	const shutdownStatuses: Array<string | undefined> = [];
+	const shutdownContext = {
+		mode: "tui",
+		hasUI: true,
+		ui: {
+			setStatus: (_key: string, value: string | undefined) =>
+				shutdownStatuses.push(value),
+			theme: { fg: (_color: string, value: string) => value },
+			notify: (_message: string) => {},
+		},
+	};
+	await dock.shutdown(shutdownContext);
+	await expectSettled(active);
+	await Promise.all(queued);
+	expect(commands).toEqual(["next"]);
+	expect(shutdownStatuses).toEqual([undefined]);
+	expect(oldPoll.active).toBeFalse();
+	expect(oldInterval.active).toBeFalse();
+	const statusCount = dock.statuses.length;
+	listeners[0]?.({ type: "snapshot", state: state() });
+	oldPoll.callback();
+	oldInterval.callback();
+	dock.sleeps[0]!.reject(new Error("late delay"));
+	sample.reject(new Error("late sample"));
+	activeCommand.resolve();
+	await flushRefresh();
+	expect(commands).toEqual(["next"]);
+	expect(dock.statuses).toHaveLength(statusCount);
+	expect(dock.notifications).toEqual([]);
+});
+
+test("a live rejected command notifies once, resolves its caller, and continues the queue", async () => {
+	const rejectedPlay = deferred<void>();
+	const completedPause = deferred<void>();
+	const commands: string[] = [];
+	const backend: MusicBackend = {
+		id: "fake",
+		label: "Fake",
+		remoteControl: false,
+		authenticated: () => true,
+		player: async () => state("paused"),
+		play: () => {
+			commands.push("play");
+			return rejectedPlay.promise;
+		},
+		pause: () => {
+			commands.push("pause");
+			return completedPause.promise;
+		},
+	};
+	const dock = setup(backend);
+	await dock.start();
+
+	const rejectedCaller = dock.command("music");
+	const nextCaller = dock.command("music");
+	await flushRefresh();
+
+	expect(commands).toEqual(["play"]);
+	rejectedPlay.reject(new Error("play failed"));
+	await rejectedCaller;
+	await flushRefresh();
+
+	expect(dock.notifications).toEqual(["play failed"]);
+	expect(commands).toEqual(["play", "pause"]);
+	completedPause.resolve();
+	await nextCaller;
 });

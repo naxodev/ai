@@ -6,7 +6,7 @@ The extension only calls `ctx.ui.setStatus`. It does not replace Pi's footer, so
 
 ## Architecture
 
-`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns Pi registration, lifecycle, notifications, status composition, controls, and ANSI waveform rendering. With `media-control`, provider changes refresh promptly while bounded 3/5/8-second polling remains active for recovery and `nowplaying-cli` compatibility. Reload and shutdown release both the provider subscription and timers.
+`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns Pi registration, lifecycle, notifications, status composition, controls, and ANSI waveform rendering. With `media-control`, authoritative provider snapshots update the status immediately. Repeated controls run in order. Bounded 3/5/8-second polling remains active for stream recovery and `nowplaying-cli` compatibility. Reload and shutdown release the provider subscription, polling, waveform, and pending control work.
 
 ## Requirements
 
