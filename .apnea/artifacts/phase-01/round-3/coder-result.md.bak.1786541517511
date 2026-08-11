@@ -1,0 +1,36 @@
+---
+status: done
+---
+
+## Changed
+
+- Decoupled provider-event consumption from sampling: invalidations now fork into the coordinator scope, so a blocked sample cannot prevent later invalidations from marking the lane stale/coalesced.
+- Retained separate poll-deadline ownership; replacing a deadline cannot interrupt the sample it triggers.
+- Expanded the fake provider with deterministic sample/transport gates and one-shot failures.
+- Added deterministic coordinator coverage for snapshot authority, stale/coalesced samples, navigation authority, 3/5/8 polling, deadline reset, reconciliation delay, queue saturation, and failure continuation.
+- Added one-attempt media-control coverage proving no retry timer is created and terminal disposal is exact-once. Server close is also asserted idempotent.
+
+Files touched: `packages/music-core/session/coordinator.ts`, `packages/music-core/session/provider.ts`, `packages/music-core/tests/session-coordinator.test.ts`, `packages/music-core/tests/session-server.test.ts`, and `packages/music-core/tests/system-media.test.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 44 pass, 0 fail, 124 expectations
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all targets passed; 106 tests passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0 — no matches
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed; music-core 106 tests, Pi 28 tests, OpenCode 149 tests
+
+$ git status --short
+exit 0 — pre-existing uncommitted daemon work and docs/music-session-architecture.html remain. No generated dist output, tarball, socket, marker, or log is listed.
+```
+
+## Residual risks
+
+The daemon-provider retry Schedule itself is not injection-tested under `TestClock`; legacy compatibility retry coverage still uses its existing raw-timer seam. Dedicated blocked-work scope-close and accepted-connection finalization tests also remain to be added.

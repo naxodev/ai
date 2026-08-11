@@ -1,0 +1,37 @@
+---
+status: done
+---
+
+Rework changes:
+- `decodeRequest` now constructs hello, state, and transport requests from Effect Schema decoder outputs rather than casting parsed request fields.
+- Preserved semantic transport errors (`UNSUPPORTED_ACTION` and `INVALID_SEEK`) before schema validation, while retaining schema validation for accepted request shapes.
+
+Files touched: `packages/music-core/session/protocol.ts`.
+
+Verification:
+
+```text
+$ bunx nx run music-core:build
+exit 0
+Bundled 201 modules in 41ms
+music-sessiond.js 0.36 MB (entry point)
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0
+95 pass, 0 fail
+All matched files use Prettier code style!
+Verified npm package contents (21 files)
+
+$ bun test packages/music-core/tests/session-*.test.ts
+exit 0
+9 pass, 0 fail
+Ran 9 tests across 4 files.
+
+$ npm pack ./packages/music-core --dry-run
+exit 0
+npm notice total files: 21
+```
+
+Residual risks:
+- `npm pack packages/music-core --dry-run` is interpreted as a remote package spec by npm in this workspace; the explicit local-path equivalent passed.
+- Ignored `dist/` was rebuilt for verification; no generated tarball, socket, or log artifact is present in `git status`.

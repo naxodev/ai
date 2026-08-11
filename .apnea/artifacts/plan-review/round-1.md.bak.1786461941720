@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — The singleton lifecycle has no protocol-version skew policy
+
+OpenCode and Pi are independently installed and can therefore carry different `music-core`/daemon versions during an upgrade. The plan says an unsupported handshake is rejected, but it does not define what `connectOrStart` does when an incompatible, healthy daemon already owns the one per-user socket. A new client cannot bind a replacement, while killing or unlinking the live daemon would disrupt existing clients; naïvely retrying can also create a restart loop.
+
+Add an explicit compatibility/upgrade policy to Phase 2 (for example, a tested protocol compatibility window) and acceptance coverage for mixed client versions. The checks should prove that supported versions share one provider and that an unsupported client fails actionably without removing a live socket, killing healthy sessions, or repeatedly spawning daemons.
+
+### Medium — “Node-compatible daemon” is only exercised with Bun
+
+Phase 2 verifies `bun packages/music-core/dist/music-sessiond.js --help`, and the proposed Pi smoke only proves that the packed extension registers commands and exits without starting the daemon. Neither check proves that the packaged executable can actually start, listen, handshake, and shut down under Node, despite Node compatibility being part of the goal and Pi’s runtime requirements.
+
+Change the verification/acceptance plan to execute the packed daemon with `node` and perform at least a socket handshake plus clean shutdown from an isolated packed install. Keep the Bun checks as additional coverage if desired.

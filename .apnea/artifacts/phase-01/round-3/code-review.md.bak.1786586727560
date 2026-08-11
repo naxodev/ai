@@ -1,0 +1,16 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 1, and the claimed rework remains within its three allowed paths. Round 2's production diagnostics and provider-boundary evidence findings are addressed.
+
+## Findings
+
+### High — The provider exposes a cold supervisor, so one Layer can own multiple active attempts
+
+`eventsFromAttemptAdapter` constructs a cold `Stream.callback` (`provider.ts:118-124`), and `serviceFromAdapter` stores that stream directly as `SessionProvider.events` (`provider.ts:310-318`). Every materialization of `provider.events` therefore executes the callback registration again, creates independent retry state/queues, and calls `backend.subscribeAttempt` again. Two consumers of the same Layer-provided service can consequently run two raw `media-control stream` attempts concurrently against the one adapter.
+
+This violates the package's explicit “there can be only one active attempt” and “one provider Layer acquisition … at most one active raw source attempt” invariants. The new lifecycle test consumes `provider.events` only once, so it does not catch the issue. The Layer must own one shared supervised attempt/event bridge (or enforce single materialization) and focused evidence must prove multiple service consumers cannot create duplicate active sources.

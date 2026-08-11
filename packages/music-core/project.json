@@ -5,6 +5,13 @@
   "sourceRoot": "packages/music-core",
   "tags": ["scope:public", "type:package"],
   "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run build",
+        "cwd": "packages/music-core"
+      }
+    },
     "typecheck": {
       "executor": "nx:run-commands",
       "options": {

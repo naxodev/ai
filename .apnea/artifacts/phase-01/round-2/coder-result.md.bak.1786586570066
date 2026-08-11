@@ -1,0 +1,35 @@
+---
+status: done
+---
+
+## Changed
+
+- Preserved terminal invalidation when a raw source disposer throws; the disposer failure is recoverable once by scoped provider cleanup and is reported as `ProviderError("dispose", …)`.
+- Made the actual provider supervisor use `attemptRetrySchedule`, with bounded per-attempt success tokens and deterministic integrated 1/2/4/8/8 retry/reset coverage.
+- Added typed recovered-error observation hooks and a scoped adapter test constructor with exact-once lifecycle instrumentation.
+- Extended focused tests for throwing terminal disposal, tagged startup/disposal failures, integrated retry cap/reset, and adapter lifecycle ownership.
+
+Files touched:
+- `packages/music-core/system-media.ts`
+- `packages/music-core/session/provider.ts`
+- `packages/music-core/tests/system-media.test.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/system-media.test.ts
+exit 0 — 40 pass, 0 fail
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0 — typecheck, 121 tests, format:check, and package:check passed
+
+$ ! rg -n "Effect\.runSync|Effect\.runPromise|setTimeout\(|setInterval\(" packages/music-core/session/provider.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — preserved accumulated migration/docs changes; Phase 1 changes remain within the approved provider, system-media, and focused-test paths.
+```
+
+## Residual risks
+
+- Coordinator and server findings remain intentionally deferred to their later phase packages.

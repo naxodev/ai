@@ -66,3 +66,23 @@ export {
   hasNowPlayingCli,
   resetMediaBackend,
 } from "./system-media.ts"
+
+// machine-local session client
+export type {
+  MusicSessionClient,
+  MusicSessionClientOptions,
+} from "./session/client.ts"
+export {
+  createMusicSessionClient,
+  MusicSessionClientError,
+} from "./session/client.ts"
+export type {
+  Capability,
+  HostKind,
+  ProtocolError,
+  ProtocolErrorCode,
+  ProviderStatus,
+  RevisionedState,
+  TransportAction,
+} from "./session/protocol.ts"
+export { PROTOCOL, baselineCapabilities } from "./session/protocol.ts"

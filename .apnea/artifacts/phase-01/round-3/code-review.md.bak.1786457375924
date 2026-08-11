@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The round-1 phase package remains aligned with approved Phase 1, and the rework stays within its file scope.
+
+## Findings
+
+### Critical — Effect is added as decoration, not as the owning runtime
+
+`coordinator.ts` now constructs an Effect `Queue` and two `SubscriptionRef`s via `Effect.runSync`, but the daemon is still owned by a mutable Promise/class lifecycle. Provider callbacks, sampling, polling, reconciliation, command execution, sockets, and shutdown are not services/layers or scoped fibers/streams; polling/reconciliation still use raw `setTimeout`; the callback listener sets—not the `SubscriptionRef` streams—drive replay; and `music-sessiond.ts` still assembles no Effect scope. The code even documents the active provider Promise as “uncancellable.” This does not meet the package’s central requirements for Effect-scoped ownership, `Schedule`/`TestClock`, interruptible work, and named provider/socket services.
+
+### High — Correlatable invalid requests are closed without their stable protocol error
+
+`decodeRequest` produces typed errors such as `UNSUPPORTED_ACTION`, `INVALID_SEEK`, and `INVALID_REQUEST`, but `server.ts` catches every decode failure and immediately closes the socket without inspecting a decodable `requestId` or sending that error. Thus a request like `{ type: "transport", requestId: 1, action: "unknown" }` never receives the required correlated `UNSUPPORTED_ACTION` response. The package only permits an uncorrelated close when a request ID cannot be decoded.
+
+### High — Client protocol failures do not terminate the failed connection
+
+In `client.ts`, an invalid daemon frame only calls `failAll`; it does not mark the client unusable, remove listeners, or destroy the socket. Subsequent commands are therefore still accepted on a connection already known to violate the protocol and can remain pending. Socket `error`/`close` similarly settle current callers without preventing later requests. The package requires protocol violations and socket failure to interrupt reader/writer work without leaking future callers.
+
+### High — Acceptance evidence remains substantially incomplete
+
+The suite increased from five to seven session tests, but still omits most mandated cases: status/state replay to late subscribers, incompatible hello, correlated invalid/duplicate IDs, malformed and oversized third-client isolation, stale sample rejection, coalesced invalidation/poll sampling, 3/5/8 scheduling with `TestClock`, failure continuation, queue overflow, optimistic seek, reconciliation timing, out-of-order responses, disconnect/indeterminate commands, listener isolation, and exact-once scoped finalization. The Effect queue/ref additions and post-disposal command behavior have no regression tests. The exact package verify command also remains failed/substituted rather than passing as written.
+
+### Medium — Frame limits are checked only after retaining the full chunk
+
+`NdjsonFramer.push()` appends and decodes the entire incoming chunk before checking `maxFrameBytes`. A single oversized chunk is therefore fully retained first, contrary to the explicit requirement to reject an oversized line before retaining more bytes. The new UTF-8 test fixes split-codepoint correctness but does not cover bounded retention.

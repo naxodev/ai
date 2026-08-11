@@ -1,0 +1,37 @@
+---
+status: done
+---
+
+## Changed
+
+- Added Effect `Context.Service` / `Layer` boundaries for daemon configuration, provider, coordinator, and Unix server.
+- Moved coordinator state to `SubscriptionRef`, command intake to a bounded `Queue`, and scoped worker/finalizer ownership into the coordinator layer.
+- Added schema-tagged config, provider, command, and socket errors.
+- Added a one-attempt system-media stream seam while retaining legacy `createSystemMedia()` retry compatibility.
+- Kept the explicit-socket server adapter and current protocol/client behavior; server shutdown now tracks and destroys pre-hello sockets.
+- Changed the daemon executable to build and run the Layer graph with scoped signal listeners.
+
+Files touched: `packages/music-core/session/config.ts`, `provider.ts`, `coordinator.ts`, `server.ts`, `music-sessiond.ts`, `packages/music-core/system-media.ts`, `packages/music-core/tests/session-coordinator.test.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 33 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed
+
+$ git status --short
+exit 0 — pre-existing worktree changes and docs/music-session-architecture.html remain; no generated dist/tarball/socket output is listed
+```
+
+## Residual risks
+
+The implementation is a minimal vertical slice, not full coverage of every Phase 1 acceptance scenario. In particular, deterministic `TestClock` coverage and complete retry/poll/reconciliation behavioral coverage still need expansion before treating the migration as production-complete. The server callback uses its captured scope to launch connection effects; further hardening should replace this bridge with a fully consumed accept queue.

@@ -1,0 +1,20 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The round-1 phase package remains aligned with approved Phase 1, and this rework stays within its file scope.
+
+## Findings
+
+### Critical — The daemon still is not owned by an Effect runtime
+
+The new `SessionCommandError` improves command error correlation, but it does not address the defining architectural gap. Provider and socket adapters remain raw Promise/callback objects rather than named Effect services/layers; daemon startup creates no Effect scope; provider events, samples, and command work run outside scoped fibers/streams; callback sets rather than `SubscriptionRef` streams drive replay; and polling/reconciliation still use raw `setTimeout` rather than `Schedule`. The queue/refs are merely created and mutated through isolated `Effect.runSync` calls inside the existing mutable class. Active provider work remains explicitly uncancellable. Phase 1 requires the daemon runtime and resource ownership—not just a few data structures—to be Effect-scoped and interruptible.
+
+`SessionCommandError` is also a conventional JavaScript class, not the required schema-tagged Effect error. Until work runs in Effect, interruption cannot be preserved and mapped separately from provider failure as specified.
+
+### High — Required Phase 1 behavior remains largely untested
+
+The session suite remains nine tests and still lacks mandated coverage for late-subscriber status/state replay, incompatible hello and capability negotiation, duplicate/out-of-order responses, malformed/oversized third-client isolation, stale sample rejection, coalesced sampling, 3/5/8 scheduling under `TestClock`, queue overflow and continuation after provider failure, optimistic seek, reconciliation timing, disconnect/indeterminate commands, listener isolation, and exact-once scoped finalization. The queue/ref lifecycle, typed command errors, and terminal client behavior have no direct regression tests. The coder result also continues to substitute `npm pack ./packages/music-core --dry-run` for the exact verify command, which has not passed as written.

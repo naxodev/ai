@@ -1,0 +1,1512 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="A field guide to the process, state, concurrency, and scaling architecture of the OpenCode and Pi music plugins."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%2307121f'/%3E%3Cpath d='M18 42V18l28-6v25a10 10 0 1 1-5-8.7V20l-18 4v13a10 10 0 1 1-5-8.7V42Z' fill='%2352e5e7'/%3E%3C/svg%3E"
+    />
+    <title>Music session architecture field guide</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #07121f;
+        --ink-2: #0d1c2d;
+        --ink-3: #142a3d;
+        --paper: #f2eadc;
+        --paper-dim: #c9c1b5;
+        --cyan: #52e5e7;
+        --cyan-dim: #227c86;
+        --coral: #ff795f;
+        --yellow: #ffd166;
+        --line: #345065;
+        --max: 78rem;
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--paper);
+        background:
+          linear-gradient(90deg, rgb(82 229 231 / 0.035) 1px, transparent 1px) 0
+            0 / 2.5rem 2.5rem,
+          linear-gradient(rgb(82 229 231 / 0.035) 1px, transparent 1px) 0 0 /
+            2.5rem 2.5rem,
+          var(--ink);
+        font-family: var(--sans);
+        line-height: 1.58;
+      }
+
+      a {
+        color: var(--cyan);
+        text-underline-offset: 0.22em;
+        text-decoration-thickness: 0.08em;
+      }
+
+      a:hover {
+        color: #a4ffff;
+      }
+
+      a:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 3px solid var(--yellow);
+        outline-offset: 4px;
+        border-radius: 2px;
+      }
+
+      .skip-link {
+        position: fixed;
+        z-index: 20;
+        top: 0.75rem;
+        left: 0.75rem;
+        padding: 0.55rem 0.8rem;
+        color: var(--ink);
+        background: var(--yellow);
+        font: 700 0.8rem var(--mono);
+        transform: translateY(-180%);
+      }
+
+      .skip-link:focus {
+        transform: none;
+      }
+
+      header {
+        position: relative;
+        overflow: hidden;
+        border-bottom: 1px solid var(--line);
+      }
+
+      header::after {
+        position: absolute;
+        right: -9rem;
+        bottom: -10rem;
+        width: 30rem;
+        height: 30rem;
+        border: 1px solid var(--cyan-dim);
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 3rem rgb(82 229 231 / 0.025),
+          0 0 0 7rem rgb(255 121 95 / 0.018);
+        content: "";
+        pointer-events: none;
+      }
+
+      .masthead,
+      main,
+      footer {
+        width: min(calc(100% - 2rem), var(--max));
+        margin-inline: auto;
+      }
+
+      .masthead {
+        position: relative;
+        z-index: 1;
+        padding: clamp(3.5rem, 8vw, 7rem) 0 3rem;
+      }
+
+      .eyebrow,
+      .section-index,
+      .tag,
+      th,
+      dt,
+      .legend,
+      .signal-label {
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow,
+      .section-index {
+        color: var(--coral);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 13ch;
+        margin-bottom: 1.2rem;
+        font-size: clamp(2.8rem, 8vw, 6.4rem);
+        line-height: 0.94;
+        letter-spacing: -0.055em;
+      }
+
+      .lede {
+        max-width: 43rem;
+        margin-bottom: 0;
+        color: var(--paper-dim);
+        font-size: clamp(1.05rem, 2.3vw, 1.35rem);
+      }
+
+      nav {
+        position: sticky;
+        z-index: 10;
+        top: 0;
+        overflow-x: auto;
+        border-bottom: 1px solid var(--line);
+        background: rgb(7 18 31 / 0.94);
+        backdrop-filter: blur(12px);
+      }
+
+      nav ul {
+        display: flex;
+        width: min(calc(100% - 2rem), var(--max));
+        margin: 0 auto;
+        padding: 0;
+        list-style: none;
+      }
+
+      nav a {
+        display: block;
+        padding: 0.85rem 1rem 0.75rem 0;
+        color: var(--paper-dim);
+        font: 700 0.72rem var(--mono);
+        letter-spacing: 0.04em;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      nav a::before {
+        color: var(--cyan-dim);
+        content: "// ";
+      }
+
+      nav a:hover {
+        color: var(--cyan);
+      }
+
+      main {
+        padding-bottom: 4rem;
+      }
+
+      section {
+        scroll-margin-top: 4rem;
+        padding: clamp(3.5rem, 8vw, 6.5rem) 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      h2 {
+        max-width: 22ch;
+        margin-bottom: 1rem;
+        font-size: clamp(2rem, 4vw, 3.6rem);
+        line-height: 1.05;
+        letter-spacing: -0.035em;
+      }
+
+      h3 {
+        margin-bottom: 0.55rem;
+        color: var(--cyan);
+        font: 700 0.9rem var(--mono);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .intro {
+        max-width: 48rem;
+        margin-bottom: 2.2rem;
+        color: var(--paper-dim);
+        font-size: 1.06rem;
+      }
+
+      code {
+        color: #a4ffff;
+        font-family: var(--mono);
+        font-size: 0.92em;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(7, auto);
+        align-items: stretch;
+        gap: 0.55rem;
+        margin-top: 2.5rem;
+      }
+
+      .flow-node {
+        min-width: 0;
+        padding: 1.15rem;
+        border: 1px solid var(--line);
+        background: var(--ink-2);
+      }
+
+      .flow-node strong {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-size: 1rem;
+      }
+
+      .flow-node span {
+        display: block;
+        color: var(--paper-dim);
+        font-size: 0.82rem;
+      }
+
+      .flow-node.core {
+        border-color: var(--cyan-dim);
+        box-shadow: inset 0 3px 0 var(--cyan);
+      }
+
+      .flow-arrow {
+        display: grid;
+        place-items: center;
+        color: var(--coral);
+        font: 700 1.4rem var(--mono);
+      }
+
+      .margin-note {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 1rem;
+        max-width: 58rem;
+        margin-top: 2rem;
+        padding: 1rem 1.2rem;
+        border-left: 3px solid var(--yellow);
+        color: var(--paper-dim);
+        background: rgb(255 209 102 / 0.055);
+      }
+
+      .margin-note strong {
+        color: var(--yellow);
+        font-family: var(--mono);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        margin-top: 2rem;
+        border: 1px solid var(--line);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--ink-2);
+      }
+
+      th,
+      td {
+        padding: 0.85rem 1rem;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      th:last-child,
+      td:last-child {
+        border-right: 0;
+      }
+
+      th {
+        color: var(--cyan);
+        background: var(--ink-3);
+      }
+
+      td {
+        min-width: 9rem;
+        color: var(--paper-dim);
+      }
+
+      td:first-child {
+        color: var(--paper);
+        font-weight: 650;
+      }
+
+      .yes {
+        color: var(--cyan);
+        font: 700 0.75rem var(--mono);
+      }
+
+      .no {
+        color: #8899a7;
+        font: 700 0.75rem var(--mono);
+      }
+
+      .event-pair {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 1rem;
+        align-items: stretch;
+        margin-top: 2rem;
+      }
+
+      .event {
+        position: relative;
+        padding: 1.5rem;
+        border: 1px solid var(--line);
+        background: var(--ink-2);
+      }
+
+      .event.snapshot {
+        border-top: 4px solid var(--cyan);
+      }
+
+      .event.invalidation {
+        border-top: 4px solid var(--coral);
+      }
+
+      .event .tag {
+        color: var(--paper-dim);
+      }
+
+      .event strong {
+        display: block;
+        margin: 0.55rem 0;
+        font-size: 1.25rem;
+      }
+
+      .event p {
+        margin-bottom: 0;
+        color: var(--paper-dim);
+      }
+
+      .versus {
+        display: grid;
+        place-items: center;
+        color: var(--yellow);
+        font: 700 0.75rem var(--mono);
+        writing-mode: vertical-rl;
+      }
+
+      .lanes {
+        display: grid;
+        gap: 0.8rem;
+        margin-top: 2.2rem;
+      }
+
+      .lane {
+        display: grid;
+        grid-template-columns: 3.2rem minmax(10rem, 0.8fr) minmax(16rem, 2fr);
+        min-height: 8rem;
+        border: 1px solid var(--line);
+        background: var(--ink-2);
+      }
+
+      .lane-number {
+        display: grid;
+        place-items: center;
+        color: var(--ink);
+        background: var(--cyan);
+        font: 800 1.25rem var(--mono);
+      }
+
+      .lane:nth-child(2) .lane-number,
+      .lane:nth-child(4) .lane-number {
+        background: var(--coral);
+      }
+
+      .lane-title,
+      .lane-track {
+        padding: 1.2rem;
+      }
+
+      .lane-title {
+        border-right: 1px solid var(--line);
+      }
+
+      .lane-title p,
+      .lane-track p {
+        margin: 0;
+        color: var(--paper-dim);
+        font-size: 0.9rem;
+      }
+
+      .signal {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        align-items: center;
+        margin-bottom: 0.65rem;
+      }
+
+      .signal span {
+        padding: 0.25rem 0.5rem;
+        border: 1px solid var(--cyan-dim);
+        color: var(--cyan);
+        background: rgb(82 229 231 / 0.04);
+        font: 700 0.7rem var(--mono);
+      }
+
+      .signal i {
+        color: var(--coral);
+        font: normal 700 0.9rem var(--mono);
+      }
+
+      .guard-grid,
+      .host-grid,
+      .failure-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        margin-top: 2rem;
+        border: 1px solid var(--line);
+        background: var(--line);
+      }
+
+      .guard,
+      .host,
+      .failure {
+        padding: 1.4rem;
+        background: var(--ink-2);
+      }
+
+      .guard p,
+      .host p,
+      .failure p {
+        margin-bottom: 0;
+        color: var(--paper-dim);
+      }
+
+      .timing-strip {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 0.35rem;
+        margin-top: 1.2rem;
+      }
+
+      .timing-strip span {
+        display: grid;
+        min-height: 3.8rem;
+        place-items: center;
+        border: 1px solid var(--line);
+        color: var(--paper);
+        background: var(--ink-3);
+        font: 700 0.78rem var(--mono);
+        text-align: center;
+      }
+
+      .timing-strip .poll {
+        border-color: var(--cyan-dim);
+        color: var(--cyan);
+      }
+
+      .timing-strip .retry {
+        border-color: #a94e45;
+        color: var(--coral);
+      }
+
+      .topology {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 4.5rem minmax(0, 1fr);
+        gap: 1rem;
+        align-items: center;
+        margin-top: 2.2rem;
+      }
+
+      .machine {
+        padding: 1.2rem;
+        border: 1px solid var(--cyan-dim);
+        background: var(--ink-2);
+      }
+
+      .machine > strong {
+        display: block;
+        margin-bottom: 1rem;
+        color: var(--cyan);
+        font: 700 0.78rem var(--mono);
+        text-transform: uppercase;
+      }
+
+      .instances {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.5rem;
+      }
+
+      .instance,
+      .provider,
+      .broker {
+        padding: 0.7rem;
+        border: 1px solid var(--line);
+        font: 700 0.72rem var(--mono);
+        text-align: center;
+      }
+
+      .provider {
+        margin-top: 0.55rem;
+        border-color: #a94e45;
+        color: var(--coral);
+      }
+
+      .broker {
+        margin: 0.55rem 0;
+        border-color: var(--yellow);
+        color: var(--yellow);
+      }
+
+      .scale-arrow {
+        color: var(--yellow);
+        font: 700 0.72rem var(--mono);
+        text-align: center;
+      }
+
+      .broker-contract {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.65rem;
+        margin-top: 1.2rem;
+      }
+
+      .broker-contract div {
+        padding: 0.9rem;
+        border-left: 2px solid var(--cyan);
+        color: var(--paper-dim);
+        background: var(--ink-2);
+        font-size: 0.9rem;
+      }
+
+      .broker-contract strong {
+        display: block;
+        color: var(--paper);
+      }
+
+      .checklist {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.7rem 1.2rem;
+        margin: 2rem 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .checklist li {
+        position: relative;
+        min-height: 3.4rem;
+        padding: 0.75rem 0.75rem 0.75rem 2.6rem;
+        border-bottom: 1px solid var(--line);
+        color: var(--paper-dim);
+      }
+
+      .checklist li::before {
+        position: absolute;
+        top: 0.78rem;
+        left: 0;
+        width: 1.7rem;
+        height: 1.7rem;
+        border: 1px solid var(--cyan-dim);
+        color: var(--cyan);
+        content: "✓";
+        font: 700 1rem/1.6rem var(--mono);
+        text-align: center;
+      }
+
+      footer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 2rem;
+        padding: 2.5rem 0 4rem;
+        color: var(--paper-dim);
+      }
+
+      footer p {
+        margin: 0;
+      }
+
+      .source-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.8rem 1.2rem;
+      }
+
+      @media (max-width: 760px) {
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-arrow {
+          min-height: 1.5rem;
+          transform: rotate(90deg);
+        }
+
+        .event-pair,
+        .topology {
+          grid-template-columns: 1fr;
+        }
+
+        .versus {
+          writing-mode: horizontal-tb;
+        }
+
+        .scale-arrow {
+          padding: 0.5rem;
+        }
+
+        .lane {
+          grid-template-columns: 2.6rem 1fr;
+        }
+
+        .lane-title {
+          border-right: 0;
+        }
+
+        .lane-track {
+          grid-column: 2;
+          padding-top: 0;
+        }
+
+        .guard-grid,
+        .host-grid,
+        .failure-grid,
+        .checklist,
+        .broker-contract {
+          grid-template-columns: 1fr;
+        }
+
+        .timing-strip {
+          grid-template-columns: repeat(4, 1fr);
+        }
+
+        footer {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      @media print {
+        :root {
+          color-scheme: light;
+          --ink: #ffffff;
+          --ink-2: #ffffff;
+          --ink-3: #eef3f5;
+          --paper: #101820;
+          --paper-dim: #34434d;
+          --cyan: #006a73;
+          --cyan-dim: #4e7c80;
+          --coral: #a43226;
+          --yellow: #775900;
+          --line: #aebbc1;
+        }
+
+        body {
+          background: #fff;
+          font-size: 9.5pt;
+        }
+
+        nav,
+        .skip-link {
+          display: none;
+        }
+
+        header::after {
+          display: none;
+        }
+
+        .masthead {
+          padding: 2rem 0;
+        }
+
+        h1 {
+          font-size: 36pt;
+        }
+
+        section {
+          padding: 2rem 0;
+          break-inside: avoid;
+        }
+
+        .table-wrap {
+          overflow: visible;
+        }
+
+        a {
+          color: #005861;
+        }
+
+        a[href]::after {
+          content: " (" attr(href) ")";
+          font-size: 0.8em;
+          overflow-wrap: anywhere;
+        }
+
+        .source-links a[href]::after {
+          display: block;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to architecture</a>
+    <header>
+      <div class="masthead">
+        <p class="eyebrow">Field guide 01 / macOS Now Playing</p>
+        <h1>Music session architecture</h1>
+        <p class="lede">
+          How OpenCode and Pi plugin instances observe one machine-local media
+          session, isolate their work, reject stale results, and scale toward a
+          broker only when coordination is required.
+        </p>
+      </div>
+    </header>
+
+    <nav aria-label="Page sections">
+      <ul>
+        <li><a href="#model">Mental model</a></li>
+        <li><a href="#ownership">Ownership</a></li>
+        <li><a href="#events">Events</a></li>
+        <li><a href="#lanes">Work lanes</a></li>
+        <li><a href="#lifecycle">Lifecycle</a></li>
+        <li><a href="#hosts">Hosts</a></li>
+        <li><a href="#instances">Instances</a></li>
+        <li><a href="#scale">Scale path</a></li>
+        <li><a href="#invariants">Invariants</a></li>
+      </ul>
+    </nav>
+
+    <main id="content">
+      <section id="model" aria-labelledby="model-title">
+        <p class="section-index">01 / Mental model</p>
+        <h2 id="model-title">Follow state from provider to pixels</h2>
+        <p class="intro">
+          The macOS provider is the authority. The shared core normalizes its
+          output and maintains a backend-local playback clock. Each host
+          controller schedules work and protects its lifecycle. The host UI
+          performs the final presentation.
+        </p>
+
+        <div
+          class="flow"
+          role="img"
+          aria-label="macOS media provider flows through music-core, a host controller, and then a host user interface"
+        >
+          <div class="flow-node">
+            <strong>macOS media provider</strong>
+            <span
+              ><code>media-control</code> or polling-only
+              <code>nowplaying-cli</code></span
+            >
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node core">
+            <strong>@naxodev/music-core</strong>
+            <span>decode · normalize · clock · commands · waveform levels</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>host controller</strong>
+            <span>project · queue · sample · recover · dispose</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>UI</strong>
+            <span>OpenCode Solid + Kitty or Pi status + ANSI</span>
+          </div>
+        </div>
+
+        <div class="margin-note">
+          <strong>Boundary</strong>
+          <span>
+            The core generates waveform levels; it does not analyze audio.
+            Registration, lifecycle, notifications, controls, and rendering
+            remain host responsibilities.
+          </span>
+        </div>
+      </section>
+
+      <section id="ownership" aria-labelledby="ownership-title">
+        <p class="section-index">02 / Ownership</p>
+        <h2 id="ownership-title">
+          Every host instance owns a complete runtime
+        </h2>
+        <p class="intro">
+          Treat an OpenCode controller or a live Pi session as the ownership
+          boundary. Nothing in the current architecture coordinates those owners
+          across processes.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Owned resource</th>
+                <th scope="col">Every host instance</th>
+                <th scope="col">OpenCode addition</th>
+                <th scope="col">Disposal boundary</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Backend and playback clock</td>
+                <td>
+                  <span class="yes">OWNED</span> by each
+                  <code>createSystemMedia()</code>
+                </td>
+                <td><span class="no">NONE</span></td>
+                <td>Backend subscription disposer</td>
+              </tr>
+              <tr>
+                <td>Provider stream subscription</td>
+                <td>
+                  <span class="yes">OWNED</span> when
+                  <code>media-control</code> is selected
+                </td>
+                <td><span class="no">NONE</span></td>
+                <td>Stream process and pending restart timer</td>
+              </tr>
+              <tr>
+                <td>Recovery poll</td>
+                <td><span class="yes">OWNED</span> at 3 / 5 / 8 seconds</td>
+                <td><span class="no">NONE</span></td>
+                <td>Controller or live-session teardown</td>
+              </tr>
+              <tr>
+                <td>Sampling lane</td>
+                <td>
+                  <span class="yes">OWNED</span> single-flight with one
+                  coalesced follow-up
+                </td>
+                <td><span class="no">NONE</span></td>
+                <td>Late results become ineligible</td>
+              </tr>
+              <tr>
+                <td>FIFO transport lane</td>
+                <td>
+                  <span class="yes">OWNED</span> and ordered only inside the
+                  instance
+                </td>
+                <td>Adjacent pending seeks may coalesce</td>
+                <td>Pending promises settle; late effects cannot project</td>
+              </tr>
+              <tr>
+                <td>Waveform and host lifecycle</td>
+                <td>
+                  <span class="yes">OWNED</span> with host-specific rendering
+                </td>
+                <td>Solid UI and Kitty or half-block graphics</td>
+                <td>Plugin teardown, Pi reload, or Pi shutdown</td>
+              </tr>
+              <tr>
+                <td>Presentation projection</td>
+                <td>Pi projects normalized state to one ANSI status line</td>
+                <td>
+                  <span class="yes">OWNED</span> merge rules for player and
+                  artwork state
+                </td>
+                <td>Controller lifecycle</td>
+              </tr>
+              <tr>
+                <td>Artwork jobs and cache</td>
+                <td><span class="no">PI: NONE</span></td>
+                <td>
+                  <span class="yes">OWNED</span> keyed jobs plus a 32-entry
+                  module cache
+                </td>
+                <td>
+                  Listeners detach; jobs and module cache remain process-local
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="events" aria-labelledby="events-title">
+        <p class="section-index">03 / Provider events</p>
+        <h2 id="events-title">A snapshot is data; invalidation is a prompt</h2>
+        <p class="intro">
+          <code>media-control stream --no-diff --no-artwork</code> emits
+          complete payloads. The core validates and normalizes complete payloads
+          before exposing them. Partial or malformed stream lines do not become
+          snapshots.
+        </p>
+
+        <div class="event-pair">
+          <article class="event snapshot">
+            <span class="tag">event.type = snapshot</span>
+            <strong>Project immediately</strong>
+            <p>
+              The state is authoritative. OpenCode replaces player state. Pi
+              projects with its authoritative path. Both invalidate older sample
+              requests so a slower provider read cannot restore stale state.
+            </p>
+          </article>
+          <div class="versus" aria-hidden="true">NOT THE SAME</div>
+          <article class="event invalidation">
+            <span class="tag">reason = stream-terminated</span>
+            <strong>Request recovery</strong>
+            <p>
+              The event carries no replacement player state. The host requests
+              <code>player()</code>. The core disposes the ended stream and
+              independently schedules its restart.
+            </p>
+          </article>
+        </div>
+
+        <div class="margin-note">
+          <strong>Fallback</strong>
+          <span>
+            <code>nowplaying-cli</code> has no subscription. The same bounded
+            host poll is therefore its only provider-update path.
+          </span>
+        </div>
+      </section>
+
+      <section id="lanes" aria-labelledby="lanes-title">
+        <p class="section-index">04 / Concurrency</p>
+        <h2 id="lanes-title">Keep four work lanes independent</h2>
+        <p class="intro">
+          A slow provider read must not block a transport command. Artwork must
+          not delay state projection. The implementations enforce those
+          properties with separate lanes rather than one shared promise chain.
+        </p>
+
+        <div class="lanes">
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">1</div>
+            <div class="lane-title">
+              <h3>Synchronous UI projection</h3>
+              <p>Latest accepted state reaches the host immediately.</p>
+            </div>
+            <div class="lane-track">
+              <div class="signal" aria-hidden="true">
+                <span>snapshot</span><i>→</i><span>state</span><i>→</i
+                ><span>render</span>
+              </div>
+              <p>
+                Authoritative snapshots do not wait behind sampling, transport,
+                or artwork. Optimistic transport state also projects after a
+                successful command while a short reconciliation is scheduled.
+              </p>
+            </div>
+          </article>
+
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">2</div>
+            <div class="lane-title">
+              <h3>Coalesced sampling</h3>
+              <p>At most one provider read runs per host instance.</p>
+            </div>
+            <div class="lane-track">
+              <div class="signal" aria-hidden="true">
+                <span>request A</span><i>→</i><span>in flight</span><i>+</i
+                ><span>B/C = pending</span><i>→</i><span>one follow-up</span>
+              </div>
+              <p>
+                Requests during an active sample set one pending flag. The drain
+                performs one follow-up using the newest request sequence,
+                instead of starting parallel reads or preserving every trigger.
+              </p>
+            </div>
+          </article>
+
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">3</div>
+            <div class="lane-title">
+              <h3>FIFO transport</h3>
+              <p>One command runs at a time inside one instance.</p>
+            </div>
+            <div class="lane-track">
+              <div class="signal" aria-hidden="true">
+                <span>play</span><i>→</i><span>next</span><i>→</i
+                ><span>pause</span><i>→</i><span>reconcile</span>
+              </div>
+              <p>
+                Pi preserves every play, pause, next, and previous intent.
+                OpenCode does the same and also supports seek. Adjacent pending
+                OpenCode seeks collapse to the newest target while all callers
+                still settle.
+              </p>
+            </div>
+          </article>
+
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">4</div>
+            <div class="lane-title">
+              <h3>Keyed artwork enrichment</h3>
+              <p>OpenCode-only work keyed by recording metadata.</p>
+            </div>
+            <div class="lane-track">
+              <div class="signal" aria-hidden="true">
+                <span>track key</span><i>→</i><span>native / search</span
+                ><i>→</i><span>completion event</span>
+              </div>
+              <p>
+                Concurrent interest in one key shares a job. Completion
+                publishes the identity with the result, so presentation merges
+                it only into the matching track. Failed resolution uses bounded
+                attempts and delayed retries without blocking playback state.
+              </p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="lifecycle" aria-labelledby="lifecycle-title">
+        <p class="section-index">05 / Stale work</p>
+        <h2 id="lifecycle-title">Prove a result is still eligible</h2>
+        <p class="intro">
+          Async completion alone does not authorize a state update. Each lane
+          checks the current owner and the revisions that can make its result
+          obsolete.
+        </p>
+
+        <div class="guard-grid">
+          <article class="guard">
+            <h3>Lifecycle guard</h3>
+            <p>
+              OpenCode captures a lifecycle generation around sampling and
+              transport work. Pi checks that the live-session object is still
+              active and still equals the extension's current session.
+            </p>
+          </article>
+          <article class="guard">
+            <h3>Sample sequence guard</h3>
+            <p>
+              Every refresh request advances a sequence. An authoritative
+              snapshot advances it again. A read projects only if its captured
+              sequence remains current.
+            </p>
+          </article>
+          <article class="guard">
+            <h3>Transport revision guard</h3>
+            <p>
+              Successful commands advance a revision. A sample started before
+              that command cannot overwrite the command's optimistic state or a
+              later reconciliation.
+            </p>
+          </article>
+          <article class="guard">
+            <h3>Stream generation guard</h3>
+            <p>
+              The core assigns each stream attempt a generation. Termination or
+              disposal invalidates the generation, suppressing late lines,
+              duplicate terminal callbacks, invalidations, and restarts.
+            </p>
+          </article>
+        </div>
+
+        <h3 style="margin-top: 2.2rem">Bounded recovery timing</h3>
+        <p class="intro">
+          Host polling remains active even with a stream. It recovers missed
+          state and supports the polling-only fallback. Stream restart backoff
+          resets to one second after a valid snapshot.
+        </p>
+        <div
+          class="timing-strip"
+          aria-label="Host polls after 3 seconds while playing, 5 seconds while paused, and 8 seconds while idle. Stream restart retries after 1, 2, 4, and at most 8 seconds."
+        >
+          <span class="poll">PLAYING<br />3 s</span>
+          <span class="poll">PAUSED<br />5 s</span>
+          <span class="poll">IDLE<br />8 s</span>
+          <span class="retry">RETRY<br />1 s</span>
+          <span class="retry">RETRY<br />2 s</span>
+          <span class="retry">RETRY<br />4 s</span>
+          <span class="retry">RETRY CAP<br />8 s</span>
+        </div>
+
+        <div class="margin-note">
+          <strong>Teardown</strong>
+          <span>
+            OpenCode plugin teardown releases UI slots, provider and artwork
+            presentation subscriptions, polling, pending sampling, and pending
+            transport waiters. Pi reload or shutdown releases its stream,
+            polling, waveform interval, status, samples, and controls. The core
+            stream disposer is idempotent and clears both its process and retry
+            timer.
+          </span>
+        </div>
+      </section>
+
+      <section id="hosts" aria-labelledby="hosts-title">
+        <p class="section-index">06 / Host comparison</p>
+        <h2 id="hosts-title">Share mechanics; preserve host presentation</h2>
+        <p class="intro">
+          Both hosts consume the same normalized provider contract, playback
+          clock, commands, reconciliation, formatting, and waveform engine.
+          Their user-interface responsibilities intentionally differ.
+        </p>
+
+        <div class="host-grid">
+          <article class="host">
+            <h3>OpenCode music player</h3>
+            <p>
+              Registers global commands and app/sidebar slots. Projects state
+              into a Solid compact bar and sidebar. Supports seek, optimistic
+              progress, notifications, artwork enrichment, Kitty graphics, and
+              half-block fallback rendering. It preserves artwork presentation
+              across ordinary sampled-state merges.
+            </p>
+          </article>
+          <article class="host">
+            <h3>Pi music dock</h3>
+            <p>
+              Registers slash commands and shortcuts. Publishes one composable
+              status through <code>ctx.ui.setStatus</code>. Renders an ANSI
+              waveform and clipped metadata. It does not own Pi's footer and
+              does not fetch or cache artwork. Its controls omit seek.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="instances" aria-labelledby="instances-title">
+        <p class="section-index">07 / Multi-instance reality</p>
+        <h2 id="instances-title">Isolation is local; convergence is global</h2>
+        <p class="intro">
+          Separate OpenCode and Pi processes do not share JavaScript memory,
+          queues, clocks, timers, stream processes, or caches. They do share the
+          same macOS Now Playing authority through independent provider calls.
+        </p>
+
+        <div class="failure-grid">
+          <article class="failure">
+            <h3>What scales with instances</h3>
+            <p>
+              With <code>media-control</code>, each of the <em>N</em> host
+              instances owns a stream process and recovery poll. Each of the
+              <em>O</em> OpenCode instances also has process-local artwork work
+              and a cache of at most 32 settled entries.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>What does not coordinate</h3>
+            <p>
+              FIFO ordering stops at a process boundary. There is no global
+              command queue, lock, or winner. Two instances can issue commands
+              concurrently, and the provider decides the observed outcome.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>How instances converge</h3>
+            <p>
+              A command affects machine-local media state. Later authoritative
+              stream snapshots or bounded polls carry that resulting state back
+              to every healthy instance. Convergence is eventual, not a global
+              transaction.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Fallback behavior</h3>
+            <p>
+              <code>nowplaying-cli</code> remains polling-only. Under that
+              backend there are no provider stream processes, but each instance
+              still owns its 3/5/8-second polling cycle and backend clock.
+            </p>
+          </article>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <caption
+              class="signal-label"
+              style="padding: 0.9rem; text-align: left"
+            >
+              Capacity and cost model: N = total live host instances; O =
+              OpenCode instances, where 0 ≤ O ≤ N
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Resource or event</th>
+                <th scope="col">Current direct topology</th>
+                <th scope="col">Broker topology</th>
+                <th scope="col">Operational meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Provider stream processes</td>
+                <td>
+                  <code>N</code> with <code>media-control</code>;
+                  <code>0</code> with <code>nowplaying-cli</code>
+                </td>
+                <td><code>1</code> per Mac with <code>media-control</code></td>
+                <td>Direct subscription cost is O(N)</td>
+              </tr>
+              <tr>
+                <td>Host recovery poll schedulers</td>
+                <td><code>N</code></td>
+                <td>
+                  <code>1</code> provider recovery scheduler in broker; client
+                  heartbeat/lifecycle work remains <code>N</code>
+                </td>
+                <td>Polling calls move out of clients</td>
+              </tr>
+              <tr>
+                <td>Provider reads per poll boundary</td>
+                <td>
+                  Up to <code>N</code>, according to each instance's state and
+                  timer phase
+                </td>
+                <td>Up to <code>1</code> broker read</td>
+                <td>Direct read pressure is O(N)</td>
+              </tr>
+              <tr>
+                <td>Transport queues</td>
+                <td><code>N</code> local FIFO queues; no global order</td>
+                <td><code>1</code> global queue if ordering is required</td>
+                <td>Choose the broker queue for cross-client serialization</td>
+              </tr>
+              <tr>
+                <td>OpenCode artwork caches</td>
+                <td>
+                  <code>O</code> process-local caches, each bounded to 32
+                  settled entries
+                </td>
+                <td>
+                  <code>O</code> client caches, or <code>1</code> optional
+                  shared cache plus client presentation state
+                </td>
+                <td>Maximum direct settled entries are <code>32O</code></td>
+              </tr>
+              <tr>
+                <td>Client UI and waveform lifecycles</td>
+                <td><code>N</code></td>
+                <td><code>N</code></td>
+                <td>Presentation remains client-side in both designs</td>
+              </tr>
+              <tr>
+                <td>Authoritative update fan-out</td>
+                <td><code>N</code> independent provider observations</td>
+                <td>
+                  <code>1</code> observation replayed to <code>N</code> clients
+                </td>
+                <td>Broker fan-out is O(N), provider observation is O(1)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="scale" aria-labelledby="scale-title">
+        <p class="section-index">08 / Scale path</p>
+        <h2 id="scale-title">Add one broker per Mac, not per fleet</h2>
+        <p class="intro">
+          Keep the direct topology for small local counts because it has no
+          daemon deployment or IPC failure mode. Introduce a broker when
+          measured provider duplication or a requirement for global command
+          order outweighs that simplicity. No numeric threshold is implied.
+        </p>
+
+        <div
+          class="topology"
+          role="img"
+          aria-label="Direct per-instance provider connections can evolve into one machine-local broker between all clients and one provider subscription"
+        >
+          <div class="machine">
+            <strong>Direct / current</strong>
+            <div class="instances">
+              <div class="instance">client 1</div>
+              <div class="instance">client 2</div>
+              <div class="instance">client N</div>
+            </div>
+            <div class="provider">N independent provider paths</div>
+          </div>
+          <div class="scale-arrow">WHEN<br />NEEDED<br />→</div>
+          <div class="machine">
+            <strong>Broker / scale path</strong>
+            <div class="instances">
+              <div class="instance">client 1</div>
+              <div class="instance">client 2</div>
+              <div class="instance">client N</div>
+            </div>
+            <div class="broker">
+              Unix-domain socket · replay · heartbeats · queue
+            </div>
+            <div class="provider">1 provider subscription per Mac</div>
+          </div>
+        </div>
+
+        <div class="broker-contract">
+          <div>
+            <strong>Observe once</strong>Own one provider subscription, clock,
+            restart loop, and recovery poll.
+          </div>
+          <div>
+            <strong>Replay latest</strong>Send the latest authoritative snapshot
+            immediately when a client connects or reconnects.
+          </div>
+          <div>
+            <strong>Order if required</strong>Route commands through one global
+            transport FIFO instead of pretending local queues compose.
+          </div>
+          <div>
+            <strong>Track clients</strong>Use connection lifecycle and
+            heartbeats to remove dead subscribers and abandoned command callers.
+          </div>
+          <div>
+            <strong>Share optionally</strong>Centralize artwork lookup and cache
+            only if duplicate OpenCode work warrants the added contract.
+          </div>
+          <div>
+            <strong>Keep presentation local</strong>Clients still own
+            projection, host lifecycle, waveform rendering, UI slots, and
+            disposal.
+          </div>
+        </div>
+
+        <div class="margin-note">
+          <strong>Machine scope</strong>
+          <span>
+            macOS Now Playing state is machine-local. Run one broker on each Mac
+            and connect over a Unix-domain socket. A cloud broker cannot
+            automatically observe another Mac's Now Playing session; a local
+            agent would still have to observe and forward that state.
+          </span>
+        </div>
+      </section>
+
+      <section id="invariants" aria-labelledby="invariants-title">
+        <p class="section-index">09 / Operations</p>
+        <h2 id="invariants-title">Design and operate against invariants</h2>
+        <p class="intro">
+          Failures should reduce freshness or presentation quality without
+          allowing stale work to regain authority or leaving background work
+          alive after its host disappears.
+        </p>
+
+        <div class="failure-grid">
+          <article class="failure">
+            <h3>Provider stream exits</h3>
+            <p>
+              Emit one invalidation, request a recovery sample, dispose the old
+              stream, and retry after 1/2/4/8 seconds. Continue bounded host
+              polling while recovery proceeds.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Provider read fails</h3>
+            <p>
+              Pi keeps its accepted state and waits for a later poll. OpenCode
+              may expose the error unless a transport error has priority. The
+              next bounded poll remains scheduled.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Transport fails</h3>
+            <p>
+              Notify in the host and keep advancing the local FIFO so one
+              rejected command does not strand following intents. OpenCode
+              requests immediate reconciliation; Pi recovers on its next bounded
+              poll.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Artwork fails</h3>
+            <p>
+              Playback state stays usable. OpenCode publishes a null completion,
+              retries the keyed entry with delay for at most three attempts, and
+              preserves identity checks at merge time.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Host reloads or exits</h3>
+            <p>
+              Mark the owner dead first. Then release subscriptions, timers,
+              waveform work, UI registrations, and pending waiters. Late async
+              results must observe the dead lifecycle and become no-ops.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Clients disagree temporarily</h3>
+            <p>
+              Do not infer a distributed lock. Accept temporary divergence and
+              converge from later authoritative provider snapshots. Add a local
+              broker only when cross-client ordering is a real requirement.
+            </p>
+          </article>
+        </div>
+
+        <ul class="checklist" aria-label="Architecture invariant checklist">
+          <li>
+            One backend owns one playback clock; no instance mutates another
+            instance's clock.
+          </li>
+          <li>
+            A complete stream snapshot projects directly and invalidates older
+            reads.
+          </li>
+          <li>
+            A stream invalidation requests data; it never masquerades as player
+            state.
+          </li>
+          <li>
+            Sampling remains single-flight and coalesces repeated triggers into
+            one follow-up.
+          </li>
+          <li>
+            Transport remains FIFO per owner; adjacent pending seeks coalesce
+            only in OpenCode.
+          </li>
+          <li>
+            Provider reads, transport commands, and artwork jobs never share a
+            blocking lane.
+          </li>
+          <li>
+            Every async projection checks lifecycle plus the relevant sequence
+            or revision.
+          </li>
+          <li>
+            Disposal is idempotent and suppresses late lines, callbacks,
+            updates, and restarts.
+          </li>
+          <li>
+            Poll delays stay bounded at 3/5/8 seconds; stream restart stays
+            capped at 8 seconds.
+          </li>
+          <li>
+            A future broker keeps client presentation and lifecycle local to
+            each host.
+          </li>
+          <li>
+            Cross-process command order does not exist until a machine-local
+            global queue owns it.
+          </li>
+          <li>
+            One Mac needs one broker because another machine cannot observe its
+            media session automatically.
+          </li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Source of truth: current package implementation and package-level
+        architecture notes.
+      </p>
+      <div class="source-links" aria-label="Package architecture sources">
+        <a href="../packages/music-core/README.md">music-core README</a>
+        <a href="../packages/opencode-music-player/README.md"
+          >OpenCode player README</a
+        >
+        <a href="../packages/pi-music-dock/README.md">Pi music dock README</a>
+      </div>
+    </footer>
+  </body>
+</html>

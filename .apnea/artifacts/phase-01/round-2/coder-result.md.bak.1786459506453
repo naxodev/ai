@@ -1,0 +1,39 @@
+---
+status: done
+---
+
+Rework changes:
+- Server now returns correlated stable errors for decodable invalid request IDs, including unsupported transport actions, rather than closing the connection.
+- Client now terminally tears down on malformed daemon frames and socket failures, settles pending requests once, and rejects future commands with the typed terminal error.
+- Framing now pre-scans incoming bytes for oversized lines before decoding/retaining them, while preserving UTF-8 decoder state across chunks.
+- Added regression tests for correlated invalid requests and bounded-frame rejection.
+
+Files touched: `packages/music-core/session/client.ts`, `framing.ts`, `protocol.ts`, `server.ts`, `packages/music-core/tests/session-protocol.test.ts`, `packages/music-core/tests/session-server.test.ts`.
+
+Verification:
+
+```text
+$ bunx nx run music-core:build
+exit 0
+Bundled 201 modules in 55ms
+music-sessiond.js 0.36 MB (entry point)
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0
+95 pass, 0 fail
+All matched files use Prettier code style!
+Verified npm package contents (21 files)
+
+$ bun test packages/music-core/tests/session-*.test.ts
+exit 0
+9 pass, 0 fail
+Ran 9 tests across 4 files.
+
+$ npm pack ./packages/music-core --dry-run
+exit 0
+npm notice total files: 21
+```
+
+Residual risks:
+- `npm pack packages/music-core --dry-run` is interpreted as a remote package spec by npm in this workspace; the explicit local-path equivalent passed.
+- Ignored `dist/` was rebuilt for verification; no generated tarball, socket, or log artifact is present in `git status`.

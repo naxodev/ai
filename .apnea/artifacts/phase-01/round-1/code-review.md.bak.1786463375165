@@ -1,0 +1,36 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package stays within Phase 1’s approved scope, so the code was reviewed against it.
+
+## Findings
+
+### Critical — The daemon runtime is not implemented with Effect v4
+
+The phase requires Effect services/layers, scoped resources/fibers, `SubscriptionRef`, a bounded `Queue`, and `Schedule`/test-clock scheduling. Instead, `session/coordinator.ts`, `provider.ts`, `server.ts`, and `client.ts` are Promise/class implementations using arrays, booleans, raw callbacks, and `setTimeout`. The only Effect runtime import is `effect/Schema` in `protocol.ts`; even those schemas are not used by the ingress decoders. This misses the defining architecture of the phase rather than being an implementation detail.
+
+### High — Wire ingress does not validate the declared protocol shapes
+
+`session/protocol.ts:105-213` manually inspects and casts values instead of decoding every request/event/response with Effect Schema. In particular, `decodeServerFrame` accepts any object as `PlayerState` (`:187`) and any string as a protocol error code (`:211`), while the hello response data is left as `unknown` and partially cast in `client.ts`. Most required schemas—nested player state, transport/state requests, events, responses, and tagged errors—do not exist. A malformed daemon frame can therefore enter host state despite the package’s schema-boundary requirement.
+
+### High — Server shutdown can hang on a client that has not completed hello
+
+`server.ts` adds a socket to `clients` only after a successful hello (`:130`), but `close()` destroys only sockets in that set before awaiting `server.close()` (`:193-194`). A connected client that sends nothing, or stalls mid-frame, remains open and causes shutdown/SIGTERM to wait indefinitely. Track and close every accepted socket, including pre-handshake connections.
+
+### High — Sampling and command shutdown violate the authority/exact-once rules
+
+In `coordinator.ts`, a trigger arriving during an active sample only sets `#samplePending` (`:126`); the in-flight sample guards solely on `#authority` (`:130`). Since the new trigger does not advance a request generation, the older sample can still publish before the coalesced rerun, contrary to the required stale-trigger rejection.
+
+Likewise, an active command is removed from `#jobs` before awaiting provider transport (`:181-189`), while `dispose()` rejects only jobs still in the array (`:235`). A blocked active transport is not settled or interrupted, and reconciliation timers created at `:217` are not retained or canceled. Shutdown therefore does not release/settle all work exactly once.
+
+### High — The new tests do not substantiate Phase 1 acceptance
+
+The four new test files contain only five tests. They do not cover most required behavior: replay/status caches, malformed-client isolation, oversized frames, stale sample rejection, coalesced sampling, 3/5/8 scheduling, command failure continuation, queue overflow, optimistic seek, reconciliation timing, out-of-order responses, disconnect/indeterminate commands, listener isolation, or exact-once cleanup. The coder result also records the exact `npm pack packages/music-core --dry-run` verification as failed, even though a corrected `./packages/...` invocation passed.
+
+### Medium — Package version metadata is a drifting hard-coded constant
+
+The phase requires package metadata to come from the manifest. Instead, version `0.1.0` is separately hard-coded in `protocol.ts:5`, `server.ts:137`, and `client.ts:305`, with no build-time replacement shown. A package version change will silently advertise stale diagnostics.

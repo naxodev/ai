@@ -1,0 +1,35 @@
+---
+status: done
+---
+
+## Changed
+
+- Serialized sampling trigger claims with the sample stale-check/publication boundary, preventing a trigger from arriving between generation validation and commit.
+- Versioned poll-deadline ownership by state revision, so a delayed older accept cannot reinstall a deadline after a newer authoritative update.
+- Replaced separate closed/pending refs with one atomic lifecycle registry: callers are registered before queue offer, and scope closure settles every registered caller exactly once.
+- Changed the bounded provider callback bridge to sliding coalescence, preserving the newest authoritative callback (including a terminal event from a disposed attempt) under saturation.
+
+Files touched: `packages/music-core/session/coordinator.ts`, `packages/music-core/session/provider.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 53 pass, 0 fail, 159 expectations
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed (115 tests)
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0 — no matches
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed (music-core 115; Pi 28; OpenCode 149)
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, runtime socket, marker, or log output is listed.
+```
+
+## Residual risks
+
+The legacy compatibility fake remains the explicit-server adapter fixture rather than a fully Effect-native test service. Existing lifecycle tests cover scoped interruption and provider finalization, but do not expose individual socket-forwarder finalizer identities.

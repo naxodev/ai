@@ -1,0 +1,35 @@
+---
+status: done
+---
+
+## Changed
+
+- Made `layerFromConfig` map Config-read failures to `MusicSessionConfigError` and route every decoded value through the shared `resolve` validation boundary.
+- Reset daemon provider backoff after a valid snapshot. Snapshot callbacks only enqueue a reset signal; scoped Effect workers own the retry counter and Schedule-driven 1/2/4/8-second delays.
+- Replaced invalidation-only poll versioning with a scoped, replaceable poll fiber. Every accepted authoritative state replaces the active 3/5/8-second Effect Schedule deadline.
+- Corrected the listener documentation to describe its server-owned `FiberSet` accept lane.
+
+Files touched: `packages/music-core/session/config.ts`, `packages/music-core/session/provider.ts`, `packages/music-core/session/coordinator.ts`, `packages/music-core/session/server.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 33 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, socket, marker, or log output is listed
+```
+
+## Residual risks
+
+Required deterministic `TestClock` coverage is still absent for retry reset, polling, reconciliation, saturation, stale/coalesced samples, and blocked-work shutdown. The accepted-socket lane uses a scoped `FiberSet` rather than a queue consumer; it should receive explicit lifecycle coverage.

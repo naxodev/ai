@@ -1,0 +1,32 @@
+---
+status: done
+---
+
+## Rework result
+
+Read the supplied round-3 review and compared it with the current phase files. The review targets the abandoned imperative implementation, while the current worktree already has the named Effect services/layers, scoped daemon graph, schema-tagged command error, `SubscriptionRef`/bounded-`Queue` coordinator, one-attempt media seam, and scoped signal handling it says are absent. No safe narrow source change follows from that stale review; altering the current Effect implementation to match it would regress the phase.
+
+Files touched: none outside this required result artifact.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 33 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, socket, marker, or log output is listed
+```
+
+## Residual risks
+
+The current slice still lacks the complete deterministic `TestClock` matrix and a fully queue-consumed accepted-socket worker required by the phase package. These are real remaining Phase 1 items, but are not actionable fixes for the stale review’s claims about a different implementation.

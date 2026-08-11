@@ -1,0 +1,40 @@
+---
+status: done
+---
+
+Rework changes:
+- Made NDJSON decoding retain `TextDecoder` state across chunk boundaries and added a split-multibyte regression test.
+- Completed state-event and hello-result boundary validation, including full nested player validation before client cache projection; removed client hello-result casts.
+- Prevented an active provider command that completes after disposal from projecting state or scheduling reconciliation.
+- Replaced the coordinator command array with a bounded Effect `Queue`, added Effect `SubscriptionRef` ownership for replayable status/state, and shut the queue down with pending caller settlement.
+- Added regression coverage for pre-hello socket shutdown and incremental UTF-8 framing.
+
+Files touched: `packages/music-core/session/client.ts`, `coordinator.ts`, `framing.ts`, `protocol.ts`, `packages/music-core/tests/session-protocol.test.ts`, `packages/music-core/tests/session-server.test.ts`.
+
+Verification:
+
+```text
+$ bunx nx run music-core:build
+exit 0
+Bundled 201 modules in 60ms
+music-sessiond.js 0.36 MB (entry point)
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0
+93 pass, 0 fail
+All matched files use Prettier code style!
+Verified npm package contents (21 files)
+
+$ bun test packages/music-core/tests/session-*.test.ts
+exit 0
+7 pass, 0 fail
+Ran 7 tests across 4 files.
+
+$ npm pack ./packages/music-core --dry-run
+exit 0
+npm notice total files: 21
+```
+
+Residual risks:
+- `npm pack packages/music-core --dry-run` remains interpreted as a remote package spec by npm in this workspace; the equivalent explicit local-path command passed.
+- The daemon bundle is ignored and no generated tarball, socket, or log artifact is present in `git status`.

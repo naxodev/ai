@@ -1,0 +1,20 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package remains aligned with approved Phase 1. The navigation authority change stays in scope and addresses that finding, but the critical polling lifecycle defect and required deterministic evidence remain unresolved.
+
+## Findings
+
+### Critical — A poll result can still strand the sampling lane permanently
+
+The fiber stored in `pollFiber` owns both the deadline and `sample("poll")` (`coordinator.ts:172-189`). When that sample succeeds, `sample` calls `accept`, and `accept` calls `restartPoll`. `restartPoll` swaps in a new fiber and interrupts `previous`, which is the currently executing poll fiber itself.
+
+The same interruption can occur when a stream snapshot replaces a poll whose provider sample is blocked. Because `sample` has no ensuring/finalizer around its `{ active: true }` state (`coordinator.ts:127-170`), interruption occurs before the lane clears `active`. Every later trigger then only marks `pending` and returns even though no sample fiber remains. The replaceable fiber must own only the deadline/trigger, or sample cleanup must be interruption-safe.
+
+### High — Phase 1 still lacks its required deterministic acceptance evidence
+
+No tasked test imports or uses `TestClock`; round 3 added no tests. The coordinator suite remains one test and does not cover the polling interruption above, navigation stale-sample rejection, retry timing/reset, repeated 3/5/8 polling, reconciliation, stale/coalesced samples, saturation/failure continuation, blocked-work shutdown, or FiberSet connection finalization. The fake provider also lacks the required blocking/failure controls. Passing the existing 33 tests therefore does not satisfy the phase package, and the coder result explicitly acknowledges this gap.

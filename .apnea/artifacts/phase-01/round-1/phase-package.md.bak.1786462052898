@@ -1,0 +1,239 @@
+---
+status: done
+---
+
+# Phase 1 package — manual-start end-to-end session daemon
+
+## Intent
+
+Deliver the smallest deployable process seam inside `@naxodev/music-core`: one foreground, Node-compatible daemon owns one real `createSystemMedia()` adapter, an Effect v4 coordinator, and a versioned newline-delimited JSON Unix-socket server. A public client connects to an explicitly supplied socket, receives provider status and replay/live state, and sends globally ordered transport commands.
+
+This phase proves the end-to-end boundary with two clients but deliberately leaves both host packages on their current per-instance backend path. Automatic launch, reconnect, singleton/stale-socket recovery, and 20+ client hardening are Phase 2 work.
+
+## Current source constraints to preserve
+
+- `packages/music-core/system-media.ts` already owns provider detection, the independent playback clock, normalized stream snapshots, and the `media-control` stream restart sequence of 1/2/4/8 seconds capped at 8 seconds. Reuse one adapter instance; do not create a second clock/provider path in the session code.
+- The host implementations currently contain the coalesced sample lane, stale-sample guards, 3/5/8-second dynamic poll, optimistic transport projection, and delayed reconciliation. Reproduce those rules in the coordinator without changing either host yet.
+- `packages/music-core` currently publishes TypeScript source directly. Keep existing exports working and add the client surface without removing or renaming low-level provider/clock exports.
+- The workspace already resolves `effect@4.0.0-beta.101` through `packages/apnea`, but `music-core` must declare it directly because its public runtime now imports Effect.
+- `**/dist/` is ignored. Build and inspect `packages/music-core/dist/music-sessiond.js`, but do not add generated output to the worktree.
+
+## Files to touch
+
+Existing files:
+
+- `bun.lock`
+- `packages/music-core/package.json`
+- `packages/music-core/project.json`
+- `packages/music-core/tsconfig.json`
+- `packages/music-core/index.ts`
+- `packages/music-core/scripts/verify-pack.ts`
+- `packages/music-core/system-media.ts` only if a small provider-status/test seam is required; preserve its public behavior and existing tests
+
+New runtime files:
+
+- `packages/music-core/session/protocol.ts`
+- `packages/music-core/session/config.ts`
+- `packages/music-core/session/framing.ts`
+- `packages/music-core/session/provider.ts`
+- `packages/music-core/session/coordinator.ts`
+- `packages/music-core/session/server.ts`
+- `packages/music-core/session/client.ts`
+- `packages/music-core/session/music-sessiond.ts`
+
+New tests:
+
+- `packages/music-core/tests/session-protocol.test.ts`
+- `packages/music-core/tests/session-coordinator.test.ts`
+- `packages/music-core/tests/session-server.test.ts`
+- `packages/music-core/tests/session-client.test.ts`
+
+Do not create another workspace package or a second package manifest for the daemon.
+
+## Files not to touch
+
+- `packages/opencode-music-player/**`
+- `packages/pi-music-dock/**`
+- `README.md` and package READMEs
+- `docs/music-session-architecture.html` — preserve this intentional pre-existing worktree addition unchanged during Phase 1
+- `.apnea/state.json`
+- Any unrelated dirty file or Apnea artifact other than this tasked artifact
+
+## Required public and wire boundaries
+
+### Public client surface
+
+Export the intentional client types and constructor from `packages/music-core/index.ts`. Keep the host-facing API small and Promise/callback based while its implementation owns an Effect scope:
+
+- `createMusicSessionClient({ socketPath, clientId, hostKind, packageVersion? })`
+- cached connection/provider status plus `subscribeStatus(listener)`
+- cached latest state plus `subscribeState(listener)`
+- `toggle()`, `play()`, `pause()`, `next()`, `previous()`, and `seek(positionMs)`
+- idempotent `dispose()` that closes the socket, interrupts reader/writer work, removes listeners, and settles every pending caller once
+
+A new subscriber must immediately receive the cached value when one exists. Isolate listener exceptions so one consumer cannot terminate the socket reader. Command Promise rejection must expose a stable typed code/message rather than raw Node socket errors.
+
+The client is explicit-connect only in this phase: no default socket path, spawning, retry, reconnect, command replay, or stale artifact removal.
+
+### Protocol v1.0
+
+Define all protocol values in `session/protocol.ts` with Effect `Schema.Struct`/tagged unions and decode unknown values at both ingress points. Do not cast parsed JSON into request/event types.
+
+Use these semantic fields consistently:
+
+- protocol major `1`, minor `0`
+- package version for diagnostics, sourced from the package manifest rather than a second drifting release constant
+- daemon instance ID, client ID, and host kind (`opencode`, `pi`, or `test`)
+- named capabilities; baseline state replay and transport are mandatory
+- monotonic daemon snapshot revision
+- correlated request ID on every request/response
+
+Wire flow:
+
+1. The first client frame is a hello request containing protocol version, package version, client identity, host kind, and capabilities.
+2. The daemon rejects a different major or a peer missing mandatory baseline capabilities, then closes that connection without affecting existing clients.
+3. Same-major peers negotiate the capability intersection. Unknown additive object fields are tolerated, but unnegotiated behavior is never used.
+4. The hello result contains daemon instance/package/protocol data and negotiated capabilities.
+5. Immediately after a successful hello, send current provider status and the latest revisioned snapshot. Also support an explicit state request so a client can ask for cached replay without sampling the provider.
+6. Transport requests carry one of `toggle`, `play`, `pause`, `next`, `previous`, or `seek`; seek alone carries a finite, non-negative integer millisecond position.
+7. Responses use one schema shape with `requestId` and either success data or a schema-defined error `{ code, message, retryable }`. Provider failures are data-plane command errors, not connection defects.
+
+Use strictly increasing non-negative integer request IDs per connection. This permits duplicate/out-of-order rejection without an unbounded seen-ID set. A schema/frame error that occurs before a request ID can be decoded closes only that connection; do not fabricate an uncorrelated response.
+
+At minimum define stable codes for incompatible protocol, invalid request, duplicate request ID, unsupported capability/action, invalid seek, provider failure, server busy, connection lost/indeterminate command, and disposed client.
+
+### Framing
+
+`session/framing.ts` is the only newline framing implementation used by client and server.
+
+- Incrementally assemble UTF-8 chunks and accept multiple complete lines per chunk.
+- Set a configurable finite maximum frame size; tests may lower it to exercise overflow.
+- Reject an oversized line before retaining more bytes.
+- Reject malformed JSON, blank frames, invalid schema payloads, and a non-whitespace incomplete frame at EOF.
+- Serialize each outbound frame as one JSON value plus `\n`.
+- Never let malformed input on one socket crash the listener or coordinator.
+- Keep callback-style `node:net` operations behind a named Effect service/layer or queue-backed adapter so tests can inject transport behavior.
+
+Slow-client write-buffer isolation and production per-client in-flight limits are Phase 2; do not build the full lifecycle policy now.
+
+## Exact implementation steps
+
+### 1. Add Effect and package/build wiring
+
+1. Add `"effect": "4.0.0-beta.101"` to `packages/music-core/package.json` runtime dependencies and update `bun.lock` through Bun.
+2. Add a `build` script that bundles `session/music-sessiond.ts` for Node into `dist/music-sessiond.js`. The entry must use a Node shebang and Node-compatible APIs; do not target Bun or require Bun globals at runtime.
+3. Add package `bin` entry `naxodev-music-sessiond` pointing to `./dist/music-sessiond.js`, include `dist` and `session` in package files, and add `prepack`/package-check wiring so ignored output is rebuilt before inspection.
+4. Add an Nx `build` target and ensure `package:check` builds before `scripts/verify-pack.ts` runs.
+5. Extend `tsconfig.json` includes to cover `session/**/*.ts` while retaining existing tests/scripts checks.
+6. Update `scripts/verify-pack.ts` to require the daemon output and all runtime session source, verify the manifest bin target, and continue rejecting `tests/` and `scripts/` from the tarball.
+
+### 2. Define configuration, schemas, and typed failures
+
+1. In `session/config.ts`, define the manual server/client options and bounded defaults used in this phase: required explicit socket path, frame limit, global command-queue capacity, command reconciliation delays, and 3/5/8-second poll intervals. Expose test layers/options so limits and timing can be replaced without environment mutation.
+2. In `session/protocol.ts`, define `PlayerState`, nested track/device, handshake, provider status, request, event, response, capability, and protocol error schemas. Reuse the TypeScript `PlayerState` type at the module boundary and add a compile-time compatibility assertion rather than maintaining a divergent domain shape.
+3. Constrain numeric wire values: finite safe integer IDs/revisions/timestamps, non-negative progress/duration/seek, and valid nullable volume. Preserve the existing repeat literals.
+4. Use schema-tagged Effect errors internally and map them once at the server/client boundary to stable wire/public error codes. Preserve interruption; do not turn interrupted fibers into provider failures.
+
+### 3. Adapt exactly one provider into Effect
+
+1. In `session/provider.ts`, define a narrow Effect service for status, sample, provider events, and transport. Its production layer calls `createSystemMedia()` exactly once.
+2. Convert the optional callback subscription into a scoped event stream. Register once, retain its disposer as a scope finalizer, and ensure finalization is idempotent.
+3. Keep `createSystemMedia()`'s existing stream normalization and 1/2/4/8-second restart behavior. A complete `snapshot` event is authoritative; an `invalidation` event requests recovery sampling.
+4. Determine and publish provider status without launching another adapter: ready for `media-control`, degraded fallback for `nowplaying-cli`, or unavailable with an actionable message. Existing low-level detection exports may be reused; if `system-media.ts` needs a new seam, keep it additive.
+5. Supply a first-class fake provider layer whose calls/events can be controlled with `Queue`, `Deferred`, `Ref`, or `Latch`, and whose creation/subscription/disposal counts are observable.
+
+### 4. Build the authoritative coordinator
+
+Implement `session/coordinator.ts` as the sole owner of latest state and command order.
+
+1. Hold latest provider status and latest snapshot in replayable `SubscriptionRef`s. Every accepted state gets the daemon instance ID and the next monotonic revision.
+2. Complete one initial sample before declaring the server ready. On a recoverable initial failure, retain an idle normalized state and degraded/unavailable status rather than preventing the daemon from listening.
+3. Consume provider events in a scoped fiber. Project complete stream snapshots immediately and directly; on invalidation, enqueue one recovery trigger.
+4. Feed initial, invalidation, poll, and reconciliation triggers into one coalescing sample lane. While one sample is active, retain at most one pending rerun. Record both the sample-request generation and the authoritative revision before calling `player()`; discard the result if a newer trigger, stream snapshot, or successful command gained authority.
+5. For an accepted sampled state, use `mergePlayer(previous, sampled)` to preserve the existing same-track metadata/progress behavior. Stream snapshots remain authoritative and are not merged with stale state.
+6. Run exactly one dynamic fallback schedule in the coordinator: 3 seconds while playing, 5 seconds while paused with a track, and 8 seconds while idle. A newly accepted stream/command/sample state resets the applicable deadline. Use Effect `Schedule`/`TestClock`, not host timers or real sleeps in tests.
+7. Use one bounded Effect `Queue` for commands from all clients. Queue offer order is execution order. A failed command emits its correlated failure and the worker proceeds to the next item; overflow returns `SERVER_BUSY`.
+8. Resolve `toggle` only when its queue item reaches the worker, against the coordinator's then-current authoritative state. Two rapid toggles must therefore invoke opposite provider actions.
+9. After successful play/pause, immediately project play state and a fresh `fetched_at`. After successful seek, clamp/project progress against the current track duration. Next/previous do not invent a track.
+10. Trigger delayed reconciliation after success: 120 ms for play/pause/seek and 150 ms for next/previous. Trigger immediate reconciliation after an expected provider command failure. All reconciliation uses the same coalesced sample lane.
+11. Increment the authority guard only after a provider command succeeds; failed commands must not corrupt the playback clock/state. Settle every queued command exactly once during normal completion, failure, or scope shutdown.
+12. Fork provider consumption, poll work, sample work, and the command worker into the owning scope. Layer acquisition must finish; no forever loop may run inline during acquisition.
+
+### 5. Implement the server
+
+1. In `session/server.ts`, acquire the coordinator first, wait for initial state readiness, and then bind a `node:net` Unix server to the explicitly supplied socket.
+2. Treat socket bind as the only ownership action in this phase. If the path already exists, fail clearly; do not unlink, probe, kill, or recover it. On normal scoped shutdown, remove only the socket successfully bound by this server.
+3. Require hello before all other requests. Keep per-connection negotiated capabilities, highest request ID, and pending response fibers.
+4. Replay provider status and latest state immediately after hello, and stream later `SubscriptionRef` changes to each compatible client.
+5. Route all transport requests to the one coordinator queue and return responses on the originating connection. One client disconnect must settle only that client's pending responses as connection-lost/indeterminate; it must not cancel a command already executing for another client or stop the coordinator.
+6. On malformed/oversized input, close only the offending connection and release all of its scoped fibers/listeners. Keep the listener available to a healthy client.
+7. Server shutdown must stop accepting, close clients, interrupt subscriptions/workers, dispose the provider subscription once, and unlink its own socket.
+
+### 6. Implement the explicit client
+
+1. In `session/client.ts`, open only the supplied socket and perform the hello handshake before resolving creation.
+2. Validate every server frame through the response/event schemas. Verify daemon instance ID and accept only increasing snapshot revisions; ignore stale revisions.
+3. Cache negotiated status and latest state. Replay caches to late local subscribers.
+4. Allocate increasing request IDs and maintain pending callers by ID. Do not replay a command after any socket failure. If the connection closes before its response, reject that caller with the typed indeterminate/connection-lost error.
+5. Keep writes serialized, correlate out-of-order responses safely, and reject protocol violations without leaking pending Promises.
+6. Make disposal idempotent and immediately stop new requests; close the socket, interrupt the reader, remove subscriptions, and settle all pending callers once.
+
+### 7. Add the foreground daemon entrypoint
+
+1. In `session/music-sessiond.ts`, support `--socket <absolute-path>` and `--help`. A missing/relative socket argument is a startup error in this phase.
+2. Assemble production config, provider, coordinator, framing, and server layers and run them in one Effect scope.
+3. Handle `SIGINT` and `SIGTERM` by closing the scope once, waiting for cleanup, and exiting without an unhandled rejection.
+4. Emit concise foreground startup/provider/shutdown diagnostics without logging state payloads. Detached launch behavior and idle shutdown are Phase 2.
+
+### 8. Add deterministic tests
+
+Use Bun's test runner around scoped Effect programs. Use fake layers, `TestClock`, `Deferred`, `Queue`, `Ref`, and explicit readiness signals; do not use arbitrary sleeps.
+
+- `session-protocol.test.ts`: valid v1.0 round trips; same-major capability intersection; incompatible major; malformed/unknown action; seek bounds; stable response/error shapes; strictly increasing request IDs; split/multiple/oversized/incomplete frames.
+- `session-coordinator.test.ts`: one provider/subscription; initial replay; direct stream projection; 3/5/8 poll selection; 1/2/4/8 low-level restart regression remains green; coalesced invalidation/poll sampling; stale sample rejection after a newer snapshot and after a command; FIFO across client identities; queue continues after failure; two toggles alternate; optimistic play/pause/seek; reconciliation delays; exact-once finalization.
+- `session-server.test.ts`: use a temporary Unix socket with the fake provider; connect two compatible clients; both receive the same initial replay and later broadcast; interleave commands and observe one FIFO; correlate each result; prove malformed/oversized input on a third socket does not affect the healthy pair; verify socket cleanup.
+- `session-client.test.ts`: cache replay to late subscribers; stale revision rejection; out-of-order response correlation; typed incompatible-major failure; disconnect rejects pending commands without replay; listener isolation; repeated disposal settles and releases once.
+- Keep all existing `music-core` tests unchanged and green, especially the provider decoder/stream/clock tests.
+
+## Acceptance checks
+
+- The built foreground daemon uses Node-compatible output and requires an explicit socket path.
+- One server acquisition creates one provider and at most one provider subscription.
+- Two compatible clients negotiate baseline capabilities, receive provider status and the same latest snapshot immediately, receive later broadcasts, and get correctly correlated command results.
+- Commands offered by both clients execute in one observed FIFO. A provider failure does not strand the queue.
+- Two rapid `toggle` requests observe successive authoritative state and invoke opposite actions.
+- Initial, invalidation, poll, and reconciliation sampling is single-flight/coalesced. A sample begun before a newer stream snapshot or successful command cannot overwrite it.
+- Polling remains 3/5/8 seconds by playback state, and existing provider stream restart tests retain the capped 1/2/4/8-second sequence.
+- Invalid schemas, seeks, actions, duplicate IDs, malformed JSON, incomplete lines, and oversized frames produce the defined rejection/connection behavior without crashing the daemon or disturbing another client.
+- Client/server shutdown releases sockets, subscriptions, schedules, fibers, queued work, and pending callers exactly once.
+- Existing low-level public exports and tests remain compatible.
+- The dry-run tarball contains `dist/music-sessiond.js`, the bin mapping, and required `session/` runtime source, but excludes tests/scripts and leaves no tracked generated output.
+
+## Verify commands
+
+Run from the repository root:
+
+```sh
+bunx nx run music-core:build
+bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+bun test packages/music-core/tests/session-*.test.ts
+npm pack packages/music-core --dry-run
+```
+
+After verification, confirm `git status --short` contains no generated `dist/`, `.tgz`, socket, or log artifact and that the pre-existing `docs/music-session-architecture.html` remains present and unchanged by this phase.
+
+## Dependencies
+
+- Existing `music-core` `PlayerState`, `createSystemMedia()`, independent playback clock, `mergePlayer()`, command runner, and stream tests.
+- Workspace-pinned `effect@4.0.0-beta.101`.
+- Node 22.19+ APIs for the shipped daemon and Unix-domain sockets.
+
+## Non-goals
+
+- Automatic daemon launch or a default per-user socket path.
+- Concurrent-start singleton selection, startup markers, stale artifact recovery, ownership/mode/symlink hardening, idle shutdown, or reconnect supervision.
+- The 24-client/slow-reader/load proof and final production queue/write-buffer limits.
+- Migrating OpenCode or Pi, or changing their current timers, controls, rendering, artwork, waveform, or lifecycle code.
+- Native artwork requests or moving iTunes/Kitty work.
+- Documentation updates, including the intentional HTML architecture document.
+- Publishing, versioning, committing, pushing, opening a PR, or editing `.apnea/state.json`.

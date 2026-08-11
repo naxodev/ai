@@ -388,6 +388,90 @@ function isDataEnvelope(
   )
 }
 
+/** One raw `media-control stream` attempt. It deliberately owns no retry timer. */
+export type SystemMediaAttemptAdapter = MusicBackend & {
+  subscribeAttempt?: (listener: MusicChangeListener) => MusicChangeDisposer
+}
+
+function subscribeMediaControlAttempt(
+  listener: MusicChangeListener,
+  deps: ResolvedSystemMediaDependencies,
+  clock: PlaybackClock,
+): MusicChangeDisposer {
+  let disposed = false
+  let terminal = false
+  let source: MusicChangeDisposer | undefined
+  let sourceDisposed = false
+  let terminalDisposalFailure: unknown
+  const disposeSource = () => {
+    if (sourceDisposed || !source) return
+    sourceDisposed = true
+    source()
+  }
+  const stop = () => {
+    if (!disposed) {
+      disposed = true
+      disposeSource()
+      return
+    }
+    // A terminal must not suppress its invalidation merely because the raw
+    // process disposer threw. Surface that one recorded failure to the Effect
+    // owner when it performs scoped cleanup.
+    if (terminalDisposalFailure !== undefined) {
+      const failure = terminalDisposalFailure
+      terminalDisposalFailure = undefined
+      throw failure
+    }
+  }
+  source = deps.startLineStream(
+    ["media-control", "stream", "--no-diff", "--no-artwork"],
+    {
+      onLine(line) {
+        if (disposed) return
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(line)
+        } catch {
+          return
+        }
+        if (
+          !isDataEnvelope(parsed) ||
+          !isAuthoritativeMediaPayload(parsed.payload)
+        )
+          return
+        listener({
+          type: "snapshot",
+          state: decodeMediaControlSample(parsed.payload, clock, deps.now()),
+        })
+      },
+      onTerminal() {
+        if (disposed || terminal) return
+        terminal = true
+        // Terminal owns the sole source disposal. Marking the attempt disposed
+        // also suppresses every late line callback and makes scope cleanup a no-op.
+        disposed = true
+        try {
+          disposeSource()
+        } catch (cause) {
+          terminalDisposalFailure = cause
+        }
+        // Notify before surfacing a disposal failure through the returned
+        // disposer: provider supervision must never be stranded waiting for
+        // this terminal transition.
+        listener({ type: "invalidation", reason: "stream-terminated" })
+      },
+    },
+  )
+  if (disposed) {
+    try {
+      disposeSource()
+    } catch (cause) {
+      terminalDisposalFailure ??= cause
+    }
+  }
+  return stop
+}
+
 function subscribeToMediaControl(
   listener: MusicChangeListener,
   deps: ResolvedSystemMediaDependencies,
@@ -587,8 +671,19 @@ export function createSystemMedia(
   if (kind === "media-control") {
     backend.subscribe = (listener) =>
       subscribeToMediaControl(listener, deps, clock)
+    // The daemon uses this unsupervised seam. It shares this exact backend's
+    // playback clock with polling and transport; legacy hosts keep `subscribe`.
+    ;(backend as SystemMediaAttemptAdapter).subscribeAttempt = (listener) =>
+      subscribeMediaControlAttempt(listener, deps, clock)
   }
   return backend
+}
+
+/** Creates one adapter whose sampling, transports and raw stream share a clock. */
+export function createSystemMediaAdapter(
+  overrides: Partial<SystemMediaDependencies> = {},
+): SystemMediaAttemptAdapter {
+  return createSystemMedia(overrides) as SystemMediaAttemptAdapter
 }
 
 export function hasMediaControl(): boolean {

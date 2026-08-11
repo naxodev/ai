@@ -1,0 +1,34 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package remains aligned with approved Phase 1. This rework stays in scope and fixes one-attempt terminal disposal, but the phase's defining runtime and verification requirements remain incomplete.
+
+## Findings
+
+### Critical — Provider restart supervision is still absent
+
+`session/provider.ts:61-75` still opens one `subscribeAttempt` callback stream and contains no retry `Schedule` or reacquisition loop. Terminal notification queues an invalidation but leaves that callback stream open, so the production daemon never starts another media-control stream. The required 1/2/4/8/8-second restart, reset after a valid snapshot, and interruption of retry sleep are not implemented.
+
+### Critical — Accepted sockets still do not own per-connection scopes
+
+Natural close now completes the outer `connection` effect, but both accepted connections and frame batches are still launched with `Effect.runFork(Scope.provide(sharedServerScope)(...))` at `server.ts:252-259` and `:282-289`. Their `acquireRelease` and `forkScoped` operations therefore register against the shared server scope, not a connection-local scope. Completing the outer effect does not close that shared scope, so socket listeners and status/state forwarding fibers remain registered until whole-server shutdown; an in-flight frame fiber is also still an untracked root fiber. The `accepted` queue is never consumed and is immediately shut down, so it does not supervise accept work.
+
+### High — Poll versioning invalidates but does not reset a deadline
+
+`coordinator.ts:277-286` records a version, sleeps for the old state's full delay, and merely skips the sample if the version changed. It then waits the extra repeat schedule before choosing a new delay. For example, an initial idle deadline can remain asleep for eight seconds after initialization accepts playing state, after which a new three-second deadline begins; the first playing poll can occur around eleven seconds rather than three. An authoritative update must interrupt/replace the existing deadline, not only suppress its eventual sample.
+
+### High — Interruption and defects are still classified as provider failures
+
+Sampling and transport continue to use `Effect.exit` (`coordinator.ts:141-146` and `:209-221`) and treat every failure cause as an ordinary provider failure. Interruption or a defect during blocked work can therefore degrade status or settle a command as `PROVIDER_FAILURE` instead of remaining interruption/defect and allowing shutdown finalization to settle the caller as disposed.
+
+### High — The verification transcript still lacks required evidence
+
+None of the tasked tests imports or uses `TestClock`, and this rework changed no tests. The passing 33-test transcript does not prove provider retry/reset, resettable 3/5/8 polling, reconciliation timing, stale/coalesced sampling, queue saturation/failure continuation, blocked-work interruption, or exact-once connection/provider cleanup. The coder result explicitly acknowledges that provider retry and deterministic TestClock coverage remain incomplete.
+
+### Medium — Stable command failure codes remain lost at the socket boundary
+
+`server.ts:240-249` still maps every failed coordinator submission to `PROVIDER_FAILURE`, discarding tagged `SERVER_BUSY` and `DISPOSED` codes that the phase requires the unchanged protocol boundary to preserve.

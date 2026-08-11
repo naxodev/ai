@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package remains aligned with approved Phase 1. The FiberSet connection ownership and legacy-provider finalization rework stay in scope and address the corresponding round-2 findings, but timing, authority, configuration, and verification requirements remain incomplete.
+
+## Findings
+
+### High — Provider retry backoff still does not reset after success
+
+`provider.ts:72-98` repeats attempts with one continuously advancing exponential `Schedule`. Snapshot events are only offered to the event queue and do not reset schedule state. Once backoff reaches eight seconds, a valid snapshot followed by a later terminal still waits eight seconds instead of restarting at one second.
+
+### High — Poll updates still do not replace the active deadline
+
+`coordinator.ts:279-288` sleeps for the full delay selected from old state and merely suppresses the sample when `pollVersion` changes. It does not interrupt and restart the sleep. An initial eight-second idle deadline can remain alive after playing state is accepted, then start a new three-second deadline, delaying the first playing poll to roughly eleven seconds.
+
+### High — Successful navigation does not invalidate an older sample
+
+The command worker increments authority only through `accept`, which is called for successful play/pause/seek (`coordinator.ts:230-251`) but not for next/previous. A sample begun before a successful navigation command can therefore complete afterward with unchanged authority and publish the pre-navigation track. The phase requires every successful command to prevent older samples from regaining authority, even when navigation does not optimistically invent a replacement track.
+
+### High — Required deterministic verification remains absent
+
+No tasked test imports or uses `TestClock`. The coordinator suite still contains one test, and retry/poll/reconciliation timing, retry reset, stale/coalesced sampling, navigation authority, failure continuation/saturation, blocked-work interruption, and connection shutdown are not deterministically covered. The 33-test transcript therefore does not substantiate the phase acceptance checks; the coder result explicitly acknowledges the missing retry reset, poll replacement, and TestClock matrix.
+
+### Medium — Config-backed acquisition still bypasses shared typed validation
+
+`config.ts:128-190` constructs runtime options separately instead of passing them through the same `resolve` validation used by explicit options. An empty configured socket path is accepted, while missing Config values fail with Effect's generic config error rather than `MusicSessionConfigError`. Both layer constructors are required to share validation and expose typed invalid-setting failures.

@@ -1,0 +1,34 @@
+---
+status: done
+---
+
+## Changed
+
+- Kept recovered source startup/disposal `ProviderError`s visible to production Effect diagnostics while allowing the event supervisor to continue; focused tests retain a deterministic observer seam.
+- Factored both production and test Layers through one typed adapter-factory boundary, including injectable probe and lifecycle seams for deterministic error coverage.
+- Added focused evidence for tagged status/probe, sample, unsupported transport, transport rejection, adapter acquisition, active-source Layer shutdown, and exact-once finalization.
+
+Files touched:
+- `packages/music-core/session/provider.ts`
+- `packages/music-core/tests/system-media.test.ts`
+- `packages/music-core/system-media.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/system-media.test.ts
+exit 0 — 41 pass, 0 fail
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0 — typecheck, 122 tests, format:check, and package:check passed
+
+$ ! rg -n "Effect\.runSync|Effect\.runPromise|setTimeout\(|setInterval\(" packages/music-core/session/provider.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — preserved accumulated migration/docs changes; Phase 1 changes remain confined to the approved provider/system-media/focused-test paths.
+```
+
+## Residual risks
+
+- Coordinator and server responsibilities remain intentionally deferred to their dedicated later phase packages.

@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package remains aligned with approved Phase 1. This rework stays in scope and addresses the previously identified coordinator races, but required runtime semantics and verification remain incomplete.
+
+## Findings
+
+### High — Optimistic commands can overwrite a newer provider snapshot with stale state
+
+After transport succeeds, the worker reads `stateRef` and constructs the entire projected state outside the atomic update (`coordinator.ts:328-349`). If the provider event fiber accepts a complete snapshot after that read but before the command calls `accept`, the command unconditionally replaces it with the older captured state plus only the play/pause/seek field. This can roll back track, progress, or metadata from a newer authoritative snapshot. The optimistic projection must transform the current state inside the same atomic `SubscriptionRef` transition rather than publish a previously captured object.
+
+### High — Sliding the mixed provider event buffer does not preserve terminal invalidations
+
+Changing the callback buffer to `strategy: "sliding"` (`provider.ts:105-142`) preserves only the latest 128 mixed events. A terminal invalidation can still be evicted by snapshots from a restarted attempt while the coordinator is slow or blocked. Conversely, a burst ending in an invalidation retains no guarantee that the latest complete snapshot is delivered. The package requires every terminal to emit one immediate invalidation while complete snapshots remain authoritative; those signals need explicit bounded coalescing/prioritization rather than one lossy mixed queue.
+
+### High — Adapter acquisition failures still bypass the tagged provider boundary
+
+`provider.ts:119-132` acquires `backend.subscribeAttempt` with `Effect.sync`. A synchronous source/startup exception therefore becomes a defect, not the required `ProviderError` with a source operation. The coordinator's typed `Effect.catch` does not recover that defect, so its provider-event worker can die permanently instead of degrading/recovering through the daemon-owned retry path. External source acquisition failures must be mapped once at this adapter boundary while genuine interruption remains separate.
+
+### High — Socket cleanup failures are still silently discarded
+
+The server finalizer maps both `server.close` and non-`ENOENT` unlink failures to `undefined` and then ignores them (`server.ts:293-310`). This directly contradicts the package requirement to map close/unlink failures through `MusicSessionSocketError` without skipping remaining cleanup. A failed unlink can leave a stale socket while shutdown reports success.
+
+### High — Required deterministic acceptance evidence is still missing
+
+No tests were added for the newly introduced sampling-gate, revisioned-deadline, or lifecycle-enrollment races; the claimed focused count remains 53. The fake is still the Promise/callback `LegacySessionProvider`, not the required Effect-native test Layer. The suite also lacks direct navigation-delay, optimistic play/pause/seek, blocked reconciliation/late transport, and instrumented exact-once connection-forwarder cases. Passing the existing suite therefore does not substantiate Phase 1's explicit acceptance matrix.

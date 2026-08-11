@@ -1,0 +1,32 @@
+---
+status: done
+---
+
+## Changed
+
+- Successful `next` and `previous` commands now advance coordinator authority and replace the poll deadline, preventing pre-navigation samples from publishing after successful navigation.
+
+Files touched: `packages/music-core/session/coordinator.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 33 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, socket, marker, or log output is listed
+```
+
+## Residual risks
+
+The required deterministic `TestClock` matrix remains absent for retry reset, polling/reconciliation, stale/coalesced samples, saturation, blocked-work shutdown, and connection finalization. The scoped `FiberSet` accepted-socket lane also needs explicit lifecycle coverage.

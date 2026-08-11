@@ -1,0 +1,34 @@
+---
+status: done
+---
+
+## Changed
+
+- Replaced per-frame detached root fibers with a connection-owned Effect queue worker, so frame parsing and command handling are serialized in the connection scope.
+- Preserved tagged coordinator command codes at the socket boundary instead of converting all command failures to `PROVIDER_FAILURE`.
+- Replaced coordinator `Effect.exit`-based sample and transport classification with typed `Effect.match` handling. Typed provider failures continue to degrade/recover the lane; interruption and defects are no longer converted to ordinary provider failures.
+
+Files touched: `packages/music-core/session/coordinator.ts`, `packages/music-core/session/server.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 33 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, socket, marker, or log output is listed
+```
+
+## Residual risks
+
+The outer Node accept callback still needs a fully working consumed accept-queue design with per-connection ownership; the attempted queue consumer did not preserve the current socket test behavior and was not retained. Poll deadlines are invalidated but not immediately interrupted/reset, and the required TestClock matrix remains absent. Provider restart timing/reset coverage also remains incomplete.

@@ -1,0 +1,33 @@
+---
+status: done
+---
+
+## Changed
+
+- Added scoped Effect retry supervision for production `subscribeAttempt` acquisitions. Each terminal invalidation completes one attempt, releases it, and starts the next under exponential 1/2/4/8-second-capped scheduling.
+- The callback remains a queue-only bridge; retry ownership is now in the scoped Effect worker rather than `system-media.ts` or a detached Promise/timer.
+
+Files touched: `packages/music-core/session/provider.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 33 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, socket, marker, or log output is listed
+```
+
+## Residual risks
+
+Snapshot-driven retry-reset semantics and deterministic `TestClock` coverage are still incomplete. The accepted-socket bridge remains captured-scope `runFork` rather than a consumed accept queue, and interruption/defect classification plus stable command-error mapping still need the broader test-backed work required by the package.

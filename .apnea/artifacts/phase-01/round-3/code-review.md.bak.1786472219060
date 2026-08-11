@@ -1,0 +1,36 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package remains aligned with approved Phase 1. Round 3 made no source or test changes. Its coder result characterizes the prior review as targeting the abandoned imperative implementation, but the prior findings cite the current Effect files and remain directly observable in the current worktree.
+
+## Findings
+
+### Critical — The daemon still has no provider restart supervision
+
+`session/provider.ts:61-75` starts one `subscribeAttempt` callback stream and has no retry `Schedule` or attempt-reacquisition loop. Terminal notification only queues an invalidation while the callback stream remains open, so the production daemon never starts a second media-control stream after the first terminates.
+
+Exact-once attempt cleanup is also still broken: `system-media.ts:430-439` invokes the source disposer on terminal without marking the attempt disposed. Finalization can invoke it again, and late line callbacks can publish after terminal.
+
+### Critical — Socket connections are still detached rather than supervised
+
+`server.ts:252-259` and `:278-286` launch work with `Effect.runFork` from Node callbacks. Injecting a captured `Scope` into a root fiber does not make that fiber a scoped child. Connection effects then remain at `Effect.never`; natural socket closure does not close a per-connection scope or interrupt its status/state forwarding fibers. The `accepted` queue is unused and immediately shut down, so it does not provide the package-required accept worker.
+
+### High — The polling policy remains incorrect
+
+`coordinator.ts:272-281` captures one state-derived delay, sleeps, samples, and repeats with `Schedule.spaced("1 millis")`. The poll worker starts before initial sampling and can therefore retain an idle eight-second deadline after a playing snapshot is accepted. Subsequent snapshots and command projections cannot replace an existing deadline either, contrary to the required resettable 3/5/8-second behavior.
+
+### High — Interruption and defects remain converted to provider failures
+
+The sample and transport paths still apply `Effect.exit` (`coordinator.ts:138-143` and `:206-218`) and classify every failed cause as a provider failure. Interruption or defects during blocked work can consequently degrade provider status or settle commands as `PROVIDER_FAILURE` instead of preserving interruption/defect and allowing scope shutdown to settle work as disposed.
+
+### High — Required deterministic evidence is still missing
+
+None of the tasked tests uses `TestClock`. The coordinator suite still has one test, the server suite has three basic tests, and the system-media suite does not test the new one-attempt seam or daemon-owned retry timing. The passing 33-test transcript does not prove retry/reset, 3/5/8 polling, reconciliation, stale/coalesced sampling, saturation/failure continuation, blocked-work interruption, or exact-once cleanup. The coder result itself acknowledges the missing TestClock matrix and accept worker.
+
+### Medium — Socket responses still discard stable command error codes
+
+`server.ts:240-249` maps all failed coordinator submissions to `PROVIDER_FAILURE`, so tagged `SERVER_BUSY` and `DISPOSED` outcomes do not preserve the existing protocol boundary behavior required by this phase.

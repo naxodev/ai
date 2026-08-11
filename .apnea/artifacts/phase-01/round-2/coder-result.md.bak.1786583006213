@@ -1,0 +1,34 @@
+---
+status: done
+---
+
+## Changed
+
+- Verified and preserved the guarded poll-acceptance path: only an actual `accept(...)` marks a sample authoritative; failed, null, and stale samples cause the poll worker to replace its deadline.
+- Extended the fake provider with deterministic null-sample control and expanded the `TestClock` test to prove null idle polls continue scheduling after failure paths.
+- Extended the pre-hello server-close test to assert scoped subscription and provider finalizers run exactly once, in addition to idempotent close/socket removal.
+
+Files touched: `packages/music-core/session/coordinator.ts`, `packages/music-core/session/provider.ts`, `packages/music-core/tests/session-coordinator.test.ts`, `packages/music-core/tests/session-server.test.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 46 pass, 0 fail, 132 expectations
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0 — no matches
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed (music-core: 108; Pi: 28; OpenCode: 149)
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, runtime socket, marker, or log output is listed.
+```
+
+## Residual risks
+
+Direct `TestClock` coverage of the daemon provider's 1/2/4/8 retry/reset sequence and retry-wait interruption is still absent. Scope-close coverage proves blocked transport/caller settlement and pre-hello connection/provider finalization, but blocked sample/retry and post-hello forwarding-fiber interruption still need dedicated tests.

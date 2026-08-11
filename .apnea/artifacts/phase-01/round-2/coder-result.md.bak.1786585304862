@@ -1,0 +1,36 @@
+---
+status: done
+---
+
+## Changed
+
+- Made state revision the atomic authority token. Sample validation and publication now occur in one `SubscriptionRef.modify` transition; navigation advances the same token atomically.
+- Transferred sampling-lane ownership directly into its coalesced follow-up, so the lane is never idle between completion and that pass.
+- Changed the daemon event bridge to a scoped `Stream.callback` with bounded/drop buffers; attempt terminals and snapshot reset signals are bounded.
+- Drained every snapshot token at each retry boundary, preventing extra snapshots from resetting later failed attempts.
+- Added deterministic daemon-stream `TestClock` retry coverage and multi-snapshot reset coverage; retained active-attempt/retry-wait interruption coverage.
+
+Files touched: `packages/music-core/session/coordinator.ts`, `packages/music-core/session/provider.ts`, `packages/music-core/tests/session-coordinator.test.ts`, `packages/music-core/tests/system-media.test.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 53 pass, 0 fail, 159 expectations
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed (115 tests)
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0 — no matches
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed (music-core 115; Pi 28; OpenCode 149)
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, runtime socket, marker, or log output is listed.
+```
+
+## Residual risks
+
+The compatibility fake remains a Promise/callback fixture for the outer explicit-socket adapter; it is scoped by `layerFromLegacy`, but it has not yet been replaced by a fully Effect-native test service. Existing tests cover blocked sample/transport and source-attempt interruption, but not an instrumented per-forwarder connection finalizer identity.

@@ -1,0 +1,35 @@
+---
+status: done
+---
+
+## Changed
+
+- Corrected poll acceptance accounting: only a sample that actually passes generation/authority/null guards reports acceptance. Failed, null, and stale poll samples now reinstall the applicable deadline.
+- Added a fake-provider null-sample control and deterministic `TestClock` coverage proving both failed and null idle polls continue at eight seconds.
+- Added a lifecycle test that closes a manually owned daemon scope during blocked transport, verifies the caller receives `DISPOSED`, and verifies provider finalization is exact-once.
+- Retained the provider retry reset at the schedule boundary, where queued snapshots are drained before backoff state is read.
+
+Files touched: `packages/music-core/session/coordinator.ts`, `packages/music-core/session/provider.ts`, `packages/music-core/tests/session-coordinator.test.ts`.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 46 pass, 0 fail, 128 expectations
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all music-core targets passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0 — no matches
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
+exit 0 — all targets passed (music-core: 108; Pi: 28; OpenCode: 149)
+
+$ git status --short
+exit 0 — pre-existing daemon work and docs/music-session-architecture.html remain; no generated dist, tarball, runtime socket, marker, or log output is listed.
+```
+
+## Residual risks
+
+The daemon-provider 1/2/4/8 retry/reset sequence still needs direct injectable-adapter `TestClock` coverage. Shutdown coverage now proves blocked transport/caller settlement and provider finalization; blocked sampling/retry and active connection-forwarding fibers remain to be covered separately.

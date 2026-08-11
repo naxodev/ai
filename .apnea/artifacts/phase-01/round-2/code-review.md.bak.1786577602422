@@ -1,0 +1,22 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package remains aligned with approved Phase 1. This rework stays in scope and fixes failed-poll rescheduling plus retry-reset serialization, but a polling bug and required lifecycle/timing evidence remain.
+
+## Findings
+
+### High — A null poll result still stops fallback polling permanently
+
+`sample` is documented by its new boolean result as distinguishing authoritative acceptance from failed, null, and stale results. However, in `coordinator.ts:145-159`, the success branch sets `accepted = true` unconditionally after the guarded `sampled.value` check. When `provider.sample()` returns `null`, no `accept` call installs a new deadline, but the poll worker sees `true` and also skips `restartPoll` (`coordinator.ts:304-309`). One null result therefore still permanently stops fallback polling. Set the result true only when `accept` actually ran, and cover null/stale poll outcomes.
+
+### High — The daemon retry schedule still lacks its required deterministic proof
+
+The reset race is structurally improved, but no test drives `eventsFromAttemptAdapter` under `TestClock` to prove the daemon-owned 1/2/4/8/8-second sequence, reset to one second after a snapshot, interruption during retry wait, and exact-once active-attempt disposal. Legacy raw-timer tests do not verify this separate Effect schedule. The coder result explicitly identifies this remaining gap.
+
+### High — Scope-close and connection lifecycle acceptance remains unverified
+
+There is still no dedicated evidence that scope closure during blocked sample, blocked transport, reconciliation, or retry sleep settles all callers once and suppresses late completion. Server tests only show socket destruction/idempotent close; they do not prove that active/pre-hello `FiberSet` connection scopes and state/status forwarding fibers are interrupted and finalized exactly once. These are explicit Phase 1 acceptance checks, not optional hardening.

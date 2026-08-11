@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 1, and the rework stays within the claimed provider/system-media/test paths. The terminal-disposal ordering and integrated Schedule retry findings from round 1 are addressed.
+
+## Findings
+
+### High — Recovered provider failures are observable only through a test hook
+
+`provider.ts:108-110` explicitly defines `ProviderEventHooks` as test-only, and production `serviceFromAdapter` calls `eventsFromAttemptAdapter(backend)` without a reporter (`provider.ts:303`). Startup and disposal `ProviderError`s are then caught at `provider.ts:220-224` and `:238-247`; with the default hook they disappear after becoming a generic invalidation. The stream's declared `ProviderError` channel never carries them, and no production diagnostic/status boundary receives their operation or cause. This does not satisfy the package requirement to retain tagged source startup/disposal failures while continuing supervision. The tests prove only that an optional test callback sees the errors.
+
+### High — The required provider operation and scoped-source acceptance evidence is still missing
+
+The new Layer test (`system-media.test.ts:416-437`) verifies two synthetic lifecycle hooks and one successful pause, but it never consumes `provider.events`, so it does not prove that an active source is finalized through provider Layer shutdown. The focused suite still has no assertions for tagged status/probe failure, sample rejection, unsupported transport, transport rejection, adapter acquisition failure, or their preserved causes. `layerFromAttemptAdapter` also receives an already-created adapter, so its success-only hook test does not exercise production adapter creation failure. These cases are explicit Phase 1 acceptance checks; the reported 40 focused passes and green package gate therefore remain insufficient for approval.

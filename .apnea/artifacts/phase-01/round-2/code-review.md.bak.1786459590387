@@ -1,0 +1,22 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The round-1 phase package remains aligned with approved Phase 1, and this rework stays within its file scope.
+
+## Findings
+
+### Critical — The daemon still has no Effect-owned runtime or scope
+
+The new `Queue` and `SubscriptionRef` values are created and mutated through isolated `Effect.runSync` calls inside the existing mutable Promise/class coordinator. They do not own execution or replay: callback sets remain the subscriber source, provider and socket adapters remain raw callbacks/Promises, command work remains an async method, and polling/reconciliation remain raw `setTimeout` handles. There are still no named provider/socket services and layers, scoped fibers/streams, `Schedule`, `TestClock`, or daemon-level Effect scope. The active provider Promise is explicitly treated as uncancellable rather than being interrupted by scope shutdown. This remains a fundamental miss against the phase intent and exact implementation requirements.
+
+### High — Protocol decoding still ignores schema outputs and casts parsed values
+
+Although more schemas now exist, `decodeRequest` calls the schemas only as validation side effects, then reconstructs requests from the original unknown record using `as HostKind`, `as TransportAction`, and `as number`. Internal failures are still plain objects/`Error` strings, and `server.ts` determines `SERVER_BUSY`/`DISPOSED` by parsing message prefixes rather than mapping schema-tagged Effect errors once at the boundary. This does not satisfy “do not cast parsed JSON” or the required tagged-error model.
+
+### High — Phase 1 acceptance remains largely untested
+
+The session suite now has nine tests, but still lacks required coverage for late-subscriber status/state replay, incompatible hello and capability negotiation, duplicate/out-of-order response handling, malformed/oversized third-client isolation, stale sample rejection, coalesced sampling, 3/5/8 scheduling under `TestClock`, queue overflow and continuation after provider failure, optimistic seek, reconciliation timing, disconnect/indeterminate commands, listener isolation, and exact-once scoped finalization. The Effect queue/ref changes and terminal client behavior have no direct regression tests. The coder result also continues to substitute `npm pack ./packages/music-core --dry-run` for the exact verify command, which has not passed as written.

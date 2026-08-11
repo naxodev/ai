@@ -1,0 +1,24 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The phase package remains aligned with approved Phase 1. The rework stays in scope and addresses config validation, retry reset, and deadline replacement, but the coordinator behavior and required deterministic evidence are still incomplete.
+
+## Findings
+
+### Critical — Replacing a poll can permanently strand the sampling lane
+
+The fiber stored in `pollFiber` owns both the deadline and the subsequent `sample("poll")` call (`coordinator.ts:172-189`). Every accepted state calls `restartPoll`, which interrupts that stored fiber. If a poll sample itself is accepted, `accept` attempts to interrupt the currently executing poll fiber from inside that fiber. Likewise, a stream snapshot arriving while a poll sample is blocked interrupts the fiber during `sample`.
+
+`sample` has no ensuring/finalizer that clears its `active` flag on interruption (`coordinator.ts:127-170`). The lane can therefore remain `{ active: true }` with no running sample; every future trigger only marks it pending and returns. Deadline replacement must interrupt only the waiting deadline, or sampling cleanup must be interruption-safe.
+
+### High — Successful navigation still does not invalidate older samples
+
+The command worker increments authority only through `accept`, which runs for successful play/pause/seek (`coordinator.ts:255-275`) but not next/previous. A sample started before successful navigation can consequently complete afterward with unchanged authority and publish the old track. Every successful command must advance the stale-sample guard even when navigation does not optimistically invent state.
+
+### High — Required deterministic verification is still absent
+
+No tasked test imports or uses `TestClock`. The coordinator suite still has one test, and no deterministic coverage proves retry delays/reset, repeatable 3/5/8 polling, reconciliation timing, stale/coalesced sampling, navigation authority, failure continuation/saturation, blocked-work interruption, or FiberSet connection shutdown. The fake provider also still lacks the package-required blocking/failure controls. The 33 passing tests therefore do not substantiate Phase 1 acceptance; the coder result explicitly acknowledges this residual gap.
