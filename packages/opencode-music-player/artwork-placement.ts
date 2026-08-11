@@ -125,6 +125,9 @@ export function planNativeArtworkPlacement(
     const actions: NativeArtworkPlacementAction[] = []
     if (state.transmitted !== 0) {
       actions.push({ type: "delete-image", imageId: state.transmitted })
+    } else {
+      // A remount loses local state, but the terminal may still hold this ID.
+      actions.push({ type: "delete-image", imageId })
     }
     actions.push({
       type: "transmit-and-display",

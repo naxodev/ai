@@ -3,7 +3,10 @@ import {
   downloadCatalogImage,
   imageDimensionsAreSafe,
   readLimitedResponse,
+  resolveArtworkDetails,
   runCommandWithTimeout,
+  selectCatalogResolution,
+  selectCatalogTrack,
   selectArtworkUrl,
 } from "../artwork.ts"
 
@@ -77,7 +80,7 @@ describe("artwork catalog matching", () => {
     ).toBeNull()
   })
 
-  test("fails closed when album or duration is unavailable", () => {
+  test("uses exact title and artist when richer metadata is unavailable", () => {
     const result = {
       trackName: "Song",
       artistName: "Artist",
@@ -91,12 +94,81 @@ describe("artwork catalog matching", () => {
         { title: "Song", artist: "Artist", album: "", duration_ms: 180_000 },
         [result],
       ),
-    ).toBeNull()
+    ).toBe("https://example.com/wrong/300x300bb.jpg")
     expect(
       selectArtworkUrl(
         { title: "Song", artist: "Artist", album: "Album", duration_ms: 0 },
         [result],
       ),
+    ).toBe("https://example.com/wrong/300x300bb.jpg")
+    expect(
+      selectCatalogTrack(
+        { title: "Song", artist: "Artist", album: "", duration_ms: 0 },
+        [result],
+      )?.trackTimeMillis,
+    ).toBe(180_000)
+  })
+
+  test("rejects ambiguous and invalid metadata-limited durations", () => {
+    const candidate = (duration: number, suffix: string) => ({
+      trackName: "Song",
+      artistName: "Artist",
+      collectionName: suffix,
+      trackTimeMillis: duration,
+      artworkUrl100: `https://example.com/${suffix}/100x100bb.jpg`,
+    })
+    const sparse = {
+      title: "Song",
+      artist: "Artist",
+      album: "",
+      duration_ms: 0,
+    }
+
+    expect(
+      selectCatalogTrack(sparse, [
+        candidate(180_000, "original"),
+        candidate(240_000, "other"),
+      ]),
+    ).toBeNull()
+    expect(
+      selectArtworkUrl(sparse, [
+        candidate(180_000, "original"),
+        candidate(240_000, "other"),
+      ]),
+    ).toBeNull()
+    expect(
+      selectCatalogResolution(sparse, [
+        candidate(180_000, "original"),
+        {
+          trackName: "Song",
+          artistName: "Artist",
+          collectionName: "other",
+          trackTimeMillis: 240_000,
+        },
+      ]),
+    ).toEqual({
+      artworkUrl: null,
+      duration_ms: 0,
+    })
+    expect(
+      selectArtworkUrl(sparse, [
+        {
+          trackName: "Song",
+          artistName: "Artist",
+          collectionName: "original",
+          artworkUrl100: "https://example.com/original/100x100bb.jpg",
+        },
+      ]),
+    ).toBe("https://example.com/original/300x300bb.jpg")
+    expect(
+      selectCatalogTrack(sparse, [
+        candidate(180_000, "original"),
+        candidate(180_500, "compilation"),
+      ]),
+    ).toBeNull()
+    expect(selectCatalogTrack(sparse, [candidate(0, "invalid")])).toBeNull()
+    expect(
+      selectCatalogTrack(sparse, [candidate(86_400_001, "invalid")]),
     ).toBeNull()
   })
 
@@ -119,6 +191,75 @@ describe("artwork catalog matching", () => {
 })
 
 describe("artwork download boundaries", () => {
+  const target = {
+    title: "Song",
+    artist: "Artist",
+    album: "Album",
+    duration_ms: 0,
+  }
+
+  test("returns catalog duration when the accepted result has no cover", async () => {
+    const fetcher = async () =>
+      Response.json({
+        results: [
+          {
+            trackName: "Song",
+            artistName: "Artist",
+            collectionName: "Album",
+            trackTimeMillis: 180_000,
+          },
+        ],
+      })
+
+    expect(
+      await resolveArtworkDetails(
+        "cache-id",
+        target,
+        null,
+        "legacy-id",
+        fetcher,
+      ),
+    ).toEqual({
+      artwork: null,
+      duration_ms: 180_000,
+    })
+  })
+
+  test("returns catalog duration when downloading its cover fails", async () => {
+    let calls = 0
+    const fetcher = async () => {
+      calls++
+      if (calls === 1) {
+        return Response.json({
+          results: [
+            {
+              trackName: "Song",
+              artistName: "Artist",
+              collectionName: "Album",
+              trackTimeMillis: 180_000,
+              artworkUrl100: "https://is1-ssl.mzstatic.com/image/100x100bb.jpg",
+            },
+          ],
+        })
+      }
+      return new Response(null, { status: 503 })
+    }
+
+    expect(
+      await resolveArtworkDetails(
+        "cache-id",
+        target,
+        null,
+        "legacy-id",
+        fetcher,
+      ),
+    ).toEqual({
+      artwork: null,
+      duration_ms: 180_000,
+    })
+    expect(calls).toBe(2)
+  })
+
   test("forbids redirects so an allowed CDN cannot redirect to another host", async () => {
     let redirect: RequestRedirect | undefined
     const fetcher = async (

@@ -7,7 +7,7 @@ import {
   type CommandResult,
   type SystemMediaDependencies,
 } from "@naxodev/music-core"
-import { resolveArtwork } from "./artwork.ts"
+import { resolveArtworkDetails } from "./artwork.ts"
 import type { Artwork, MusicBackend, MusicError, PlayerState } from "./types.ts"
 
 type MediaGet = {
@@ -29,6 +29,7 @@ export type ArtworkIdentity = {
 
 type ArtworkCacheEntry = {
   value: Artwork | null
+  duration_ms: number
   pending: boolean
   attempts: number
   retry_at: number
@@ -48,6 +49,16 @@ export {
 export function artworkIdentityKey(identity: ArtworkIdentity): string {
   return JSON.stringify([
     identity.uid,
+    identity.title,
+    identity.artist,
+    identity.album,
+    identity.duration_ms,
+  ])
+}
+
+/** Cache covers by recording metadata; provider IDs can change on pause. */
+export function artworkCacheKey(identity: ArtworkIdentity): string {
+  return JSON.stringify([
     identity.title,
     identity.artist,
     identity.album,
@@ -107,6 +118,7 @@ function identityFromTrack(track: {
 
 async function artworkForTrack(
   key: string,
+  legacyKey: string,
   target: {
     title: string
     artist: string
@@ -114,10 +126,16 @@ async function artworkForTrack(
     duration_ms: number
   },
   native: (() => Promise<string | null>) | null,
-): Promise<Artwork | null> {
+): Promise<{ artwork: Artwork | null; duration_ms: number; loading: boolean }> {
   let entry = artworkCache.get(key)
   if (!entry) {
-    entry = { value: null, pending: false, attempts: 0, retry_at: 0 }
+    entry = {
+      value: null,
+      duration_ms: target.duration_ms,
+      pending: false,
+      attempts: 0,
+      retry_at: 0,
+    }
     artworkCache.set(key, entry)
     if (artworkCache.size > 32) {
       const oldest = artworkCache.keys().next().value
@@ -136,12 +154,13 @@ async function artworkForTrack(
     const activeEntry = entry
     void (async () => {
       const data = await native?.()
-      return resolveArtwork(key, target, data ?? null)
+      return resolveArtworkDetails(key, target, data ?? null, legacyKey)
     })().then(
-      (artwork) => {
-        activeEntry.value = artwork
+      (resolution) => {
+        activeEntry.value = resolution.artwork
+        activeEntry.duration_ms = resolution.duration_ms
         activeEntry.pending = false
-        if (!artwork) {
+        if (!resolution.artwork) {
           activeEntry.retry_at =
             Date.now() + 2_000 * 2 ** (activeEntry.attempts - 1)
         }
@@ -153,7 +172,11 @@ async function artworkForTrack(
       },
     )
   }
-  return entry.value
+  return {
+    artwork: entry.value,
+    duration_ms: entry.duration_ms,
+    loading: entry.pending,
+  }
 }
 
 export function createSystemMedia(
@@ -172,10 +195,11 @@ export function createSystemMedia(
 
       const track = state.track
       const identity = identityFromTrack(track)
-      const artworkKey = artworkIdentityKey(identity)
+      const artworkKey = artworkCacheKey(identity)
 
-      const artwork = await artworkForTrack(
+      const artworkState = await artworkForTrack(
         artworkKey,
+        artworkIdentityKey(identity),
         {
           title: track.name,
           artist: track.artists,
@@ -198,7 +222,12 @@ export function createSystemMedia(
         ...state,
         track: {
           ...track,
-          artwork,
+          duration_ms:
+            track.duration_ms > 0
+              ? track.duration_ms
+              : artworkState.duration_ms,
+          artwork: artworkState.artwork,
+          artwork_loading: artworkState.loading,
         },
       }
     },

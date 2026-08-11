@@ -1,13 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode-ai/plugin/tui"
-import { mergePlayer } from "@naxodev/music-core"
 import {
   createSystemMedia,
   hasMediaControl,
   hasNowPlayingCli,
   openNowPlayingApp,
 } from "./system-media.ts"
-import { isMac, type MusicBackend } from "./types.ts"
+import { isMac, mergePlayerPresentation, type MusicBackend } from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
 
 const POLL_PLAYING_MS = 3000
@@ -197,7 +196,7 @@ export function createController(
               revision === transportRevision &&
               pendingSeekRevision === null
             ) {
-              const player = mergePlayer(session.player, sampled)
+              const player = mergePlayerPresentation(session.player, sampled)
               setSession((d) => {
                 d.player = player
                 d.error = null
@@ -398,6 +397,7 @@ function AppHost(props: { context: Context; ctrl: Controller }) {
     <CompactPlayer
       context={context}
       state={ctrl.session}
+      onPlayPause={() => void ctrl.playPause()}
       onSeek={(positionMs) => void ctrl.seek(positionMs)}
     />
   )
@@ -436,6 +436,7 @@ export function createMusicPlayerPlugin(options?: {
           onPlayPause={() => void ctrl.playPause()}
           onNext={() => void ctrl.next()}
           onPrev={() => void ctrl.prev()}
+          onSeek={(positionMs) => void ctrl.seek(positionMs)}
         />
       ))
       return () => {

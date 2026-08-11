@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { trackKey } from "@naxodev/music-core"
 import {
+  artworkCacheKey,
   artworkDataForIdentity,
   artworkIdentityKey,
   createSystemMedia,
@@ -33,6 +34,15 @@ describe("artwork identity", () => {
         artworkIdentityKey(identity),
       )
     }
+  })
+
+  test("reuses cached artwork when only the provider id changes", () => {
+    expect(artworkCacheKey({ ...identity, uid: "paused-id" })).toBe(
+      artworkCacheKey(identity),
+    )
+    expect(artworkCacheKey({ ...identity, album: "Deluxe" })).not.toBe(
+      artworkCacheKey(identity),
+    )
   })
 
   test("rejects native artwork if playback changed during the second sample", () => {

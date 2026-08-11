@@ -25,6 +25,36 @@ import {
 
 type Context = Plugin.Context
 const tmuxOffsetCache = createTmuxOffsetCache()
+const nativeArtworkImageId = kittyImageId("opencode-music-player:artwork")
+let latestNativeArtworkOwner = 0
+
+export type NativeArtworkOwnership = { isCurrent: () => boolean }
+
+export function claimNativeArtworkOwnership(): NativeArtworkOwnership {
+  const owner = ++latestNativeArtworkOwner
+  return { isCurrent: () => owner === latestNativeArtworkOwner }
+}
+
+export function cleanupNativeArtwork(
+  ownership: NativeArtworkOwnership,
+  remove: () => void,
+): void {
+  if (ownership.isCurrent()) remove()
+}
+
+export function imageIdForArtwork(_artworkId: string): number {
+  return nativeArtworkImageId
+}
+
+export function legacyImageIdForArtwork(artworkId: string): number {
+  return kittyImageId(artworkId)
+}
+
+export function legacyImageIdForResolvedArtwork(
+  artwork: Pick<Artwork, "id" | "legacy_id">,
+): number {
+  return legacyImageIdForArtwork(artwork.legacy_id ?? artwork.id)
+}
 
 function terminalOffset(slot: SlotGeometry | null) {
   return resolveTerminalOffset({
@@ -48,8 +78,10 @@ function copyState(next: NativeArtworkState): NativeArtworkState {
 }
 
 export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
+  const ownership = claimNativeArtworkOwnership()
   let container: BoxRenderable | undefined
   let state: NativeArtworkState = { transmitted: 0, placement: null }
+  let artworkIdentity = ""
   let paintPending = false
   let disposed = false
 
@@ -99,6 +131,15 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   }
 
   const paintNativeImage = () => {
+    if (!ownership.isCurrent()) return
+    if (artworkIdentity !== props.artwork.id) {
+      artworkIdentity = props.artwork.id
+      writeGraphics(
+        props.context.renderer,
+        kittyDelete(legacyImageIdForResolvedArtwork(props.artwork)),
+      )
+      state = { transmitted: 0, placement: null }
+    }
     const kittySupported = supportsKittyGraphics(props.context)
     const slotValid =
       !!container &&
@@ -115,7 +156,7 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
         }
       : null
     const offset = terminalOffset(slot)
-    const imageId = kittyImageId(props.artwork.id)
+    const imageId = imageIdForArtwork(props.artwork.id)
     const x = slot ? slot.screenX + offset.x : 0
     const y = slot ? slot.screenY + offset.y : 0
     const width = slot?.width ?? 0
@@ -142,7 +183,7 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
     paintPending = true
     void props.context.renderer.idle().then(() => {
       paintPending = false
-      if (!disposed) paintNativeImage()
+      if (!disposed && ownership.isCurrent()) paintNativeImage()
     })
   }
 
@@ -150,8 +191,10 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   onCleanup(() => {
     disposed = true
     props.context.renderer.off("frame", scheduleNativeImage)
-    // Synchronous clear so replacement mounts cannot race idle-deferred deletes.
-    paintNativeImage()
+    // Clear even if this owner unmounts before its first native paint.
+    cleanupNativeArtwork(ownership, () => {
+      writeGraphics(props.context.renderer, kittyDelete(nativeArtworkImageId))
+    })
   })
 
   return (
