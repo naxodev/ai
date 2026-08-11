@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import { Clock, Effect, Result } from "effect"
+import { Cause, Clock, Effect, Exit, Result } from "effect"
 import { effectivePaneStyle, supportsFloating } from "../domain/herdr.ts"
 import {
   abs,
@@ -93,11 +93,19 @@ function codeReviewRoundKey(phaseIndex: number): string {
 function herdrAfterRollback(
   e: HerdrError,
   context: { readonly task_attempted: string; readonly artifact: string },
+  rollbackErrors: readonly string[],
 ): HerdrError {
   return new HerdrError({
     message: e.message,
     ...(e.command !== undefined ? { command: e.command } : {}),
-    details: { ...(e.details ?? {}), ...context, rolled_back: true },
+    details: {
+      ...(e.details ?? {}),
+      ...context,
+      rolled_back: rollbackErrors.length === 0,
+      ...(rollbackErrors.length > 0
+        ? { rollback_errors: [...rollbackErrors] }
+        : {}),
+    },
   })
 }
 
@@ -128,10 +136,24 @@ export const dispatchWorkflow = (
     const herdr = yield* Herdr
 
     const state = yield* store.require(root)
+    const stateBeforeDispatch = structuredClone(state)
 
     const allowed = toolAllowed(state.step, "dispatch_role")
     if (Result.isFailure(allowed)) {
       return yield* allowed.failure
+    }
+
+    if (state.pending_artifact != null) {
+      return yield* new GateRefused({
+        gate: "dispatch_pending",
+        message:
+          "a role dispatch is already pending; call workflow_wait before dispatching again",
+        details: {
+          pending_artifact: state.pending_artifact,
+          pending_role: state.pending_role,
+          pending_pane_id: state.pending_pane_id,
+        },
+      })
     }
 
     const kinds = allowedKinds(state.step)
@@ -159,7 +181,7 @@ export const dispatchWorkflow = (
         return yield* new GateRefused({
           gate: "rework",
           message:
-            "rework=true only valid for plan/code (after CHANGES_REQUIRED) or same-gate re-review",
+            "rework=true only valid for plan/code after CHANGES_REQUIRED, phase_package after package rework, or same-gate re-review",
         })
       }
     }
@@ -433,15 +455,40 @@ export const dispatchWorkflow = (
       pane_style_effective: paneStyle.effective,
     }
 
-    const rollbackLaunch = Effect.gen(function* () {
-      yield* fs.remove(taskFile)
-      yield* fs.remove(taskFile.replace(/\.md$/, ".sh"))
-      yield* fs.remove(taskFile.replace(/\.md$/, ".exit"))
-      yield* fs.remove(artifactAbs)
-      if (backupAbs != null) {
-        yield* fs.rename(backupAbs, artifactAbs)
-      }
-    })
+    const rollbackLaunch = (restoreState = true) =>
+      Effect.gen(function* () {
+        const errors: string[] = []
+        const attempt = (label: string, operation: Effect.Effect<void>) =>
+          Effect.gen(function* () {
+            const exit = yield* Effect.exit(operation)
+            if (Exit.isFailure(exit)) {
+              errors.push(`${label}: ${Cause.pretty(exit.cause)}`)
+            }
+          })
+        yield* attempt("remove task", fs.remove(taskFile))
+        yield* attempt(
+          "remove floating script",
+          fs.remove(taskFile.replace(/\.md$/, ".sh")),
+        )
+        yield* attempt(
+          "remove floating exit marker",
+          fs.remove(taskFile.replace(/\.md$/, ".exit")),
+        )
+        yield* attempt("remove replacement artifact", fs.remove(artifactAbs))
+        if (backupAbs != null) {
+          yield* attempt(
+            "restore prior artifact",
+            fs.rename(backupAbs, artifactAbs),
+          )
+        }
+        if (restoreState) {
+          yield* attempt(
+            "restore workflow state",
+            store.save(stateBeforeDispatch, root),
+          )
+        }
+        return errors
+      })
 
     const markPending = (launchedAt: number): void => {
       state.pending_artifact = artifactRel
@@ -452,16 +499,33 @@ export const dispatchWorkflow = (
       resetRecoveryLadder(state)
     }
 
+    // Persist ownership before crossing an external launch boundary. If this
+    // process dies after Herdr accepts work, a retry must not start a duplicate.
+    const preparedAt = yield* Clock.currentTimeMillis
+    markPending(preparedAt)
+    state.pending_pane_id = null
+    state.pending_pane_label = null
+    state.pending_floating_exit = null
+    const preparedState = yield* Effect.exit(store.save(state, root))
+    if (Exit.isFailure(preparedState)) {
+      const persistenceError = new HerdrError({
+        message: `failed to persist pending dispatch before launch: ${Cause.pretty(preparedState.cause)}`,
+      })
+      const rollbackErrors = yield* rollbackLaunch(false)
+      return yield* herdrAfterRollback(
+        persistenceError,
+        {
+          task_attempted: taskRef.task,
+          artifact: artifactRel,
+        },
+        rollbackErrors,
+      )
+    }
+
     if (herdrAvailability === "unavailable") {
       // Stamped here, not at the top of the workflow: `pending_started_at` is
       // the anchor for both the role's deadline and wait's liveness grace, so
       // it must mean "the role has the prompt", not "dispatch began".
-      const launchedAt = yield* Clock.currentTimeMillis
-      state.pending_pane_id = null
-      state.pending_pane_label = null
-      state.pending_floating_exit = null
-      markPending(launchedAt)
-      yield* store.save(state, root)
       return ok(
         `task written (no Herdr). Launch ${role} yourself; then workflow_wait.`,
         {
@@ -486,29 +550,43 @@ export const dispatchWorkflow = (
       const exitAbs = taskFile.replace(/\.md$/, ".exit")
       // Drop stale exit marker so wait cannot see a previous run's code.
       yield* fs.remove(exitAbs)
-      const launched = yield* Effect.result(
-        Effect.gen(function* () {
-          yield* herdr.writeFloatingTaskScript(
-            scriptAbs,
-            root,
-            cmd,
-            prompt,
-            exitAbs,
-          )
-          yield* herdr.openFloatingPane(scriptAbs, root)
-        }),
+      const scriptWritten = yield* Effect.result(
+        herdr.writeFloatingTaskScript(scriptAbs, root, cmd, prompt, exitAbs),
       )
-      if (Result.isFailure(launched)) {
-        yield* rollbackLaunch
-        return yield* herdrAfterRollback(launched.failure, {
-          task_attempted: taskRef.task,
-          artifact: artifactRel,
-        })
+      if (Result.isFailure(scriptWritten)) {
+        const rollbackErrors = yield* rollbackLaunch()
+        return yield* herdrAfterRollback(
+          scriptWritten.failure,
+          {
+            task_attempted: taskRef.task,
+            artifact: artifactRel,
+          },
+          rollbackErrors,
+        )
       }
       // Popups have no pane id — liveness is the exit file; leave role_panes alone.
       state.pending_pane_id = null
       state.pending_pane_label = null
       state.pending_floating_exit = rel(exitAbs, root)
+      yield* store.save(state, root)
+      const opened = yield* Effect.result(
+        herdr.openFloatingPane(scriptAbs, root),
+      )
+      if (Result.isFailure(opened)) {
+        return yield* new HerdrError({
+          message: opened.failure.message,
+          ...(opened.failure.command !== undefined
+            ? { command: opened.failure.command }
+            : {}),
+          details: {
+            ...(opened.failure.details ?? {}),
+            delivery: "unknown",
+            task_attempted: taskRef.task,
+            artifact: artifactRel,
+            pending_preserved: true,
+          },
+        })
+      }
       launch = {
         mode: "oneshot",
         pane_style: cfg.pane_style,
@@ -530,11 +608,40 @@ export const dispatchWorkflow = (
         herdr.runInteractivePrompt(role, cmd, prompt, prefer),
       )
       if (Result.isFailure(launched)) {
-        yield* rollbackLaunch
-        return yield* herdrAfterRollback(launched.failure, {
-          task_attempted: taskRef.task,
-          artifact: artifactRel,
-        })
+        if (launched.failure.details?.delivery === "unknown") {
+          const paneId = String(launched.failure.details.pane_id)
+          const paneLabel = String(launched.failure.details.pane_label)
+          state.pending_pane_id = paneId
+          state.pending_pane_label = paneLabel
+          state.pending_floating_exit = null
+          state.role_panes[role] = {
+            pane_id: paneId,
+            label: paneLabel,
+            profile_fingerprint: profileFingerprint,
+          }
+          yield* store.save(state, root)
+          return yield* new HerdrError({
+            message: launched.failure.message,
+            ...(launched.failure.command !== undefined
+              ? { command: launched.failure.command }
+              : {}),
+            details: {
+              ...(launched.failure.details ?? {}),
+              task_attempted: taskRef.task,
+              artifact: artifactRel,
+              pending_preserved: true,
+            },
+          })
+        }
+        const rollbackErrors = yield* rollbackLaunch()
+        return yield* herdrAfterRollback(
+          launched.failure,
+          {
+            task_attempted: taskRef.task,
+            artifact: artifactRel,
+          },
+          rollbackErrors,
+        )
       }
       const r = launched.success
       launch = {

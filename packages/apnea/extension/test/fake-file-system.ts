@@ -2,7 +2,13 @@ import { Effect, Layer } from "effect"
 import { FileSystem, type FileSystemService } from "../services/file-system.ts"
 
 /** In-memory FileSystem for unit tests (paths as exact string keys). */
-export function makeFakeFileSystem(initial: Record<string, string> = {}): {
+export function makeFakeFileSystem(
+  initial: Record<string, string> = {},
+  opts: {
+    failWrite?: (path: string) => Error | null
+    failRemove?: (path: string) => Error | null
+  } = {},
+): {
   files: Map<string, string>
   modes: Map<string, number>
   layer: Layer.Layer<FileSystem>
@@ -32,6 +38,8 @@ export function makeFakeFileSystem(initial: Record<string, string> = {}): {
 
     writeFile: (path, content) =>
       Effect.sync(() => {
+        const failure = opts.failWrite?.(path)
+        if (failure) throw failure
         ensureParent(path)
         files.set(path, content)
       }),
@@ -60,6 +68,8 @@ export function makeFakeFileSystem(initial: Record<string, string> = {}): {
 
     remove: (path) =>
       Effect.sync(() => {
+        const failure = opts.failRemove?.(path)
+        if (failure) throw failure
         files.delete(path)
       }),
 

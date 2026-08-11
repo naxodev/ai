@@ -686,7 +686,7 @@ describe("dispatchWorkflow (fake layers)", () => {
   })
 
   itEffect(
-    "late floating open failure restores the exact pre-dispatch files",
+    "floating open failure preserves pending ownership because delivery is ambiguous",
     () => {
       const artifact = `${ROOT}/.apnea/artifacts/plan.md`
       const existingTask = `${ROOT}/.apnea/tasks/plan-p1-r1-0.md`
@@ -694,7 +694,6 @@ describe("dispatchWorkflow (fake layers)", () => {
         [artifact]: "prior plan",
         [existingTask]: "prior task",
       })
-      const before = new Map(fsFake.files)
       const { layer, fakeFs } = layerOf(fsFake, {
         herdr: {
           enabled: true,
@@ -710,12 +709,16 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(e.message).toBe("popup already open")
         expect(e.details).toMatchObject({
           artifact: ".apnea/artifacts/plan.md",
-          rolled_back: true,
+          delivery: "unknown",
+          pending_preserved: true,
         })
         expect(e.details?.task_attempted).toMatch(
           /^\.apnea\/tasks\/plan-p1-r1-\d+\.md$/,
         )
-        expect(fakeFs.files).toEqual(before)
+        expect(savedState(fakeFs).pending_artifact).toBe(
+          ".apnea/artifacts/plan.md",
+        )
+        expect(taskFiles(fakeFs)).toHaveLength(2)
       }).pipe(Effect.provide(layer))
     },
   )
@@ -764,6 +767,120 @@ describe("dispatchWorkflow (fake layers)", () => {
           rolled_back: true,
         })
         expect(fakeFs.files).toEqual(before)
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "ambiguous pane-run failure preserves task, pending state, and retry ownership",
+    () => {
+      const error = new HerdrError({
+        message: "herdr pane run failed: response lost",
+        command: "herdr pane run",
+        details: {
+          delivery: "unknown",
+          pane_id: "pane-42",
+          pane_label: "apnea:planner:abc",
+          reused: false,
+        },
+      })
+      const fsFake = seedFs(baseState({ step: "planning" }))
+      const first = layerOf(fsFake, { herdr: { interactive: error } })
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        const failure = expectFailure(result, "HerdrError")
+        expect(failure.message).toContain("response lost")
+        expect(failure.details).toMatchObject({
+          delivery: "unknown",
+          pending_preserved: true,
+        })
+        const saved = savedState(fsFake)
+        expect(saved.pending_artifact).toBe(".apnea/artifacts/plan.md")
+        expect(saved.pending_pane_id).toBe("pane-42")
+        expect(taskFiles(fsFake)).toHaveLength(1)
+
+        const retry = layerOf(fsFake)
+        const retried = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT).pipe(
+            Effect.provide(retry.layer),
+          ),
+        )
+        const retryFailure = expectFailure(retried, "GateRefused")
+        expect(retryFailure.gate).toBe("dispatch_pending")
+        expect(retry.herdr.interactiveCalls).toHaveLength(0)
+        expect(taskFiles(fsFake)).toHaveLength(1)
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect(
+    "definite launch failure reports rollback cleanup failure without hiding launch error",
+    () => {
+      const fsFake = makeFakeFileSystem(
+        {
+          [statePath(ROOT)]: `${JSON.stringify(baseState(), null, 2)}\n`,
+          ...briefFiles("/pkg"),
+        },
+        {
+          failRemove: (path) =>
+            path.includes("/.apnea/tasks/") && path.endsWith(".md")
+              ? new Error("cleanup disk failure")
+              : null,
+        },
+      )
+      const { layer } = layerOf(fsFake, {
+        herdr: {
+          interactive: new HerdrError({
+            message: "pane split failed",
+            details: { delivery: "not_delivered" },
+          }),
+        },
+      })
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        const failure = expectFailure(result, "HerdrError")
+        expect(failure.message).toBe("pane split failed")
+        expect(failure.details?.rolled_back).toBe(false)
+        expect(failure.details?.rollback_errors).toEqual([
+          expect.stringContaining("cleanup disk failure"),
+        ])
+        expect(savedState(fsFake).pending_artifact).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "pending-state persistence failure restores files and never launches a worker",
+    () => {
+      const artifact = `${ROOT}/.apnea/artifacts/plan.md`
+      const state = baseState()
+      const fsFake = makeFakeFileSystem(
+        {
+          [statePath(ROOT)]: `${JSON.stringify(state, null, 2)}\n`,
+          [artifact]: "prior plan",
+          ...briefFiles("/pkg"),
+        },
+        {
+          failWrite: (path) =>
+            path === statePath(ROOT) ? new Error("state disk full") : null,
+        },
+      )
+      const { layer, herdr } = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        const failure = expectFailure(result, "HerdrError")
+        expect(failure.message).toContain("state disk full")
+        expect(failure.details?.rolled_back).toBe(true)
+        expect(herdr.interactiveCalls).toHaveLength(0)
+        expect(fsFake.files.get(artifact)).toBe("prior plan")
+        expect(taskFiles(fsFake)).toEqual([])
+        expect(savedState(fsFake)).toEqual(state)
       }).pipe(Effect.provide(layer))
     },
   )
