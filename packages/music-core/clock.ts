@@ -80,6 +80,15 @@ function sameTrackKeyIdentity(
     rightParts.length === 3 ? rightParts : ["", ...rightParts]
   if (leftTitle && rightTitle && leftTitle !== rightTitle) return false
   if (leftArtist && rightArtist && leftArtist !== rightArtist) return false
+  const leftDurationKnown = leftDurationMs > 0
+  const rightDurationKnown = rightDurationMs > 0
+  if (
+    leftDurationKnown &&
+    rightDurationKnown &&
+    Math.abs(leftDurationMs - rightDurationMs) > 1_000
+  ) {
+    return false
+  }
   if (
     leftTitle &&
     rightTitle &&
@@ -88,14 +97,10 @@ function sameTrackKeyIdentity(
     leftTitle === rightTitle &&
     leftArtist === rightArtist
   ) {
-    return (
-      !leftId ||
-      !rightId ||
-      leftId === rightId ||
-      leftDurationMs <= 0 ||
-      rightDurationMs <= 0 ||
-      Math.abs(leftDurationMs - rightDurationMs) <= 1_000
-    )
+    if (leftId && rightId && leftId !== rightId) {
+      return leftDurationKnown && rightDurationKnown
+    }
+    return true
   }
   if (leftId && rightId && leftId !== rightId) return false
   return true

@@ -50,6 +50,12 @@ export function legacyImageIdForArtwork(artworkId: string): number {
   return kittyImageId(artworkId)
 }
 
+export function legacyImageIdForResolvedArtwork(
+  artwork: Pick<Artwork, "id" | "legacy_id">,
+): number {
+  return legacyImageIdForArtwork(artwork.legacy_id ?? artwork.id)
+}
+
 function terminalOffset(slot: SlotGeometry | null) {
   return resolveTerminalOffset({
     slot,
@@ -130,7 +136,7 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
       artworkIdentity = props.artwork.id
       writeGraphics(
         props.context.renderer,
-        kittyDelete(legacyImageIdForArtwork(artworkIdentity)),
+        kittyDelete(legacyImageIdForResolvedArtwork(props.artwork)),
       )
       state = { transmitted: 0, placement: null }
     }

@@ -73,24 +73,6 @@ function matchingCatalogTracks(
   return matches
 }
 
-function selectArtworkTrack(
-  target: TrackIdentity,
-  results: CatalogTrack[],
-): CatalogTrack | null {
-  let matches = matchingCatalogTracks(target, results).filter(
-    (item) => typeof item.artworkUrl100 === "string",
-  )
-  if (target.duration_ms > 0) {
-    matches = matches.filter(
-      (item) =>
-        validCatalogDuration(item.trackTimeMillis) &&
-        Math.abs(item.trackTimeMillis! - target.duration_ms) <=
-          DURATION_TOLERANCE_MS,
-    )
-  }
-  return matches[0] ?? null
-}
-
 function validCatalogDuration(value: number | undefined): value is number {
   return (
     typeof value === "number" &&
@@ -100,47 +82,44 @@ function validCatalogDuration(value: number | undefined): value is number {
   )
 }
 
+function selectCatalogCandidate(
+  target: TrackIdentity,
+  results: CatalogTrack[],
+): CatalogTrack | null {
+  let matches = matchingCatalogTracks(target, results)
+  if (target.duration_ms > 0) {
+    matches = matches.filter(
+      (item) =>
+        validCatalogDuration(item.trackTimeMillis) &&
+        Math.abs(item.trackTimeMillis! - target.duration_ms) <=
+          DURATION_TOLERANCE_MS,
+    )
+  } else if (matches.length !== 1) {
+    return null
+  }
+
+  return matches[0] ?? null
+}
+
 export function selectCatalogTrack(
   target: TrackIdentity,
   results: CatalogTrack[],
 ): CatalogTrack | null {
-  let matches = matchingCatalogTracks(target, results).filter((item) =>
-    validCatalogDuration(item.trackTimeMillis),
-  )
-  if (target.duration_ms > 0) {
-    matches = matches.filter(
-      (item) =>
-        Math.abs(item.trackTimeMillis! - target.duration_ms) <=
-        DURATION_TOLERANCE_MS,
-    )
-  }
-  if ((!target.album || target.duration_ms <= 0) && matches.length > 1) {
-    const firstDuration = matches[0]!.trackTimeMillis!
-    if (
-      matches.some(
-        (item) =>
-          Math.abs(item.trackTimeMillis! - firstDuration) >
-          DURATION_TOLERANCE_MS,
-      )
-    ) {
-      return null
-    }
-  }
-
-  return matches[0] ?? null
+  const match = selectCatalogCandidate(target, results)
+  return validCatalogDuration(match?.trackTimeMillis) ? match : null
 }
 
 export function selectCatalogResolution(
   target: TrackIdentity,
   results: CatalogTrack[],
 ): { artworkUrl: string | null; duration_ms: number } {
-  const artworkMatch = selectArtworkTrack(target, results)
-  const durationMatch = selectCatalogTrack(target, results)
+  const match = selectCatalogCandidate(target, results)
   return {
     artworkUrl:
-      artworkMatch?.artworkUrl100?.replace(/100x100(?=[a-z]*\.)/, "300x300") ??
-      null,
-    duration_ms: durationMatch?.trackTimeMillis ?? target.duration_ms,
+      match?.artworkUrl100?.replace(/100x100(?=[a-z]*\.)/, "300x300") ?? null,
+    duration_ms: validCatalogDuration(match?.trackTimeMillis)
+      ? match.trackTimeMillis
+      : target.duration_ms,
   }
 }
 
@@ -206,7 +185,8 @@ export async function downloadCatalogImage(
 
 async function catalogArtwork(
   target: TrackIdentity,
-): Promise<{ bytes: Uint8Array; duration_ms: number } | null> {
+  fetcher: Fetcher = fetch,
+): Promise<{ bytes: Uint8Array | null; duration_ms: number } | null> {
   if (!target.title || !target.artist) return null
   const term = [target.artist, target.title, target.album]
     .filter(Boolean)
@@ -217,7 +197,7 @@ async function catalogArtwork(
   url.searchParams.set("limit", "10")
 
   try {
-    const result = await fetch(url, {
+    const result = await fetcher(url, {
       redirect: "error",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
@@ -233,14 +213,11 @@ async function catalogArtwork(
     const results = payload.results ?? []
     const resolution = selectCatalogResolution(target, results)
     const bytes = resolution.artworkUrl
-      ? await downloadCatalogImage(resolution.artworkUrl)
+      ? await downloadCatalogImage(resolution.artworkUrl, fetcher)
       : null
-    return bytes
-      ? {
-          bytes,
-          duration_ms: resolution.duration_ms,
-        }
-      : null
+    if (!resolution.artworkUrl && resolution.duration_ms === target.duration_ms)
+      return null
+    return { bytes, duration_ms: resolution.duration_ms }
   } catch {
     return null
   }
@@ -377,6 +354,8 @@ export async function resolveArtworkDetails(
   id: string,
   target: TrackIdentity,
   nativeBase64: string | null,
+  legacyId = id,
+  fetcher: Fetcher = fetch,
 ): Promise<ArtworkResolution> {
   const candidates: Uint8Array[] = []
   if (nativeBase64) {
@@ -399,6 +378,7 @@ export async function resolveArtworkDetails(
         return {
           artwork: {
             id,
+            legacy_id: legacyId,
             png_base64: Buffer.from(nativePng).toString("base64"),
             ...presentation(thumbnail),
           },
@@ -410,8 +390,11 @@ export async function resolveArtworkDetails(
     }
   }
 
-  const catalog = await catalogArtwork(target)
+  const catalog = await catalogArtwork(target, fetcher)
   if (!catalog) return { artwork: null, duration_ms: target.duration_ms }
+  if (!catalog.bytes) {
+    return { artwork: null, duration_ms: catalog.duration_ms }
+  }
   try {
     const nativePng = await squarePng(catalog.bytes, 300)
     const thumbnail = nativePng ? await squarePng(nativePng, 24) : null
@@ -421,6 +404,7 @@ export async function resolveArtworkDetails(
     return {
       artwork: {
         id,
+        legacy_id: legacyId,
         png_base64: Buffer.from(nativePng).toString("base64"),
         ...presentation(thumbnail),
       },

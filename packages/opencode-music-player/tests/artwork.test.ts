@@ -3,6 +3,7 @@ import {
   downloadCatalogImage,
   imageDimensionsAreSafe,
   readLimitedResponse,
+  resolveArtworkDetails,
   runCommandWithTimeout,
   selectCatalogResolution,
   selectCatalogTrack,
@@ -134,7 +135,7 @@ describe("artwork catalog matching", () => {
         candidate(180_000, "original"),
         candidate(240_000, "other"),
       ]),
-    ).toBe("https://example.com/original/300x300bb.jpg")
+    ).toBeNull()
     expect(
       selectCatalogResolution(sparse, [
         candidate(180_000, "original"),
@@ -146,7 +147,7 @@ describe("artwork catalog matching", () => {
         },
       ]),
     ).toEqual({
-      artworkUrl: "https://example.com/original/300x300bb.jpg",
+      artworkUrl: null,
       duration_ms: 0,
     })
     expect(
@@ -163,8 +164,8 @@ describe("artwork catalog matching", () => {
       selectCatalogTrack(sparse, [
         candidate(180_000, "original"),
         candidate(180_500, "compilation"),
-      ])?.collectionName,
-    ).toBe("original")
+      ]),
+    ).toBeNull()
     expect(selectCatalogTrack(sparse, [candidate(0, "invalid")])).toBeNull()
     expect(
       selectCatalogTrack(sparse, [candidate(86_400_001, "invalid")]),
@@ -190,6 +191,75 @@ describe("artwork catalog matching", () => {
 })
 
 describe("artwork download boundaries", () => {
+  const target = {
+    title: "Song",
+    artist: "Artist",
+    album: "Album",
+    duration_ms: 0,
+  }
+
+  test("returns catalog duration when the accepted result has no cover", async () => {
+    const fetcher = async () =>
+      Response.json({
+        results: [
+          {
+            trackName: "Song",
+            artistName: "Artist",
+            collectionName: "Album",
+            trackTimeMillis: 180_000,
+          },
+        ],
+      })
+
+    expect(
+      await resolveArtworkDetails(
+        "cache-id",
+        target,
+        null,
+        "legacy-id",
+        fetcher,
+      ),
+    ).toEqual({
+      artwork: null,
+      duration_ms: 180_000,
+    })
+  })
+
+  test("returns catalog duration when downloading its cover fails", async () => {
+    let calls = 0
+    const fetcher = async () => {
+      calls++
+      if (calls === 1) {
+        return Response.json({
+          results: [
+            {
+              trackName: "Song",
+              artistName: "Artist",
+              collectionName: "Album",
+              trackTimeMillis: 180_000,
+              artworkUrl100: "https://is1-ssl.mzstatic.com/image/100x100bb.jpg",
+            },
+          ],
+        })
+      }
+      return new Response(null, { status: 503 })
+    }
+
+    expect(
+      await resolveArtworkDetails(
+        "cache-id",
+        target,
+        null,
+        "legacy-id",
+        fetcher,
+      ),
+    ).toEqual({
+      artwork: null,
+      duration_ms: 180_000,
+    })
+    expect(calls).toBe(2)
+  })
+
   test("forbids redirects so an allowed CDN cannot redirect to another host", async () => {
     let redirect: RequestRedirect | undefined
     const fetcher = async (

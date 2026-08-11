@@ -118,6 +118,7 @@ function identityFromTrack(track: {
 
 async function artworkForTrack(
   key: string,
+  legacyKey: string,
   target: {
     title: string
     artist: string
@@ -153,7 +154,7 @@ async function artworkForTrack(
     const activeEntry = entry
     void (async () => {
       const data = await native?.()
-      return resolveArtworkDetails(key, target, data ?? null)
+      return resolveArtworkDetails(key, target, data ?? null, legacyKey)
     })().then(
       (resolution) => {
         activeEntry.value = resolution.artwork
@@ -198,6 +199,7 @@ export function createSystemMedia(
 
       const artworkState = await artworkForTrack(
         artworkKey,
+        artworkIdentityKey(identity),
         {
           title: track.name,
           artist: track.artists,

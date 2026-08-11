@@ -16,6 +16,7 @@ export { formatMs, isMac }
 
 export type Artwork = {
   id: string
+  legacy_id?: string
   png_base64: string
   accent: string
   cells: Array<Array<{ upper: string; lower: string }>>
