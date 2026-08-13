@@ -408,18 +408,21 @@ export default Plugin.define({
         initial: { enabled: true },
       },
     )
-    const unsubscribe = context.ui.slot("prompt.footer.end", (slot) => (
-      <VimHost
-        context={context}
-        runtime={runtime}
-        session={session}
-        setRuntime={setRuntime}
-        settings={settings}
-        setSettings={setSettings}
-        hostMode={slot.mode}
-        writeClipboard={writeClipboard}
-      />
-    ))
+    const unsubscribe = context.ui.slot({
+      append: "prompt.footer",
+      render: (slot) => (
+        <VimHost
+          context={context}
+          runtime={runtime}
+          session={session}
+          setRuntime={setRuntime}
+          settings={settings}
+          setSettings={setSettings}
+          hostMode={slot.mode}
+          writeClipboard={writeClipboard}
+        />
+      ),
+    })
     return () => {
       writeClipboard.dispose()
       unsubscribe()

@@ -518,19 +518,23 @@ export function createMusicPlayerPlugin(options?: {
 
       const ctrl =
         options?.createController?.(context) ?? createController(context)
-      const unsubApp = context.ui.slot("app", () => (
-        <AppHost context={context} ctrl={ctrl} />
-      ))
-      const unsubSidebar = context.ui.slot("sidebar.content", () => (
-        <SidebarPlayer
-          context={context}
-          state={ctrl.session}
-          onPlayPause={() => void ctrl.playPause()}
-          onNext={() => void ctrl.next()}
-          onPrev={() => void ctrl.prev()}
-          onSeek={(positionMs) => void ctrl.seek(positionMs)}
-        />
-      ))
+      const unsubApp = context.ui.slot({
+        append: "app",
+        render: () => <AppHost context={context} ctrl={ctrl} />,
+      })
+      const unsubSidebar = context.ui.slot({
+        append: "sidebar.content",
+        render: () => (
+          <SidebarPlayer
+            context={context}
+            state={ctrl.session}
+            onPlayPause={() => void ctrl.playPause()}
+            onNext={() => void ctrl.next()}
+            onPrev={() => void ctrl.prev()}
+            onSeek={(positionMs) => void ctrl.seek(positionMs)}
+          />
+        ),
+      })
       return () => {
         unsubApp()
         unsubSidebar()
