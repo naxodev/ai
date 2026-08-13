@@ -1,0 +1,41 @@
+---
+status: done
+---
+
+## Changed
+
+- Extended the Effect-native coordinator fixture with a deterministic queued-sample control, per-call signals, counters, and late-emission-safe scoped events.
+- Added config-provider missing/default and malformed-numeric coverage.
+- Expanded coordinator tests for invalidation single-flight behavior, play/pause/seek snapshot races, navigation authority advancement, poll one-millisecond boundaries, and distinct transport/navigation reconciliation delays.
+- Kept all production work constrained to the Phase 2 coordinator/provider seam.
+
+Files touched:
+- `packages/music-core/session/coordinator.ts`
+- `packages/music-core/session/provider.ts`
+- `packages/music-core/tests/session-coordinator.test.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts
+exit 0 — 10 pass, 0 fail
+
+$ bun test packages/music-core/tests/system-media.test.ts
+exit 0 — 42 pass, 0 fail
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0 — typecheck, 118 tests, format:check, and package:check passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(|Date\.now\(" packages/music-core/session/coordinator.ts
+exit 0
+
+$ ! rg -n "createFakeProvider|layerFromLegacy|Effect\.repeat\(Effect\.yieldNow|new Promise" packages/music-core/tests/session-coordinator.test.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — approved Phase 2 product/test paths only; pre-existing `.apnea/state.json` remains untouched.
+```
+
+## Residual risks
+
+- Scope-close exact-once settlement and stale deadline replacement need additional focused evidence.

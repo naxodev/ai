@@ -3,6 +3,7 @@ import {
   Duration,
   Effect,
   Layer,
+  Latch,
   Option,
   Queue,
   Ref,
@@ -405,6 +406,259 @@ export const layerFromLegacy = (provider: LegacySessionProvider) =>
       })
     }),
   )
+
+/** Effect-native coordinator fixture; controls are deliberately outside the service. */
+export type CoordinatorProviderFixture = {
+  readonly layer: Layer.Layer<SessionProvider>
+  readonly emit: (event: MusicChangeEvent) => Effect.Effect<void>
+  readonly setState: (state: PlayerState) => Effect.Effect<void>
+  readonly enqueueSample: (state: PlayerState | null) => Effect.Effect<void>
+  readonly blockSample: Effect.Effect<void>
+  readonly releaseSample: Effect.Effect<void>
+  readonly blockTransport: Effect.Effect<void>
+  readonly releaseTransport: Effect.Effect<void>
+  readonly failNextSample: (cause?: Error) => Effect.Effect<void>
+  readonly returnNullNextSample: Effect.Effect<void>
+  readonly failNextTransport: (cause?: Error) => Effect.Effect<void>
+  readonly sampleStarted: Latch.Latch
+  readonly sampleCompleted: Latch.Latch
+  readonly sampleStarts: Queue.Dequeue<number>
+  readonly sampleCompletions: Queue.Dequeue<number>
+  readonly transportStarted: Latch.Latch
+  readonly transportStarts: Queue.Dequeue<number>
+  readonly eventConsumed: Queue.Dequeue<MusicChangeEvent>
+  readonly eventSubscribed: Latch.Latch
+  readonly calls: Ref.Ref<
+    ReadonlyArray<{
+      readonly action: TransportAction
+      readonly positionMs?: number
+    }>
+  >
+  readonly samples: Ref.Ref<number>
+  readonly completedSamples: Ref.Ref<number>
+  readonly interruptedSamples: Ref.Ref<number>
+  readonly activeSamples: Ref.Ref<number>
+  readonly maxSamples: Ref.Ref<number>
+  readonly activeTransports: Ref.Ref<number>
+  readonly maxTransports: Ref.Ref<number>
+  readonly subscriptions: Ref.Ref<number>
+  readonly eventFinalizations: Ref.Ref<number>
+  readonly finalizations: Ref.Ref<number>
+}
+
+export const makeCoordinatorProviderFixture = (
+  initial: PlayerState = emptyPlayer(),
+): Effect.Effect<CoordinatorProviderFixture> =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(initial)
+    const sampleGate = yield* Latch.make(true)
+    const transportGate = yield* Latch.make(true)
+    const sampleStarted = yield* Latch.make(false)
+    const sampleCompleted = yield* Latch.make(false)
+    const sampleStarts = yield* Queue.unbounded<number>()
+    const sampleCompletions = yield* Queue.unbounded<number>()
+    const transportStarted = yield* Latch.make(false)
+    const transportStarts = yield* Queue.unbounded<number>()
+    const eventConsumed = yield* Queue.unbounded<MusicChangeEvent>()
+    const eventSubscribed = yield* Latch.make(false)
+    const samples = yield* Ref.make(0)
+    const plannedSamples = yield* Ref.make<ReadonlyArray<PlayerState | null>>(
+      [],
+    )
+    const completedSamples = yield* Ref.make(0)
+    const interruptedSamples = yield* Ref.make(0)
+    const activeSamples = yield* Ref.make(0)
+    const maxSamples = yield* Ref.make(0)
+    const activeTransports = yield* Ref.make(0)
+    const maxTransports = yield* Ref.make(0)
+    const nextSampleFailure = yield* Ref.make<Error | undefined>(undefined)
+    const nextSampleNull = yield* Ref.make(false)
+    const nextTransportFailure = yield* Ref.make<Error | undefined>(undefined)
+    const calls = yield* Ref.make<
+      ReadonlyArray<{
+        readonly action: TransportAction
+        readonly positionMs?: number
+      }>
+    >([])
+    const subscriptions = yield* Ref.make(0)
+    const eventFinalizations = yield* Ref.make(0)
+    const finalizations = yield* Ref.make(0)
+    let sink: Queue.Enqueue<MusicChangeEvent> | undefined
+    let closed = false
+    const events = Stream.callback<MusicChangeEvent>((queue) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          sink = queue
+          closed = false
+          return undefined
+        }).pipe(
+          Effect.tap(() => Ref.update(subscriptions, (count) => count + 1)),
+          Effect.tap(() => Latch.open(eventSubscribed)),
+        ),
+        () =>
+          Effect.sync(() => {
+            closed = true
+            sink = undefined
+          }).pipe(
+            Effect.andThen(
+              Ref.update(eventFinalizations, (count) => count + 1),
+            ),
+          ),
+      ),
+    ).pipe(
+      Stream.flatMap((event) =>
+        Stream.fromEffect(Queue.offer(eventConsumed, event)).pipe(
+          Stream.map(() => event),
+        ),
+      ),
+    )
+    const fixture: CoordinatorProviderFixture = {
+      layer: Layer.effect(
+        SessionProvider,
+        Effect.addFinalizer(() =>
+          Ref.update(finalizations, (count) => count + 1),
+        ).pipe(
+          Effect.as(
+            SessionProvider.of({
+              status: () =>
+                Effect.succeed({
+                  kind: "ready",
+                  provider: "media-control",
+                  message: "fixture",
+                }),
+              sample: () =>
+                Effect.acquireUseRelease(
+                  Effect.gen(function* () {
+                    const count = yield* Ref.updateAndGet(
+                      activeSamples,
+                      (value) => value + 1,
+                    )
+                    yield* Ref.update(maxSamples, (maximum) =>
+                      Math.max(maximum, count),
+                    )
+                    const sampleNumber = yield* Ref.updateAndGet(
+                      samples,
+                      (value) => value + 1,
+                    )
+                    yield* Queue.offer(sampleStarts, sampleNumber)
+                    yield* Latch.open(sampleStarted)
+                    return yield* Ref.modify(plannedSamples, (values) =>
+                      values.length === 0
+                        ? [undefined, values]
+                        : [values[0], values.slice(1)],
+                    )
+                  }),
+                  (planned) =>
+                    Latch.await(sampleGate).pipe(
+                      Effect.onInterrupt(() =>
+                        Ref.update(interruptedSamples, (count) => count + 1),
+                      ),
+                      Effect.andThen(
+                        Ref.getAndSet(nextSampleFailure, undefined),
+                      ),
+                      Effect.flatMap((failure) =>
+                        failure
+                          ? Effect.fail(providerError("sample", failure))
+                          : Ref.getAndSet(nextSampleNull, false).pipe(
+                              Effect.flatMap((nullSample) =>
+                                nullSample
+                                  ? Effect.succeed(null)
+                                  : planned === undefined
+                                    ? Ref.get(state)
+                                    : Effect.succeed(planned),
+                              ),
+                            ),
+                      ),
+                    ),
+                  () =>
+                    Ref.update(activeSamples, (count) => count - 1).pipe(
+                      Effect.andThen(
+                        Ref.updateAndGet(
+                          completedSamples,
+                          (count) => count + 1,
+                        ),
+                      ),
+                      Effect.tap((count) =>
+                        Queue.offer(sampleCompletions, count),
+                      ),
+                      Effect.andThen(Latch.open(sampleCompleted)),
+                    ),
+                ),
+              transport: (action, positionMs) =>
+                Effect.acquireUseRelease(
+                  Ref.updateAndGet(activeTransports, (count) => count + 1).pipe(
+                    Effect.tap((count) =>
+                      Ref.update(maxTransports, (maximum) =>
+                        Math.max(maximum, count),
+                      ),
+                    ),
+                    Effect.tap((count) => Queue.offer(transportStarts, count)),
+                    Effect.tap(() => Latch.open(transportStarted)),
+                    Effect.tap(() =>
+                      Ref.update(calls, (all) => [
+                        ...all,
+                        positionMs === undefined
+                          ? { action }
+                          : { action, positionMs },
+                      ]),
+                    ),
+                  ),
+                  () =>
+                    Latch.await(transportGate).pipe(
+                      Effect.andThen(
+                        Ref.getAndSet(nextTransportFailure, undefined),
+                      ),
+                      Effect.flatMap((failure) =>
+                        failure
+                          ? Effect.fail(providerError("transport", failure))
+                          : Effect.void,
+                      ),
+                    ),
+                  () => Ref.update(activeTransports, (count) => count - 1),
+                ),
+              events,
+            }),
+          ),
+        ),
+      ),
+      emit: (event) =>
+        Effect.sync(() => {
+          if (!closed && sink) Queue.offerUnsafe(sink, event)
+        }),
+      setState: (next) => Ref.set(state, next),
+      enqueueSample: (next) =>
+        Ref.update(plannedSamples, (values) => [...values, next]),
+      blockSample: Latch.close(sampleGate).pipe(Effect.asVoid),
+      releaseSample: Latch.open(sampleGate).pipe(Effect.asVoid),
+      blockTransport: Latch.close(transportGate).pipe(Effect.asVoid),
+      releaseTransport: Latch.open(transportGate).pipe(Effect.asVoid),
+      failNextSample: (cause = new Error("sample failed")) =>
+        Ref.set(nextSampleFailure, cause),
+      returnNullNextSample: Ref.set(nextSampleNull, true),
+      failNextTransport: (cause = new Error("transport failed")) =>
+        Ref.set(nextTransportFailure, cause),
+      sampleStarted,
+      sampleCompleted,
+      sampleStarts,
+      sampleCompletions,
+      transportStarted,
+      transportStarts,
+      eventConsumed,
+      eventSubscribed,
+      calls,
+      samples,
+      completedSamples,
+      interruptedSamples,
+      activeSamples,
+      maxSamples,
+      activeTransports,
+      maxTransports,
+      subscriptions,
+      eventFinalizations,
+      finalizations,
+    }
+    return fixture
+  })
 
 export type FakeProvider = LegacySessionProvider & {
   emit(event: MusicChangeEvent): void

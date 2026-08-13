@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, and the new blocked-command test stays within scope. It adds useful active-command closure evidence, but the coder result explicitly leaves mandatory Phase 2 acceptance cases incomplete.
+
+## Findings
+
+### High — Burst synchronization remains upstream of coordinator enrollment
+
+`eventConsumed` is still emitted by fixture-side `Stream.tap` (`provider.ts:508`) before the event reaches the coordinator's downstream handler. Waiting on it does not prove `sample("invalidation")` has acquired `samplingGate` and advanced the generation. The coalescing test can therefore release the blocked sample before it becomes stale, so its result remains scheduler-dependent rather than deterministic proof.
+
+### High — Queue saturation and continuation remain untested
+
+No focused test configures a small capacity, blocks the active transport, fills the queue, observes tagged `SERVER_BUSY`, verifies the active-plus-capacity bound, then releases work and proves queued and subsequent commands execute in FIFO order. The new admission logic remains behaviorally unaccepted.
+
+### High — Exact-once command closure coverage is still partial
+
+The new test covers one blocked active caller and post-close submission, but not a blocked active transport with queued callers, close racing enrollment/offer, or exact-once `DISPOSED` settlement for every enrolled job. It also does not release the transport after closure to prove a late completion cannot project state or resettle the caller.
+
+### High — Poll/reconciliation shutdown and stale-install races remain uncovered
+
+There is still no test that closes during poll or reconciliation sleep and proves later `TestClock` advancement starts no sample. The required stale poll-deadline installation race also remains untested; ordinary deadline replacement does not establish that invariant.
+
+### Medium — Late sample/event and no-op behavior remain incomplete
+
+The blocked-sample shutdown test does not release the sample or emit another provider event after closure to prove late work is suppressed. No focused test proves that an identical sampled state preserves both revision and its existing poll deadline.

@@ -1,4 +1,5 @@
 import {
+  Clock,
   Context,
   Deferred,
   Effect,
@@ -6,7 +7,6 @@ import {
   Layer,
   Queue,
   Ref,
-  Schedule,
   Semaphore,
   Schema,
   Scope,
@@ -55,17 +55,83 @@ const commandError = (
       : { code, operation, message, cause: { cause } },
   )
 
-type PollDeadline = {
+export type PollDeadline = {
   readonly revision: number
   readonly fiber: Fiber.Fiber<void, never> | undefined
 }
+
+type PollReservation = {
+  readonly reserved: boolean
+  readonly previous: Fiber.Fiber<void, never> | undefined
+}
+
+/** Atomically reserve a deadline revision; stale installers lose to authority. */
+export const reservePollDeadline = (
+  deadlines: Ref.Ref<PollDeadline>,
+  revision: number,
+): Effect.Effect<PollReservation> =>
+  Ref.modify<PollDeadline, PollReservation>(deadlines, (current) =>
+    current.revision > revision
+      ? [{ reserved: false, previous: undefined }, current]
+      : [
+          { reserved: true, previous: current.fiber },
+          { revision, fiber: undefined },
+        ],
+  )
+
+/** Attach only to the reservation still owned by this deadline candidate. */
+export const attachPollDeadline = (
+  deadlines: Ref.Ref<PollDeadline>,
+  revision: number,
+  fiber: Fiber.Fiber<void, never>,
+): Effect.Effect<boolean> =>
+  Ref.modify(deadlines, (current) =>
+    current.revision === revision && current.fiber === undefined
+      ? [true, { ...current, fiber }]
+      : [false, current],
+  )
+
+export type SamplingState = {
+  readonly active: boolean
+  readonly pending: boolean
+  readonly generation: number
+}
+
+/** Atomically claim or coalesce a sample; an active ticket becomes stale. */
+export const claimSampling = (
+  sampling: Ref.Ref<SamplingState>,
+): Effect.Effect<number | undefined> =>
+  Ref.modify(sampling, (current) => {
+    const generation = current.generation + 1
+    return current.active
+      ? [undefined, { ...current, generation, pending: true }]
+      : [generation, { active: true, pending: false, generation }]
+  })
 type Job = {
   readonly action: TransportAction
   readonly positionMs?: number
   readonly result: Deferred.Deferred<CommandResult, SessionCommandError>
 }
-const instanceId = () =>
-  `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+const instanceId = () => `music-session-${Math.random().toString(36).slice(2)}`
+
+const samePlayerState = (left: PlayerState, right: PlayerState) =>
+  left.is_playing === right.is_playing &&
+  left.progress_ms === right.progress_ms &&
+  left.shuffle === right.shuffle &&
+  left.repeat === right.repeat &&
+  left.fetched_at === right.fetched_at &&
+  left.track?.id === right.track?.id &&
+  left.track?.name === right.track?.name &&
+  left.track?.artists === right.track?.artists &&
+  left.track?.album === right.track?.album &&
+  left.track?.uri === right.track?.uri &&
+  left.track?.duration_ms === right.track?.duration_ms &&
+  left.device?.id === right.device?.id &&
+  left.device?.name === right.device?.name &&
+  left.device?.type === right.device?.type &&
+  left.device?.is_active === right.device?.is_active &&
+  left.device?.volume_percent === right.device?.volume_percent &&
+  left.device?.supports_volume === right.device?.supports_volume
 
 /** The sole state, command and scheduling authority for a daemon scope. */
 export class MusicSessionCoordinator extends Context.Service<
@@ -110,8 +176,8 @@ export const layer = Layer.effect(
       revision: -1,
       fiber: undefined,
     })
-    const pollTriggers = yield* Queue.unbounded<void>()
-    const sampling = yield* Ref.make({
+    const pollTriggers = yield* Queue.sliding<void>(1)
+    const sampling = yield* Ref.make<SamplingState>({
       active: false,
       pending: false,
       generation: 0,
@@ -136,16 +202,19 @@ export const layer = Layer.effect(
         )
           return [false, previous] as const
         const next = merge ? mergePlayer(previous.state, state) : state
-        return next
-          ? [
-              true,
-              {
-                daemonInstanceId,
-                revision: previous.revision + 1,
-                state: next,
-              },
-            ]
-          : [false, previous]
+        // Polling commonly returns the authoritative state unchanged. Such a
+        // sample is not an authority transition and must not churn revisions
+        // or continually replace an otherwise valid deadline.
+        if (!next || (merge && samePlayerState(next, previous.state)))
+          return [false, previous]
+        return [
+          true,
+          {
+            daemonInstanceId,
+            revision: previous.revision + 1,
+            state: next,
+          },
+        ]
       })
       if (accepted) yield* restartPoll()
       return accepted
@@ -160,23 +229,16 @@ export const layer = Layer.effect(
       yield* restartPoll()
     })
 
-    const sample: (
-      reason: string,
-    ) => Effect.Effect<boolean, never, Scope.Scope> = Effect.fn(
-      "MusicSession.Coordinator.sample",
-    )(function* (_reason: string) {
-      // Claim the single-flight lane atomically. A competing trigger marks the
-      // active attempt stale and requests precisely one catch-up sample.
-      const ticket = yield* samplingGate.withPermits(1)(
-        Ref.modify(sampling, (current) => {
-          const generation = current.generation + 1
-          return current.active
-            ? [undefined, { ...current, generation, pending: true }]
-            : [generation, { active: true, pending: false, generation }]
-        }),
-      )
-      if (ticket === undefined) return false
-
+    // Claiming is separate from provider work so event consumption can make a
+    // competing sample stale before the provider fiber is scheduled.
+    const claimSample = Effect.fn("MusicSession.Coordinator.claimSample")(
+      function* () {
+        return yield* samplingGate.withPermits(1)(claimSampling(sampling))
+      },
+    )
+    const runSample = (
+      ticket: number,
+    ): Effect.Effect<boolean, never, Scope.Scope> => {
       const run = (
         ownedTicket: number,
       ): Effect.Effect<boolean, never, Scope.Scope> =>
@@ -206,15 +268,31 @@ export const layer = Layer.effect(
           }
           // Transfer ownership directly to the coalesced pass. The lane never
           // becomes idle between completion and that pass's claim.
-          const nextTicket = yield* Ref.modify(sampling, (current) => {
-            if (!current.pending)
-              return [undefined, { ...current, active: false, pending: false }]
-            const generation = current.generation + 1
-            return [generation, { active: true, pending: false, generation }]
-          })
+          const nextTicket = yield* samplingGate.withPermits(1)(
+            Ref.modify(sampling, (current) => {
+              if (!current.pending)
+                return [
+                  undefined,
+                  { ...current, active: false, pending: false },
+                ] as const
+              const generation = current.generation + 1
+              return [
+                generation,
+                { active: true, pending: false, generation },
+              ] as const
+            }),
+          )
           return nextTicket === undefined ? accepted : yield* run(nextTicket)
         })
-      return yield* run(ticket)
+      return run(ticket)
+    }
+    const sample: (
+      reason: string,
+    ) => Effect.Effect<boolean, never, Scope.Scope> = Effect.fn(
+      "MusicSession.Coordinator.sample",
+    )(function* (_reason: string) {
+      const ticket = yield* claimSample()
+      return ticket === undefined ? false : yield* runSample(ticket)
     })
 
     const restartPoll = Effect.fn("MusicSession.Coordinator.restartPoll")(
@@ -225,37 +303,31 @@ export const layer = Layer.effect(
           : snapshot.state.track
             ? config.pollMs.paused
             : config.pollMs.idle
-        const next = yield* Effect.void.pipe(
-          Effect.repeat(
-            Schedule.spaced(delay).pipe(Schedule.upTo({ times: 1 })),
+        // Reserve the revision before creating a sleeper. A newer revision can
+        // therefore reject an older candidate even if it yielded after reading
+        // its snapshot but before it could install a fiber.
+        const reservation = yield* reservePollDeadline(
+          pollFiber,
+          snapshot.revision,
+        )
+        if (!reservation.reserved) return
+        if (reservation.previous) yield* Fiber.interrupt(reservation.previous)
+        const next = yield* Effect.sleep(delay).pipe(
+          Effect.flatMap(() => Ref.get(pollFiber)),
+          Effect.flatMap((current) =>
+            current.revision === snapshot.revision
+              ? Queue.offer(pollTriggers, undefined)
+              : Effect.void,
           ),
-          Effect.flatMap(() => Queue.offer(pollTriggers, undefined)),
           Effect.asVoid,
           Effect.forkScoped,
         )
-        // Do not let a delayed older accept replace a deadline installed for a
-        // newer revision. Interrupt an uninstalled candidate immediately.
-        const installed = yield* Ref.modify(
+        const attached = yield* attachPollDeadline(
           pollFiber,
-          (
-            current,
-          ): readonly [
-            {
-              readonly installed: boolean
-              readonly previous: Fiber.Fiber<void, never> | undefined
-            },
-            PollDeadline,
-          ] =>
-            current.revision > snapshot.revision
-              ? [{ installed: false, previous: undefined }, current]
-              : [
-                  { installed: true, previous: current.fiber },
-                  { revision: snapshot.revision, fiber: next },
-                ],
+          snapshot.revision,
+          next,
         )
-        if (installed.installed) {
-          if (installed.previous) yield* Fiber.interrupt(installed.previous)
-        } else yield* Fiber.interrupt(next)
+        if (!attached) yield* Fiber.interrupt(next)
       },
     )
 
@@ -325,28 +397,45 @@ export const layer = Layer.effect(
           yield* sample("command-failure").pipe(Effect.forkScoped)
           return
         }
-        const current = yield* SubscriptionRef.get(stateRef)
+        const now = yield* Clock.currentTimeMillis
+        // Commit projections against the state that exists *after* transport.
+        // A concurrent complete snapshot can therefore never be rolled back by
+        // a stale full-state object captured before the transport completed.
         if (action === "play" || action === "pause")
-          yield* accept(
+          yield* SubscriptionRef.modify(stateRef, (current) => [
+            true,
             {
-              ...current.state,
-              is_playing: action === "play",
-              fetched_at: Date.now(),
+              daemonInstanceId,
+              revision: current.revision + 1,
+              state: {
+                ...current.state,
+                is_playing: action === "play",
+                fetched_at: now,
+              },
             },
-            false,
-          )
+          ])
         if (action === "seek")
-          yield* accept(
-            {
-              ...current.state,
-              progress_ms: Math.min(
-                job.positionMs ?? 0,
-                current.state.track?.duration_ms || job.positionMs || 0,
-              ),
-              fetched_at: Date.now(),
-            },
-            false,
-          )
+          yield* SubscriptionRef.modify(stateRef, (current) => {
+            const requested = Math.max(0, job.positionMs ?? 0)
+            const duration = current.state.track?.duration_ms
+            return [
+              true,
+              {
+                daemonInstanceId,
+                revision: current.revision + 1,
+                state: {
+                  ...current.state,
+                  progress_ms:
+                    duration && duration > 0
+                      ? Math.min(requested, duration)
+                      : requested,
+                  fetched_at: now,
+                },
+              },
+            ]
+          })
+        if (action === "play" || action === "pause" || action === "seek")
+          yield* restartPoll()
         // Navigation has no safe optimistic replacement state, but it is still
         // authoritative provider work: a pre-navigation sample must not win.
         if (action === "next" || action === "previous")
@@ -368,7 +457,13 @@ export const layer = Layer.effect(
       Stream.runForEach((event: MusicChangeEvent) =>
         event.type === "snapshot"
           ? accept(event.state, false)
-          : sample("invalidation").pipe(Effect.forkScoped, Effect.asVoid),
+          : claimSample().pipe(
+              Effect.flatMap((ticket) =>
+                ticket === undefined
+                  ? Effect.void
+                  : runSample(ticket).pipe(Effect.forkScoped, Effect.asVoid),
+              ),
+            ),
       ),
     )
     yield* events.pipe(
@@ -400,14 +495,25 @@ export const layer = Layer.effect(
           : { action, positionMs, result }
       // Register before offering. Scope closure can therefore settle this
       // caller even if it races queue shutdown or a fast worker completion.
-      const enrolled = yield* Ref.modify(lifecycle, (current) =>
-        current.closed
-          ? [false, current]
-          : [true, { ...current, pending: new Set([...current.pending, job]) }],
-      )
-      if (!enrolled)
+      // Admission and lifecycle enrollment share the explicit command bound:
+      // one active job plus the queue's configured capacity. This keeps the
+      // close-safe registry from becoming a second unbounded queue.
+      const admission = yield* Ref.modify(lifecycle, (current) => {
+        if (current.closed) return ["closed" as const, current]
+        if (current.pending.size >= config.commandQueueCapacity + 1)
+          return ["busy" as const, current]
+        return [
+          "enrolled" as const,
+          { ...current, pending: new Set([...current.pending, job]) },
+        ]
+      })
+      if (admission === "closed")
         return yield* Effect.fail(
           commandError("DISPOSED", "command", "coordinator is closed"),
+        )
+      if (admission === "busy")
+        return yield* Effect.fail(
+          commandError("SERVER_BUSY", "command", "command queue is full"),
         )
       const offered = yield* Effect.sync(() => Queue.offerUnsafe(commands, job))
       if (!offered) {

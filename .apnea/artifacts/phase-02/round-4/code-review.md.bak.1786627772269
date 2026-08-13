@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, but this round makes no additional implementation or acceptance-test progress. The coder result explicitly confirms that mandatory Phase 2 cases remain outstanding.
+
+## Findings
+
+### High — Trigger acknowledgement remains upstream of coordinator enrollment
+
+`eventConsumed` is still recorded by the fixture's `Stream.tap` before the event reaches the coordinator handler (`provider.ts:508`). Waiting on it does not prove that `sample("invalidation")` acquired `samplingGate` and advanced the generation. The burst test can therefore release the blocked sample before it is stale, making its passing result scheduler-dependent rather than deterministic acceptance evidence.
+
+### High — Full-queue behavior and continuation remain untested
+
+No test configures a small capacity, blocks the active command, fills the queue, receives tagged `SERVER_BUSY`, verifies the active-plus-capacity bound, then releases work and proves subsequent FIFO operation. The new admission logic remains unaccepted.
+
+### High — Exact-once scope closure remains entirely untested
+
+There is no deterministic coverage for close racing enrollment/offer, blocked active transport with queued callers, blocked sampling, post-close submission, or exact-once `DISPOSED` settlement. Fixture interruption and finalization counters are still unused, and late release/emission/clock adjustment after closure is not checked.
+
+### High — Stale poll installation and sleeper interruption remain uncovered
+
+Ordinary deadline reset is tested, but not the stale-install race required by the package. No test closes during poll or reconciliation sleep and proves later `TestClock` advancement starts no provider work.
+
+### Medium — No-op merge still lacks direct acceptance evidence
+
+No focused test proves that an identical sampled state preserves both revision and the existing poll deadline.

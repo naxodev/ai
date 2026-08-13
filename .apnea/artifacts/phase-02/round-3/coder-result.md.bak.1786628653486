@@ -1,0 +1,37 @@
+---
+status: done
+---
+
+## Changed
+
+- Extended blocked-sample scope-close coverage to release the interrupted call and emit a late snapshot after closure.
+- Asserted late provider activity cannot restart coordinator sampling after scoped shutdown.
+
+Files touched:
+- `packages/music-core/tests/session-coordinator.test.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts
+exit 0 — 14 pass, 0 fail
+
+$ bun test packages/music-core/tests/system-media.test.ts
+exit 0 — 42 pass, 0 fail
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0 — typecheck, test, format:check, and package:check passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(|Date\.now\(" packages/music-core/session/coordinator.ts
+exit 0
+
+$ ! rg -n "createFakeProvider|layerFromLegacy|Effect\.repeat\(Effect\.yieldNow|new Promise" packages/music-core/tests/session-coordinator.test.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — Phase 2 product/test changes remain confined to approved paths; pre-existing `.apnea/state.json` remains untouched.
+```
+
+## Residual risks
+
+- Queue saturation/continuation, queued-command closure, stale poll-installation, poll/reconciliation sleep interruption, and no-op merge acceptance still need focused deterministic coverage.

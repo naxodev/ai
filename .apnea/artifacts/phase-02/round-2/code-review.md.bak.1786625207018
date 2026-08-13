@@ -1,0 +1,26 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, and the rework stays within its allowed coordinator/provider-test seam. The implementation adds useful controls and addresses identical-state revision churn, but the phase gate remains incomplete as the coder result acknowledges.
+
+## Findings
+
+### High — The invalidation-burst test does not prove a stale sample plus one catch-up
+
+The fixture's `sampleStarted` and `sampleCompleted` controls are one-way latches opened by the coordinator's initial sample (`provider.ts:515-517,539-541`). In the burst test, both `Latch.await` calls can therefore return immediately from that earlier sample. `sampleStarts` is also a capacity-one sliding queue, and the test merely takes one value and asserts it is at least one (`session-coordinator.test.ts:165-168`). It never asserts two new calls, one stale completion plus one catch-up, or the final accepted state. Thus the test can pass without demonstrating the package's central coalescing invariant. Per-call start/completion synchronization and exact count/publication assertions are still required.
+
+### High — The required race, timing, queue, and shutdown matrices remain absent
+
+Only one blocked play race was added. It still uses `Effect.yieldNow` after emitting the newer snapshot (`session-coordinator.test.ts:196`) rather than waiting for an explicit coordinator commit, so release ordering is not deterministic. Pause and seek races, pre-trigger/pre-snapshot/pre-command stale samples, poll reset/stale-install and one-millisecond boundaries, transport/navigation reconciliation, multi-submitter FIFO, saturation, and all enrollment/blocked/queued/deadline closure races remain untested. The transport-failure test also does not assert that exactly one recovery sample is requested. The coder explicitly lists these residual gaps, so eight passing tests do not satisfy Phase 2 acceptance.
+
+### High — Config acceptance remains unimplemented
+
+The config test is unchanged: it covers defaults and an empty socket path only. There is still no concrete override/`ConfigProvider` parity and defaulting evidence, malformed numeric-text case, or exhaustive typed rejection for frame size, queue capacity, reconciliation delays, and poll delays. This is an explicit Phase 2 gate, not later-phase work.
+
+### Medium — The no-op revision fix has no focused evidence
+
+`coordinator.ts:138-143` now compares merged state via `JSON.stringify`, but no test proves that an identical merge preserves revision and its existing poll deadline. Besides leaving the claimed fix unverified, serialization equality is sensitive to object property insertion order rather than domain equality. Add direct revision/deadline evidence and use an explicit state equality decision rather than incidental JSON representation.

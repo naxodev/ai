@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, and changes stay within its allowed provider-test seam. No socket/server scope was introduced. However, the previous trigger-enrollment issue is not actually resolved, and the coder result still leaves mandatory Phase 2 matrices incomplete.
+
+## Findings
+
+### High — `eventConsumed` still acknowledges before coordinator trigger enrollment
+
+The new observation remains `Stream.tap((event) => Queue.offer(eventConsumed, event))` in the fixture (`provider.ts:508`). That tap completes before the stream emits the event to the coordinator's downstream `Stream.runForEach`, so the test helper can return before `sample("invalidation")` acquires `samplingGate` and advances the generation. Releasing the sample after this acknowledgement is still racy; it does not prove the stale attempt was invalidated before publication. The acknowledgement must come from the coordinator side after trigger enrollment, not from an upstream fixture tap.
+
+### High — Queue saturation and continuation remain untested
+
+No focused test configures a small command capacity, blocks the active job, fills the queue, observes tagged `SERVER_BUSY`, verifies the active-plus-capacity bound, then releases work and proves the worker remains usable. This explicit acceptance check is still absent despite the newly bounded admission implementation.
+
+### High — Exact-once scope closure remains entirely unaccepted
+
+There is still no deterministic evidence for close racing enrollment/offer, blocked active transport with queued jobs, blocked sample, submission after close, or exact-once `DISPOSED` settlement. Fixture interruption/event-source/Layer finalization counters remain unused, and late release/emission/clock advancement after closure is not tested. The coder result explicitly identifies this remaining gap.
+
+### High — Stale deadline installation and sleep interruption remain uncovered
+
+Ordinary poll-deadline reset is tested, but the required stale-install race is not. No test closes during poll or reconciliation sleep and proves that later `TestClock` advancement starts no provider work. These are explicit Phase 2 timing and scope invariants.
+
+### Medium — No-op merge behavior still lacks focused evidence
+
+No test proves that an identical sampled state leaves the revision unchanged and preserves the existing poll deadline, despite dedicated production logic for that invariant.

@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, and the new test stays within its deterministic provider/coordinator seam. Blocked-sample shutdown now has useful evidence, but the remaining mandatory acceptance gaps are explicitly acknowledged by the coder result.
+
+## Findings
+
+### High — Burst synchronization is still upstream of trigger enrollment
+
+`eventConsumed` remains implemented with fixture-side `Stream.tap` (`provider.ts:508`), which completes before the event reaches the coordinator's downstream handler. The burst test may therefore release its blocked sample before `sample("invalidation")` advances the generation. The new scope test avoids this issue by additionally waiting for a sample start, but the coalescing test still lacks a coordinator-side acknowledgement and remains scheduler-dependent.
+
+### High — Queue saturation and continuation remain untested
+
+No focused test fills a configured small queue behind a blocked active command, observes tagged `SERVER_BUSY`, verifies the active-plus-capacity bound, then releases work and proves the global worker remains usable. The admission implementation is still not accepted behaviorally.
+
+### High — Command exact-once closure remains untested
+
+The added test proves interruption/finalization for one blocked sample only. It does not cover close racing command enrollment/offer, a blocked active transport with queued callers, post-close submission, or exact-once `DISPOSED` settlement for every active/queued caller. These are explicit Phase 2 command-lifecycle invariants.
+
+### High — Poll/reconciliation shutdown and stale-install races remain uncovered
+
+There is still no test that closes during a poll or reconciliation sleep and proves later `TestClock` advancement starts no work. The required stale poll-deadline installation race also remains untested; ordinary deadline replacement is insufficient evidence for that concurrency invariant.
+
+### Medium — Late-completion and no-op behavior remain incomplete
+
+The shutdown test does not release the blocked sample or emit events after closure to prove late work is suppressed. No focused test proves that an identical sampled state preserves both revision and the existing poll deadline.

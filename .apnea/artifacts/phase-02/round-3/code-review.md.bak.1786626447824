@@ -1,0 +1,26 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, and the changes stay within its allowed coordinator/provider-test seam. Command admission is now bounded and several stale-authority tests improved, but required acceptance evidence remains incomplete.
+
+## Findings
+
+### High — The burst test permits the stale sample to publish
+
+After emitting the second and third invalidations, the test immediately opens the sample gate without waiting for those triggers to advance the coordinator generation (`session-coordinator.test.ts:286-290`). It then discards the first state update and checks only that the second is `catch-up` (`:297-298`). This allows exactly the forbidden behavior: the blocked `stale` sample may publish before the queued invalidations are processed, followed by the catch-up, and the test still passes. Synchronize on trigger enrollment/generation and assert that there is exactly one publication whose state is `catch-up`; do not discard an unexplained first update.
+
+### High — Queue saturation and exact-once closure remain unaccepted
+
+Although `coordinator.ts:453-460` now bounds lifecycle enrollment, no focused test proves configured-capacity `SERVER_BUSY`, that active-plus-queued work remains within the bound, or that the worker continues afterward. There is also still no deterministic coverage for close racing enrollment/offer, blocked active transport plus queued jobs, blocked sample, post-close submission, or exact-once `DISPOSED` settlement. The overflow-versus-close path is especially important because an enrolled job can race between direct `SERVER_BUSY` return and finalizer failure of its `Deferred`.
+
+### High — Poll deadline reset/replacement and shutdown semantics remain unverified
+
+The 3/5/8 and reconciliation boundary tests are useful, but no test proves that a newer authoritative update resets and replaces the prior deadline, that a delayed stale installation cannot replace the newer one, or that closing during poll/reconciliation sleep prevents later clock advances from starting work. These are explicit Phase 2 acceptance checks, and the coder result acknowledges the gap.
+
+### Medium — Remaining lifecycle/finalization evidence is absent
+
+The fixture now counts interrupted samples, event-source finalization, and Layer finalization, but no focused test asserts those counters or verifies that late provider emissions/releases after closure cannot publish or execute work. The no-op merge rule also still lacks direct revision/deadline evidence.

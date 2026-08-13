@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, and the changes stay within its allowed files. Config parity and explicit state equality are improved, but the coder result correctly reports that major Phase 2 acceptance evidence is still missing.
+
+## Findings
+
+### High — The expanded fixture controls are still not used to prove coalescing
+
+The fixture now exposes unbounded per-call `sampleStarts` and `sampleCompletions`, but the invalidation-burst test does not consume either. It still waits on the one-way `sampleStarted`/`sampleCompleted` latches opened by the coordinator's initial sample and asserts only `maxSamples === 1` (`session-coordinator.test.ts:226-253`). It never proves that the blocked sample was stale, that exactly one catch-up ran, or that only the catch-up published. The central single-flight/coalescing acceptance invariant therefore remains unverified.
+
+### High — Stale-authority and optimistic-command race coverage remains incomplete
+
+There are still no direct tests for samples started before a trigger, complete snapshot, or successful command. The one blocked transport race covers play only; pause and seek are absent, and the separate seek test does not block transport or publish a competing snapshot. There is also no evidence that next/previous advance authority without inventing state. These are explicit Phase 2 acceptance checks and the key races called out by the plan.
+
+### High — Polling and reconciliation timing are not accepted at their boundaries
+
+The poll test advances directly by 3/5/8 seconds and checks one aggregate sample increment. It does not verify no action one millisecond before the deadline, no duplicate afterward, deadline reset/replacement after a newer authority update, or stale-install rejection. No test covers the distinct 120 ms transport and 150 ms navigation reconciliation delays or scope closure during those sleeps. The required `TestClock` timing matrix remains absent.
+
+### High — Queue bounds and exact-once shutdown behavior remain untested
+
+There is no configured-capacity saturation/`SERVER_BUSY` test, blocked active plus queued command test, post-close `DISPOSED` test, enrollment/offer versus close race, or proof that active and queued callers settle exactly once while blocked sample/transport/poll/reconciliation work is interrupted. Fixture finalization and suppression of late emissions/completions are likewise not asserted. This leaves the package's global command and scope-lifecycle invariants without acceptance evidence.
+
+### Medium — ConfigProvider malformed/defaulting coverage is partial
+
+The config test now proves complete concrete/provider parity and several concrete invalid values, but it does not exercise missing optional ConfigProvider values using defaults or malformed numeric text through `layerFromConfig`, both explicitly required by the package.

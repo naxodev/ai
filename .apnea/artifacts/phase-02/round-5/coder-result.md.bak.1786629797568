@@ -1,0 +1,36 @@
+---
+status: done
+---
+
+## Changed
+
+- Added direct no-op sampled-state evidence: an identical paused provider sample does not advance the coordinator authority revision.
+
+Files touched:
+- `packages/music-core/tests/session-coordinator.test.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts
+exit 0 — 15 pass, 0 fail
+
+$ bun test packages/music-core/tests/system-media.test.ts
+exit 0 — 42 pass, 0 fail
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0 — typecheck, test, format:check, and package:check passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(|Date\.now\(" packages/music-core/session/coordinator.ts
+exit 0
+
+$ ! rg -n "createFakeProvider|layerFromLegacy|Effect\.repeat\(Effect\.yieldNow|new Promise" packages/music-core/tests/session-coordinator.test.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — Phase 2 product/test changes remain confined to approved paths; pre-existing `.apnea/state.json` remains untouched.
+```
+
+## Residual risks
+
+- Deterministic acceptance coverage remains for coordinator-side trigger enrolment, queue saturation/continuation, queued close settlement, stale deadline installation, and poll/reconciliation sleeper interruption.

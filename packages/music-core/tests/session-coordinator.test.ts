@@ -1,71 +1,236 @@
 import { expect, test } from "bun:test"
 import {
+  ConfigProvider,
   Context,
-  Duration,
   Effect,
   Exit,
   Fiber,
+  Latch,
   Layer,
-  Option,
-  Schedule,
-  Scope,
+  Queue,
+  Result,
+  Ref,
   Stream,
+  Scope,
 } from "effect"
 import { TestClock } from "effect/testing"
-import { emptyPlayer } from "../types.ts"
-import { MusicSessionConfig, layer as configLayer } from "../session/config.ts"
+import { emptyPlayer, type PlayerState } from "../types.ts"
+import {
+  MusicSessionConfig,
+  layer as configLayer,
+  layerFromConfig,
+} from "../session/config.ts"
 import {
   MusicSessionCoordinator,
+  type PollDeadline,
+  type SamplingState,
+  attachPollDeadline,
+  claimSampling,
   layer as coordinatorLayer,
+  reservePollDeadline,
 } from "../session/coordinator.ts"
-import { createFakeProvider, layerFromLegacy } from "../session/provider.ts"
+import { makeCoordinatorProviderFixture } from "../session/provider.ts"
 
-test("config layer applies defaults and rejects invalid daemon timing", async () => {
-  const defaults = await Effect.runPromise(
+const track = (name: string): PlayerState["track"] => ({
+  id: name,
+  name,
+  artists: "Artist",
+  album: "Album",
+  uri: `system:${name}`,
+  duration_ms: 10_000,
+})
+
+const fixture = () =>
+  Effect.runPromise(
+    makeCoordinatorProviderFixture({ ...emptyPlayer(), fetched_at: 1 }),
+  )
+type Fixture = Awaited<ReturnType<typeof fixture>>
+
+const graph = (provider: Fixture, capacity = 128) =>
+  Layer.provide(
+    Layer.provide(coordinatorLayer, provider.layer),
+    configLayer({
+      socketPath: "/tmp/music-session-test.sock",
+      commandQueueCapacity: capacity,
+      reconciliationMs: { transport: 120, navigation: 150 },
+      pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
+    }),
+  )
+
+const awaitSubscription = (provider: Fixture) =>
+  Latch.await(provider.eventSubscribed)
+
+const initialSample = (provider: Fixture) =>
+  Effect.all([
+    Queue.take(provider.sampleStarts),
+    Queue.take(provider.sampleCompletions),
+  ])
+
+const snapshot = (provider: Fixture, state: PlayerState) =>
+  provider.emit({ type: "snapshot", state })
+
+const invalidation = (provider: Fixture) =>
+  provider
+    .emit({ type: "invalidation", reason: "stream-terminated" })
+    .pipe(Effect.andThen(Queue.take(provider.eventConsumed)))
+
+const subscribeStates = (coordinator: MusicSessionCoordinator["Service"]) =>
+  Effect.gen(function* () {
+    const updates = yield* Queue.unbounded<PlayerState>()
+    const ready = yield* Latch.make(false)
+    yield* coordinator.states.pipe(
+      Stream.map((revisioned) => revisioned.state),
+      Stream.runForEach((state) =>
+        Queue.offer(updates, state).pipe(Effect.andThen(Latch.open(ready))),
+      ),
+      Effect.forkScoped,
+    )
+    yield* Latch.await(ready)
+    yield* Queue.take(updates)
+    return updates
+  })
+
+test("config defaults, overrides, ConfigProvider parity, and typed failures", async () => {
+  const resolve = (layer: Layer.Layer<MusicSessionConfig, unknown>) =>
     Effect.scoped(
       Effect.gen(function* () {
         return (yield* MusicSessionConfig).options
-      }).pipe(Effect.provide(configLayer({ socketPath: "/tmp/config.sock" }))),
-    ),
+      }).pipe(Effect.provide(layer)),
+    )
+  const defaults = await Effect.runPromise(
+    resolve(configLayer({ socketPath: "/tmp/config.sock" })),
   )
   expect(defaults.maxFrameBytes).toBe(64 * 1024)
-  expect(defaults.pollMs).toEqual({
-    playing: 3_000,
-    paused: 5_000,
-    idle: 8_000,
-  })
-
-  const error = await Effect.runPromise(
-    Effect.scoped(
-      Layer.build(
-        configLayer({
-          socketPath: "/tmp/config.sock",
-          pollMs: { playing: 3_000, paused: 5_000, idle: 0 },
-        }),
-      ),
-    ).pipe(
-      Effect.match({
-        onSuccess: () => "unexpected success",
-        onFailure: (failure) => failure,
+  const concrete = await Effect.runPromise(
+    resolve(
+      configLayer({
+        socketPath: "/tmp/config.sock",
+        maxFrameBytes: 512,
+        commandQueueCapacity: 4,
+        reconciliationMs: { transport: 7, navigation: 8 },
+        pollMs: { playing: 9, paused: 10, idle: 11 },
       }),
     ),
   )
-  expect(error).toMatchObject({
+  const fromConfig = await Effect.runPromise(
+    resolve(layerFromConfig).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({
+            MUSIC_SESSION_SOCKET: "/tmp/config.sock",
+            MUSIC_SESSION_MAX_FRAME_BYTES: "512",
+            MUSIC_SESSION_COMMAND_QUEUE_CAPACITY: "4",
+            MUSIC_SESSION_RECONCILIATION_TRANSPORT_MS: "7",
+            MUSIC_SESSION_RECONCILIATION_NAVIGATION_MS: "8",
+            MUSIC_SESSION_POLL_PLAYING_MS: "9",
+            MUSIC_SESSION_POLL_PAUSED_MS: "10",
+            MUSIC_SESSION_POLL_IDLE_MS: "11",
+          }),
+        ),
+      ),
+    ),
+  )
+  expect(fromConfig).toEqual(concrete)
+  const missing = await Effect.runPromise(
+    resolve(layerFromConfig).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({
+            MUSIC_SESSION_SOCKET: "/tmp/config.sock",
+          }),
+        ),
+      ),
+    ),
+  )
+  expect(missing.maxFrameBytes).toBe(64 * 1024)
+  const malformed = await Effect.runPromise(
+    resolve(layerFromConfig).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({
+            MUSIC_SESSION_SOCKET: "/tmp/config.sock",
+            MUSIC_SESSION_POLL_PLAYING_MS: "wrong",
+          }),
+        ),
+      ),
+      Effect.match({ onSuccess: () => undefined, onFailure: (error) => error }),
+    ),
+  )
+  expect(malformed).toMatchObject({
     _tag: "MusicSession.ConfigError",
-    setting: "pollMs.idle",
-    operation: "resolve",
+    setting: "pollMs.playing",
   })
+  for (const [setting, invalid] of [
+    ["socketPath", { socketPath: "" }],
+    ["maxFrameBytes", { maxFrameBytes: 0 }],
+    ["commandQueueCapacity", { commandQueueCapacity: Number.NaN }],
+    [
+      "reconciliationMs.transport",
+      { reconciliationMs: { transport: 0, navigation: 1 } },
+    ],
+    [
+      "reconciliationMs.navigation",
+      { reconciliationMs: { transport: 1, navigation: -1 } },
+    ],
+    ["pollMs.playing", { pollMs: { playing: 0, paused: 1, idle: 1 } }],
+    [
+      "pollMs.paused",
+      { pollMs: { playing: 1, paused: Number.POSITIVE_INFINITY, idle: 1 } },
+    ],
+    [
+      "pollMs.idle",
+      { pollMs: { playing: 1, paused: 1, idle: Number.MAX_SAFE_INTEGER + 1 } },
+    ],
+  ] as const) {
+    const failure = await Effect.runPromise(
+      Effect.scoped(
+        Layer.build(
+          configLayer({ socketPath: "/tmp/config.sock", ...invalid }),
+        ),
+      ).pipe(
+        Effect.match({
+          onSuccess: () => undefined,
+          onFailure: (error) => error,
+        }),
+      ),
+    )
+    expect(failure).toMatchObject({ _tag: "MusicSession.ConfigError", setting })
+  }
 })
 
-test("coordinator layer owns one provider subscription and serializes toggles", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({
-      socketPath: "/tmp/test.sock",
-      pollMs: { playing: 100000, paused: 100000, idle: 100000 },
-    }),
+test("state and status replay current values and snapshots publish without sampling", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        const initial = yield* coordinator.states.pipe(
+          Stream.take(1),
+          Stream.runHead,
+        )
+        expect(initial._tag).toBe("Some")
+        yield* awaitSubscription(provider)
+        yield* Latch.await(provider.sampleStarted)
+        const beforeSamples = yield* Ref.get(provider.samples)
+        const updates = yield* subscribeStates(coordinator)
+        yield* provider.emit({
+          type: "snapshot",
+          state: { ...emptyPlayer(), track: track("new"), fetched_at: 2 },
+        })
+        expect((yield* Queue.take(updates)).track?.name).toBe("new")
+        expect(yield* Ref.get(provider.samples)).toBeLessThanOrEqual(
+          beforeSamples + 1,
+        )
+        expect(
+          (yield* coordinator.status.pipe(Stream.take(1), Stream.runHead))._tag,
+        ).toBe("Some")
+      }).pipe(Effect.provide(graph(provider))),
+    ),
   )
+})
+
+test("commands are globally FIFO and toggle resolves when dequeued", async () => {
+  const provider = await fixture()
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -74,411 +239,643 @@ test("coordinator layer owns one provider subscription and serializes toggles", 
           coordinator.submit("toggle"),
           coordinator.submit("toggle"),
         ])
-        expect(provider.calls).toEqual(["play", "pause"])
-        const replay = yield* coordinator.states.pipe(
-          Stream.take(1),
-          Stream.runCollect,
-        )
-        expect(replay).toHaveLength(1)
-      }).pipe(Effect.provide(graph)),
+        expect(yield* Ref.get(provider.calls)).toEqual([
+          { action: "play" },
+          { action: "pause" },
+        ])
+      }).pipe(Effect.provide(graph(provider))),
     ),
   )
-  expect(provider.counts.subscriptions).toBe(1)
-  expect(provider.counts.disposals).toBe(1)
-  expect(provider.counts.providerDisposals).toBe(1)
 })
 
-test("provider snapshots publish immediately without sampling", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/snapshot.sock" }),
-  )
+test("optimistic seek projects over the current provider snapshot", async () => {
+  const provider = await fixture()
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const coordinator = yield* MusicSessionCoordinator
-        const observed = yield* coordinator.states.pipe(
-          Stream.filter((snapshot) => snapshot.state.fetched_at === 2),
-          Stream.runHead,
-          Effect.forkScoped,
-        )
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        expect(provider.counts.subscriptions).toBe(1)
-        provider.emit({
+        yield* awaitSubscription(provider)
+        const updates = yield* subscribeStates(coordinator)
+        yield* provider.emit({
           type: "snapshot",
-          state: { ...provider.state, fetched_at: 2 },
+          state: {
+            ...emptyPlayer(),
+            track: track("authoritative"),
+            progress_ms: 200,
+            fetched_at: 2,
+          },
         })
-        const snapshot = yield* Fiber.join(observed)
-        expect(Option.isSome(snapshot)).toBe(true)
-        if (Option.isSome(snapshot))
-          expect(snapshot.value.state.fetched_at).toBe(2)
-        expect(provider.counts.samples).toBe(1)
-      }).pipe(Effect.provide(graph)),
+        yield* Queue.take(updates)
+        yield* coordinator.submit("seek", 30_000)
+        const current = yield* coordinator.current()
+        expect(current.state.track?.name).toBe("authoritative")
+        expect(current.state.progress_ms).toBe(10_000)
+      }).pipe(Effect.provide(graph(provider))),
     ),
   )
 })
 
-test("atomic sampling claim discards a blocked stale sample and coalesces invalidation bursts", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/stale-sample.sock" }),
-  )
+test("atomic sampling claim stales an active ticket before publication", async () => {
   await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* MusicSessionCoordinator
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        provider.blockSample()
-        provider.emit({ type: "invalidation", reason: "stream-terminated" })
-        provider.emit({ type: "invalidation", reason: "stream-terminated" })
-        provider.emit({ type: "invalidation", reason: "stream-terminated" })
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        expect(provider.counts.samples).toBe(2)
-        provider.releaseSample()
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        expect(provider.counts.samples).toBe(3)
-      }).pipe(Effect.provide(graph)),
-    ),
-  )
-})
-
-test("a complete snapshot prevents a blocked older sample from publishing", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/snapshot-authority.sock" }),
-  )
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const coordinator = yield* MusicSessionCoordinator
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        provider.blockSample()
-        provider.emit({ type: "invalidation", reason: "stream-terminated" })
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        const observed = yield* coordinator.states.pipe(
-          Stream.filter((snapshot) => snapshot.state.fetched_at === 2),
-          Stream.runHead,
-          Effect.forkScoped,
-        )
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        provider.emit({
-          type: "snapshot",
-          state: { ...provider.state, fetched_at: 2 },
-        })
-        const snapshot = yield* Fiber.join(observed)
-        expect(Option.isSome(snapshot)).toBe(true)
-        provider.releaseSample()
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        expect((yield* coordinator.current()).state.fetched_at).toBe(2)
-        expect(provider.counts.samples).toBe(2)
-      }).pipe(Effect.provide(graph)),
-    ),
-  )
-})
-
-test("successful navigation prevents a pre-command sample from publishing", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/navigation-authority.sock" }),
-  )
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const coordinator = yield* MusicSessionCoordinator
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        const before = yield* coordinator.current()
-        provider.blockSample()
-        provider.emit({ type: "invalidation", reason: "stream-terminated" })
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        yield* coordinator.submit("next")
-        provider.releaseSample()
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        // Navigation advances authority without inventing a replacement state;
-        // releasing the older sample cannot advance it again.
-        expect((yield* coordinator.current()).revision).toBe(
-          before.revision + 1,
-        )
-        expect(provider.calls).toEqual(["next"])
-      }).pipe(Effect.provide(graph)),
-    ),
-  )
-})
-
-test("queue saturation returns SERVER_BUSY without stopping queued commands", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({
-      socketPath: "/tmp/command-capacity.sock",
-      commandQueueCapacity: 1,
+    Effect.gen(function* () {
+      const sampling = yield* Ref.make<SamplingState>({
+        active: true,
+        pending: false,
+        generation: 4,
+      })
+      expect(yield* claimSampling(sampling)).toBeUndefined()
+      expect(yield* Ref.get(sampling)).toEqual({
+        active: true,
+        pending: true,
+        generation: 5,
+      })
     }),
   )
+})
+
+test("invalidation bursts discard the stale sample and run one catch-up", async () => {
+  const provider = await fixture()
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const coordinator = yield* MusicSessionCoordinator
-        provider.blockTransport()
-        const first = yield* coordinator.submit("play").pipe(Effect.forkScoped)
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        const second = yield* coordinator
-          .submit("pause")
-          .pipe(Effect.forkScoped)
-        yield* Effect.repeat(Effect.yieldNow, Schedule.recurs(10))
-        const rejected = yield* coordinator.submit("next").pipe(
-          Effect.match({
-            onSuccess: () => "unexpected success",
-            onFailure: (error) => error.code,
-          }),
-        )
-        expect(rejected).toBe("SERVER_BUSY")
-        provider.releaseTransport()
-        yield* Fiber.join(first)
-        yield* Fiber.join(second)
-        expect(provider.calls).toEqual(["play", "pause"])
-      }).pipe(Effect.provide(graph)),
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const updates = yield* subscribeStates(coordinator)
+        yield* provider.blockSample
+        yield* provider.enqueueSample({
+          ...emptyPlayer(),
+          track: track("stale"),
+          fetched_at: 2,
+        })
+        yield* invalidation(provider)
+        expect(yield* Queue.take(provider.sampleStarts)).toBe(2)
+        yield* provider.enqueueSample({
+          ...emptyPlayer(),
+          track: track("catch-up"),
+          fetched_at: 3,
+        })
+        yield* invalidation(provider)
+        yield* invalidation(provider)
+        yield* provider.releaseSample
+        expect(yield* Queue.take(provider.sampleCompletions)).toBe(2)
+        expect(yield* Queue.take(provider.sampleStarts)).toBe(3)
+        expect(yield* Queue.take(provider.sampleCompletions)).toBe(3)
+        // The trigger is consumed before release, so the stale attempt cannot
+        // commit. Exactly one post-subscription publication is the catch-up.
+        expect((yield* Queue.take(updates)).track?.name).toBe("catch-up")
+        expect(yield* Ref.get(provider.maxSamples)).toBe(1)
+      }).pipe(Effect.provide(graph(provider))),
     ),
   )
 })
 
-test("reconciliation waits for the configured Effect-time delay", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({
-      socketPath: "/tmp/reconciliation.sock",
-      reconciliationMs: { transport: 250, navigation: 500 },
-      pollMs: { playing: 100_000, paused: 100_000, idle: 100_000 },
-    }),
-  )
+test("samples started before snapshots and commands cannot overwrite authority", async () => {
+  const provider = await fixture()
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const updates = yield* subscribeStates(coordinator)
+        yield* provider.blockSample
+        yield* provider.enqueueSample({
+          ...emptyPlayer(),
+          track: track("stale-snapshot"),
+          fetched_at: 2,
+        })
+        yield* invalidation(provider)
+        expect(yield* Queue.take(provider.sampleStarts)).toBe(2)
+        yield* snapshot(provider, {
+          ...emptyPlayer(),
+          track: track("authoritative"),
+          fetched_at: 3,
+        })
+        expect((yield* Queue.take(updates)).track?.name).toBe("authoritative")
+        yield* provider.releaseSample
+        expect(yield* Queue.take(provider.sampleCompletions)).toBe(2)
+        expect((yield* coordinator.current()).state.track?.name).toBe(
+          "authoritative",
+        )
+
+        yield* provider.blockSample
+        yield* provider.enqueueSample({
+          ...emptyPlayer(),
+          track: track("stale-command"),
+          fetched_at: 4,
+        })
+        yield* invalidation(provider)
+        expect(yield* Queue.take(provider.sampleStarts)).toBe(3)
         yield* coordinator.submit("play")
-        yield* Effect.yieldNow
-        yield* TestClock.adjust("249 millis")
-        expect(provider.counts.samples).toBe(1)
-        yield* TestClock.adjust("1 millis")
-        expect(provider.counts.samples).toBe(2)
-      }).pipe(Effect.provide(graph)),
-    ).pipe(Effect.provide(TestClock.layer())),
+        yield* provider.releaseSample
+        expect(yield* Queue.take(provider.sampleCompletions)).toBe(3)
+        const current = yield* coordinator.current()
+        expect(current.state.track?.name).toBe("authoritative")
+        expect(current.state.is_playing).toBe(true)
+      }).pipe(Effect.provide(graph(provider))),
+    ),
   )
 })
 
-test("playing polling advances under TestClock", async () => {
-  const provider = createFakeProvider({
-    ...emptyPlayer(),
-    is_playing: true,
-    fetched_at: 1,
-    track: {
-      id: "track",
-      name: "Track",
-      artists: "Artist",
-      album: "Album",
-      uri: "spotify:track:track",
-      duration_ms: 10_000,
-    },
-  })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/test-clock.sock" }),
-  )
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* MusicSessionCoordinator
-        expect(provider.counts.samples).toBe(1)
-        yield* TestClock.adjust("3 seconds")
-        expect(provider.counts.samples).toBe(2)
-      }).pipe(Effect.provide(graph)),
-    ).pipe(Effect.provide(TestClock.layer())),
-  )
-})
-
-test("TestClock uses paused and idle polling bounds", async () => {
-  const paused = createFakeProvider({
-    ...emptyPlayer(),
-    fetched_at: 1,
-    track: {
-      id: "paused",
-      name: "Paused",
-      artists: "Artist",
-      album: "Album",
-      uri: "spotify:track:paused",
-      duration_ms: 10_000,
-    },
-  })
-  const idle = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const run = (
-    provider: ReturnType<typeof createFakeProvider>,
-    delay: Duration.Input,
-  ) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* MusicSessionCoordinator
-        expect(provider.counts.samples).toBe(1)
-        yield* TestClock.adjust(delay)
-        expect(provider.counts.samples).toBe(2)
-      }).pipe(
-        Effect.provide(
-          Layer.provide(
-            Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-            configLayer({ socketPath: `/tmp/${delay}.sock` }),
-          ),
-        ),
+test("blocked play, pause, and seek project over a newer snapshot", async () => {
+  for (const [action, positionMs] of [
+    ["play", undefined],
+    ["pause", undefined],
+    ["seek", 30_000],
+  ] as const) {
+    const provider = await fixture()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* MusicSessionCoordinator
+          yield* awaitSubscription(provider)
+          yield* provider.blockTransport
+          const command = yield* coordinator
+            .submit(action, positionMs)
+            .pipe(Effect.forkScoped)
+          yield* Queue.take(provider.transportStarts)
+          const updates = yield* subscribeStates(coordinator)
+          yield* snapshot(provider, {
+            ...emptyPlayer(),
+            track: track(`newer-${action}`),
+            progress_ms: 700,
+            fetched_at: 9,
+          })
+          yield* Queue.take(updates)
+          yield* provider.releaseTransport
+          yield* Fiber.join(command)
+          const current = yield* coordinator.current()
+          expect(current.state.track?.name).toBe(`newer-${action}`)
+          expect(current.state.progress_ms).toBe(
+            action === "seek" ? 10_000 : 700,
+          )
+          expect(current.state.is_playing).toBe(action === "play")
+        }).pipe(Effect.provide(graph(provider))),
       ),
     )
-  await Effect.runPromise(
-    run(paused, "5 seconds").pipe(Effect.provide(TestClock.layer())),
-  )
-  await Effect.runPromise(
-    run(idle, "8 seconds").pipe(Effect.provide(TestClock.layer())),
-  )
-})
-
-test("failed and null polls install the next idle deadline", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/failed-poll.sock" }),
-  )
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* MusicSessionCoordinator
-        provider.failNextSample()
-        yield* TestClock.adjust("8 seconds")
-        expect(provider.counts.samples).toBe(2)
-        yield* TestClock.adjust("8 seconds")
-        expect(provider.counts.samples).toBe(3)
-        provider.returnNullNextSample()
-        yield* TestClock.adjust("8 seconds")
-        expect(provider.counts.samples).toBe(4)
-        yield* TestClock.adjust("8 seconds")
-        expect(provider.counts.samples).toBe(5)
-      }).pipe(Effect.provide(graph)),
-    ).pipe(Effect.provide(TestClock.layer())),
-  )
-})
-
-test("an authoritative snapshot resets the polling deadline", async () => {
-  const provider = createFakeProvider({
-    ...emptyPlayer(),
-    is_playing: true,
-    fetched_at: 1,
-    track: {
-      id: "reset",
-      name: "Reset",
-      artists: "Artist",
-      album: "Album",
-      uri: "spotify:track:reset",
-      duration_ms: 10_000,
-    },
-  })
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/reset-poll.sock" }),
-  )
-  await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* MusicSessionCoordinator
-        yield* TestClock.adjust("2 seconds")
-        provider.emit({
-          type: "snapshot",
-          state: { ...provider.state, fetched_at: 2 },
-        })
-        yield* Effect.yieldNow
-        yield* TestClock.adjust("1 second")
-        expect(provider.counts.samples).toBe(1)
-        yield* TestClock.adjust("2 seconds")
-        expect(provider.counts.samples).toBe(2)
-      }).pipe(Effect.provide(graph)),
-    ).pipe(Effect.provide(TestClock.layer())),
-  )
-})
-
-test("scope close settles a blocked transport and finalizes the provider once", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  provider.blockTransport()
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/blocked-close.sock" }),
-  )
-  const scope = await Effect.runPromise(Scope.make())
-  try {
-    const context = await Effect.runPromise(
-      Scope.provide(scope)(Layer.build(graph)),
-    )
-    const coordinator = Context.get(context, MusicSessionCoordinator)
-    const command = Effect.runFork(
-      Scope.provide(scope)(coordinator.submit("play")),
-    )
-    await Effect.runPromise(Effect.repeat(Effect.yieldNow, Schedule.recurs(10)))
-    await Effect.runPromise(Scope.close(scope, Exit.void))
-    const result = await Effect.runPromise(
-      Fiber.join(command).pipe(
-        Effect.match({
-          onSuccess: () => "unexpected success",
-          onFailure: (error) => error.code,
-        }),
-      ),
-    )
-    expect(result).toBe("DISPOSED")
-    expect(provider.counts.providerDisposals).toBe(1)
-  } finally {
-    await Effect.runPromise(Scope.close(scope, Exit.void))
   }
 })
 
-test("scope close interrupts a blocked initial sample and suppresses its late completion", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  provider.blockSample()
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/blocked-sample-close.sock" }),
-  )
-  const scope = await Effect.runPromise(Scope.make())
-  try {
-    const build = Effect.runFork(Scope.provide(scope)(Layer.build(graph)))
-    await Effect.runPromise(Effect.repeat(Effect.yieldNow, Schedule.recurs(10)))
-    expect(provider.counts.samples).toBe(1)
-    await Effect.runPromise(Scope.close(scope, Exit.void))
-    provider.releaseSample()
-    await Effect.runPromise(Effect.repeat(Effect.yieldNow, Schedule.recurs(10)))
-    expect(provider.counts.providerDisposals).toBe(1)
-    expect(provider.counts.disposals).toBe(1)
-    expect(build.pollUnsafe()).toBeDefined()
-  } finally {
-    await Effect.runPromise(Scope.close(scope, Exit.void))
+test("transport and navigation reconcile at distinct TestClock boundaries", async () => {
+  for (const [action, delay] of [
+    ["play", 120],
+    ["next", 150],
+  ] as const) {
+    const provider = await fixture()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* MusicSessionCoordinator
+          yield* awaitSubscription(provider)
+          yield* initialSample(provider)
+          const before = yield* Ref.get(provider.samples)
+          yield* coordinator.submit(action)
+          yield* TestClock.adjust(delay - 1)
+          expect(yield* Ref.get(provider.samples)).toBe(before)
+          yield* TestClock.adjust(1)
+          expect(yield* Ref.get(provider.samples)).toBe(before + 1)
+        }).pipe(Effect.provide(graph(provider))),
+      ).pipe(Effect.provide(TestClock.layer())),
+    )
   }
 })
 
-test("failed transport returns a tagged failure and leaves the command lane live", async () => {
-  const provider = createFakeProvider({ ...emptyPlayer(), fetched_at: 1 })
-  provider.failNextTransport()
-  const graph = Layer.provide(
-    Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-    configLayer({ socketPath: "/tmp/failure.sock" }),
-  )
+test("provider transport failure is tagged and leaves the FIFO lane live", async () => {
+  const provider = await fixture()
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const beforeRecovery = yield* Ref.get(provider.samples)
+        yield* provider.failNextTransport()
         const failed = yield* coordinator.submit("play").pipe(
           Effect.match({
-            onSuccess: () => "unexpected success",
+            onSuccess: () => "success",
             onFailure: (error) => error.code,
           }),
         )
         expect(failed).toBe("PROVIDER_FAILURE")
-        yield* coordinator.submit("play")
-        expect(provider.calls).toEqual(["play", "play"])
-      }).pipe(Effect.provide(graph)),
+        expect(yield* Queue.take(provider.sampleStarts)).toBe(
+          beforeRecovery + 1,
+        )
+        yield* coordinator.submit("pause")
+        expect(yield* Ref.get(provider.calls)).toEqual([
+          { action: "play" },
+          { action: "pause" },
+        ])
+      }).pipe(Effect.provide(graph(provider))),
     ),
   )
+})
+
+test("next advances authority without inventing state", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        const updates = yield* subscribeStates(coordinator)
+        yield* snapshot(provider, {
+          ...emptyPlayer(),
+          track: track("current"),
+          progress_ms: 55,
+        })
+        yield* Queue.take(updates)
+        const before = yield* coordinator.current()
+        yield* coordinator.submit("next")
+        const after = yield* coordinator.current()
+        expect(after.revision).toBe(before.revision + 1)
+        expect(after.state).toEqual(before.state)
+      }).pipe(Effect.provide(graph(provider))),
+    ),
+  )
+})
+
+test("scope closure interrupts a blocked sample and finalizes the event source", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make()
+        yield* Scope.provide(scope)(Layer.build(graph(provider)))
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        yield* provider.blockSample
+        yield* invalidation(provider)
+        yield* Queue.take(provider.sampleStarts)
+        yield* Scope.close(scope, Exit.void)
+        const samplesAtClose = yield* Ref.get(provider.samples)
+        // The closed fixture discards late source traffic; releasing an
+        // interrupted provider call cannot revive coordinator work.
+        yield* provider.releaseSample
+        yield* snapshot(provider, {
+          ...emptyPlayer(),
+          track: track("late-after-close"),
+        })
+        expect(yield* Ref.get(provider.samples)).toBe(samplesAtClose)
+        expect(yield* Ref.get(provider.interruptedSamples)).toBe(1)
+        expect(yield* Ref.get(provider.eventFinalizations)).toBe(1)
+        expect(yield* Ref.get(provider.finalizations)).toBe(1)
+      }),
+    ),
+  )
+})
+
+test("queue capacity bounds admission and the FIFO worker continues", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* provider.blockTransport
+        const first = yield* coordinator.submit("play").pipe(Effect.forkScoped)
+        yield* Queue.take(provider.transportStarts)
+        const outcomes = yield* Queue.unbounded<{
+          readonly action: "pause" | "seek"
+          readonly outcome: Result.Result<unknown, { readonly code: string }>
+        }>()
+        const submit = (action: "pause" | "seek", positionMs?: number) =>
+          coordinator.submit(action, positionMs).pipe(
+            Effect.result,
+            Effect.tap((outcome) => Queue.offer(outcomes, { action, outcome })),
+            Effect.forkScoped,
+          )
+        yield* submit("pause")
+        yield* submit("seek", 9)
+        // No queued action can settle while play owns the worker. The first
+        // result is therefore the overflow, proving its peer was enrolled.
+        const overflow = yield* Queue.take(outcomes)
+        expect(
+          overflow.outcome._tag === "Failure"
+            ? overflow.outcome.failure.code
+            : "success",
+        ).toBe("SERVER_BUSY")
+        yield* provider.releaseTransport
+        yield* Fiber.join(first)
+        const enrolled = yield* Queue.take(outcomes)
+        expect(enrolled.outcome._tag).toBe("Success")
+        expect(yield* Ref.get(provider.calls)).toEqual([
+          { action: "play" },
+          { action: enrolled.action },
+        ])
+        yield* coordinator.submit("next")
+        expect(yield* Ref.get(provider.calls)).toEqual([
+          { action: "play" },
+          { action: enrolled.action },
+          { action: "next" },
+        ])
+      }).pipe(Effect.provide(graph(provider, 1))),
+    ),
+  )
+})
+
+test("scope closure settles active and queued commands exactly once", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make()
+        const context = yield* Scope.provide(scope)(
+          Layer.build(graph(provider, 1)),
+        )
+        const coordinator = Context.get(context, MusicSessionCoordinator)
+        yield* awaitSubscription(provider)
+        yield* provider.blockTransport
+        const active = yield* coordinator.submit("play").pipe(Effect.forkScoped)
+        yield* Queue.take(provider.transportStarts)
+        const outcomes = yield* Queue.unbounded<{
+          readonly action: "pause" | "next"
+          readonly outcome: Result.Result<unknown, { readonly code: string }>
+        }>()
+        const submit = (action: "pause" | "next") =>
+          coordinator.submit(action).pipe(
+            Effect.result,
+            Effect.tap((outcome) => Queue.offer(outcomes, { action, outcome })),
+            Effect.forkScoped,
+          )
+        yield* submit("pause")
+        yield* submit("next")
+        // As above, while play is blocked the first completion proves the
+        // other submitter crossed enrollment/offer before scope closure.
+        const overflow = yield* Queue.take(outcomes)
+        expect(
+          overflow.outcome._tag === "Failure"
+            ? overflow.outcome.failure.code
+            : "success",
+        ).toBe("SERVER_BUSY")
+        yield* Scope.close(scope, Exit.void)
+        const settle = (fiber: Fiber.Fiber<unknown, unknown>) =>
+          Fiber.join(fiber).pipe(
+            Effect.match({
+              onSuccess: () => "success",
+              onFailure: (error) =>
+                error instanceof Error && "code" in error
+                  ? String(error.code)
+                  : "unknown",
+            }),
+          )
+        expect(yield* settle(active)).toBe("DISPOSED")
+        const enrolled = yield* Queue.take(outcomes)
+        expect(
+          enrolled.outcome._tag === "Failure"
+            ? enrolled.outcome.failure.code
+            : "success",
+        ).toBe("DISPOSED")
+        yield* provider.releaseTransport
+        expect(yield* Ref.get(provider.calls)).toEqual([{ action: "play" }])
+      }),
+    ),
+  )
+})
+
+test("scope close settles a blocked active command and rejects later submissions", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make()
+        const context = yield* Scope.provide(scope)(
+          Layer.build(graph(provider)),
+        )
+        const coordinator = Context.get(context, MusicSessionCoordinator)
+        yield* awaitSubscription(provider)
+        yield* provider.blockTransport
+        const active = yield* coordinator.submit("play").pipe(Effect.forkScoped)
+        yield* Queue.take(provider.transportStarts)
+        yield* Scope.close(scope, Exit.void)
+        const settled = yield* Fiber.join(active).pipe(
+          Effect.match({
+            onSuccess: () => "success",
+            onFailure: (error) =>
+              error instanceof Error && "code" in error
+                ? String(error.code)
+                : "unknown",
+          }),
+        )
+        expect(settled).toBe("DISPOSED")
+        const revisionAtClose = (yield* coordinator.current()).revision
+        yield* provider.releaseTransport
+        expect((yield* coordinator.current()).revision).toBe(revisionAtClose)
+        expect(yield* Ref.get(provider.calls)).toEqual([{ action: "play" }])
+        const afterClose = yield* coordinator.submit("next").pipe(Effect.flip)
+        expect(afterClose.code).toBe("DISPOSED")
+      }),
+    ),
+  )
+})
+
+test("identical paused sample preserves its authority revision", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const updates = yield* subscribeStates(coordinator)
+        const paused = {
+          ...emptyPlayer(),
+          track: track("same"),
+          fetched_at: 7,
+        }
+        yield* provider.setState(paused)
+        yield* snapshot(provider, paused)
+        yield* Queue.take(updates)
+        const before = yield* coordinator.current()
+        yield* invalidation(provider)
+        yield* Queue.take(provider.sampleStarts)
+        yield* Queue.take(provider.sampleCompletions)
+        expect((yield* coordinator.current()).revision).toBe(before.revision)
+      }).pipe(Effect.provide(graph(provider))),
+    ),
+  )
+})
+
+test("a no-op sample preserves the pending poll deadline", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const paused = { ...emptyPlayer(), track: track("same"), fetched_at: 7 }
+        yield* snapshot(provider, paused)
+        yield* TestClock.adjust("4 seconds")
+        const before = yield* Ref.get(provider.samples)
+        yield* provider.setState(paused)
+        yield* invalidation(provider)
+        yield* Queue.take(provider.sampleStarts)
+        yield* Queue.take(provider.sampleCompletions)
+        yield* TestClock.adjust("999 millis")
+        expect(yield* Ref.get(provider.samples)).toBe(before + 1)
+        yield* TestClock.adjust("1 milli")
+        expect(yield* Ref.get(provider.samples)).toBe(before + 2)
+        void coordinator
+      }).pipe(Effect.provide(graph(provider))),
+    ).pipe(Effect.provide(TestClock.layer())),
+  )
+})
+
+test("scope closure interrupts poll and reconciliation sleeps", async () => {
+  for (const action of [undefined, "play"] as const) {
+    const provider = await fixture()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make()
+        const context = yield* Scope.provide(scope)(
+          Layer.build(graph(provider)),
+        )
+        const coordinator = Context.get(context, MusicSessionCoordinator)
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        if (action) yield* coordinator.submit(action)
+        const samplesAtClose = yield* Ref.get(provider.samples)
+        yield* Scope.close(scope, Exit.void)
+        yield* TestClock.adjust("10 seconds")
+        expect(yield* Ref.get(provider.samples)).toBe(samplesAtClose)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+  }
+})
+
+test("stale poll candidate cannot attach after newer deadline installs", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const deadlines = yield* Ref.make<PollDeadline>({
+          revision: 0,
+          fiber: undefined,
+        })
+        const older = yield* reservePollDeadline(deadlines, 1)
+        expect(older.reserved).toBe(true)
+        const newer = yield* reservePollDeadline(deadlines, 2)
+        expect(newer.reserved).toBe(true)
+        const newerFiber = yield* Effect.never.pipe(Effect.forkScoped)
+        expect(yield* attachPollDeadline(deadlines, 2, newerFiber)).toBe(true)
+        const olderFiber = yield* Effect.never.pipe(Effect.forkScoped)
+        expect(yield* attachPollDeadline(deadlines, 1, olderFiber)).toBe(false)
+        yield* Fiber.interrupt(olderFiber)
+        const installed = yield* Ref.get(deadlines)
+        expect(installed.revision).toBe(2)
+        expect(installed.fiber).toBe(newerFiber)
+      }),
+    ),
+  )
+})
+
+test("stale poll-deadline reservation cannot replace newer authority", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const deadlines = yield* Ref.make<PollDeadline>({
+        revision: 2,
+        fiber: undefined,
+      })
+      const stale = yield* reservePollDeadline(deadlines, 1)
+      expect(stale.reserved).toBe(false)
+      expect((yield* Ref.get(deadlines)).revision).toBe(2)
+      const current = yield* reservePollDeadline(deadlines, 3)
+      expect(current.reserved).toBe(true)
+      expect((yield* Ref.get(deadlines)).revision).toBe(3)
+    }),
+  )
+})
+
+test("a newer authority revision owns the only poll deadline", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        const updates = yield* subscribeStates(coordinator)
+        const paused = { ...emptyPlayer(), track: track("paused") }
+        const playing = { ...paused, is_playing: true }
+        yield* provider.setState(playing)
+        yield* snapshot(provider, paused)
+        yield* Queue.take(updates)
+        yield* snapshot(provider, playing)
+        yield* Queue.take(updates)
+        const before = yield* Ref.get(provider.samples)
+        yield* TestClock.adjust("3 seconds")
+        expect(yield* Ref.get(provider.samples)).toBe(before + 1)
+        // The old paused (five-second) candidate must never fire.
+        yield* TestClock.adjust("2 seconds")
+        expect(yield* Ref.get(provider.samples)).toBe(before + 1)
+        void coordinator
+      }).pipe(Effect.provide(graph(provider))),
+    ).pipe(Effect.provide(TestClock.layer())),
+  )
+})
+
+test("an authoritative snapshot resets the pending poll deadline", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        const updates = yield* subscribeStates(coordinator)
+        yield* snapshot(provider, { ...emptyPlayer(), track: track("paused") })
+        yield* Queue.take(updates)
+        const before = yield* Ref.get(provider.samples)
+        yield* TestClock.adjust("4999 millis")
+        expect(yield* Ref.get(provider.samples)).toBe(before)
+        yield* snapshot(provider, {
+          ...emptyPlayer(),
+          is_playing: true,
+          track: track("playing"),
+        })
+        yield* Queue.take(updates)
+        yield* TestClock.adjust("2999 millis")
+        expect(yield* Ref.get(provider.samples)).toBe(before)
+        yield* TestClock.adjust("1 milli")
+        expect(yield* Ref.get(provider.samples)).toBe(before + 1)
+        void coordinator
+      }).pipe(Effect.provide(graph(provider))),
+    ).pipe(Effect.provide(TestClock.layer())),
+  )
+})
+
+test("Effect clock polls playing, paused, and idle authority", async () => {
+  for (const [state, delay] of [
+    [
+      { ...emptyPlayer(), is_playing: true, track: track("playing") },
+      "3 seconds",
+    ],
+    [{ ...emptyPlayer(), track: track("paused") }, "5 seconds"],
+    [emptyPlayer(), "8 seconds"],
+  ] as const) {
+    const provider = await fixture()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* MusicSessionCoordinator
+          yield* awaitSubscription(provider)
+          const updates = yield* subscribeStates(coordinator)
+          yield* provider.emit({ type: "snapshot", state })
+          yield* Queue.take(updates)
+          const before = yield* Ref.get(provider.samples)
+          yield* TestClock.adjust(
+            delay === "3 seconds"
+              ? "2999 millis"
+              : delay === "5 seconds"
+                ? "4999 millis"
+                : "7999 millis",
+          )
+          expect(yield* Ref.get(provider.samples)).toBe(before)
+          yield* TestClock.adjust("1 milli")
+          expect(yield* Ref.get(provider.samples)).toBe(before + 1)
+          yield* TestClock.adjust("1 milli")
+          expect(yield* Ref.get(provider.samples)).toBe(before + 1)
+          void coordinator
+        }).pipe(Effect.provide(graph(provider))),
+      ).pipe(Effect.provide(TestClock.layer())),
+    )
+  }
 })

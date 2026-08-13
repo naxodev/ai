@@ -1,0 +1,41 @@
+---
+status: done
+---
+
+## Changed
+
+- Reworked coordinator test fixture controls with per-call queues, concurrency accounting, interruption/completion counters, transport signals, and event-source finalization accounting.
+- Replaced incidental JSON state comparison with explicit player-state equality and serialized sampling ownership transfer under the sampling gate.
+- Expanded focused coverage for concrete/config-provider configuration validation, typed invalid settings, snapshot replay/publication, command ordering, atomic projection, invalidation concurrency, provider failure, and 3/5/8-second polling.
+- Removed arbitrary yield-based coordinator-test synchronization; tests use fixture latches/queues and `TestClock`.
+
+Files touched:
+- `packages/music-core/session/coordinator.ts`
+- `packages/music-core/session/provider.ts`
+- `packages/music-core/tests/session-coordinator.test.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-coordinator.test.ts
+exit 0 — 8 pass, 0 fail
+
+$ bun test packages/music-core/tests/system-media.test.ts
+exit 0 — 42 pass, 0 fail
+
+$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
+exit 0 — typecheck, 116 tests, format:check, and package:check passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(|Date\.now\(" packages/music-core/session/coordinator.ts
+exit 0
+
+$ ! rg -n "createFakeProvider|layerFromLegacy|Effect\.repeat\(Effect\.yieldNow|new Promise" packages/music-core/tests/session-coordinator.test.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — product/test changes are confined to the approved Phase 2 paths; pre-existing `.apnea/state.json` remains untouched.
+```
+
+## Residual risks
+
+- Full Phase 2 coverage still needs direct acceptance tests for stale-sample publication/revision preservation, poll deadline replacement, reconciliation boundaries, saturation, and all scope-close races.

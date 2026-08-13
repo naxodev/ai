@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 2, and the rework stays within its allowed coordinator/provider-test seam. ConfigProvider and timing coverage improved, but the coder result correctly acknowledges that required Phase 2 lifecycle evidence remains incomplete.
+
+## Findings
+
+### High — Command admission can grow an unbounded pending registry
+
+`coordinator.ts:449-467` adds every concurrent submission to `lifecycle.pending` before attempting the bounded queue offer. That `Set` has no matching capacity or admission permit, so arbitrarily many concurrent submitters can enroll before their offers fail, even though `commands` is bounded. This violates the package's explicit bound of one active job plus configured queue capacity and its prohibition on a second unbounded pending collection. Admission/enrollment must enforce the same bound while preserving the close race guarantee.
+
+### High — The invalidation-burst test still consumes initial-sample signals and does not prove catch-up
+
+Coordinator construction completes the initial sample before exposing the service, leaving its start/completion values in the fixture queues. The burst test's first `Queue.take(provider.sampleStarts)` and `Queue.take(provider.sampleCompletions)` (`session-coordinator.test.ts:282,291`) can therefore consume those initial values. It never takes a second start/completion, asserts an exact sample-count delta, or observes that only the planned `catch-up` state publishes; `updates` is explicitly unused. The test can pass without proving one stale blocked sample plus exactly one accepted catch-up.
+
+### High — Stale-sample authority cases remain uncovered
+
+There is still no direct evidence that samples begun before a newer trigger, complete snapshot, or successful command are rejected. The transport race tests protect command projection from stale full-state replacement, but do not test the inverse requirement that an already-running sample cannot overwrite a later play/pause/seek/navigation authority transition. These are core Phase 2 invariants, not later-phase concerns.
+
+### High — Exact-once closure behavior and stale deadline replacement remain unverified
+
+As the coder result notes, no focused test covers close racing enrollment/offer, blocked active transport plus queued jobs, blocked sample, poll/reconciliation sleep, post-close submission, late release/emission/clock adjustment, or exact-once `DISPOSED` settlement and fixture finalization. Poll tests now check one-millisecond boundaries, but there is still no deadline reset/replacement test or stale-install race. These explicit acceptance checks must be completed before approval.
+
+### Medium — Provider-failure recovery evidence is still ambiguous
+
+The provider-failure test takes one value from `sampleStarts` after the failed command, but it does not first drain the initial sample signal. The assertion can therefore be satisfied without observing the required recovery sample. Assert an exact post-failure sample delta/start and subsequent worker usability.
