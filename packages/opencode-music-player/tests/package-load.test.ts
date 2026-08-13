@@ -5,6 +5,7 @@ import plugin from "../index.tsx"
 
 type SlotName = "app" | "sidebar.content"
 type Slot = (props: any) => any
+type SlotClaim = { append: SlotName; render: Slot }
 
 test("package entrypoint exports an OpenCode TUI plugin definition", () => {
   expect(plugin.id).toBe("music-player")
@@ -66,9 +67,9 @@ test("setup shares one session and persistent keymap across sidebar remounts", a
   const context = {
     ui: {
       toast: { show: () => {} },
-      slot: (name: SlotName, render: Slot) => {
-        registered.push(name)
-        slots.set(name, render)
+      slot: (claim: SlotClaim) => {
+        registered.push(claim.append)
+        slots.set(claim.append, claim.render)
         return () => {
           unsubscriptions++
         }
