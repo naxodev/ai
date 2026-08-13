@@ -1,0 +1,34 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 3 and this round stays within the server seam. Faulted `close()` now waits for the scoped graph, forwarder-start hooks run before the fibers are forked, and the post-bind test verifies path/provider cleanup before rejection. Most required Phase 3 acceptance work remains outstanding.
+
+## Findings
+
+### High — The required lifecycle and error matrix remains substantially absent
+
+The suite still has only eight facade tests, and the coder result explicitly lists major package gates as residual work. Missing deterministic evidence includes direct Layer/provider/source/listener acquisition counts; complete two-client hello/status/state replay; blocked command and blocked sample shutdown; acceptance racing close; late-write suppression; injected connection/write defects; injected close/unlink failures and `ENOENT`; cleanup continuation and repeated failed-close outcomes; and signal-handler removal. These are explicit Phase 3 acceptance requirements and cannot be deferred.
+
+### High — The socket dependency seam cannot inject required cleanup failures
+
+`layerWithHooks` exposes lifecycle callbacks and the raw listener, but `closeServer` and `unlinkOwnedPath` remain hardwired module functions. Focused tests therefore cannot deterministically inject close failure, non-`ENOENT` unlink failure, or `ENOENT` while still performing real cleanup, as the package requires. Factor these Node operations into the narrow in-file dependency constructor and add the complete cleanup-continuation/idempotency matrix.
+
+### High — Expected close/unlink failures are still converted to defects
+
+The listener finalizer captures `MusicSessionSocketError` values and then uses `Effect.die` (`server.ts:459-460`). This preserves an object for cause squashing but classifies expected socket-boundary failures as defects instead of typed failures. The package requires stable schema-tagged close/unlink errors at the Layer, Promise, and process boundaries. The absent failure-injection tests currently do not establish those semantics or multiple-failure retention.
+
+### Medium — Connection-failure production diagnostics remain lossy
+
+`onConnectionFailure` gives focused tests a synchronous observation point, but production observation still uses a capacity-one sliding queue. Concurrent failures can overwrite earlier causes before the logging fiber observes them. A non-optional bounded counter/metric or equivalent synchronous diagnostic record is needed if every contained defect is to be observed without unbounded payload retention.
+
+### Medium — Test hooks can throw directly from Node callbacks
+
+`onListener`, `onAccepted`, and `onEnrolled` are invoked directly in Node acquisition/connection callbacks. A throwing test hook can escape the scoped Effect boundary, contrary to the server's rule that callback defects be observed and isolated. Wrap hook invocation at the same Effect/runtime boundary or constrain the seam so hooks cannot throw into Node.
+
+## Verification
+
+Independent verification passes: 8 server tests, 65 coordinator/provider tests, and all static scans. Those checks do not cover the remaining required matrices above.

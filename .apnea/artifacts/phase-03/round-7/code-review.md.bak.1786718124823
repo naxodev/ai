@@ -1,0 +1,42 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and this round stays within the allowed server/test files. The callback-entry seam proves synchronous destruction when enrollment is refused, but it does not complete the remaining Phase 3 ownership gates.
+
+## Findings
+
+### High — The rejected-enrollment test is not an acceptance-vs-shutdown test
+
+The new test deterministically exercises the synthetic `canEnroll: () => false` branch, but server shutdown never begins until after the socket has closed. It therefore proves generic enrollment refusal, not that a Node connection callback racing actual scope closure observes `closing` and destroys the socket or enrolls it before shutdown awaits finalization. The package explicitly requires the shutdown race. Add a deterministic seam that forces or models the production closing transition at callback entry and covers both outcomes.
+
+### High — Blocked-command shutdown still lacks no-late-response evidence
+
+The existing blocked-command test closes the client and whole graph after transport starts. It does not release the blocked provider after connection finalization, count connection/forwarder finalizers, or record server write attempts. Client-side `DISPOSED` and provider interruption do not prove that no late response is attempted after provider release.
+
+### High — Exact graph/finalization and FIFO-admission evidence remains incomplete
+
+The suite still does not count one coordinator or exact finalization of the complete two-client graph, pre-hello connection, and partial-frame connection. Commands from two clients are asserted from concurrent facade calls and provider call order rather than deterministic per-socket admission signals into the coordinator FIFO. These remain explicit focused-suite requirements.
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler completion/interruption and direct Layer composition are covered, but no runtime executable-path evidence proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while preserving tagged operation/message diagnostics.
+
+### Medium — Blocked-sampling evidence remains incomplete for listener/socket ownership
+
+The blocked-sample test proves sample interruption and exact provider source/Layer finalization, but opens no socket and records no exact listener close, unlink, or connection finalization. It does not cover the full provider/listener/socket ownership requirement for this shutdown case.
+
+### Medium — `canEnroll` can violate the callback's destroy-or-enroll invariant
+
+Unlike observation hooks, `hooks.canEnroll?.(socket)` is called outside `invokeHook`. If the test hook throws, the Node callback exits without synchronously destroying or enrolling the accepted socket. The narrow test boundary should convert hook failure to refusal/destruction so even injected failures preserve ownership.
+
+### Medium — Late-forwarding and failure-safe cleanup evidence remains incomplete
+
+The late-provider-event test emits only after the provider source is disposed and does not await forwarding finalizers, so it still conflates provider teardown with connection-child finalization. Most integration tests also lack `try/finally` or scoped test cleanup and may leak resources after an intermediate assertion failure.
+
+## Verification
+
+The coder reports 19 server tests, 65 coordinator/provider tests, all package targets, and all static scans passing. Those checks do not cover the outstanding gates above.

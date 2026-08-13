@@ -1,0 +1,34 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and this round changes only the allowed focused test. The comprehensive two-client graph now has exact close/unlink counts and failure-safe cleanup, resolving the prior graph finding. Other package-required boundaries remain incomplete.
+
+## Findings
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the Node process boundary required by the package.
+
+### High — Post-hello late-forwarder isolation still lacks per-connection write evidence
+
+The server-shutdown replay test emits only after the provider source is disposed. The peer-isolation test proves the disconnected client's two forwarders finalize and the healthy peer receives a later update, but the global write hook does not identify which socket attempted a write and is not used there. Add a per-connection write-attempt observation and prove the finalized client's count remains unchanged while the provider, listener, and healthy peer stay live.
+
+### Medium — Blocked-sampling exact cleanup still omits close/unlink and source-acquisition counts
+
+The blocked-sampling test covers a real socket, listener finalization, input queue/processor, connection, sample interruption, event-source finalization, and provider-Layer finalization. It does not count close/unlink attempts or provider source acquisition, leaving exact-once ownership partly inferred from path absence.
+
+### Medium — The actual production `closing` refusal branch remains unobserved
+
+Starting `server.close()` at Node callback entry proves the enrolled-and-finalized branch because the synchronous callback continues before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic rejection, but no callback is deterministically delivered after production has marked the server closing and before listener close completes.
+
+### Medium — Failure-safe cleanup is still incomplete across the focused suite
+
+The comprehensive graph and recent direct-Layer tests now use `try/finally`, but several earlier socket/error tests still dispose clients and close servers only on success paths. An intermediate assertion can leak sockets, listeners, or paths despite the package's explicit requirement that every focused test clean up on failure.
+
+## Verification
+
+The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, and all static scans passing. Those checks do not cover the outstanding gates above.

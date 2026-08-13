@@ -1,0 +1,38 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes, and the current coder result overstates the accumulated suite: several package-required boundaries remain unresolved.
+
+## Findings
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+
+### High — Post-hello late-forwarder isolation lacks per-connection write evidence
+
+The server-shutdown replay test emits only after the provider source is disposed. The peer-isolation test proves the disconnected client's two forwarders finalize and the healthy peer receives a later update, but it does not attribute write attempts to each socket. Contrary to the coder result's broad late-write claim, there is no deterministic proof that the finalized post-hello connection receives no write attempt while provider, listener, and healthy peer remain live.
+
+### Medium — Blocked-sampling exact cleanup omits close/unlink and source-acquisition counts
+
+The blocked-sampling test covers a real socket, listener finalization, input queue/processor, connection, sample interruption, event-source finalization, and provider-Layer finalization. It does not count close/unlink attempts or provider source acquisition, leaving exact-once ownership partly inferred from path absence.
+
+### Medium — The actual production `closing` refusal branch remains unobserved
+
+Starting `server.close()` at callback entry proves the enrolled-and-finalized branch because the synchronous callback continues before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic rejection, but no callback is deterministically delivered after production marks the server closing and before listener close completes.
+
+### Medium — Failure-safe cleanup remains incomplete across the focused suite
+
+Recent comprehensive/direct-Layer tests use `try/finally`, but several earlier socket and error tests release resources only on success paths. An intermediate assertion can leak sockets, listeners, or paths despite the package's requirement that every focused test clean up on failure.
+
+### Low — The reported verification omits the required worktree command
+
+The transcript substitutes `git diff --check` for `jj diff --summary`. Independent inspection shows product changes remain confined to allowed Phase 3 files, but the coder transcript does not include the specified verification command.
+
+## Verification
+
+The coder reports 23 server tests, 65 coordinator/provider tests, package targets, and static scans passing. No new evidence addresses the findings above.

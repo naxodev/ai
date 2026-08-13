@@ -1,0 +1,42 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and this round changes only the allowed focused server test. The blocked-sampling test adds deterministic interruption and provider-finalization evidence, but the package's ownership matrix remains incomplete.
+
+## Findings
+
+### High — Blocked-command shutdown still does not prove no late server response
+
+The existing test observes transport start, disposes the client, and closes the entire Layer scope. It neither releases the provider after connection finalization nor instruments connection/forwarder finalization and server write attempts. The client-side `DISPOSED` rejection and `activeTransports === 0` therefore do not prove the required server invariant that releasing blocked provider work cannot produce a late response.
+
+### High — Acceptance-vs-close evidence still does not observe the rejected branch
+
+The race test does not force an interleaving. Production invokes `onAccepted` only after checking `closing`, immediately followed by enrollment, so sockets delivered by Node during shutdown and synchronously destroyed are absent from the counters. `accepted === enrolled` can also pass with zero accepts. Add a callback-entry signal before the closing decision and deterministically exercise enrollment versus immediate destruction.
+
+### High — Exact graph/finalization and FIFO-admission evidence remains incomplete
+
+The suite still does not count one coordinator or exact finalization of the complete two-client graph, pre-hello connection, and partial-frame connection. The command test infers FIFO order from concurrent client calls and provider call order instead of recording each socket's observed command-admission order. These are explicit focused-suite requirements.
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler completion/interruption and direct Layer composition are covered, but no runtime executable-path evidence proves signal-driven dependency-order cleanup or that a close/unlink failure sets nonzero process status while preserving tagged operation/message diagnostics.
+
+### Medium — Blocked-sampling evidence does not cover exact listener/socket ownership
+
+The new test correctly proves one blocked sample is interrupted and the provider event source and provider Layer finalize once. It opens no socket and records no listener close/unlink or connection-finalization counters, so it does not establish the package's full requirement that blocked-sample shutdown finalizes provider, listener, and socket ownership exactly once.
+
+### Medium — Late-write suppression still conflates connection cleanup with provider teardown
+
+The post-hello test closes the whole graph before emitting through the disposed legacy provider source, does not await forwarding-finalizer hooks, and uses one microtask as synchronization. Its unchanged write count does not isolate connection-forwarder finalization from provider teardown.
+
+### Medium — Failure-safe cleanup is not applied across the suite
+
+The two newest direct-Layer tests use `try/finally`, but the remaining integration tests still clean resources only on success paths. An intermediate assertion can leak sockets, listeners, or paths despite the package's explicit cleanup requirement.
+
+## Verification
+
+The coder reports 19 server tests, 65 coordinator/provider tests, all package targets, and all static scans passing. Those results do not cover the outstanding gates above.

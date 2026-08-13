@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 3 and this round stays within its server seam. The extra facade runtime has been removed and connection defects now have a bounded diagnostic path, but post-bind faults and interruption handling remain incomplete and the required acceptance matrix is still absent.
+
+## Findings
+
+### High — Post-bind listener failure is again unobserved by the Promise facade
+
+`startMusicSessionServer` builds the service but never evaluates `service.awaitFailure`. Under that public adapter, `onServerError` only places the tagged error in `serverFaults`; it neither closes the scope nor affects a returned Promise. The coder result explicitly lists this as residual work. The package requires post-bind failures to reach the shared server lifetime and the Promise/process boundaries without an isolated runtime, so this must be integrated into the facade's one scoped Effect program and covered by deterministic fault injection.
+
+### High — Normal scope interruption is caught and logged as a connection failure
+
+The connection wrapper uses `tapCause` followed by unconditional `catchCause` (`server.ts:378-379`). Both operators include interruption causes. Consequently, `FiberSet.clear` during ordinary shutdown reports each interrupted connection to `connectionFaults`, logs `music-session connection failed`, and converts the interruption into success. The package requires interruption to remain distinct from defects and expected failures. Filter out interruption-only causes, preserve interruption, and observe/contain only genuine connection failures.
+
+### High — The required lifecycle and error-injection matrix remains substantially absent
+
+The focused suite is unchanged at six facade-level tests and still lacks a narrow Node-operation/lifecycle-hook constructor and exact counters. It does not deterministically prove direct Layer acquisition and two-client replay/broadcast, natural pre/post-hello and forwarding finalization, blocked command/sample closure, acceptance racing shutdown, late-write suppression, post-bind fault propagation, injected close/unlink/`ENOENT`, cleanup continuation and repeated failed-close outcomes, or signal-handler removal. These are explicit Phase 3 acceptance gates, not later-phase evidence.
+
+### Medium — The bounded diagnostic queue can discard unobserved connection causes
+
+`connectionFaults` is a capacity-one sliding queue. Bursts of connection failures can overwrite an earlier cause before the logging fiber takes it, so not every defect is actually observed despite `tapCause` completing successfully. A bounded diagnostic design is appropriate, but the lifecycle hook/counter should record every contained failure synchronously even if detailed payload logging is coalesced.
+
+## Verification
+
+The reported checks are reproducible: 6 server tests, 65 coordinator/provider tests, and all static scans pass. They do not exercise the remaining findings.

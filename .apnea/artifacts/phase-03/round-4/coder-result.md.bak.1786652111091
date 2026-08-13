@@ -1,0 +1,39 @@
+---
+status: done
+---
+
+## Changed
+
+- Corrected healthy-peer replay synchronization to wait specifically for the post-disconnect snapshot (`progress_ms: 42`), excluding immediate client replay from satisfying the assertion.
+
+Files touched:
+- `packages/music-core/tests/session-server.test.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-server.test.ts
+exit 0 — 7 pass, 0 fail
+
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 65 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — build, typecheck, test, format:check, and package:check passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ ! rg -n "startMusicSessionServer" packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ ! rg -n "Effect\.repeat\(Effect\.yieldNow|setTimeout\(|new Promise\(.*setTimeout|Date\.now\(" packages/music-core/tests/session-server.test.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — only approved Phase 3 product/test paths changed; pre-existing `.apnea/state.json` remains untouched.
+```
+
+## Residual risks
+
+- Exact connection-finalization synchronization, post-bind facade fault propagation, and remaining lifecycle/error-injection acceptance matrices require additional Phase 3 work.

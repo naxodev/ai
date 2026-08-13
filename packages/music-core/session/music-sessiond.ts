@@ -20,41 +20,93 @@ function socketArgument(argv: string[]): string {
   return value
 }
 
-const waitForSignal: Effect.Effect<void> = Effect.callback<void>((resume) => {
-  const stop = () => resume(Effect.void)
-  process.once("SIGINT", stop)
-  process.once("SIGTERM", stop)
-  return Effect.sync(() => {
-    process.off("SIGINT", stop)
-    process.off("SIGTERM", stop)
-  })
-})
-
-try {
-  const socketPath = socketArgument(process.argv.slice(2))
-  const coordinatorWithProvider = Layer.provide(coordinatorLayer, providerLayer)
-  const serverWithCoordinator = Layer.provide(
-    serverLayer,
-    coordinatorWithProvider,
-  )
-  const graph = Layer.provide(
-    serverWithCoordinator,
-    configLayer({ socketPath }),
-  )
-  const daemon = Effect.scoped(
-    Effect.gen(function* () {
-      const server = yield* MusicSessionServerService
-      console.error(
-        `music-sessiond listening on ${socketPath} (${server.coordinator.daemonInstanceId})`,
-      )
-      yield* waitForSignal
-    }).pipe(Effect.provide(graph)),
-  )
-  await Effect.runPromise(daemon)
-  console.error("music-sessiond stopped")
-} catch (error) {
-  console.error(
-    `music-sessiond: ${error instanceof Error ? error.message : String(error)}`,
-  )
-  process.exitCode = 1
+const formatDaemonError = (error: unknown) => {
+  const tagged =
+    typeof error === "object" && error !== null
+      ? (error as { readonly _tag?: unknown; readonly operation?: unknown })
+      : undefined
+  const tag = typeof tagged?._tag === "string" ? `${tagged._tag} ` : ""
+  const operation =
+    typeof tagged?.operation === "string" ? `[${tagged.operation}] ` : ""
+  const message = error instanceof Error ? error.message : String(error)
+  return `${tag}${operation}${message}`
 }
+
+type SignalEmitter = {
+  once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown
+  off(event: "SIGINT" | "SIGTERM", listener: () => void): unknown
+}
+
+/** Scoped signal boundary; the injectable emitter keeps listener ownership testable. */
+export const waitForSignal = (signals: SignalEmitter = process) =>
+  Effect.callback<void>((resume) => {
+    let stopped = false
+    const remove = () => {
+      signals.off("SIGINT", stop)
+      signals.off("SIGTERM", stop)
+    }
+    const stop = () => {
+      if (stopped) return
+      stopped = true
+      remove()
+      resume(Effect.void)
+    }
+    signals.once("SIGINT", stop)
+    signals.once("SIGTERM", stop)
+    return Effect.sync(remove)
+  })
+
+const main = async () => {
+  try {
+    const socketPath = socketArgument(process.argv.slice(2))
+    const coordinatorWithProvider = Layer.provide(
+      coordinatorLayer,
+      providerLayer,
+    )
+    const serverWithCoordinator = Layer.provide(
+      serverLayer,
+      coordinatorWithProvider,
+    )
+    const graph = Layer.provide(
+      serverWithCoordinator,
+      configLayer({ socketPath }),
+    )
+    let cleanupFailure: (() => unknown) | undefined
+    let cleanupFailures: (() => ReadonlyArray<unknown>) | undefined
+    const daemon = Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* MusicSessionServerService
+        cleanupFailure = server.failure
+        cleanupFailures = server.cleanupFailures
+        console.error(
+          `music-sessiond listening on ${socketPath} (${server.coordinator.daemonInstanceId})`,
+        )
+        yield* Effect.raceFirst(waitForSignal(), server.awaitFailure)
+      }).pipe(Effect.provide(graph)),
+    )
+    let daemonFailure: unknown
+    try {
+      await Effect.runPromise(daemon)
+    } catch (error) {
+      daemonFailure = error
+    }
+    const cleanup = cleanupFailures?.() ?? []
+    if (daemonFailure && cleanup.length > 0)
+      console.error(
+        `music-sessiond cleanup failures: ${cleanup.map(String).join("; ")}`,
+      )
+    if (daemonFailure) throw daemonFailure
+    const failure = cleanupFailure?.()
+    if (failure) throw failure
+    console.error("music-sessiond stopped")
+  } catch (error) {
+    console.error(`music-sessiond: ${formatDaemonError(error)}`)
+    process.exitCode = 1
+  }
+}
+
+if (
+  process.argv[1]?.endsWith("music-sessiond.ts") ||
+  process.argv[1]?.endsWith("music-sessiond.js")
+)
+  await main()

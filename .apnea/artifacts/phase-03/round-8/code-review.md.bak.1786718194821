@@ -1,0 +1,42 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and this round stays within the allowed server/test files. A throwing enrollment hook now safely becomes synchronous refusal, resolving the prior callback-invariant issue, but the mandatory Phase 3 matrix remains incomplete.
+
+## Findings
+
+### High — Actual acceptance-vs-shutdown interleaving remains unproved
+
+Both enrollment tests exercise synthetic `canEnroll` refusal while the server is fully open; shutdown starts only after the rejected socket closes. They prove refusal safety, not the required race in which actual scope closure and Node acceptance overlap. Deterministically exercise the production `closing` decision and prove that a socket delivered around shutdown is either enrolled and awaited to finalization or immediately destroyed.
+
+### High — Blocked-command shutdown still lacks no-late-response evidence
+
+The blocked-command test observes provider transport start, disposes the client, and closes the graph. It does not await connection/forwarder finalizers, release provider work afterward, or count server write attempts. Client-side `DISPOSED` plus provider interruption does not prove that no late response is attempted after provider release.
+
+### High — Exact graph/finalization and FIFO admission remain incomplete
+
+The suite still does not count one coordinator or exact finalization of the complete two-client graph, pre-hello connection, and partial-frame connection. The two-client command test derives order from concurrent facade calls and provider call order rather than deterministic per-socket admission signals into the coordinator FIFO. These are explicit package requirements.
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler completion/interruption and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics.
+
+### Medium — Blocked-sampling evidence does not include exact listener/socket cleanup
+
+The blocked-sample test proves interruption and one provider event-source/Layer finalization, but opens no socket and records no listener close, unlink, or connection-finalization counts. It therefore does not establish exact provider/listener/socket ownership for the package's blocked-sampling case.
+
+### Medium — Late-forwarder isolation is still conflated with provider teardown
+
+The late-event test closes the entire graph before emitting through an already-disposed provider source and does not await forwarding-finalizer hooks. Its unchanged write count cannot distinguish finalized connection children from outer provider teardown.
+
+### Medium — Failure-safe cleanup is still missing from most integration tests
+
+Only the recent direct-Layer cases use `try/finally`. Most socket tests clean up only on their success paths, so an intermediate assertion can leak sockets, listeners, or paths despite the package's explicit test-finalization requirement.
+
+## Verification
+
+The coder reports 20 server tests, 65 coordinator/provider tests, all package targets, and all static scans passing. Those checks do not cover the outstanding gates above.

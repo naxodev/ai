@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 3 and the changes stay within the server seam. The peer test now waits for connection and forwarding finalizers without another Effect runtime, resolving its prior scheduling gap. The phase still lacks required fault propagation and most of its deterministic ownership matrix.
+
+## Findings
+
+### High — Post-bind faults remain unobserved through the Promise facade
+
+`startMusicSessionServer` still never evaluates `service.awaitFailure`. Under this supported facade, a post-bind server `error` only enters `serverFaults`; it neither closes the scope nor reaches a returned Promise. The coder result explicitly leaves this gap outstanding. Integrate fault supervision into the facade's single scoped Effect graph without adding an isolated runtime, and prove it through deterministic error injection.
+
+### High — The required lifecycle and error matrix remains substantially absent
+
+The suite remains seven facade tests and still lacks the narrow Node-operation/lifecycle-hook constructor and exact counters required by the package. Missing evidence includes direct Layer/provider/source/listener acquisition; complete two-client hello/status/state replay; blocked command and blocked sample shutdown; acceptance racing close; no late writes; connection-defect observation; injected close/unlink/`ENOENT`; cleanup continuation and memoized failed-close outcomes; and signal-handler removal. These are explicit Phase 3 acceptance gates and cannot be deferred.
+
+### Medium — Lifecycle instrumentation is global, one-shot, and exposed on the public facade
+
+`makeConnectionLifecycle` creates one pair of Promises for the entire server, not one record per accepted connection. `completeConnection` resolves on the first finalized connection, while `forwardersFinalized` resolves after any two forwarder completions globally. This cannot identify a specific connection or support exact counts across pre-hello, post-hello, shutdown, and acceptance-race cases. The package calls for a narrow in-file test-hook constructor, but these test-only methods are instead added to exported `MusicSessionServer`. Use per-connection IDs/counters in an injected test seam and leave the production facade unchanged.
+
+### Medium — Connection-defect diagnostics remain lossy and untested
+
+Non-interruption causes are contained after being offered to a capacity-one sliding queue. Concurrent failures can overwrite an earlier cause before observation, and no synchronous counter proves every contained defect was recorded. The peer test covers ordinary disposal, not an injected socket/write failure.
+
+## Verification
+
+Independent verification passes: 7 server tests, 65 coordinator/provider tests, and all static scans. These checks do not exercise the remaining findings.

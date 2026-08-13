@@ -1,0 +1,38 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and this round changes only the allowed focused server test. Socket-defect targeting is now deterministic, but the phase's required ownership evidence is still incomplete.
+
+## Findings
+
+### High — Blocked command and blocked sampling shutdown remain unproved
+
+The coder result explicitly leaves both cases outstanding. There is no deterministic command-start/provider-release test proving that connection interruption releases all server children and suppresses a late response, and no blocked-sample test proving that `close()` waits through coordinator/provider interruption and finalizes listener, sockets, provider source, and provider Layer exactly once. Both are explicit Phase 3 acceptance gates.
+
+### High — The new acceptance-race test does not force or observe the critical race
+
+The test starts `net.createConnection` and `server.close()` without a synchronization point, so it may pass solely through the zero-acceptance path. More importantly, `onAccepted` is invoked only after production has checked `closing`; sockets accepted by Node and synchronously rejected during shutdown are not counted. `onAccepted` and `onEnrolled` are adjacent in the same callback, making `accepted === enrolled` tautological for the observed branch. Add a boundary signal that records every Node acceptance and deterministically interleaves shutdown with enrollment, then prove each observed socket is enrolled-and-finalized or immediately destroyed.
+
+### High — Exact graph/finalization and FIFO admission evidence remains incomplete
+
+The suite still does not count one coordinator or exact finalization of the complete two-client graph. Pre-hello and partial-frame cases do not instrument exact connection/listener/forwarder cleanup. The command test still infers FIFO order from concurrent Promise invocation and provider call order rather than recording the two sockets' observed command-admission order. These counts and admission signals are required by the package.
+
+### High — Executable cleanup failures still do not reach a tested process boundary
+
+Signal-handler completion and interruption are now covered, and the static scan excludes the Promise facade. There remains no runtime executable-path evidence that signal-driven Layer cleanup completes in dependency order and that injected close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer tests do not establish the Node process boundary.
+
+### Medium — Late-write suppression still conflates connection cleanup with provider teardown
+
+The post-hello shutdown test closes the whole graph before emitting through the already-disposed legacy provider source, does not await forwarding-finalizer hooks, and uses one `Promise.resolve()` turn as synchronization. The unchanged write count therefore does not deterministically prove that both connection forwarders finalized before a late event.
+
+### Medium — Focused integration tests still lack failure-safe cleanup
+
+The package requires sockets, scopes, and paths to be closed even when assertions fail. The tests continue to clean up only on success paths rather than through `try/finally`, scoped fixtures, or test finalizers, so an intermediate failure can leak resources and contaminate subsequent evidence.
+
+## Verification
+
+The coder reports 17 server tests, 65 coordinator/provider tests, all package targets, and all static scans passing. Those results do not cover the outstanding gates above.

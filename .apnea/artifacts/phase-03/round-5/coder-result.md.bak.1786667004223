@@ -1,0 +1,42 @@
+---
+status: done
+---
+
+## Changed
+
+- Made faulted `close()` await the scoped graph's `running` completion before returning its preserved typed fault.
+- Moved forwarder-start lifecycle hooks to run before each stream is forked.
+- Strengthened deterministic server tests to assert exact forwarder starts/finalizations and that post-bind fault rejection follows listener/path/provider cleanup.
+
+Files touched:
+- `packages/music-core/session/server.ts`
+- `packages/music-core/tests/session-server.test.ts`
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-server.test.ts
+exit 0 — 8 pass, 0 fail
+
+$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
+exit 0 — 65 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0 — all targets passed; 135 tests passed
+
+$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+exit 0
+
+$ ! rg -n "startMusicSessionServer" packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ ! rg -n "Effect\.repeat\(Effect\.yieldNow|setTimeout\(|new Promise\(.*setTimeout|Date\.now\(" packages/music-core/tests/session-server.test.ts
+exit 0
+
+$ jj diff --summary
+exit 0 — Phase 3 paths are modified; pre-existing `.apnea/state.json` remains untouched.
+```
+
+## Residual risks
+
+The remaining package-required injected close/unlink failure cases, blocked-command/sample closure cases, acceptance-race coverage, connection-defect injection, and signal-helper tests still need focused implementation.

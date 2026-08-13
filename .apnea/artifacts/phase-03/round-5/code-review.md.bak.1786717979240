@@ -1,0 +1,42 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and this round changes only the allowed focused server test. The new direct-Layer blocked-command test adds useful command-start and cleanup evidence, but it does not complete that scenario or the remaining mandatory ownership matrix.
+
+## Findings
+
+### High — The blocked-command test does not prove the required no-late-response boundary
+
+The test observes provider transport start, disposes the client, then closes the entire Layer scope. Its `DISPOSED` assertion is the client facade settling its own pending Promise, while `activeTransports === 0` follows from coordinator/provider scope interruption. It never releases the blocked provider after connection finalization, instruments server write attempts/finalization, or proves no late response is attempted. The package specifically requires the blocked connection work to be interrupted and no response after provider release.
+
+### High — Blocked sampling shutdown remains untested
+
+There is still no deterministic test that blocks coordinator sampling, starts server closure, and proves closure waits for interruption while listener, sockets, provider event source, provider Layer, and sampling work finalize exactly once. The coder result explicitly lists this package gate as residual risk.
+
+### High — Acceptance-vs-close evidence remains tautological
+
+The existing race test still does not force an acceptance/enrollment interleaving. `onAccepted` is called only after the production `closing` check and immediately before `onEnrolled`, so sockets accepted by Node and rejected during shutdown are invisible to its counters and `accepted === enrolled` does not prove the alternative branch. A deterministic boundary hook must observe all Node accept callbacks and force shutdown around enrollment.
+
+### High — Exact graph/finalization and FIFO admission counts remain incomplete
+
+The suite does not count one coordinator or exact finalization of the full two-client graph, pre-hello connection, and partial-frame connection. The two-client command test still infers FIFO order from concurrent Promise invocation/provider calls instead of recording each socket's observed admission order. These are explicit focused-suite requirements.
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler completion/interruption and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that injected close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics.
+
+### Medium — Late-write suppression still closes the provider source before injection
+
+The post-hello shutdown test closes the whole graph, emits through an already-disposed legacy provider source, does not await forwarding-finalizer hooks, and synchronizes with one microtask. Its unchanged write count does not isolate connection-forwarder finalization from provider teardown.
+
+### Medium — Failure-safe cleanup is not applied across the focused suite
+
+The new blocked-command test uses `try/finally`, but the other integration tests still clean sockets/scopes only on success paths. An intermediate assertion failure can leak listener/socket/path resources despite the package's explicit cleanup requirement.
+
+## Verification
+
+The coder reports 18 server tests, 65 coordinator/provider tests, all package targets, and all static scans passing. Those results do not cover the outstanding gates above.

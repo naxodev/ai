@@ -1,0 +1,38 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and this round changes only the allowed focused test. The two-client graph now has strong exact connection/forwarder/provider finalization counts. Remaining package-owned process and lifecycle cases still prevent approval.
+
+## Findings
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the Node process boundary required by the package.
+
+### Medium — Blocked-sampling exact cleanup still omits close/unlink and source-acquisition counts
+
+The blocked-sampling test covers a real socket, listener finalization, input queue/processor, connection, sample interruption, event-source finalization, and provider-Layer finalization. It still does not count listener close/unlink attempts or provider source acquisition, leaving exact-once ownership partly inferred from path absence.
+
+### Medium — Production closing-state refusal remains unobserved
+
+Starting `server.close()` at Node callback entry exercises the enrolled-and-finalized branch because the synchronous callback continues before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic rejection, but no callback deterministically observes the real production `closing` branch.
+
+### Medium — Post-hello late-forwarder isolation remains conflated with provider teardown
+
+The replay-forwarding test emits its late event only after the entire provider source is disposed. The peer-isolation test proves two forwarders finalize and the healthy peer receives a later update, but it does not count write attempts attributable to the disconnected connection. Add deterministic no-late-write evidence while provider, listener, and healthy peer remain live.
+
+### Medium — The strengthened two-client test itself is not failure-safe
+
+Despite now owning the most comprehensive graph, the test has no `try/finally`; any assertion before its final `dispose()`/`close()` leaks both clients, the listener, and socket path. Several older integration tests have the same issue. The package explicitly requires cleanup even when assertions fail.
+
+### Medium — Complete graph cleanup does not count close/unlink attempts
+
+The new graph test counts listener finalization and checks path absence, but does not instrument `onClose` and `onUnlink`. Since the acceptance claim is exact-once complete graph cleanup, include those counters alongside the other exact lifecycle counts rather than inferring them from final state.
+
+## Verification
+
+The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, and all static scans passing. Those checks do not cover the outstanding gates above.

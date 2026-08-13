@@ -1,0 +1,38 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes. Comprehensive graph cleanup is now failure-safe and exactly counted, but the coder result conflates that evidence with still-incomplete blocked-sampling and legacy cases.
+
+## Findings
+
+### High — Executable cleanup failure remains unverified at the process boundary
+
+Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+
+### High — Post-hello late-forwarder isolation lacks per-connection write evidence
+
+The blocked-command test proves response suppression after provider release, not replay-forwarder isolation. Server shutdown emits only after provider-source disposal, while peer isolation does not attribute write attempts to each socket. No deterministic test proves that a provider event after one post-hello connection finalizes causes no write attempt for that connection while provider, listener, and healthy peer remain live.
+
+### Medium — Blocked-sampling exact cleanup remains incomplete
+
+The comprehensive graph has exact close/unlink counts, but the separate blocked-sampling test does not. It counts listener acquisition/finalization, socket/input/processor/connection finalization, sampling interruption, event-source finalization, and provider-Layer finalization, while omitting `onClose`, `onUnlink`, and provider source acquisition/subscription.
+
+### Medium — Actual production closing-state refusal remains unobserved
+
+Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes.
+
+### Medium — Failure-safe cleanup remains incomplete across older tests
+
+The comprehensive graph is now protected by `try/finally`, but several earlier socket/error tests release resources only on success paths. An intermediate assertion can leak sockets, listeners, or paths despite the package's requirement that every focused test clean up on failure.
+
+### Low — Required worktree verification is absent
+
+The coder transcript substitutes `git diff --check` for `jj diff --summary`. Independent inspection confirms product changes remain confined to allowed Phase 3 paths, but the submitted transcript omits the specified command.
+
+## Verification
+
+The coder reports 23 server tests, 65 coordinator/provider tests, package targets, and static scans passing. No new evidence addresses the findings above.

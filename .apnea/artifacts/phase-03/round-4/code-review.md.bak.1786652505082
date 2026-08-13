@@ -1,0 +1,30 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The package remains aligned with approved Phase 3 and the correction stays within the focused server tests. Waiting for `progress_ms: 42` removes the initial-replay false positive, but the broader Phase 3 ownership and failure gates remain unresolved.
+
+## Findings
+
+### High — The peer test still does not prove post-finalization isolation
+
+The revised predicate now proves the live client receives the new snapshot, but `one.dispose()` only initiates socket destruction. The test emits immediately afterward without waiting for the server-side connection scope and both forwarding fibers to finalize. It therefore covers update delivery while disconnect may be in flight, not the package requirement that a naturally disconnected post-hello connection finalizes exactly once and a healthy peer continues afterward. Add the required lifecycle hook and await finalization before emitting.
+
+### High — Post-bind faults remain unobserved through the Promise facade
+
+`startMusicSessionServer` still never evaluates `service.awaitFailure`. A post-bind server error under this supported facade only enters `serverFaults`; it neither closes the scope nor reaches a returned Promise. The coder result explicitly leaves this gap outstanding. Integrate fault supervision into the facade's single scoped Effect graph without an isolated runtime and prove it with deterministic injected error evidence.
+
+### High — The required lifecycle and error matrix remains substantially absent
+
+The suite remains seven facade tests with no narrow Node-operation/lifecycle-hook constructor or exact counters. It does not yet prove direct Layer acquisition and exact provider/source/listener counts; complete two-client hello/status/state replay; natural pre/post-hello and forwarding finalization; blocked command/sample closure; acceptance racing shutdown; late-write suppression; injected close/unlink/`ENOENT`; cleanup continuation and repeated failed-close outcomes; connection-defect observation; or signal-handler removal. These are explicit Phase 3 acceptance gates and cannot be deferred.
+
+### Medium — Connection-failure diagnostics remain lossy and untested
+
+Non-interruption causes are contained after being offered to a capacity-one sliding queue. Concurrent defects can overwrite an earlier cause before the diagnostic fiber observes it, and no synchronous hook/counter proves each contained failure was recorded. The peer test exercises ordinary disposal rather than an injected socket/write defect.
+
+## Verification
+
+The focused server suite passes 7 tests and the corrected snapshot predicate is deterministic for update delivery. No new evidence addresses the remaining lifecycle/failure gates.
