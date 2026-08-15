@@ -5,12 +5,23 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The package remains aligned with approved Phase 1, and no additional product changes were made in this dispatch. The prior provider-boundary findings are addressed, but the later cold-stream ownership finding remains unresolved.
+The Phase 1 package remains aligned with the approved plan, and the product diff is confined to its three allowed files. The executable runner and real-listener closing-refusal changes address the first two narrow boundaries without reopening baseline server behavior.
 
 ## Findings
 
-### High — One provider Layer can still create multiple active raw attempts
+### High — The required whole-file failure-safety audit is still incomplete
 
-`eventsFromAttemptAdapter` still returns a cold `Stream.callback` (`provider.ts:118-124`), and `serviceFromAdapter` still exposes that stream directly as `SessionProvider.events` (`provider.ts:310-318`). Each materialization runs a new supervisor with independent queues/retry state and calls `backend.subscribeAttempt` again. Two consumers of the same Layer-provided service can therefore create two concurrent `media-control stream` attempts against one adapter.
+Acceptance check 3 requires every focused server test to release resources when setup or an assertion fails, but several unchanged paths still bypass cleanup:
 
-This violates the package's “there can be only one active attempt” and “one provider Layer acquisition … at most one active raw source attempt” acceptance invariants. The focused lifecycle test still consumes `provider.events` only once (`system-media.test.ts:428`), so the claimed 41 focused passes do not cover this case. The Layer must own one shared supervised event bridge (or otherwise enforce one materialization), with deterministic evidence that multiple subscribers do not duplicate source acquisition and that Layer shutdown finalizes the single source exactly once.
+- `connected()` rejects on a socket `error` without destroying that socket, so callers cannot clean up a handle when connection setup fails.
+- `scoped signal wait removes both handlers after a signal` starts a waiting Effect before assertions but has no `finally`; a failed listener-count assertion leaves the signal fiber/listeners active. The interruption variant manually creates a `Scope`, then performs assertions before `Scope.close` without an ensuring/finally path.
+- `two clients share the daemon command lane` acquires the server and both clients before entering `try`. If either client acquisition fails, the `finally` block is never reached; `Promise.all` also makes a successfully acquired sibling client unavailable for disposal.
+- `one graph replays hello, status, and state to both clients` likewise assigns neither client until `Promise.all` fully succeeds, contrary to the package's explicit requirement to retain each handle immediately.
+
+The new closing-refusal test also waits only on the refusal latch and installs no client `error` rejection path. An unexpected connection failure can leave the test waiting forever instead of entering `finally` to release the closing gate.
+
+Move these acquisitions under outer `try` blocks, retain each handle as soon as it is created, ensure manually created signal scopes/fibers are always interrupted, and make failed socket connection attempts destroy/reject through an awaitable path. This is mechanical test ownership work already required by the package, not expanded lifecycle acceptance.
+
+## Verification
+
+The coder reports both focused tests, all 25 server tests, 65 baseline tests, all music-core package targets, and the static scan passing. That supports the executable and closing-refusal behavior, but successful runs do not establish cleanup when setup or assertions fail; the finding above therefore remains blocking.

@@ -2,239 +2,185 @@
 status: done
 ---
 
-# Phase 1 package: provider attempt lifecycle and bounded event bridge
+# Phase 1 package: close only the three unresolved server boundaries
 
 ## Intent
 
-Finish only the daemon’s provider boundary in the existing dirty worktree. Make one raw provider attempt, callback-to-Effect event delivery, retry timing, tagged provider failures, and provider/source cleanup independently correct and deterministically tested.
+Amend the accumulated scoped-server work with only these three fixes:
 
-Do not fix coordinator authority, socket cleanup, protocol/client behavior, daemon startup, host migration, artwork, packaging, or docs in this phase. In particular, the abandoned review’s coordinator and server findings belong to Phases 2 and 3 and are not acceptance gates here.
+1. deterministically prove that cleanup failure through the executable runtime path sets nonzero process status and retains tagged operation/message diagnostics;
+2. deterministically drive a real Node connection through the production `closing` refusal branch;
+3. make every focused server test release its resources if setup or an assertion fails.
 
-Preserve all accumulated work, including `docs/music-session-architecture.html`, and refine the existing implementation rather than resetting it. Use Effect TypeScript v4 only.
+Do not reopen the abandoned exhaustive lifecycle matrix. Provider, coordinator, replay, ordinary connection scoping, blocked-work interruption, late-write suppression, cleanup ordering/idempotency, and existing socket-error behavior are already verified. Their suites are regression gates only, not Phase 1 acceptance work.
+
+Preserve the existing server implementation, the provider/coordinator commits, unrelated worktree changes, and `docs/music-session-architecture.html`. Use the repository-pinned Effect v4 APIs only.
 
 ## Files to touch
 
-Only these product/test files:
+Only:
 
-- `packages/music-core/system-media.ts`
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/tests/system-media.test.ts`
+- `packages/music-core/session/server.ts`
+- `packages/music-core/session/music-sessiond.ts`
+- `packages/music-core/tests/session-server.test.ts`
 
-Do not create a parallel provider module or another package. Keep the low-level one-attempt seam in `system-media.ts`, the Effect ownership/retry boundary in `session/provider.ts`, and focused evidence in the existing `system-media.test.ts`.
+A file need not change if the narrow implementation does not require it.
 
 ## Files not to touch
 
-- `packages/music-core/session/config.ts`
+- `packages/music-core/session/provider.ts`
 - `packages/music-core/session/coordinator.ts`
-- `packages/music-core/session/framing.ts`
+- `packages/music-core/session/config.ts`
 - `packages/music-core/session/protocol.ts`
+- `packages/music-core/session/framing.ts`
 - `packages/music-core/session/client.ts`
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
+- `packages/music-core/system-media.ts`
 - `packages/music-core/index.ts`
-- `packages/music-core/tests/session-coordinator.test.ts`
-- `packages/music-core/tests/session-protocol.test.ts`
-- `packages/music-core/tests/session-client.test.ts`
-- `packages/music-core/tests/session-server.test.ts`
 - `packages/music-core/package.json`
 - `packages/music-core/project.json`
 - `packages/music-core/scripts/verify-pack.ts`
-- `packages/music-core/tsconfig.json`
-- `bun.lock`
+- `packages/music-core/tests/system-media.test.ts`
+- `packages/music-core/tests/session-coordinator.test.ts`
+- `packages/music-core/tests/session-protocol.test.ts`
+- `packages/music-core/tests/session-client.test.ts`
 - Anything under `packages/opencode-music-player/`
 - Anything under `packages/pi-music-dock/`
 - `README.md`, package READMEs, and `docs/music-session-architecture.html`
-- `.apnea/state.json` and other `.apnea` tasks/artifacts
+- `.apnea/state.json` and unrelated `.apnea` tasks/artifacts
 
-If the implementation appears to require one of these paths, stop rather than broadening Phase 1.
-
-## Required behavioral shape
-
-### Ownership boundary
-
-- `system-media.ts` owns platform decoding, one shared playback clock, sample/transport operations, and a raw **single-attempt** callback seam.
-- `session/provider.ts` owns Effect acquisition, bounded callback bridging, attempt supervision, retry timing, tagged provider errors, and scoped interruption.
-- The callback seam may only publish data/terminal notifications into bounded bridge state. It must not start Effect work, launch detached Promise work, or own retry timing.
-- Production `createSystemMedia()` remains compatible for the still-unmigrated hosts. Its existing legacy callback/timer supervision is allowed to remain in `system-media.ts`; the daemon path must use `subscribeAttempt`, not `subscribe`.
-
-### Event guarantees
-
-The provider stream has two different event guarantees and must not put them in one lossy mixed sliding queue:
-
-1. Complete snapshots may be conflated under pressure, but the latest complete snapshot for an attempt must remain deliverable.
-2. Every attempt terminal transition must schedule exactly one invalidation and must not be evicted by snapshots.
-
-Use separate bounded state/signals for these concerns. There can be only one active attempt, and retry must not begin until that attempt’s terminal invalidation has been handed to the bounded Effect-owned output path. This provides backpressure for terminals and keeps the number of pending terminal signals bounded. A capacity-one conflated snapshot slot/wakeup is sufficient; an unbounded queue is not.
-
-If terminal arrives while the downstream consumer is blocked, eventual delivery must preserve the latest pending snapshot and one terminal invalidation. Late callbacks from the disposed attempt must be ignored.
+If solving one of the three boundaries appears to require a protocol, provider, coordinator, lifecycle-discovery, host, manifest, or documentation change, stop rather than broadening this phase.
 
 ## Exact implementation steps
 
-### 1. Preserve and harden the one-attempt system-media seam
+### 1. Preserve the accepted server baseline
 
-In `packages/music-core/system-media.ts`:
+Before editing:
 
-1. Keep `createSystemMediaAdapter()` as one adapter with one `PlaybackClock` shared by:
-   - `player()` sampling;
-   - successful play/pause/seek/next/previous clock changes;
-   - complete `media-control stream` snapshot decoding.
-2. Keep `SystemMediaAttemptAdapter.subscribeAttempt` as the daemon-only unsupervised seam. One call must start exactly one:
+1. Inspect `jj diff --summary` and retain every unrelated path.
+2. Treat the current `MusicSessionServerService`, `layerWithHooks`, `startMusicSessionServer`, scoped signal wait, connection `FiberSet`, and cleanup-outcome retention as inputs. Refactor only the seams necessary for the three requirements below.
+3. Do not add another runtime, detached Promise loop, timer, retry, protocol branch, lifecycle counter matrix, or duplicate server graph.
+4. Keep test hooks in `packages/music-core/session/server.ts`; do not export them from `packages/music-core/index.ts` or create another module.
 
-   ```text
-   media-control stream --no-diff --no-artwork
-   ```
+### 2. Make the executable cleanup-failure path deterministically injectable
 
-3. Do not add retry timers to this seam. It emits only:
-   - decoded complete `snapshot` events; and
-   - one `invalidation` when that attempt terminates.
-4. Preserve complete-payload validation. Partial/diff/malformed lines must not become authoritative snapshots.
-5. Make disposal idempotent for all orderings:
-   - explicit dispose before terminal;
-   - terminal before explicit dispose;
-   - duplicate terminal callback;
-   - terminal called synchronously before `startLineStream` returns its disposer;
-   - late line/terminal callbacks after disposal.
-6. Ensure the raw source disposer runs exactly once in every ordering above.
-7. Do not alter the legacy `createSystemMedia().subscribe` contract, its 1/2/4/8 retry behavior, backend fallback, command behavior, or public types used by OpenCode/Pi.
+In `packages/music-core/session/music-sessiond.ts`:
 
-### 2. Make provider acquisition and operations tagged boundaries
+1. Extract the current executable body into a testable in-file runner that is also called by the existing top-level executable guard. Keep production defaults equivalent to today:
+   - parse the supplied argv;
+   - compose the production config → provider → coordinator → server graph once;
+   - run one scoped foreground Effect;
+   - wait on the scoped real process signal boundary or server failure;
+   - inspect retained cleanup outcomes after scope closure;
+   - emit diagnostics and set nonzero process status on failure.
+2. Give the runner only narrow dependency injection needed by the focused test: graph construction (or the server graph), signal emitter, diagnostic sink, and process-status sink/default. Do not add a public-package export, CLI flag, or environment variable that enables test failures in installed production use.
+3. Keep one top-level `Effect.runPromise` process boundary. The injected runner must execute the same cleanup-outcome inspection and `formatDaemonError` path as the real executable; do not test a copied formatter or a Promise-facade-only approximation.
+4. When scoped shutdown retains `MusicSessionSocketError`, set status to `1` and print all of:
+   - `MusicSession.SocketError`;
+   - the operation in the existing bracketed form, such as `[close]` or `[unlink]`;
+   - the original useful message.
+5. If foreground execution and cleanup both fail, preserve the foreground failure and report the cleanup diagnostics as well. Never turn retained cleanup failure into success.
 
-In `packages/music-core/session/provider.ts`:
+In `packages/music-core/tests/session-server.test.ts`:
 
-1. Retain `SessionProvider` as the Effect service and `ProviderError` as a `Schema.TaggedErrorClass` carrying at least operation, message, and original defect/cause.
-2. Factor adapter-to-service construction so production and tests exercise the same implementation. A small scoped test constructor in this existing file is acceptable; do not create another module.
-3. Acquire `createSystemMediaAdapter()` with `Effect.try`/equivalent typed acquisition, not `Effect.sync`. A synchronous adapter creation failure must become `ProviderError` with an acquisition operation.
-4. Wrap every external synchronous or Promise boundary once:
-   - provider status/probes;
-   - sample;
-   - transport;
-   - `subscribeAttempt` startup;
-   - source disposal when it can throw.
-5. Give source startup/acquisition a stable operation such as `source` or `subscribe`; use it consistently in tests. Do not catch genuine Effect interruption and convert it into `ProviderError`.
-6. Unsupported transport remains a typed provider failure. A provider operation failure must not be wrapped repeatedly or lose its original cause.
-7. Register scoped exact-once finalization for the adapter/service lifetime and active source. The test constructor must expose enough acquisition/finalization instrumentation to prove this without changing production callers.
+6. Replace environment/permission-dependent executable cleanup injection with deterministic use of the runner seam. Prefer a real child process launched from the test with an inline script that imports the runner and supplies a graph using the existing fake provider plus `layerWithHooks` cleanup injection. This avoids inventing another fixture path and yields an actual child exit status.
+7. Wait for the child to report listener readiness, send a real `SIGTERM`, and inject one cleanup error only after the corresponding real close/unlink operation has run. Do not use `chmod`, timing sleeps, undocumented environment switches, or an unrelated fake main.
+8. Assert child exit status `1`, tagged error text, operation text, injected message text, listener closure, and completion of the remaining cleanup. Always kill/await the child and remove its path/temp directory in `finally`.
+9. Name the focused test so it matches `executable.*cleanup failure`.
 
-### 3. Replace the mixed sliding bridge
+### 3. Exercise the real production closing-refusal branch
 
-Replace the current `Stream.callback(..., { strategy: "sliding" })` design in `eventsFromAttemptAdapter`.
+In `packages/music-core/session/server.ts`:
 
-1. Build the stream from scoped, bounded Effect primitives, for example:
-   - one capacity-one conflated snapshot slot/wakeup;
-   - one dedicated terminal signal for the current attempt;
-   - one bounded downstream event queue;
-   - one scoped attempt-supervisor fiber.
-2. Callback work must be constant and non-blocking: update/offer only into the private bounded bridge and return.
-3. Snapshot pressure may replace an older pending snapshot with a newer one. It must not replace a terminal signal.
-4. A terminal signal must:
-   - be accepted once for that attempt;
-   - stop/dispose that attempt once;
-   - retain/drain the latest pending complete snapshot as applicable;
-   - enqueue one invalidation without waiting for a recovery sample;
-   - only then enter retry pacing.
-5. Do not begin another attempt while the prior terminal invalidation is merely pending outside the bounded output path. This is what makes “one invalidation per terminal” compatible with bounded memory.
-6. Acquisition failure has no callback terminal, so normalize it at the same supervision boundary: retain the tagged `ProviderError`, publish the provider invalidation/degradation signal expected by this stream, and continue through the retry schedule rather than terminating the worker permanently.
-7. Closing the stream scope must interrupt the active attempt or retry sleep, shut down bridge queues, dispose the active source once, and suppress all late callback offers.
-8. Do not use an unbounded queue, a raw timer, a detached Promise loop, `Effect.runSync`, or `Effect.runPromise` inside the provider implementation.
+1. Replace the current synthetic pattern where a shutdown hook directly calls the acceptance callback with an observation/barrier seam around the real production state transition.
+2. Set the same production `closing` flag used by the real Node `connection` callback before signaling the hook.
+3. Allow a focused test to hold finalization after `closing = true` but before `net.Server.close()` stops acceptance. Use an Effect-owned gate/barrier; production with no hook must proceed immediately.
+4. Add a narrow observation hook for the refusal branch if needed. It may observe the exact `net.Socket`, but it must not make the refusal decision. The production callback must still execute its normal `if (closing) { socket.destroy(); return }` branch.
+5. The gate must remain inside the server finalizer and be interruption-safe. It must not become a public runtime setting or alter ordinary production ordering.
+6. Preserve shutdown behavior for already enrolled sockets. Do not add another acceptance callback, socket registry, or runtime.
 
-### 4. Keep retry state owned by the Effect supervisor
+In `packages/music-core/tests/session-server.test.ts`:
 
-1. Use Effect `Schedule`/Effect clock for delays of 1, 2, 4, 8, 8 seconds on consecutive unsuccessful attempts.
-2. A valid complete snapshot in an attempt resets the **next** terminal/startup-failure retry delay to one second.
-3. Multiple snapshots in one attempt cause one reset; reset tokens must not leak into later attempts.
-4. A terminal emits its invalidation before sleeping.
-5. Attempt startup failures participate in the same capped progression and do not kill the event stream.
-6. Interruption during an active attempt or any retry wait prevents another attempt from starting.
-7. Prefer keeping retry accounting private to the supervisor. Retain `attemptRetrySchedule` as an export only if it remains useful to the integrated behavior; do not let a schedule-only unit test substitute for end-to-end stream evidence.
+7. Start `server.close()`, await a deterministic signal that production has set `closing`, and hold listener close with the new gate.
+8. While that real listener is still accepting, create a real `net.createConnection` to its Unix path. Await observation of that exact socket entering the real production callback and then await client-side closure.
+9. Assert the socket is destroyed/refused and that accepted, enrolled, and connection-finalized counts remain zero for it.
+10. Release the closing gate, await server shutdown, and assert the path is removed.
+11. Release the gate in `finally` even if connection or assertions fail, then destroy the client and await the memoized server close. Do not permit a failed assertion to deadlock finalization.
+12. Name the focused test so it matches `closing.*refus`.
+13. Remove or rewrite the existing test that passes a synthetic `new net.Socket()` directly to the callback; synthetic callback invocation is not evidence for this requirement.
 
-### 5. Replace weak timing coordination with deterministic test controls
+### 4. Make the entire focused server file failure-safe
 
-In `packages/music-core/tests/system-media.test.ts`:
+Audit every test in `packages/music-core/tests/session-server.test.ts`, not just the two new tests:
 
-1. Extend the existing stream fake instead of creating another test file. Add deterministic controls/counters for:
-   - attempt-start notification;
-   - synchronous startup failure;
-   - emitted complete snapshots and terminals;
-   - source disposal;
-   - adapter/service acquisition and finalization where the provider test constructor needs them.
-2. Use `Deferred`, bounded `Queue`, `Ref`, `Latch`, and `TestClock` to coordinate tests. Do not use wall-clock sleeps or arbitrary repeated `Effect.yieldNow` loops as proof that a fiber probably started.
-3. Preserve all existing legacy tests below the one-attempt section. Update focused tests where the provider architecture changes, but do not weaken existing expectations.
+1. Declare optional resource handles before the outer `try` and acquire resources inside it. A failed `connected(...)`, second client creation, Layer build, or subprocess readiness assertion must still reach cleanup.
+2. Release in reverse ownership order in `finally`:
+   - unsubscribe/dispose clients;
+   - destroy raw sockets;
+   - release any closing/test gates;
+   - close/await server facades or Effect scopes idempotently;
+   - kill and await subprocesses;
+   - restore changed permissions if any remain;
+   - remove temporary directories and Unix paths.
+3. For expected cleanup-failure tests, assert the failure in the body and catch the same memoized failure only in `finally`. Do not rerun cleanup resources.
+4. For Effect Layer tests, always close `Scope` in `finally`, including when `Layer.build`, queue/latch waits, or assertions fail.
+5. For tests with multiple clients/sockets, assign each handle immediately after acquisition so a later acquisition failure cannot leak earlier handles.
+6. For subprocess stream readers, release readers and terminate/await the child even if readiness or diagnostic parsing fails.
+7. Use real unique Unix paths already produced by `socketPath(...)`. Do not use wall-clock time for uniqueness.
+8. Do not add arbitrary sleeps, repeated `Effect.yieldNow`, or raw test timers. Synchronize with Node events, existing hooks, `Deferred`, `Latch`, `Queue`, or an explicit gate.
+9. Cleanup code may suppress the already asserted expected product error, but it must not silently omit resource release. Keep assertions about product cleanup in the test body.
 
-Add or strengthen focused tests for all of the following:
+This audit is mechanical resource safety. Do not add new behavioral scenarios while touching the tests.
 
-#### One-attempt seam
+### 5. Keep the phase diff narrow and reviewable
 
-- It starts one raw source and creates no retry timer.
-- Complete input emits a snapshot; partial/malformed input does not.
-- Duplicate terminal calls emit one invalidation and dispose once.
-- Explicit dispose, synchronous terminal-before-return, and late callbacks each remain exact-once and silent after disposal.
-- Sampling, stream decoding, and transport still share one adapter clock.
-
-#### Bounded bridge
-
-- Block the downstream consumer, emit more snapshots than the bridge capacity, then terminate the attempt. After release, the newest snapshot and exactly one invalidation are observed.
-- Snapshot bursts do not grow an unbounded collection; assert the configured bridge bound through observable counters/state rather than process memory.
-- A terminal cannot be evicted by later snapshots, and a snapshot cannot erase the terminal signal.
-- Duplicate/late terminal callbacks do not create duplicate invalidations.
-
-#### Retry and errors
-
-- Integrated `eventsFromAttemptAdapter` behavior under `TestClock` starts attempts after 1/2/4/8/8 seconds.
-- A valid snapshot followed by terminal resets the very next delay to one second.
-- A synchronous `subscribeAttempt` throw is a `ProviderError` at the source operation and supervision still starts the next attempt on schedule.
-- Status/probe, sample, unsupported transport, transport rejection, and adapter acquisition failures retain their expected `ProviderError` operation/cause.
-- A failed attempt does not permanently terminate event supervision.
-
-#### Scope cleanup
-
-- Interrupting during retry sleep starts no later attempt.
-- Interrupting an active attempt disposes its source once and suppresses late snapshot/terminal callbacks.
-- Closing the provider Layer finalizes adapter/provider/source ownership exactly once, including repeated/competing cleanup paths.
-- No focused test leaves a fiber, queue, callback, source, or retry sleeper alive.
+1. Format only touched files.
+2. Run the two focused tests first, then the complete server file.
+3. Run provider/coordinator suites and package targets only as baseline regressions.
+4. Inspect `jj diff --summary` and the exact diff. Revert no unrelated path and do not edit `.apnea/state.json`.
+5. Keep work in the current Jujutsu phase child for review. Do not run `git commit`, push, or `jj squash` during this coding round. After approval, the run may use its prescribed `jj squash` step to fold only this reviewed phase into the intended server change.
 
 ## Acceptance checks
 
-All checks below must be true before handing off Phase 1:
+Only these checks decide Phase 1 acceptance:
 
-- One provider Layer acquisition creates one adapter and at most one active raw source attempt.
-- The one-attempt seam owns no retry timer and uses the same adapter clock as sample and transport.
-- Complete snapshots are authoritative; malformed/partial provider payloads remain ignored.
-- The callback bridge is bounded, conflates snapshots toward the latest value, and guarantees one invalidation for every terminal transition. It is not one lossy mixed queue.
-- Synchronous attempt startup failure is a tagged `ProviderError` and cannot permanently kill supervision.
-- Sample, transport, status/probe, adapter acquisition, source startup, and source disposal failures cross one tagged provider boundary; interruption remains interruption.
-- `TestClock` proves integrated 1/2/4/8/8 retries and reset to one second immediately after a valid snapshot.
-- Interruption during active attempt or retry wait prevents restart, disposes exactly once, and ignores late callbacks.
-- Existing `createSystemMedia()` fallback, clock, complete-stream-payload, command, and legacy retry behavior remains green.
-- No coordinator, server, protocol, client, host, documentation, manifest, lockfile, or `.apnea/state.json` change is included.
+1. **Executable boundary:** deterministic cleanup failure through the executable runner produces actual nonzero child/process status and diagnostics containing the tagged error, failed operation, and useful original message; other cleanup completes.
+2. **Closing refusal:** a real connection accepted by the real Node listener after production sets `closing` is synchronously refused/destroyed by the real production callback and is never accepted, enrolled, or finalized as a connection scope.
+3. **Failure-safe focused tests:** every server test cleans all resources if setup or any assertion fails, including sockets, clients, listener/server, scopes, subprocesses, gates, temporary directories, permissions, and Unix paths.
+
+Passing replay, scoped connection, blocked sample/command, late write, normal cleanup, close/unlink typing, provider, and coordinator tests is required only to show no regression. Those behaviors are not new acceptance work and must not be re-audited unless this phase's diff changes them or a regression command fails.
 
 ## Verify commands
 
 Run from the repository root in this order:
 
 ```sh
-bun test packages/music-core/tests/system-media.test.ts
-bunx nx run-many -t typecheck test format:check package:check --projects=music-core
-! rg -n "Effect\.runSync|Effect\.runPromise|setTimeout\(|setInterval\(" packages/music-core/session/provider.ts
+bun test packages/music-core/tests/session-server.test.ts -t 'executable.*cleanup failure|closing.*refus'
+bun test packages/music-core/tests/session-server.test.ts
+# Baseline regressions only; do not turn them into new Phase 1 findings.
+bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
+bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
 jj diff --summary
 ```
 
-Inspect the final `jj diff --summary` rather than cleaning the working copy. It must show the preserved pre-existing migration and architecture HTML plus Phase 1 changes only in the three allowed product/test paths (apart from this run’s `.apnea` artifacts). Do not reset unrelated changes.
+Expected focused evidence:
 
-Use the run’s Jujutsu squash workflow only after review approval: keep implementation in the current phase child for review, do not create a Git commit or push, and let the approved phase be squashed into the accumulated run change before Phase 2 begins.
+- both regex-selected tests execute and pass;
+- the full server suite exits without leaked handles or retained paths;
+- diagnostics assertions include `_tag`/tag text, operation, and message rather than only checking a generic nonzero exit;
+- no focused test relies on `chmod`, arbitrary sleep, or synthetic invocation of the acceptance callback for the two new boundaries.
 
 ## Dependencies
 
-- Existing `packages/music-core/system-media.ts` provider normalization, backend fallback, legacy stream retry, and playback clock behavior.
-- Existing `packages/music-core/session/provider.ts` service attempt.
-- Existing focused test fakes in `packages/music-core/tests/system-media.test.ts`.
-- Pinned `effect@4.0.0-beta.101`, including `effect/testing` `TestClock`.
+- Verified provider commit `e7103663` and coordinator commit `859fc01d`.
+- Accumulated scoped server implementation in `66bc1f91`.
+- Existing `MusicSessionSocketError`, `MusicSessionServerService` cleanup outcomes, `layerWithHooks`, fake provider, scoped signal wait, and real Unix-socket test helpers.
+- macOS/Node Unix-domain sockets, Bun test runner, and repository-pinned Effect v4.
 
 ## Non-goals
 
-- Fixing coordinator optimistic projection, sampling generations, polling deadlines, reconciliation, command queue, or coordinator tests.
-- Fixing listener/socket/connection ownership, close/unlink reporting, signal cleanup, or server tests.
-- Changing schemas, wire revision negotiation, capabilities, framing, client correlation, or disconnect semantics.
-- Runtime-directory discovery, singleton launch, reconnect, idle exit, diagnostics, or 24-client load/backpressure.
-- Native artwork requests or deduplication.
-- OpenCode or Pi migration and removal of host-owned polling/provider work.
-- Package manifest, export, bin, pack verifier, smoke, README, or architecture HTML changes.
-- Publishing, committing, pushing, opening a PR, editing `.apnea/state.json`, or deleting unrelated worktree content.
+- Reworking or adding acceptance evidence for provider attempts, bridge bounds, retry schedules, coordinator authority, polling/reconciliation, command FIFO, replay, ordinary connection ownership, blocked work, late writes, normal cleanup ordering/idempotency, or existing listen/close/unlink semantics.
+- Schema/protocol revisions, capability negotiation, client request semantics, runtime-directory security, stale endpoint recovery, singleton startup, reconnect, idle shutdown, lifecycle diagnostics expansion, 24-client fan-out, slow readers, or backpressure.
+- Artwork, OpenCode migration, Pi migration, host UI behavior, manifests, packing, pinned host smokes, READMEs, or architecture HTML.
+- New source/test modules or public exports.
+- Publishing, committing, squashing before approval, pushing, opening a PR, editing `.apnea/state.json`, or cleaning/resetting unrelated worktree changes.

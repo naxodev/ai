@@ -1,10 +1,20 @@
 import { expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { chmod, mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
 import net from "node:net"
-import { Context, Effect, Exit, Latch, Layer, Queue, Ref, Scope } from "effect"
+import {
+  Context,
+  Effect,
+  Exit,
+  Fiber,
+  Latch,
+  Layer,
+  Queue,
+  Ref,
+  Scope,
+} from "effect"
 import { layer as configLayer } from "../session/config.ts"
 import { layer as coordinatorLayer } from "../session/coordinator.ts"
 import {
@@ -42,35 +52,62 @@ const readUntil = async (stream: ReadableStream<Uint8Array>, text: string) => {
 const connected = (path: string) => {
   const socket = net.createConnection(path)
   return new Promise<net.Socket>((resolve, reject) => {
-    socket.once("connect", () => resolve(socket))
-    socket.once("error", reject)
+    const remove = () => {
+      socket.off("connect", onConnect)
+      socket.off("error", onError)
+    }
+    const onConnect = () => {
+      remove()
+      resolve(socket)
+    }
+    const onError = (cause: Error) => {
+      remove()
+      socket.destroy()
+      reject(cause)
+    }
+    socket.once("connect", onConnect)
+    socket.once("error", onError)
   })
 }
 
 test("scoped signal wait removes both handlers after a signal", async () => {
   const signals = new EventEmitter()
-  const waiting = Effect.runPromise(waitForSignal(signals))
-  expect(signals.listenerCount("SIGINT")).toBe(1)
-  expect(signals.listenerCount("SIGTERM")).toBe(1)
-  signals.emit("SIGINT")
-  await waiting
-  expect(signals.listenerCount("SIGINT")).toBe(0)
-  expect(signals.listenerCount("SIGTERM")).toBe(0)
+  let closeScope: (() => Promise<void>) | undefined
+  try {
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
+    const waiting = await Effect.runPromise(
+      Effect.forkIn(scope, { startImmediately: true })(waitForSignal(signals)),
+    )
+    expect(signals.listenerCount("SIGINT")).toBe(1)
+    expect(signals.listenerCount("SIGTERM")).toBe(1)
+    signals.emit("SIGINT")
+    await Effect.runPromise(Fiber.join(waiting))
+    expect(signals.listenerCount("SIGINT")).toBe(0)
+    expect(signals.listenerCount("SIGTERM")).toBe(0)
+  } finally {
+    await closeScope?.()
+  }
 })
 
 test("scoped signal wait removes both handlers on interruption", async () => {
   const signals = new EventEmitter()
-  await Effect.runPromise(
-    Effect.gen(function* () {
-      const scope = yield* Scope.make()
-      yield* Effect.forkIn(scope, { startImmediately: true })(
-        waitForSignal(signals),
-      )
-      expect(signals.listenerCount("SIGINT")).toBe(1)
-      expect(signals.listenerCount("SIGTERM")).toBe(1)
-      yield* Scope.close(scope, Exit.void)
-    }),
-  )
+  let closeScope: (() => Promise<void>) | undefined
+  try {
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.forkIn(scope, { startImmediately: true })(
+          waitForSignal(signals),
+        )
+        expect(signals.listenerCount("SIGINT")).toBe(1)
+        expect(signals.listenerCount("SIGTERM")).toBe(1)
+      }),
+    )
+  } finally {
+    await closeScope?.()
+  }
   expect(signals.listenerCount("SIGINT")).toBe(0)
   expect(signals.listenerCount("SIGTERM")).toBe(0)
 })
@@ -85,25 +122,27 @@ test("server shutdown exactly finalizes a pre-hello connection and graph", async
     input: 0,
     connection: 0,
   }
-  const server = await startMusicSessionServer({ socketPath: path }, provider, {
-    onCoordinator: () => {
-      counts.coordinator += 1
-    },
-    onListener: () => {
-      counts.listener += 1
-    },
-    onListenerFinalized: () => {
-      counts.listenerFinalized += 1
-    },
-    onInputFinalized: () => {
-      counts.input += 1
-    },
-    onConnectionFinalized: () => {
-      counts.connection += 1
-    },
-  })
-  const socket = await connected(path)
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let socket: net.Socket | undefined
   try {
+    server = await startMusicSessionServer({ socketPath: path }, provider, {
+      onCoordinator: () => {
+        counts.coordinator += 1
+      },
+      onListener: () => {
+        counts.listener += 1
+      },
+      onListenerFinalized: () => {
+        counts.listenerFinalized += 1
+      },
+      onInputFinalized: () => {
+        counts.input += 1
+      },
+      onConnectionFinalized: () => {
+        counts.connection += 1
+      },
+    })
+    socket = await connected(path)
     await server.close()
     await server.close()
     expect(socket.destroyed).toBe(true)
@@ -118,8 +157,8 @@ test("server shutdown exactly finalizes a pre-hello connection and graph", async
     expect(provider.counts.disposals).toBe(1)
     expect(provider.counts.providerDisposals).toBe(1)
   } finally {
-    socket.destroy()
-    await server.close().catch(() => {})
+    socket?.destroy()
+    await server?.close().catch(() => {})
   }
 })
 
@@ -127,13 +166,14 @@ test("server close interrupts post-hello forwarding before late provider events"
   const path = socketPath("active")
   const provider = createFakeProvider()
   let writes = 0
-  const server = await startMusicSessionServer({ socketPath: path }, provider, {
-    onWriteAttempt: () => {
-      writes += 1
-    },
-  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   try {
+    server = await startMusicSessionServer({ socketPath: path }, provider, {
+      onWriteAttempt: () => {
+        writes += 1
+      },
+    })
     client = await createMusicSessionClient({
       socketPath: path,
       clientId: "active-client",
@@ -152,7 +192,7 @@ test("server close interrupts post-hello forwarding before late provider events"
     expect(existsSync(path)).toBe(false)
   } finally {
     client?.dispose()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -166,10 +206,11 @@ test("partial-frame disconnect exactly finalizes input and connection while list
   const finalized = new Promise<void>((resolve) => {
     resolveFinalized = resolve
   })
-  const server = await startMusicSessionServer(
-    { socketPath: path },
-    undefined,
-    {
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let partial: net.Socket | undefined
+  let healthy: net.Socket | undefined
+  try {
+    server = await startMusicSessionServer({ socketPath: path }, undefined, {
       onInputFinalized: () => {
         inputs += 1
       },
@@ -183,15 +224,14 @@ test("partial-frame disconnect exactly finalizes input and connection while list
         connections += 1
         resolveFinalized()
       },
-    },
-  )
-  const partial = await connected(path)
-  try {
+    })
+    const partialSocket = await connected(path)
+    partial = partialSocket
     const closed = new Promise<void>((resolve) =>
-      partial.once("close", resolve),
+      partialSocket.once("close", resolve),
     )
-    partial.write('{"type":"hello"')
-    partial.end()
+    partialSocket.write('{"type":"hello"')
+    partialSocket.end()
     await closed
     await finalized
     // EOF is processed by the serial input fiber before its finalization.
@@ -199,20 +239,23 @@ test("partial-frame disconnect exactly finalizes input and connection while list
     expect(inputs).toBe(1)
     expect(processors).toBe(1)
     expect(connections).toBe(1)
-    const healthy = await connected(path)
+    healthy = await connected(path)
     healthy.destroy()
   } finally {
-    partial.destroy()
-    await server.close()
+    partial?.destroy()
+    healthy?.destroy()
+    await server?.close().catch(() => {})
   }
 })
 
 test("natural malformed-client disconnect leaves the listener healthy", async () => {
   const path = socketPath("mid-frame")
-  const server = await startMusicSessionServer({ socketPath: path })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let partial: net.Socket | undefined
   let healthy: net.Socket | undefined
   try {
+    const activeServer = await startMusicSessionServer({ socketPath: path })
+    server = activeServer
     partial = await connected(path)
     const closed = new Promise<void>((resolve) =>
       partial?.once("close", resolve),
@@ -222,23 +265,24 @@ test("natural malformed-client disconnect leaves the listener healthy", async ()
     await closed
     healthy = await connected(path)
     healthy.destroy()
-    await server.close()
+    await activeServer.close()
     expect(existsSync(path)).toBe(false)
   } finally {
     partial?.destroy()
     healthy?.destroy()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
 test("correlates an invalid request without closing the listener", async () => {
   const path = socketPath("invalid")
-  const server = await startMusicSessionServer(
-    { socketPath: path },
-    createFakeProvider(),
-  )
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let socket: net.Socket | undefined
   try {
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+    )
     socket = await connected(path)
     const response = new Promise<string>((resolve) =>
       socket?.once("data", (chunk: Buffer) => resolve(chunk.toString())),
@@ -252,7 +296,7 @@ test("correlates an invalid request without closing the listener", async () => {
     })
   } finally {
     socket?.destroy()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -261,13 +305,14 @@ test("socket defects are observed while a healthy peer remains live", async () =
   const failures: unknown[] = []
   const accepted: net.Socket[] = []
   const provider = createFakeProvider()
-  const server = await startMusicSessionServer({ socketPath: path }, provider, {
-    onAccepted: (socket) => accepted.push(socket),
-    onConnectionFailure: (cause) => failures.push(cause),
-  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let broken: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   let healthy: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   try {
+    server = await startMusicSessionServer({ socketPath: path }, provider, {
+      onAccepted: (socket) => accepted.push(socket),
+      onConnectionFailure: (cause) => failures.push(cause),
+    })
     broken = await createMusicSessionClient({
       socketPath: path,
       clientId: "broken",
@@ -296,29 +341,30 @@ test("socket defects are observed while a healthy peer remains live", async () =
   } finally {
     broken?.dispose()
     healthy?.dispose()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
 test("throwing enrollment seam still destroys the accepted socket", async () => {
   const path = socketPath("acceptance-hook-throw")
-  const server = await startMusicSessionServer(
-    { socketPath: path },
-    createFakeProvider(),
-    {
-      canEnroll: () => {
-        throw new Error("injected enrollment hook fault")
-      },
-    },
-  )
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let socket: net.Socket | undefined
   try {
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+      {
+        canEnroll: () => {
+          throw new Error("injected enrollment hook fault")
+        },
+      },
+    )
     socket = net.createConnection(path)
     await new Promise<void>((resolve) => socket?.once("close", resolve))
     expect(socket.destroyed).toBe(true)
   } finally {
     socket?.destroy()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -328,27 +374,27 @@ test("acceptance during actual server shutdown is enrolled then finalized", asyn
   let enrolled = 0
   let finalized = 0
   let closing: Promise<void> | undefined
-  let server: Awaited<ReturnType<typeof startMusicSessionServer>>
-  server = await startMusicSessionServer(
-    { socketPath: path },
-    createFakeProvider(),
-    {
-      onNodeConnection: () => {
-        closing ??= server.close()
-      },
-      onAccepted: () => {
-        accepted += 1
-      },
-      onEnrolled: () => {
-        enrolled += 1
-      },
-      onConnectionFinalized: () => {
-        finalized += 1
-      },
-    },
-  )
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let socket: net.Socket | undefined
   try {
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+      {
+        onNodeConnection: () => {
+          if (server) closing ??= server.close()
+        },
+        onAccepted: () => {
+          accepted += 1
+        },
+        onEnrolled: () => {
+          enrolled += 1
+        },
+        onConnectionFinalized: () => {
+          finalized += 1
+        },
+      },
+    )
     socket = net.createConnection(path)
     await new Promise<void>((resolve) => socket?.once("close", resolve))
     await closing
@@ -360,45 +406,84 @@ test("acceptance during actual server shutdown is enrolled then finalized", asyn
     expect(existsSync(path)).toBe(false)
   } finally {
     socket?.destroy()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
-test("production acceptance callback refuses sockets after shutdown begins", async () => {
+test("production closing refusal destroys a real listener connection", async () => {
   const path = socketPath("closing-refusal")
+  const closing = Latch.makeUnsafe()
+  const releaseClosing = Latch.makeUnsafe()
+  const refused = Latch.makeUnsafe()
   let accepted = 0
   let enrolled = 0
   let finalized = 0
-  let refused: net.Socket | undefined
-  const server = await startMusicSessionServer(
-    { socketPath: path },
-    createFakeProvider(),
-    {
-      onAccepted: () => {
-        accepted += 1
-      },
-      onEnrolled: () => {
-        enrolled += 1
-      },
-      onConnectionFinalized: () => {
-        finalized += 1
-      },
-      onClosing: (accept) => {
-        refused = new net.Socket()
-        accept(refused)
-      },
-    },
-  )
+  let refusedSocket: net.Socket | undefined
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let client: net.Socket | undefined
+  let shutdown: Promise<void> | undefined
   try {
-    await server.close()
-    expect(refused?.destroyed).toBe(true)
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+      {
+        onAccepted: () => {
+          accepted += 1
+        },
+        onEnrolled: () => {
+          enrolled += 1
+        },
+        onConnectionFinalized: () => {
+          finalized += 1
+        },
+        onClosing: () => Latch.openUnsafe(closing),
+        awaitClosing: Latch.await(releaseClosing),
+        onRefused: (socket) => {
+          refusedSocket = socket
+          Latch.openUnsafe(refused)
+        },
+      },
+    )
+    shutdown = server.close()
+    await Effect.runPromise(Latch.await(closing))
+    const refusalClient = net.createConnection(path)
+    client = refusalClient
+    const clientClosed = new Promise<void>((resolve, reject) => {
+      const remove = () => {
+        refusalClient.off("close", onClose)
+        refusalClient.off("error", onError)
+      }
+      const onClose = () => {
+        remove()
+        resolve()
+      }
+      const onError = (cause: Error) => {
+        remove()
+        reject(cause)
+      }
+      refusalClient.once("close", onClose)
+      refusalClient.once("error", onError)
+    })
+    const outcome = await Promise.race([
+      Effect.runPromise(Latch.await(refused)).then(() => "refused"),
+      clientClosed.then(() => "closed"),
+    ])
+    expect(outcome).toBe("refused")
+    await clientClosed
+    expect(refusedSocket).toBeDefined()
+    expect(refusedSocket?.destroyed).toBe(true)
     expect(accepted).toBe(0)
     expect(enrolled).toBe(0)
     expect(finalized).toBe(0)
+    Latch.openUnsafe(releaseClosing)
+    await shutdown
     expect(existsSync(path)).toBe(false)
   } finally {
-    refused?.destroy()
-    await server.close().catch(() => {})
+    Latch.openUnsafe(refused)
+    Latch.openUnsafe(releaseClosing)
+    client?.destroy()
+    await shutdown?.catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -408,27 +493,28 @@ test("Node acceptance rejected before enrollment destroys the exact socket", asy
   let accepted = 0
   let enrolled = 0
   let finalized = 0
-  const server = await startMusicSessionServer(
-    { socketPath: path },
-    createFakeProvider(),
-    {
-      onNodeConnection: () => {
-        nodeAccepted += 1
-      },
-      canEnroll: () => false,
-      onAccepted: () => {
-        accepted += 1
-      },
-      onEnrolled: () => {
-        enrolled += 1
-      },
-      onConnectionFinalized: () => {
-        finalized += 1
-      },
-    },
-  )
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let socket: net.Socket | undefined
   try {
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+      {
+        onNodeConnection: () => {
+          nodeAccepted += 1
+        },
+        canEnroll: () => false,
+        onAccepted: () => {
+          accepted += 1
+        },
+        onEnrolled: () => {
+          enrolled += 1
+        },
+        onConnectionFinalized: () => {
+          finalized += 1
+        },
+      },
+    )
     socket = net.createConnection(path)
     await new Promise<void>((resolve) => socket?.once("close", resolve))
     expect(nodeAccepted).toBe(1)
@@ -438,18 +524,19 @@ test("Node acceptance rejected before enrollment destroys the exact socket", asy
     expect(socket.destroyed).toBe(true)
   } finally {
     socket?.destroy()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
 test("an occupied path reports listen failure without disrupting its owner", async () => {
   const path = socketPath("occupied")
-  const owner = await startMusicSessionServer(
-    { socketPath: path },
-    createFakeProvider(),
-  )
+  let owner: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let peer: net.Socket | undefined
   try {
+    owner = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+    )
     await expect(
       startMusicSessionServer({ socketPath: path }, createFakeProvider()),
     ).rejects.toMatchObject({
@@ -463,7 +550,7 @@ test("an occupied path reports listen failure without disrupting its owner", asy
     expect(existsSync(path)).toBe(false)
   } finally {
     peer?.destroy()
-    await owner.close().catch(() => {})
+    await owner?.close().catch(() => {})
   }
 })
 
@@ -483,57 +570,61 @@ test("one graph replays hello, status, and state to both clients", async () => {
     closes: 0,
     unlinks: 0,
   }
-  const server = await startMusicSessionServer({ socketPath: path }, provider, {
-    onClose: () => {
-      counts.closes += 1
-    },
-    onUnlink: () => {
-      counts.unlinks += 1
-    },
-    onListener: () => {
-      counts.listener += 1
-    },
-    onListenerFinalized: () => {
-      counts.listenerFinalized += 1
-    },
-    onAccepted: () => {
-      counts.accepted += 1
-    },
-    onEnrolled: () => {
-      counts.enrolled += 1
-    },
-    onInputFinalized: () => {
-      counts.input += 1
-    },
-    onInputProcessorFinalized: () => {
-      counts.processors += 1
-    },
-    onConnectionFinalized: () => {
-      counts.connections += 1
-    },
-    onForwarderStarted: () => {
-      counts.forwardersStarted += 1
-    },
-    onForwarderFinalized: () => {
-      counts.forwardersFinalized += 1
-    },
-  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let one: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   let two: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   try {
-    const [clientOne, clientTwo] = await Promise.all([
-      createMusicSessionClient({
-        socketPath: path,
-        clientId: "replay-one",
-        hostKind: "test",
-      }),
-      createMusicSessionClient({
-        socketPath: path,
-        clientId: "replay-two",
-        hostKind: "test",
-      }),
-    ])
+    const activeServer = await startMusicSessionServer(
+      { socketPath: path },
+      provider,
+      {
+        onClose: () => {
+          counts.closes += 1
+        },
+        onUnlink: () => {
+          counts.unlinks += 1
+        },
+        onListener: () => {
+          counts.listener += 1
+        },
+        onListenerFinalized: () => {
+          counts.listenerFinalized += 1
+        },
+        onAccepted: () => {
+          counts.accepted += 1
+        },
+        onEnrolled: () => {
+          counts.enrolled += 1
+        },
+        onInputFinalized: () => {
+          counts.input += 1
+        },
+        onInputProcessorFinalized: () => {
+          counts.processors += 1
+        },
+        onConnectionFinalized: () => {
+          counts.connections += 1
+        },
+        onForwarderStarted: () => {
+          counts.forwardersStarted += 1
+        },
+        onForwarderFinalized: () => {
+          counts.forwardersFinalized += 1
+        },
+      },
+    )
+    server = activeServer
+    const clientOne = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "replay-one",
+      hostKind: "test",
+    })
     one = clientOne
+    const clientTwo = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "replay-two",
+      hostKind: "test",
+    })
     two = clientTwo
     const replay = (client: typeof clientOne) =>
       Promise.all([
@@ -571,7 +662,7 @@ test("one graph replays hello, status, and state to both clients", async () => {
     expect(clientTwo.state?.state.progress_ms).toBe(77)
     clientOne.dispose()
     clientTwo.dispose()
-    await server.close()
+    await activeServer.close()
     expect(counts).toEqual({
       listener: 1,
       listenerFinalized: 1,
@@ -594,7 +685,7 @@ test("one graph replays hello, status, and state to both clients", async () => {
   } finally {
     one?.dispose()
     two?.dispose()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -610,28 +701,29 @@ test("a disconnected peer does not stop another client's replay", async () => {
   const connectionFinalized = new Promise<void>((resolve) => {
     resolveFinalized = resolve
   })
-  const server = await startMusicSessionServer({ socketPath: path }, provider, {
-    onAccepted: (socket) => {
-      sockets.push(socket)
-    },
-    onWriteAttempt: (socket) => {
-      writes.set(socket, (writes.get(socket) ?? 0) + 1)
-    },
-    onForwarderStarted: () => {
-      forwardersStarted += 1
-    },
-    onConnectionFinalized: () => {
-      finalized += 1
-      if (finalized === 1 && forwardersFinalized === 2) resolveFinalized()
-    },
-    onForwarderFinalized: () => {
-      forwardersFinalized += 1
-      if (finalized === 1 && forwardersFinalized === 2) resolveFinalized()
-    },
-  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let one: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   let two: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   try {
+    server = await startMusicSessionServer({ socketPath: path }, provider, {
+      onAccepted: (socket) => {
+        sockets.push(socket)
+      },
+      onWriteAttempt: (socket) => {
+        writes.set(socket, (writes.get(socket) ?? 0) + 1)
+      },
+      onForwarderStarted: () => {
+        forwardersStarted += 1
+      },
+      onConnectionFinalized: () => {
+        finalized += 1
+        if (finalized === 1 && forwardersFinalized === 2) resolveFinalized()
+      },
+      onForwarderFinalized: () => {
+        forwardersFinalized += 1
+        if (finalized === 1 && forwardersFinalized === 2) resolveFinalized()
+      },
+    })
     one = await createMusicSessionClient({
       socketPath: path,
       clientId: "gone",
@@ -668,7 +760,7 @@ test("a disconnected peer does not stop another client's replay", async () => {
   } finally {
     one?.dispose()
     two?.dispose()
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -676,10 +768,11 @@ test("post-bind listener faults reach the Promise facade", async () => {
   const path = socketPath("post-bind-fault")
   let listener: net.Server | undefined
   const provider = createFakeProvider()
-  const server = await startMusicSessionServer({ socketPath: path }, provider, {
-    onListener: (next) => (listener = next),
-  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   try {
+    server = await startMusicSessionServer({ socketPath: path }, provider, {
+      onListener: (next) => (listener = next),
+    })
     if (!listener) throw new Error("listener was not acquired")
     listener.emit("error", new Error("post-bind failure"))
     await expect(server.close()).rejects.toMatchObject({
@@ -690,7 +783,7 @@ test("post-bind listener faults reach the Promise facade", async () => {
     expect(provider.counts.disposals).toBe(1)
     expect(provider.counts.providerDisposals).toBe(1)
   } finally {
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -699,16 +792,17 @@ test("close failure remains typed after real cleanup and is memoized", async () 
   const provider = createFakeProvider()
   let closes = 0
   let unlinks = 0
-  const server = await startMusicSessionServer({ socketPath: path }, provider, {
-    closeFailure: () => new Error("injected close failure"),
-    onClose: () => {
-      closes += 1
-    },
-    onUnlink: () => {
-      unlinks += 1
-    },
-  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   try {
+    server = await startMusicSessionServer({ socketPath: path }, provider, {
+      closeFailure: () => new Error("injected close failure"),
+      onClose: () => {
+        closes += 1
+      },
+      onUnlink: () => {
+        unlinks += 1
+      },
+    })
     const first = server.close()
     expect(server.close()).toBe(first)
     await expect(first).rejects.toMatchObject({
@@ -721,29 +815,30 @@ test("close failure remains typed after real cleanup and is memoized", async () 
     expect(provider.counts.disposals).toBe(1)
     expect(provider.counts.providerDisposals).toBe(1)
   } finally {
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
 test("multiple cleanup failures retain both tagged operations", async () => {
   const path = socketPath("multiple-cleanup-failures")
   const observed: string[] = []
-  const server = await startMusicSessionServer(
-    { socketPath: path },
-    createFakeProvider(),
-    {
-      closeFailure: () => new Error("close failure"),
-      unlinkFailure: () =>
-        Object.assign(new Error("unlink failure"), { code: "EACCES" }),
-      onCleanupFailure: (error) => observed.push(error.operation),
-    },
-  )
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   try {
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+      {
+        closeFailure: () => new Error("close failure"),
+        unlinkFailure: () =>
+          Object.assign(new Error("unlink failure"), { code: "EACCES" }),
+        onCleanupFailure: (error) => observed.push(error.operation),
+      },
+    )
     await expect(server.close()).rejects.toMatchObject({ operation: "close" })
     expect(observed).toEqual(["close", "unlink"])
     expect(existsSync(path)).toBe(false)
   } finally {
-    await server.close().catch(() => {})
+    await server?.close().catch(() => {})
   }
 })
 
@@ -753,18 +848,19 @@ test("unlink failures are typed after listener cleanup and ENOENT is tolerated",
   const error = Object.assign(new Error("injected unlink failure"), {
     code: "EACCES",
   })
-  const failed = await startMusicSessionServer(
-    { socketPath: failedPath },
-    createFakeProvider(),
-    {
-      unlinkFailure: () => error,
-      onUnlink: () => {
-        unlinks += 1
-      },
-    },
-  )
+  let failed: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let tolerated: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   try {
+    failed = await startMusicSessionServer(
+      { socketPath: failedPath },
+      createFakeProvider(),
+      {
+        unlinkFailure: () => error,
+        onUnlink: () => {
+          unlinks += 1
+        },
+      },
+    )
     await expect(failed.close()).rejects.toMatchObject({
       _tag: "MusicSession.SocketError",
       operation: "unlink",
@@ -784,21 +880,50 @@ test("unlink failures are typed after listener cleanup and ENOENT is tolerated",
     await tolerated.close()
     expect(existsSync(enoentPath)).toBe(false)
   } finally {
-    await failed.close().catch(() => {})
+    await failed?.close().catch(() => {})
     await tolerated?.close().catch(() => {})
   }
 })
 
-test("the executable reports tagged cleanup failure after SIGTERM", async () => {
-  const directory = await mkdtemp("/tmp/music-sessiond-executable-")
-  const path = `${directory}/daemon.sock`
+test("executable reports cleanup failure with nonzero status after SIGTERM", async () => {
+  let directory: string | undefined
   let daemon: ReturnType<typeof Bun.spawn> | undefined
+  let diagnostics: ReadableStream<Uint8Array> | undefined
   try {
+    directory = await mkdtemp("/tmp/music-sessiond-executable-")
+    const runner = new URL("../session/music-sessiond.ts", import.meta.url).href
+    const config = new URL("../session/config.ts", import.meta.url).href
+    const coordinator = new URL("../session/coordinator.ts", import.meta.url)
+      .href
+    const provider = new URL("../session/provider.ts", import.meta.url).href
+    const server = new URL("../session/server.ts", import.meta.url).href
+    const path = `${directory}/daemon.sock`
     daemon = Bun.spawn(
       [
         process.execPath,
-        "run",
-        new URL("../session/music-sessiond.ts", import.meta.url).pathname,
+        "--cwd",
+        new URL("..", import.meta.url).pathname,
+        "--eval",
+        `import { Layer } from "effect";
+         import { runMusicSessionDaemon } from ${JSON.stringify(runner)};
+         import { layer as configLayer } from ${JSON.stringify(config)};
+         import { layer as coordinatorLayer } from ${JSON.stringify(coordinator)};
+         import { createFakeProvider, layerFromLegacy } from ${JSON.stringify(provider)};
+         import { layerWithHooks } from ${JSON.stringify(server)};
+         await runMusicSessionDaemon({
+           argv: process.argv.slice(1),
+           graph: (socketPath) => Layer.provide(
+             Layer.provide(
+               layerWithHooks({
+                 closeFailure: () => new Error("injected executable close failure"),
+                 onUnlink: () => console.error("test unlink completed"),
+               }),
+               Layer.provide(coordinatorLayer, layerFromLegacy(createFakeProvider())),
+             ),
+             configLayer({ socketPath }),
+           ),
+         });`,
+        "--",
         "--socket",
         path,
       ],
@@ -807,27 +932,23 @@ test("the executable reports tagged cleanup failure after SIGTERM", async () => 
     const stderr = daemon.stderr
     if (!stderr || typeof stderr === "number")
       throw new Error("daemon stderr was not piped")
-    const [ready, diagnostics] = stderr.tee()
+    const [ready, output] = stderr.tee()
+    diagnostics = output
     await readUntil(ready, "music-sessiond listening")
-    // This is a real unlink failure at the executable process boundary; the
-    // parent restores the directory only after the daemon has finalized.
-    await chmod(directory, 0o500)
     daemon.kill("SIGTERM")
-    const output = await new Response(diagnostics).text()
+    const text = await new Response(diagnostics).text()
     expect(await daemon.exited).toBe(1)
-    expect(output).toContain("MusicSession.SocketError")
-    expect(output).toContain("[unlink]")
-    // The artifact remains because unlink failed, but signal-driven scope
-    // closure has already closed the listener that owned it.
-    expect(existsSync(path)).toBe(true)
-    await expect(connected(path)).rejects.toBeInstanceOf(Error)
+    expect(text).toContain("MusicSession.SocketError")
+    expect(text).toContain("[close]")
+    expect(text).toContain("injected executable close failure")
+    expect(text).toContain("test unlink completed")
+    expect(existsSync(path)).toBe(false)
   } finally {
     if (daemon) {
       daemon.kill("SIGKILL")
       await daemon.exited
     }
-    await chmod(directory, 0o700).catch(() => {})
-    await rm(directory, { recursive: true, force: true })
+    if (directory) await rm(directory, { recursive: true, force: true })
   }
 })
 
@@ -846,8 +967,10 @@ test("direct Layer owners join tagged cleanup in one outer program", async () =>
     serverWithCoordinator,
     configLayer({ socketPath: path }),
   )
-  const scope = await Effect.runPromise(Scope.make())
+  let closeScope: (() => Promise<void>) | undefined
   try {
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
     const cleanup = await Effect.runPromise(
       Effect.gen(function* () {
         const context = yield* Scope.provide(scope)(Layer.build(graph))
@@ -860,14 +983,13 @@ test("direct Layer owners join tagged cleanup in one outer program", async () =>
     expect(existsSync(path)).toBe(false)
     expect(provider.counts.providerDisposals).toBe(1)
   } finally {
-    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await closeScope?.()
   }
 })
 
 test("server close interrupts blocked coordinator sampling and finalizes ownership", async () => {
   const path = socketPath("blocked-sample")
-  const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
-  const scope = await Effect.runPromise(Scope.make())
+  let closeScope: (() => Promise<void>) | undefined
   let socket: net.Socket | undefined
   const counts = {
     listener: 0,
@@ -879,6 +1001,9 @@ test("server close interrupts blocked coordinator sampling and finalizes ownersh
     unlinks: 0,
   }
   try {
+    const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
     const coordinatorWithProvider = Layer.provide(
       coordinatorLayer,
       fixture.layer,
@@ -940,19 +1065,21 @@ test("server close interrupts blocked coordinator sampling and finalizes ownersh
     expect(existsSync(path)).toBe(false)
   } finally {
     socket?.destroy()
-    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await closeScope?.()
   }
 })
 
 test("server scope interrupts a blocked socket command without a late response", async () => {
   const path = socketPath("blocked-command")
-  const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
-  await Effect.runPromise(fixture.blockTransport)
-  const scope = await Effect.runPromise(Scope.make())
+  let closeScope: (() => Promise<void>) | undefined
   let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   let writes = 0
   let finalized = 0
   try {
+    const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
+    await Effect.runPromise(fixture.blockTransport)
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
     const coordinatorWithProvider = Layer.provide(
       coordinatorLayer,
       fixture.layer,
@@ -994,14 +1121,13 @@ test("server scope interrupts a blocked socket command without a late response",
     expect(existsSync(path)).toBe(false)
   } finally {
     client?.dispose()
-    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await closeScope?.()
   }
 })
 
 test("two socket admissions retain FIFO order while the first transport blocks", async () => {
   const path = socketPath("command-admission")
-  const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
-  const scope = await Effect.runPromise(Scope.make())
+  let closeScope: (() => Promise<void>) | undefined
   const admissions: string[] = []
   let resolveSecondAdmission: () => void = () => {}
   const secondAdmission = new Promise<void>((resolve) => {
@@ -1010,6 +1136,9 @@ test("two socket admissions retain FIFO order while the first transport blocks",
   let one: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   let two: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
   try {
+    const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
     await Effect.runPromise(fixture.blockTransport)
     const graph = Layer.provide(
       Layer.provide(
@@ -1051,42 +1180,46 @@ test("two socket admissions retain FIFO order while the first transport blocks",
   } finally {
     one?.dispose()
     two?.dispose()
-    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await closeScope?.()
   }
 })
 
 test("two clients share the daemon command lane", async () => {
   const path = socketPath("commands")
   const provider = createFakeProvider()
-  const server = await startMusicSessionServer(
-    {
-      socketPath: path,
-      pollMs: { playing: 100000, paused: 100000, idle: 100000 },
-    },
-    provider,
-  )
-  const [one, two] = await Promise.all([
-    createMusicSessionClient({
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let one: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let two: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    const activeServer = await startMusicSessionServer(
+      {
+        socketPath: path,
+        pollMs: { playing: 100000, paused: 100000, idle: 100000 },
+      },
+      provider,
+    )
+    server = activeServer
+    const first = await createMusicSessionClient({
       socketPath: path,
       clientId: "one",
       hostKind: "test",
-    }),
-    createMusicSessionClient({
+    })
+    one = first
+    const second = await createMusicSessionClient({
       socketPath: path,
       clientId: "two",
       hostKind: "test",
-    }),
-  ])
-  try {
-    await Promise.all([one.play(), two.pause()])
+    })
+    two = second
+    await Promise.all([first.play(), second.pause()])
     expect(provider.calls).toEqual(["play", "pause"])
-    one.dispose()
-    two.dispose()
-    await server.close()
+    first.dispose()
+    second.dispose()
+    await activeServer.close()
     expect(existsSync(path)).toBe(false)
   } finally {
-    one.dispose()
-    two.dispose()
-    await server.close().catch(() => {})
+    one?.dispose()
+    two?.dispose()
+    await server?.close().catch(() => {})
   }
 })

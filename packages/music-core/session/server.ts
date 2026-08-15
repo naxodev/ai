@@ -86,11 +86,12 @@ export type ServerLifecycleHooks = {
   readonly onCleanupFailure?: (error: MusicSessionSocketError) => void
   /** Runs at Node callback entry, before the closing/enrollment decision. */
   readonly onNodeConnection?: (socket: net.Socket) => void
-  /**
-   * Test-only shutdown seam. It receives the production acceptance callback
-   * after the server has atomically stopped enrollment but before close().
-   */
-  readonly onClosing?: (accept: (socket: net.Socket) => void) => void
+  /** Observes production closing before listener close stops acceptance. */
+  readonly onClosing?: () => void
+  /** Test-only Effect gate held after closing and before listener close. */
+  readonly awaitClosing?: Effect.Effect<void>
+  /** Observes a socket refused by the production closing branch. */
+  readonly onRefused?: (socket: net.Socket) => void
   /** Test-only synchronous enrollment refusal; production always enrolls. */
   readonly canEnroll?: (socket: net.Socket) => boolean
   readonly onCoordinator?: () => void
@@ -473,7 +474,12 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
       }
       const onConnection = (socket: net.Socket) => {
         invokeHook(() => hooks.onNodeConnection?.(socket))
-        if (closing || !canEnroll(socket)) {
+        if (closing) {
+          invokeHook(() => hooks.onRefused?.(socket))
+          socket.destroy()
+          return
+        }
+        if (!canEnroll(socket)) {
           socket.destroy()
           return
         }
@@ -547,15 +553,12 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
           Effect.gen(function* () {
             closing = true
             yield* Effect.sync(() => {
-              // This hook invokes the same callback Node uses, making the
-              // closing refusal branch observable without a detached runtime.
-              try {
-                hooks.onClosing?.(onConnection)
-              } catch {
-                // Test observation cannot prevent real shutdown cleanup.
-              }
+              invokeHook(hooks.onClosing)
               for (const socket of sockets) socket.destroy()
             })
+            // A focused test can hold this finalizer while the real listener
+            // remains live, then connect through Node's production callback.
+            yield* hooks.awaitClosing ?? Effect.void
             yield* Queue.shutdown(serverFaults)
             // Interrupt and await connection scopes before listener teardown.
             yield* FiberSet.clear(connections)

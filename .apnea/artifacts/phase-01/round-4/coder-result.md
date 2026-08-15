@@ -4,15 +4,11 @@ status: done
 
 ## Changed
 
-- Made `connected()` destroy and reject failed connection attempts, so callers do not lose an errored raw socket before their `finally` executes.
-- Moved focused-server resource acquisition into outer `try` blocks, assigned clients immediately instead of through all-or-nothing `Promise.all`, and made every server/scope cleanup idempotent in `finally`.
-- Made both signal-wait tests close their active wait/scope even when an assertion fails.
-- Made the real closing-refusal client awaitable on both `close` and `error`, ensuring a failed connection releases the closing gate.
-- Added an Effect `Deferred` readiness handshake between daemon signal-listener registration and readiness diagnostics, removing the SIGTERM race in the executable child test.
+- Scoped the successful signal-wait test’s fiber and joins it through `Fiber.join`, so assertion failures close the scope instead of depending on a particular signal listener being registered.
+- Raced closing-refusal callback observation against client closure/error and opens both test latches in `finally`; a connection failure now fails immediately and still releases server finalization.
 
 Files touched:
 
-- `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
 ## Verify transcript
@@ -25,7 +21,7 @@ exit 0
 $ bun test packages/music-core/tests/session-server.test.ts
 exit 0
 25 pass, 0 fail
-111 expect() calls
+112 expect() calls
 
 $ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
 exit 0
@@ -52,5 +48,5 @@ M packages/music-core/tests/session-server.test.ts
 
 ## Residual risks
 
-- The complete server suite continues to emit its expected warning for the intentional multiple-cleanup-failure scenario.
+- The expected multiple-cleanup-failure scenario continues to emit its warning during the full server suite.
 - No commit, squash, push, or `.apnea/state.json` edit was performed.

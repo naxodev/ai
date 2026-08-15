@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import { layer as configLayer } from "./config.ts"
 import { layer as providerLayer } from "./provider.ts"
 import { layer as coordinatorLayer } from "./coordinator.ts"
@@ -8,7 +8,7 @@ import { layer as serverLayer, MusicSessionServerService } from "./server.ts"
 function usage() {
   console.log("Usage: naxodev-music-sessiond --socket <absolute-path>")
 }
-function socketArgument(argv: string[]): string {
+function socketArgument(argv: readonly string[]): string {
   if (argv.includes("--help") || argv.includes("-h")) {
     usage()
     process.exit(0)
@@ -38,7 +38,10 @@ type SignalEmitter = {
 }
 
 /** Scoped signal boundary; the injectable emitter keeps listener ownership testable. */
-export const waitForSignal = (signals: SignalEmitter = process) =>
+export const waitForSignal = (
+  signals: SignalEmitter = process,
+  onListening?: () => void,
+) =>
   Effect.callback<void>((resume) => {
     let stopped = false
     const remove = () => {
@@ -53,24 +56,41 @@ export const waitForSignal = (signals: SignalEmitter = process) =>
     }
     signals.once("SIGINT", stop)
     signals.once("SIGTERM", stop)
+    onListening?.()
     return Effect.sync(remove)
   })
 
-const main = async () => {
+const productionGraph = (socketPath: string) => {
+  const coordinatorWithProvider = Layer.provide(coordinatorLayer, providerLayer)
+  const serverWithCoordinator = Layer.provide(
+    serverLayer,
+    coordinatorWithProvider,
+  )
+  return Layer.provide(serverWithCoordinator, configLayer({ socketPath }))
+}
+
+/** Narrow executable seam; production continues to use the defaults below. */
+export type MusicSessionDaemonOptions = {
+  readonly argv?: readonly string[]
+  readonly graph?: (socketPath: string) => ReturnType<typeof productionGraph>
+  readonly signals?: SignalEmitter
+  readonly diagnostic?: (message: string) => void
+  readonly setStatus?: (status: number) => void
+}
+
+/**
+ * Runs the executable's real scoped graph and retains cleanup diagnostics after
+ * scope closure. Tests may replace only process-boundary dependencies.
+ */
+export const runMusicSessionDaemon = async (
+  options: MusicSessionDaemonOptions = {},
+): Promise<void> => {
+  const diagnostic = options.diagnostic ?? console.error
+  const setStatus =
+    options.setStatus ?? ((status) => (process.exitCode = status))
   try {
-    const socketPath = socketArgument(process.argv.slice(2))
-    const coordinatorWithProvider = Layer.provide(
-      coordinatorLayer,
-      providerLayer,
-    )
-    const serverWithCoordinator = Layer.provide(
-      serverLayer,
-      coordinatorWithProvider,
-    )
-    const graph = Layer.provide(
-      serverWithCoordinator,
-      configLayer({ socketPath }),
-    )
+    const socketPath = socketArgument(options.argv ?? process.argv.slice(2))
+    const graph = (options.graph ?? productionGraph)(socketPath)
     let cleanupFailure: (() => unknown) | undefined
     let cleanupFailures: (() => ReadonlyArray<unknown>) | undefined
     const daemon = Effect.scoped(
@@ -78,10 +98,15 @@ const main = async () => {
         const server = yield* MusicSessionServerService
         cleanupFailure = server.failure
         cleanupFailures = server.cleanupFailures
-        console.error(
+        const signalReady = Deferred.makeUnsafe<void>()
+        const signal = yield* waitForSignal(options.signals, () => {
+          Deferred.doneUnsafe(signalReady, Effect.void)
+        }).pipe(Effect.forkScoped)
+        yield* Deferred.await(signalReady)
+        diagnostic(
           `music-sessiond listening on ${socketPath} (${server.coordinator.daemonInstanceId})`,
         )
-        yield* Effect.raceFirst(waitForSignal(), server.awaitFailure)
+        yield* Effect.raceFirst(Fiber.join(signal), server.awaitFailure)
       }).pipe(Effect.provide(graph)),
     )
     let daemonFailure: unknown
@@ -92,16 +117,16 @@ const main = async () => {
     }
     const cleanup = cleanupFailures?.() ?? []
     if (daemonFailure && cleanup.length > 0)
-      console.error(
-        `music-sessiond cleanup failures: ${cleanup.map(String).join("; ")}`,
+      diagnostic(
+        `music-sessiond cleanup failures: ${cleanup.map(formatDaemonError).join("; ")}`,
       )
     if (daemonFailure) throw daemonFailure
-    const failure = cleanupFailure?.()
+    const failure = cleanupFailure?.() ?? cleanup[0]
     if (failure) throw failure
-    console.error("music-sessiond stopped")
+    diagnostic("music-sessiond stopped")
   } catch (error) {
-    console.error(`music-sessiond: ${formatDaemonError(error)}`)
-    process.exitCode = 1
+    diagnostic(`music-sessiond: ${formatDaemonError(error)}`)
+    setStatus(1)
   }
 }
 
@@ -109,4 +134,4 @@ if (
   process.argv[1]?.endsWith("music-sessiond.ts") ||
   process.argv[1]?.endsWith("music-sessiond.js")
 )
-  await main()
+  await runMusicSessionDaemon()

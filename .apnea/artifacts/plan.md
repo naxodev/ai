@@ -2,163 +2,53 @@
 status: done
 ---
 
-# Plan: complete the machine-local Effect music-session migration
+# Plan: finish the machine-local Effect music-session migration
 
 ## Goal restatement
 
-Finish the existing dirty-worktree migration from one media provider per OpenCode/Pi process to one same-user, machine-local music-session daemon serving at least 20 concurrent clients. Preserve all accumulated source changes and `docs/music-session-architecture.html`; refine the current `packages/music-core/session/` implementation in place rather than resetting it.
+Finish the existing machine-local music-session migration without resetting the current tree. Preserve the verified provider commit (`e7103663`), verified coordinator commit (`859fc01d`), the accumulated scoped-server work now present in `66bc1f91`, all unrelated changes, and `docs/music-session-architecture.html`. Complete the three unresolved server boundaries first, then deliver the negotiated protocol, secure singleton lifecycle, reconnect and idle shutdown, bounded 24-client fan-out, centralized native artwork, OpenCode and Pi migrations, packing, documentation, pinned host smokes, final checks, and a PR-description artifact.
 
-The daemon must be owned by one Effect TypeScript v4 runtime: services and Layers define boundaries, provider/listener/socket resources are scoped, long-lived work is supervised, replay uses Effect state/stream primitives, timing is deterministic under `TestClock`, expected boundary failures are schema-tagged, and runtime settings pass through Effect `Config`. The final clients use a schema-validated, revision-negotiated Unix-socket protocol while retaining existing controls, feedback, waveform, artwork, reload, and cleanup behavior.
+Use only the repository-pinned Effect TypeScript v4 APIs. Long-lived work belongs to Layers/scopes and supervised fibers; use `Schema` at untrusted boundaries, `Config` for runtime settings, `Schedule` for timing, `SubscriptionRef` for replayable state, bounded queues/streams for flow control, and Effect synchronization primitives/TestClock for deterministic tests.
 
-Do not commit with Git, push, publish, open a PR, or edit `.apnea/state.json`.
+Do not use Git commits, push, publish, open a PR, or edit `.apnea/state.json`. Follow the run's Jujutsu phase-child and `jj squash` workflow, preserving unrelated worktree content. After each approved phase, squash only that phase's reviewed child into its intended phase change before starting the next child.
 
-## Current-tree findings and execution discipline
+## Inspected baseline and planning constraints
 
-- The working copy already contains substantial uncommitted daemon/client code in `packages/music-core/session/`, package/bin changes, Effect `4.0.0-beta.101`, tests, and the intentional architecture HTML. All are inputs, not disposable generated work.
-- The latest abandoned review identified four concrete unfinished seams: optimistic command projection can overwrite a newer provider snapshot; the sliding mixed provider-event buffer cannot guarantee terminal invalidations and latest snapshots; synchronous attempt acquisition bypasses `ProviderError`; and socket close/unlink failures are discarded. Deterministic evidence is also missing for the coordinator and connection races.
-- Keep daemon, protocol, client, and host-neutral state in `@naxodev/music-core`. Both hosts already depend on it; another package would add a release boundary without reducing authority.
-- Keep `createSystemMedia()` as a public compatibility surface. “Removal” below means removing duplicate provider/poll/sample/transport ownership from the two hosts, not deleting the low-level export.
-- The last abandoned run reported the current focused and package gates green. Each phase must preserve that baseline while adding only evidence for its own seam.
-- Use Effect v4 APIs only. Promise/callback facades are permitted at public Node/host boundaries, but may not own daemon work.
-- Follow the repository’s Jujutsu squash workflow: perform each phase in a fresh child change, inspect `jj diff --summary`, and only after phase acceptance use `jj squash` to fold that phase into the accumulated run change before starting the next child. Do not use `git commit`, disturb unrelated paths, or push.
+- The provider and coordinator are separate verified commits. Their retry/bridge, authority, polling, reconciliation, command FIFO, interruption, and tagged-error tests are regression gates, not unfinished acceptance work.
+- The current server implementation already contains scoped listener/connection ownership, replay, local failure isolation, blocked-work interruption, late-write suppression, ordered cleanup, and tagged close/unlink handling. The latest abandoned handoff narrows unfinished server work to exactly three evidence/correctness boundaries listed in Phase 1.
+- Phase 1 must not recreate the abandoned exhaustive lifecycle matrix or re-review already verified server behavior. Review is limited to its diff and the three stated boundaries; broad suites run only as regression checks.
+- The current protocol/client are explicit-path version 1 foundations with Effect schemas plus parallel manual validation. Later phases refine these in place rather than replacing the package boundary.
+- Keep daemon, protocol, client, and host-neutral state in `packages/music-core/`. Keep `createSystemMedia()` as a low-level public compatibility API; remove only production host ownership of providers, polling, sampling, clocks, and transport queues.
+- The checked-in manifests pin OpenCode/Pi dependencies, while the currently resolved machine binaries differ. Final smokes must execute and assert the exact versions selected in the manifests rather than silently accepting whichever executable is first on `PATH`.
+- `docs/music-session-architecture.html` is intentional content. Preserve it until the documentation phase, then edit it in place.
 
 ## Phases
 
-### Phase 1 — Provider attempt lifecycle and bounded event bridge
+### Phase 1 — Close only the three unresolved server boundaries
 
 **Intent**
 
-Finish only the provider boundary. Make one raw provider attempt, bounded callback-to-Effect delivery, retry pacing, and provider errors independently correct before coordinator or server acceptance is considered.
-
-**Implementation outline**
-
-1. Preserve one `createSystemMediaAdapter()` clock shared by sample, transport, and stream decoding. Keep legacy `createSystemMedia()` retry behavior unchanged for hosts not yet migrated.
-2. Make the one-attempt seam start exactly one `media-control stream --no-diff --no-artwork`, emit complete snapshots, report one terminal invalidation, own no retry timer, and dispose child/listeners exactly once.
-3. Replace the current lossy mixed sliding buffer with an explicitly bounded coalescing/prioritization design. It must retain the latest complete snapshot while guaranteeing each terminal transition causes one immediate invalidation; neither event class may evict the other’s required signal.
-4. Map synchronous attempt acquisition, callback-source startup, sample, transport, and source failures once into `ProviderError` (`Schema.TaggedErrorClass`). Preserve defects and interruption rather than relabeling them.
-5. Supervise attempts in the provider Layer with an Effect `Schedule`: 1/2/4/8/8-second delays, reset to one second after a valid snapshot. Interruption must cancel retry sleep or an active attempt and suppress late callbacks.
-6. Add focused tests with `TestClock`, Effect synchronization primitives, and acquisition/disposal counters. Do not rely on coordinator/server tests or wall-clock sleeps for this phase.
+Amend the accumulated server phase with narrowly targeted production-path evidence and failure-safe tests. Do not add any other server acceptance criterion.
 
 **Files likely touched**
 
-- `packages/music-core/system-media.ts`
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/tests/system-media.test.ts`
-
-**Acceptance checks**
-
-- One provider Layer acquisition creates one adapter and at most one active raw stream attempt; all source/provider finalizers run exactly once.
-- A saturated bridge still delivers the latest authoritative snapshot and one invalidation per terminal transition with bounded memory.
-- Attempt startup throws and terminal failures are tagged `ProviderError`s and do not permanently kill retry supervision.
-- `TestClock` proves capped 1/2/4/8/8 retries, reset after success, and interruption during active/retry states.
-- The one-attempt seam owns no raw retry timer; all existing low-level fallback, complete-payload, shared-clock, and legacy retry tests remain green.
-
-**Verify commands**
-
-```sh
-bun test packages/music-core/tests/system-media.test.ts
-bunx nx run-many -t typecheck test format:check package:check --projects=music-core
-! rg -n "setTimeout\(|setInterval\(" packages/music-core/session/provider.ts
-jj diff --summary
-```
-
-**Dependencies**
-
-- Current `system-media.ts` normalization, fallback provider behavior, and playback clock.
-- Pinned Effect v4 and `effect/testing`.
-
-**Non-goals**
-
-- Coordinator authority, polling, commands, sockets, protocol changes, process lifecycle, or host migration.
-
-### Phase 2 — Coordinator atomic authority, polling, reconciliation, and global commands
-
-**Intent**
-
-Make the coordinator the sole atomic state and command authority. This phase is accepted entirely with an Effect-native fake provider Layer and does not require a socket or client.
-
-**Implementation outline**
-
-1. Complete the `MusicSessionConfig` Context service and shared validation path for queue capacity, frame size, reconciliation delays, and 3/5/8-second polls. Concrete test options and `ConfigProvider` acquisition must produce the same typed result; malformed values fail as `MusicSessionConfigError`.
-2. Use `SubscriptionRef` for replayable provider status and revisioned state. Complete snapshots replace state immediately; samples merge through existing reconciliation behavior.
-3. Implement a single-flight sampling lane with atomic generation/authority checks: overlapping triggers stale the active sample and coalesce to one catch-up; pre-snapshot, pre-trigger, and pre-command samples cannot publish.
-4. Fix optimistic play/pause/seek projection by transforming the current `SubscriptionRef` value inside one atomic transition. Never publish a full state captured before a concurrent provider snapshot. Navigation advances authority without inventing replacement metadata.
-5. Keep one bounded Effect `Queue` and one scoped global command worker. Resolve `toggle` at dequeue time; continue after provider failure or saturation; settle active and queued callers exactly once on interruption.
-6. Drive 3/5/8-second polling and transport/navigation reconciliation with Effect time/Schedules. Every accepted update atomically replaces the applicable deadline.
-7. Replace conventional coordinator errors with schema-tagged command errors and preserve provider causes/interruption.
-8. Add an Effect-native deterministic fake Layer using `Deferred`, `Queue`, `Ref`, or `Latch`; retain the Promise fake only where later socket compatibility tests need it.
-
-**Files likely touched**
-
-- `packages/music-core/session/config.ts`
-- `packages/music-core/session/coordinator.ts`
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/tests/session-coordinator.test.ts`
-
-**Acceptance checks**
-
-- Late status/state subscribers receive the current value first and then ordered updates.
-- Complete snapshots publish without sampling; invalidation bursts yield one discarded stale sample and one catch-up.
-- Tests reproduce and prevent snapshot-vs-optimistic-command, trigger-vs-publication, deadline replacement, and scope-close enrollment races.
-- `TestClock` proves playing/paused/idle polls at 3/5/8 seconds, deadline reset, and distinct transport/navigation reconciliation delays.
-- Cross-submitter commands execute FIFO; two rapid toggles call play then pause; successful play/pause/seek project centrally without rolling back newer metadata.
-- One command failure requests recovery and leaves the worker usable; overflow is typed and bounded; blocked work is interrupted and every caller settles once.
-- Coordinator tests use the Effect-native fake Layer and do not require server behavior.
-
-**Verify commands**
-
-```sh
-bun test packages/music-core/tests/session-coordinator.test.ts
-bunx nx run-many -t typecheck test format:check package:check --projects=music-core
-! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts
-jj diff --summary
-```
-
-**Dependencies**
-
-- Phase 1 provider service, event guarantees, and tagged failures.
-
-**Non-goals**
-
-- Unix sockets, expanded wire schemas, reconnect, auto-start, or host behavior.
-
-### Phase 3 — Scoped foreground socket server and connection ownership
-
-**Intent**
-
-Make the current explicit-socket foreground server a genuinely scoped Effect slice. Preserve the existing wire behavior; protocol expansion belongs to Phase 4.
-
-**Implementation outline**
-
-1. Acquire `net.Server`, the successfully bound path, accepted sockets from acceptance onward, Node listeners, input queues, framers, and each connection’s forwarding fibers through scopes/Layers.
-2. Enroll connection work in `FiberSet` or equivalent supervised Effect ownership directly from the accept bridge. Pre-hello and mid-frame sockets must be owned just like handshaken clients.
-3. Keep current hello-first, replay, state, and transport behavior while decoding all ingress at the existing protocol boundary.
-4. Surface listen, close, and non-`ENOENT` unlink failures as `MusicSessionSocketError` while continuing the remaining finalizers. Never silently discard stale-path cleanup failure.
-5. Make repeated close idempotent. Server scope closure interrupts connection forwarding and blocked coordinator calls, destroys sockets, closes the listener, unlinks only its own bound socket, and releases coordinator/provider once.
-6. Run the production Layer graph directly in `music-sessiond.ts`; signal registration is scoped. The test-facing `startMusicSessionServer` remains only a Promise adapter over one Effect scope.
-7. Add deterministic cleanup instrumentation rather than inferring resource release from elapsed time.
-
-**Files likely touched**
-
-- `packages/music-core/session/config.ts`
-- `packages/music-core/session/framing.ts`
 - `packages/music-core/session/server.ts`
 - `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/tests/session-server.test.ts`
-- `packages/music-core/tests/session-coordinator.test.ts`
 
 **Acceptance checks**
 
-- One Layer graph acquires one provider, one event source, one coordinator, and one Unix listener.
-- Two explicit clients receive initial status/state and a provider update, and their commands pass through the one coordinator FIFO.
-- Closing with a pre-hello socket, active forwarding, blocked sample, or blocked command completes with exact-once resource finalization and no late writes.
-- Repeated close is harmless; listen/close/unlink errors retain typed operation context and do not skip other cleanup.
-- No detached Promise loop, raw timer, or isolated `Effect.runSync` owns daemon work.
+1. A deterministic executable-path cleanup failure exits nonzero and emits diagnostics retaining the `MusicSessionSocketError` tag, failed operation (`close` or `unlink`), and useful message; the remaining cleanup still completes.
+2. A real `net.Server` acceptance callback is deterministically delivered after the production `closing` state is set and before listener close completes; that real socket is refused/destroyed and never accepted, enrolled, or finalized as a connection scope.
+3. Every existing focused server test is failure-safe: sockets, clients, listeners, Effect scopes, subprocesses, permissions, temporary directories, and Unix paths are released in `finally`/scoped finalizers even when an intermediate assertion fails.
 
 **Verify commands**
 
 ```sh
-bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
+bun test packages/music-core/tests/session-server.test.ts -t 'executable.*cleanup failure|closing.*refus'
+bun test packages/music-core/tests/session-server.test.ts
+# Baseline regressions only; they are not new Phase 1 acceptance work.
+bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
 bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
 jj diff --summary
@@ -166,125 +56,94 @@ jj diff --summary
 
 **Dependencies**
 
-- Phase 1 provider and Phase 2 coordinator Layers.
+- Verified provider/coordinator commits and accumulated scoped server implementation.
+- Existing `ServerLifecycleHooks`, executable boundary, real Unix sockets, and focused server suite.
 
 **Non-goals**
 
-- Revision-range negotiation, reconnect, automatic process launch, 24-client capacity, or host migration.
+- Re-proving or changing provider behavior, coordinator authority, replay, normal scoped connection ownership, blocked-work interruption, late-write suppression, ordinary cleanup, existing close/unlink typing, or the complete server lifecycle matrix.
+- Protocol changes, discovery/startup, reconnect, idle shutdown, fan-out, artwork, host migration, manifests, or docs.
 
-### Phase 4 — Shared validated protocol and explicit client
+### Phase 2 — Make the shared wire contract schema-owned and revision-negotiated
 
 **Intent**
 
-Finish a manually started end-to-end contract before automating daemon lifecycle.
-
-**Implementation outline**
-
-1. Define requests, events, responses, provider/device/track state, capabilities, revision ranges, and stable errors with Effect `Schema`; decode unknown input at both client and server boundaries and remove parallel manual validators/casts.
-2. Negotiate protocol major plus supported revision interval and capability intersection, selecting the highest overlap. Package version remains diagnostics, not compatibility. The initial revision supports itself; additive evolution retains the immediately preceding revision.
-3. Return actionable incompatibility data containing both ranges. Rejecting an incompatible client must not disturb the healthy daemon or existing clients.
-4. Preserve immediate status/latest-state replay with daemon instance ID and monotonic revision. Reject wrong-instance, stale, duplicate, out-of-order, malformed, oversized, and incomplete frames.
-5. Enforce hello-first ordering, strictly increasing request IDs, capability/action checks, seek bounds, and stable success/failure envelopes.
-6. Make the explicit client correlate responses, isolate listener exceptions, dispose idempotently, and settle every pending call once. A lost connection before a command response reports an indeterminate result; commands are never replayed.
+Turn the current explicit-path protocol into one additive, Effect-Schema-owned contract with revision-range and capability negotiation, while retaining manually started server/client operation.
 
 **Files likely touched**
 
 - `packages/music-core/session/protocol.ts`
 - `packages/music-core/session/framing.ts`
-- `packages/music-core/session/client.ts`
 - `packages/music-core/session/server.ts`
-- `packages/music-core/session/coordinator.ts`
-- `packages/music-core/index.ts`
+- `packages/music-core/session/client.ts`
 - `packages/music-core/tests/session-protocol.test.ts`
-- `packages/music-core/tests/session-client.test.ts`
 - `packages/music-core/tests/session-server.test.ts`
+- `packages/music-core/tests/session-client.test.ts`
 
 **Acceptance checks**
 
-- Overlapping old/current wire ranges negotiate one revision and share the existing provider; disjoint ranges receive one actionable typed failure while healthy peers remain connected.
-- Schema decoding rejects malformed nested state/errors, invalid actions/seeks, missing capabilities, duplicate IDs, oversized frames, and incomplete lines without crashing the listener.
-- Replay and subsequent broadcasts are ordered; stale/wrong-instance snapshots and unsolicited/duplicate responses are ignored or terminate the offending connection as specified.
-- Pending calls settle once on response, disposal, malformed daemon data, and disconnect; indeterminate commands are not retried.
-- Provider failure/queue overflow remain typed and do not strand later FIFO work.
+- Requests, events, responses, nested state, capabilities, revision ranges, and stable errors are decoded from unknown input through Effect `Schema`; parallel hand-written shape validators/casts are removed.
+- Hello negotiates protocol major, highest overlapping wire revision, and capability intersection. Package version is diagnostic only.
+- Current and immediately preceding supported revisions can share one healthy daemon; disjoint ranges receive one actionable error containing both ranges without disturbing healthy clients.
+- Hello-first ordering, increasing request IDs, action/capability checks, seek bounds, malformed/oversized/incomplete frames, and stable response envelopes remain enforced at the boundary.
 
 **Verify commands**
 
 ```sh
-bun test packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-coordinator.test.ts
+bun test packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
 bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 jj diff --summary
 ```
 
 **Dependencies**
 
-- Phase 3 foreground server and cleanup semantics.
+- Phase 1 server boundary and existing protocol/framer/client foundations.
 
 **Non-goals**
 
-- Runtime-directory discovery, process spawning, reconnect, idle exit, artwork, or host migration.
+- Automatic startup, runtime-path discovery, reconnect, idle shutdown, load hardening, artwork, or host changes.
 
-### Phase 5 — Secure same-user singleton startup and version-skew policy
+### Phase 3 — Finish the explicit client's truthful request and stream semantics
 
 **Intent**
 
-Add race-safe discovery and automatic startup without yet requiring reconnect/load-hardening evidence.
-
-**Implementation outline**
-
-1. Resolve a short per-user runtime directory/socket under `/tmp` to remain below macOS Unix-socket limits. Require owner-only directory permissions and reject symlinks, foreign ownership, and unexpected file types.
-2. Implement `connectOrStart` as an Effect workflow: probe and complete hello first; only missing or safely identified stale endpoints may enter startup.
-3. Coordinate launchers with an exclusively created startup marker while keeping socket bind as singleton authority. Spawn the packaged daemon detached with no inherited host stdio/handles and wait with a bounded jittered `Schedule`.
-4. A losing daemon exits before acquiring a provider. Remove only artifacts proven to belong to this user/start attempt.
-5. Treat incompatibility with a healthy socket generation as terminal: no unlink, kill, replacement spawn, or reconnect loop. A later explicit retry may proceed only after that generation disappears or becomes compatible.
-6. Add real Unix-socket concurrent-start tests with instrumented provider acquisition.
+Make the manually connected lightweight client reliable before adding lifecycle automation.
 
 **Files likely touched**
 
-- `packages/music-core/session/config.ts`
 - `packages/music-core/session/client.ts`
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/session/protocol.ts`
 - `packages/music-core/tests/session-client.test.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
 **Acceptance checks**
 
-- Concurrent first-use attempts produce one bound listener, one provider object, and at most one provider stream/poll owner.
-- Detached launch inherits no host stdio/handle that keeps OpenCode or Pi alive.
-- Owned stale socket/marker artifacts recover; symlinked, foreign-owned, non-socket, and healthy incompatible endpoints are never removed.
-- Supported mixed clients join the live daemon; an unsupported client gets one actionable error with zero kill/unlink/replacement/retry-loop attempts.
+- Responses correlate once; unsolicited/duplicate responses and malformed daemon frames cannot settle the wrong request.
+- Wrong-instance, stale, duplicate, and out-of-order snapshots are rejected while valid replay and broadcasts remain ordered.
+- Listener exceptions are isolated; disposal is idempotent; every pending request settles once on response, malformed data, disconnect, or disposal.
+- A disconnect before a command result is reported as indeterminate and the explicit client never replays that command.
 
 **Verify commands**
 
 ```sh
-bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-server.test.ts
 bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 jj diff --summary
 ```
 
 **Dependencies**
 
-- Phase 4 negotiated protocol and explicit client.
+- Phase 2 negotiated schemas.
 
 **Non-goals**
 
-- Reconnect after a live loss, idle shutdown, slow-reader isolation, 24-client proof, host migration, or packed-install smoke.
+- Reconnect supervision, process launch, default paths, idle exit, load limits, or host presentation.
 
-### Phase 6 — Reconnect generations and zero-client shutdown
+### Phase 4 — Secure same-user runtime paths and endpoint discovery
 
 **Intent**
 
-Complete process replacement and idle lifetime semantics independently of scale/backpressure.
-
-**Implementation outline**
-
-1. Supervise reconnect with bounded backoff only after genuine endpoint loss. Retain the last accepted state for presentation while reconnecting.
-2. Settle in-flight requests truthfully as connection-lost/indeterminate, never replay a command, and admit replacement replay under a new daemon generation.
-3. Reject late frames, callbacks, and completions from superseded socket/daemon generations.
-4. Track live connection scopes and exit after a configurable zero-client grace period. New clients cancel the pending idle exit.
-5. Ensure signals, idle exit, startup loss, and defects close clients, provider, listener, schedules, and owned runtime artifacts exactly once.
-6. Add lifecycle diagnostics for startup, incompatibility, provider degradation, reconnect, client count, and shutdown without logging playback/artwork payloads.
+Establish safe default machine-local discovery and stale-endpoint classification without spawning a daemon yet.
 
 **Files likely touched**
 
@@ -297,10 +156,10 @@ Complete process replacement and idle lifetime semantics independently of scale/
 
 **Acceptance checks**
 
-- Killing the daemon settles pending calls once, starts/finds one replacement, adopts its replay, and ignores old-generation data without replaying commands.
-- Incompatibility remains non-looping and does not trigger replacement.
-- Closing the last client starts one idle deadline; reconnect before expiry cancels it; expiry releases provider/listener and removes owned artifacts.
-- Signal and defect paths have the same exact-once cleanup guarantees and leave no inherited process handles.
+- A short per-user runtime directory/socket stays within macOS Unix-socket limits and requires owner-only permissions.
+- Symlinks, foreign ownership, and unexpected file types are rejected; only an owned, proven-stale socket/marker is removable.
+- Probing completes protocol hello before classifying an endpoint healthy, stale, or incompatible.
+- A healthy incompatible daemon is never unlinked, killed, or replaced.
 
 **Verify commands**
 
@@ -312,70 +171,169 @@ jj diff --summary
 
 **Dependencies**
 
-- Phase 5 singleton discovery/startup.
+- Phase 3 explicit handshake and errors.
 
 **Non-goals**
 
-- Slow-client backpressure, 24-client proof, artwork, host UI behavior, or packaging smoke.
+- Detached spawning, launcher races, reconnect, idle shutdown, or host migration.
 
-### Phase 7 — Bounded fan-out and 24-client operation
+### Phase 5 — Add race-safe singleton auto-start and skew policy
 
 **Intent**
 
-Prove the daemon remains bounded and responsive at the target concurrency without making host migration part of the gate.
-
-**Implementation outline**
-
-1. Bound per-client in-flight requests, inbound frames, global command depth, outbound response/event buffering, and socket write pressure.
-2. Coalesce pending state snapshots per slow client while preserving command responses and status transitions required by the protocol.
-3. Disconnect abusive or irrecoverably slow clients rather than blocking provider work or healthy peers.
-4. Add a real-socket scenario with at least 24 alternating OpenCode/Pi identities covering replay, fan-out, cross-client FIFO, a paused reader, provider failure, and reconnect.
+Implement `connectOrStart` so concurrent first use produces one daemon/provider owner and version skew cannot cause a replacement storm.
 
 **Files likely touched**
 
 - `packages/music-core/session/config.ts`
 - `packages/music-core/session/client.ts`
 - `packages/music-core/session/server.ts`
-- `packages/music-core/session/protocol.ts`
+- `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/tests/session-client.test.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
 **Acceptance checks**
 
-- Twenty-four clients receive initial replay and a later provider update while one provider/stream/poll owner remains active.
-- One paused reader cannot delay the other 23; memory and queues remain within configured bounds.
-- Commands from all identities execute in one observed FIFO; overflow affects only the responsible request/client and the worker continues.
-- Reconnect and mixed-version behavior from Phases 4–6 remain correct under concurrent load.
+- Concurrent launchers coordinate through an exclusive startup marker while socket bind remains singleton authority; losers exit before provider acquisition.
+- The packaged daemon is detached without inherited host stdio/handles, and connection wait uses a bounded jittered Effect `Schedule`.
+- Concurrent first use yields one listener, provider object, provider stream, and polling owner.
+- Supported clients join the live daemon; incompatibility is terminal for that healthy generation with zero unlink/kill/replacement/retry-loop attempts.
 
 **Verify commands**
 
 ```sh
-bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-coordinator.test.ts
+bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
 bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 jj diff --summary
 ```
 
 **Dependencies**
 
-- Phase 6 reconnect and idle lifetime semantics.
+- Phase 4 secure discovery and Phase 2 skew contract.
 
 **Non-goals**
 
-- Host controllers, artwork rendering, remote/TCP access, multi-user sharing, or durable history.
+- Reconnect after live loss, idle exit, 24-client load, artwork, or host UI behavior.
 
-### Phase 8 — Centralize native artwork reads
+### Phase 6 — Supervise reconnect across daemon generations
 
 **Intent**
 
-Make the daemon the only production owner of native `media-control` artwork reads before OpenCode stops creating its local provider. Keep catalog lookup and rendering host-local.
+Recover from genuine endpoint loss without lying about in-flight commands or admitting late data from an old generation.
 
-**Implementation outline**
+**Files likely touched**
 
-1. Add a negotiated native-artwork request/capability to the validated protocol and client.
-2. Validate the requested recording identity against current authoritative state before and after the native read, bound payload size, and return typed unavailable/stale results.
-3. Deduplicate concurrent identical reads and bound settled cache entries without allowing unresolved work to be evicted incorrectly.
-4. Invoke `media-control get --now` only behind the daemon provider boundary. Keep iTunes lookup, download, image conversion, color/cell generation, and Kitty rendering out of core.
-5. Add deterministic provider/server/client tests for identity changes, deduplication, bounds, failure, disconnect, and disposal.
+- `packages/music-core/session/config.ts`
+- `packages/music-core/session/client.ts`
+- `packages/music-core/session/protocol.ts`
+- `packages/music-core/tests/session-client.test.ts`
+- `packages/music-core/tests/session-server.test.ts`
+
+**Acceptance checks**
+
+- Genuine loss starts bounded reconnect supervision and retains the last accepted state for presentation.
+- Pending commands settle once as connection-lost/indeterminate and are never replayed.
+- Replacement replay under a new daemon instance is adopted; late frames/callbacks/completions from the old socket or daemon are ignored.
+- Incompatibility remains non-looping and never triggers replacement.
+
+**Verify commands**
+
+```sh
+bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+jj diff --summary
+```
+
+**Dependencies**
+
+- Phase 5 singleton startup and Phase 3 truthful request settlement.
+
+**Non-goals**
+
+- Zero-client daemon exit, fan-out pressure, artwork, or host-specific feedback.
+
+### Phase 7 — Add zero-client idle shutdown and lifecycle diagnostics
+
+**Intent**
+
+Complete daemon lifetime semantics separately from concurrency hardening.
+
+**Files likely touched**
+
+- `packages/music-core/session/config.ts`
+- `packages/music-core/session/server.ts`
+- `packages/music-core/session/music-sessiond.ts`
+- `packages/music-core/session/client.ts`
+- `packages/music-core/tests/session-server.test.ts`
+- `packages/music-core/tests/session-client.test.ts`
+
+**Acceptance checks**
+
+- Last-client departure starts one configurable idle grace period; a new client cancels it; expiry releases provider/listener and removes owned runtime artifacts.
+- Signal, idle, startup-loss, and defect paths finalize resources exactly once.
+- Startup, incompatibility, provider degradation, reconnect, client count, and shutdown diagnostics are useful but omit playback/artwork payloads.
+- Detached daemon handles do not keep either host process alive.
+
+**Verify commands**
+
+```sh
+bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts
+bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+jj diff --summary
+```
+
+**Dependencies**
+
+- Phase 6 reconnect generations.
+
+**Non-goals**
+
+- 24-client backpressure, artwork, host migration, or package smoke.
+
+### Phase 8 — Bound fan-out and prove 24-client operation
+
+**Intent**
+
+Meet the 20+ client requirement with bounded, isolated real-socket behavior.
+
+**Files likely touched**
+
+- `packages/music-core/session/config.ts`
+- `packages/music-core/session/protocol.ts`
+- `packages/music-core/session/client.ts`
+- `packages/music-core/session/server.ts`
+- `packages/music-core/tests/session-client.test.ts`
+- `packages/music-core/tests/session-server.test.ts`
+- `packages/music-core/tests/session-coordinator.test.ts`
+
+**Acceptance checks**
+
+- Inbound frames, per-client requests, global commands, outbound responses/events, and socket write pressure have explicit bounds.
+- Pending state can coalesce per slow client without dropping command responses or required status transitions; abusive/irrecoverably slow clients are disconnected locally.
+- Twenty-four alternating OpenCode/Pi identities receive replay and a later update while one provider/stream/poll owner remains active.
+- One paused reader cannot delay the other 23; cross-client commands remain globally FIFO and overflow does not kill the worker.
+
+**Verify commands**
+
+```sh
+bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-coordinator.test.ts
+bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+jj diff --summary
+```
+
+**Dependencies**
+
+- Phases 6–7 complete client and daemon lifetimes.
+
+**Non-goals**
+
+- Host controllers, remote/TCP access, durable history, or artwork rendering.
+
+### Phase 9 — Centralize and bound native artwork reads
+
+**Intent**
+
+Make the daemon the only production owner of native `media-control get --now` artwork reads while leaving catalog lookup and rendering in OpenCode.
 
 **Files likely touched**
 
@@ -392,10 +350,10 @@ Make the daemon the only production owner of native `media-control` artwork read
 
 **Acceptance checks**
 
-- Concurrent identical requests across clients produce one native provider read.
-- Artwork is accepted only for the still-current full recording identity and stays within configured payload/cache limits.
-- Unsupported provider/capability, stale identity, malformed data, and disconnect return stable bounded failures without affecting state fan-out.
-- No catalog/network/rendering concern moves into the daemon.
+- A negotiated artwork capability/request validates the full current recording identity before and after the native read and bounds payload size.
+- Concurrent identical requests share one scoped Effect cache lookup; settled entries are capacity-bounded and transient failures are not incorrectly retained.
+- Unsupported, stale, malformed, failed, disconnected, and disposed requests return stable bounded outcomes without affecting state fan-out.
+- No iTunes lookup, download, conversion, color/cell generation, Kitty rendering, or other host presentation moves into core.
 
 **Verify commands**
 
@@ -407,161 +365,158 @@ jj diff --summary
 
 **Dependencies**
 
-- Phase 7 bounded protocol and provider authority.
+- Phase 8 bounded client/server protocol and provider authority.
 
 **Non-goals**
 
-- OpenCode controller migration itself, Pi artwork, or UI changes.
+- OpenCode cutover, Pi artwork, or UI changes.
 
-### Phase 9 — Migrate the OpenCode client and preserve presentation
+### Phase 10 — Introduce a tested OpenCode session-backed adapter
 
 **Intent**
 
-Replace OpenCode’s provider/sampling/transport ownership with one lightweight production session client while preserving controller, artwork, waveform, and UI behavior.
+Create the lightweight OpenCode-facing session adapter and deterministic fake seam while leaving the current production selection intact for one green tactical step.
 
-**Implementation outline**
+**Files likely touched**
 
-1. Refactor the OpenCode system-media facade and controller to consume session replay/live state and provider/connection status and to route controls through the daemon.
-2. Remove host-owned provider creation, stream restart, 3/5/8 polling, stale-sample authority, playback clock, and general transport FIFO. Keep adjacent seek coalescing only as local input optimization with every caller settled.
-3. Fetch native artwork through the daemon capability; retain identity-aware iTunes fallback, bounded local artwork jobs/cache, image conversion, Kitty/half-block rendering, and completion events.
-4. Preserve loading semantics based on local pending calls, toast/error behavior, compact/sidebar rendering, shortcuts, and host integration contracts.
-5. On disconnect retain the last view and show bounded actionable feedback; converge from replay. Disposal suppresses late state/command/artwork work and closes only this client.
-6. Rewrite controller/lifecycle/system-media tests around a deterministic fake session client and update the existing package smoke to install packed core.
+- `packages/opencode-music-player/system-media.ts`
+- `packages/opencode-music-player/types.ts`
+- `packages/opencode-music-player/index.tsx`
+- `packages/opencode-music-player/tests/system-media.test.ts`
+- `packages/opencode-music-player/tests/controller.test.ts`
+- `packages/opencode-music-player/tests/controller-lifecycle.test.ts`
+- `packages/opencode-music-player/tests/artwork-lifecycle.test.ts`
+
+**Acceptance checks**
+
+- A session-client factory/fake can drive replay, live state/status, controls, reconnect generations, disposal, and native artwork responses through existing controller contracts.
+- Tests preserve loading semantics, command feedback, local seek coalescing, waveform projection, and late-callback suppression without a real daemon.
+- The adapter owns no provider, polling, sampling lane, playback clock, or global transport queue.
+
+**Verify commands**
+
+```sh
+bun test --preload @opentui/solid/preload packages/opencode-music-player/tests/system-media.test.ts packages/opencode-music-player/tests/controller.test.ts packages/opencode-music-player/tests/controller-lifecycle.test.ts packages/opencode-music-player/tests/artwork-lifecycle.test.ts
+bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player
+jj diff --summary
+```
+
+**Dependencies**
+
+- Phase 9 production client/artwork surface.
+
+**Non-goals**
+
+- Switching the production default, deleting the old backend, UI redesign, Pi migration, or packed smoke.
+
+### Phase 11 — Cut OpenCode production over without presentation regressions
+
+**Intent**
+
+Select the session adapter in production and remove OpenCode's duplicate provider authority while preserving the current app/sidebar experience.
 
 **Files likely touched**
 
 - `packages/opencode-music-player/index.tsx`
 - `packages/opencode-music-player/system-media.ts`
 - `packages/opencode-music-player/types.ts`
-- `packages/opencode-music-player/package.json`
 - `packages/opencode-music-player/tests/controller.test.ts`
 - `packages/opencode-music-player/tests/controller-lifecycle.test.ts`
 - `packages/opencode-music-player/tests/system-media.test.ts`
-- `packages/opencode-music-player/tests/package-load.test.ts`
 - `packages/opencode-music-player/tests/artwork-lifecycle.test.ts`
-- `packages/opencode-music-player/scripts/package-smoke.ts`
-- `packages/opencode-music-player/scripts/verify-pack.ts`
+- `packages/opencode-music-player/tests/package-load.test.ts`
 
 **Acceptance checks**
 
-- Loading OpenCode creates one session client and no host provider, provider stream, provider poll, sample lane, playback clock, or general command queue.
-- Replay/live playing, paused, idle, replacement, and enriched artwork states preserve current UI, waveform, controls, loading, errors, and toast behavior.
-- Rapid local seeks retain prior coalescing while actual transport remains daemon-global FIFO.
-- Native identity checks, iTunes fallback, cache bounds, Kitty/half-block rendering, and teardown remain green.
-- Disconnect/reconnect retains and then converges the view; incompatibility does not cause spawn/retry storms; teardown leaves other clients healthy.
-- Packed OpenCode resolves packed core and renders the real app/sidebar smoke fixture.
+- Loading OpenCode creates one session client and no host provider/probe/stream/poll/sample lane/playback clock/general command queue.
+- Replay/live playing, paused, idle, daemon replacement, disconnect, and incompatibility preserve controls, loading, errors, toasts, waveform, compact bar, and sidebar behavior.
+- Native artwork comes through the daemon; identity-aware iTunes fallback, local cache/jobs, image conversion, Kitty/half-block rendering, and completion events remain host-local and bounded.
+- Disposal closes only this client, suppresses late state/command/artwork work, and leaves other clients healthy.
 
 **Verify commands**
 
 ```sh
-bunx nx run-many -t build typecheck test format:check package:check --projects=music-core,opencode-music-player
-bunx nx run opencode-music-player:smoke
+bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player
 ! rg -n "createSystemMedia|hasMediaControl|hasNowPlayingCli|POLL_PLAYING_MS|pendingSample|transportRevision" packages/opencode-music-player/index.tsx packages/opencode-music-player/system-media.ts
 jj diff --summary
 ```
 
 **Dependencies**
 
-- Phase 8 native artwork request and the production session client lifecycle.
+- Phase 10 tested adapter and Phase 9 artwork capability.
 
 **Non-goals**
 
-- Moving catalog lookup, rendering, Solid state, or layout into the daemon; changing controls or shortcuts; Pi migration.
+- Moving UI/Solid/catalog/rendering into core, changing controls/shortcuts, Pi migration, or final smoke certification.
 
-### Phase 10 — Migrate Pi and prove mixed-host behavior
+### Phase 12 — Migrate Pi and prove mixed-host command behavior
 
 **Intent**
 
-Move Pi to the same lightweight client, preserve its status/waveform lifecycle, and prove both host identities coexist without duplicate ownership.
-
-**Implementation outline**
-
-1. Replace the injected `MusicBackend` test seam with an injected session-client factory/fake.
-2. On `session_start`, project replay/live state and status into the existing waveform/status path; Pi must not probe or start provider binaries.
-3. Route `/music`, shortcut toggle, next, and previous through daemon commands while preserving per-call notifications.
-4. Remove local sample/retry/poll/revision/transport queue logic. On reload/shutdown mark the session dead before disposing subscriptions, client, waveform, and status so late work is ignored.
-5. Rewrite lifecycle/ordering tests and update the existing package smoke to install packed core and exit without inherited daemon/provider handles.
-6. Extend mixed-host coverage so commands from either real host adapter update both.
+Replace Pi's backend/polling/transport ownership with one session client while retaining status-line and waveform behavior.
 
 **Files likely touched**
 
 - `packages/pi-music-dock/extensions/music-dock/index.ts`
 - `packages/pi-music-dock/test/index.test.ts`
 - `packages/pi-music-dock/package.json`
-- `packages/pi-music-dock/scripts/package-smoke.ts`
 - `packages/music-core/tests/session-client.test.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
 **Acceptance checks**
 
-- A live Pi session owns one client and local waveform/status work, but no provider, probe, subscription, poll, sample lane, playback clock, or transport queue.
-- Replay/live playing, paused, idle, enrichment, and replacement preserve status and waveform behavior.
-- Pi/OpenCode commands are globally FIFO; repeated toggles alternate from daemon state and all callers settle.
-- Reload/shutdown clears local presentation, ignores old completions/events, closes only Pi’s client, and leaves OpenCode healthy.
-- Missing tools, unsupported platform, reconnect, incompatibility, and command failure notify without crash or retry/spawn storm.
-- The packed Pi extension registers all commands and exits promptly without inherited provider/daemon handles.
+- A live Pi session owns one client plus local waveform/status work, with no provider probe/retry/poll/sample lane/playback clock/general transport queue.
+- `/music`, `/music-next`, `/music-prev`, and shortcuts route through the daemon and preserve per-call notifications.
+- Replay/live/replacement/disconnect states preserve status and waveform; reload/shutdown marks the session dead before disposal and ignores late work.
+- Pi and OpenCode identities share one daemon FIFO; closing/reloading Pi leaves OpenCode healthy.
 
 **Verify commands**
 
 ```sh
-bunx nx run-many -t build typecheck test format:check package:check --projects=music-core,pi-music-dock
-bunx nx run pi-music-dock:smoke
+bunx nx run-many -t typecheck test format:check package:check --projects=music-core,pi-music-dock
 ! rg -n "createSystemMedia|hasMediaControl|hasNowPlayingCli|POLL_PLAYING_MS|pendingSample|transportRevision" packages/pi-music-dock/extensions/music-dock/index.ts
 jj diff --summary
 ```
 
 **Dependencies**
 
-- Phase 7 client lifecycle and Phase 9 exercised mixed-host counterpart.
+- Phases 8 and 11 provide bounded mixed-host client behavior.
 
 **Non-goals**
 
-- Seek/artwork in Pi, footer replacement, command/shortcut renaming, or shared waveform rendering state.
+- Pi artwork/seek, footer ownership, command renaming, or final packed smoke.
 
-### Phase 11 — Remove duplicate host ownership and finish manifests/smokes
+### Phase 13 — Remove migration scaffolding and finalize package surfaces
 
 **Intent**
 
-Remove migration scaffolding only after both hosts are green, then prove packed Node and host boundaries. Retain the documented low-level core compatibility API.
-
-**Implementation outline**
-
-1. Delete now-unused host backend types, constructor injections, poll/retry/sample/transport helpers, and obsolete tests; keep `createSystemMedia()` exported from core for external compatibility, with the daemon as its sole production caller in this workspace.
-2. Finalize core exports, bin/files lists, dependency metadata, Nx targets, and pack assertions for every required daemon/client runtime file while excluding tests/scripts.
-3. Extend the existing core pack verifier/target to build and pack core, install the tarball and dependencies into an isolated temporary project, start the installed daemon with `node`, perform hello/replay through the installed client, disconnect, and assert status-zero idle exit plus socket cleanup. It must not resolve workspace source.
-4. Ensure OpenCode and Pi smokes install packed core, use no workspace-only resolution, and leave no inherited daemon handle.
-5. Remove generated tarballs, sockets, markers, logs, and untracked build output after each smoke.
+Delete obsolete host ownership only after both migrations are green, and finalize exports/manifests without yet making live host smokes the gate.
 
 **Files likely touched**
 
 - `packages/music-core/index.ts`
 - `packages/music-core/package.json`
 - `packages/music-core/project.json`
-- `packages/music-core/scripts/verify-pack.ts`
 - `packages/music-core/tsconfig.json`
 - `packages/opencode-music-player/index.tsx`
 - `packages/opencode-music-player/system-media.ts`
 - `packages/opencode-music-player/types.ts`
 - `packages/opencode-music-player/package.json`
-- `packages/opencode-music-player/scripts/package-smoke.ts`
-- `packages/opencode-music-player/scripts/verify-pack.ts`
 - `packages/pi-music-dock/extensions/music-dock/index.ts`
 - `packages/pi-music-dock/package.json`
-- `packages/pi-music-dock/scripts/package-smoke.ts`
 - `bun.lock`
 
 **Acceptance checks**
 
-- No production host file directly creates/probes the provider or owns provider retry, polling, stale sampling, playback clock, or a general transport queue.
-- Core’s package contains the executable and all client/session runtime files, excludes development files, and retains intended low-level public exports.
-- An isolated tarball install starts the real executable under Node, handshakes/replays through installed client code, exits after disconnect, and removes its socket.
-- Packed OpenCode and Pi resolve packed core and exit without leaked handles.
-- No generated package/runtime artifacts remain in the working copy.
+- Obsolete host backend types, provider probes, retries, polling, sampling, playback clocks, and transport queues are gone; `createSystemMedia()` remains an intentional core compatibility export.
+- Core exports and `bin`/`files` metadata include every daemon/client runtime file and exclude tests/scripts.
+- Host dependency metadata resolves `@naxodev/music-core` correctly and remains exactly version-pinned where host compatibility requires it.
+- No generated tarball, socket, marker, log, or build artifact remains in the working copy.
 
 **Verify commands**
 
 ```sh
-bunx nx run-many -t build typecheck test format:check package:check smoke --projects=music-core,opencode-music-player,pi-music-dock
+bunx nx run-many -t typecheck test format:check package:check --projects=music-core,opencode-music-player,pi-music-dock
 (cd packages/music-core && npm pack --dry-run --ignore-scripts)
 ! rg -n "createSystemMedia|hasMediaControl|hasNowPlayingCli|POLL_PLAYING_MS|pendingSample|transportRevision" packages/opencode-music-player/index.tsx packages/opencode-music-player/system-media.ts packages/pi-music-dock/extensions/music-dock/index.ts
 jj status
@@ -569,25 +524,52 @@ jj status
 
 **Dependencies**
 
-- Phases 9–10 completed host migrations and Phase 6 idle shutdown.
+- Phases 11–12 completed host cutovers.
 
 **Non-goals**
 
-- Publishing, versioning, deleting the low-level core provider compatibility surface, or documentation edits.
+- Publishing, versioning, deleting low-level core compatibility APIs, docs, or host smoke execution.
 
-### Phase 12 — Update current-architecture docs and run final verification
+### Phase 14 — Prove the packed core daemon/client under Node
 
 **Intent**
 
-Document only the completed architecture, preserve the existing HTML’s design/accessibility, and run the whole workspace and mixed-host checks.
+Upgrade core packing from a file-list check to an isolated installed-package lifecycle smoke.
 
-**Implementation outline**
+**Files likely touched**
 
-1. Document core daemon/client use, same-user socket security, singleton startup, revision/capability negotiation, supported/unsupported skew, reconnect without command replay, command indeterminacy, bounds, diagnostics, and idle shutdown.
-2. Update both host READMEs and the root package description to distinguish daemon authority from host-local presentation.
-3. Edit `docs/music-session-architecture.html` in place. Present 20+ clients → one same-user Unix socket daemon → one provider as current. Cover Effect services/Layers/scopes, replay/revisions, compatibility, global FIFO, bounded fan-out, reconnect, idle lifetime, native artwork ownership, O(1) provider cost, O(N) fan-out, and client-local UI/waveforms/catalog/rendering.
-4. Preserve skip link, labeled navigation/diagrams, source links, responsive/print rules, reduced-motion behavior, and existing visual language.
-5. Run the full workspace gate and manually exercise one OpenCode and one Pi instance against the same daemon on macOS. Inspect rather than modify unrelated dirty files.
+- `packages/music-core/package.json`
+- `packages/music-core/project.json`
+- `packages/music-core/scripts/verify-pack.ts`
+- `packages/music-core/session/music-sessiond.ts`
+
+**Acceptance checks**
+
+- The verifier builds and packs core, installs the tarball plus dependencies into a temporary project, and resolves no workspace source.
+- Installed client code starts/connects to the installed Node executable, completes hello/replay, disconnects, observes status-zero idle exit, and confirms owned socket cleanup.
+- Temporary installs, tarballs, runtime artifacts, and child processes are cleaned on success and failure.
+
+**Verify commands**
+
+```sh
+bunx nx run music-core:package:check
+bunx nx run music-core:smoke
+jj status
+```
+
+**Dependencies**
+
+- Phase 7 idle exit and Phase 13 finalized package contents.
+
+**Non-goals**
+
+- OpenCode/Pi TUI rendering, publishing, or documentation.
+
+### Phase 15 — Document the completed current architecture
+
+**Intent**
+
+Update prose and the preserved architecture HTML only after behavior and packaging are settled.
 
 **Files likely touched**
 
@@ -599,49 +581,179 @@ Document only the completed architecture, preserve the existing HTML’s design/
 
 **Acceptance checks**
 
-- No documentation presents independent host providers/polls as current or the daemon as a future option.
-- Compatibility guidance says supported mixed versions share the healthy daemon; unsupported skew never replaces it and receives actionable convergence guidance.
-- The HTML remains intentional worktree content with its accessibility, responsive, print, and source-link behavior intact.
-- In a real mixed-host check, both hosts show the same track, controls from either converge in both, one PID/socket/provider serves them, reload does not duplicate ownership, and final disconnect releases daemon/provider after idle grace.
-- Missing provider tools and daemon restart produce actionable feedback and recover when prerequisites return.
-- Full checks pass; no tarball, socket, marker, log, or newly tracked generated output remains; unrelated changes and `.apnea/state.json` are untouched.
+- Documentation presents 20+ clients → one same-user Unix socket daemon → one provider as current, not future.
+- It explains Effect services/Layers/scopes, replay/revisions, compatible and incompatible skew, global FIFO, bounds, reconnect without command replay, indeterminate commands, idle shutdown, native artwork ownership, diagnostics, and O(1) provider/O(N) fan-out costs.
+- Host docs distinguish daemon authority from host-local UI/waveform/catalog/rendering work.
+- The HTML retains its skip link, labeled navigation/diagrams, source links, responsive/print behavior, reduced-motion support, and visual language.
 
 **Verify commands**
 
 ```sh
 bunx prettier --check README.md packages/music-core/README.md packages/opencode-music-player/README.md packages/pi-music-dock/README.md docs/music-session-architecture.html
 ! rg -n "Direct / current|Broker / scale path|future broker|when coordination is required" docs/music-session-architecture.html packages/music-core/README.md packages/opencode-music-player/README.md packages/pi-music-dock/README.md
-bun run check
-jj status
-```
-
-Manual documentation/live check:
-
-```sh
-python3 -m http.server 8000
-# Open http://localhost:8000/docs/music-session-architecture.html, then run one OpenCode and one Pi TUI against the same machine-local session.
+jj diff --summary
 ```
 
 **Dependencies**
 
-- Phases 1–11 define the architecture and packed behavior to document.
-- macOS, provider tooling, the repository-pinned OpenCode CLI, and Pi for the live check.
+- Phases 2–14 define the architecture being documented.
 
 **Non-goals**
 
-- Publishing, tagging, committing, pushing, opening a PR, launchd installation, remote daemon management, or unrelated HTML redesign.
+- New behavior, unrelated HTML redesign, publishing, or PR creation.
+
+### Phase 16 — Certify the packed OpenCode plugin against its exact pin
+
+**Intent**
+
+Run the real packed OpenCode presentation smoke against the exact OpenCode version declared by the package, with packed core resolution.
+
+**Files likely touched**
+
+- `packages/opencode-music-player/package.json`
+- `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/opencode-music-player/scripts/verify-pack.ts`
+- `packages/opencode-music-player/tests/package-load.test.ts`
+
+**Acceptance checks**
+
+- The smoke fails clearly on version mismatch and runs the exact pinned `opencode2`, not an unverified `PATH` binary.
+- An isolated install resolves packed OpenCode and packed core, loads the real plugin, renders expanded/collapsed/narrow app/sidebar states, and exercises session-backed replay/control presentation.
+- Exit leaves no tmux session, daemon/provider handle, tarball, socket, marker, log, or temporary install.
+
+**Verify commands**
+
+```sh
+opencode2 --version
+bunx nx run opencode-music-player:smoke
+jj status
+```
+
+**Dependencies**
+
+- Phases 11, 13, and 14.
+
+**Non-goals**
+
+- Updating to an unpinned OpenCode release, redesigning presentation, Pi smoke, publishing, or PR creation.
+
+### Phase 17 — Certify the packed Pi extension against its exact pin
+
+**Intent**
+
+Run the packed extension through the exact Pi version declared by the package and prove prompt process exit.
+
+**Files likely touched**
+
+- `packages/pi-music-dock/package.json`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
+
+**Acceptance checks**
+
+- The smoke resolves and asserts the exact pinned Pi executable/version rather than accepting an arbitrary global binary.
+- An isolated install resolves packed Pi and packed core, loads the extension in RPC mode, and registers `/music`, `/music-next`, and `/music-prev`.
+- The process exits promptly without inherited daemon/provider handles and cleans tarballs/runtime/temp artifacts on success or failure.
+
+**Verify commands**
+
+```sh
+pi --version
+bunx nx run pi-music-dock:smoke
+jj status
+```
+
+**Dependencies**
+
+- Phases 12–14.
+
+**Non-goals**
+
+- Pi artwork/seek, accepting a floating host version, publishing, or PR creation.
+
+### Phase 18 — Run the full workspace and mixed-host release gate
+
+**Intent**
+
+Verify the accumulated migration as one system and make only narrow fixes exposed by this gate.
+
+**Files likely touched**
+
+- No product file is expected; if a gate exposes a defect, touch only the existing file that owns that defect and rerun its focused phase checks before this gate.
+
+**Acceptance checks**
+
+- `bun run check` passes, including format, policy, typecheck, unit/integration, parity, package, and smoke targets.
+- On macOS with provider tooling, one pinned OpenCode and one pinned Pi instance show the same track; commands from either converge in both; one PID/socket/provider serves them; reload does not duplicate ownership.
+- Daemon replacement recovers without command replay; missing tools and restart yield actionable feedback; final disconnect releases daemon/provider and removes owned artifacts after idle grace.
+- The worktree contains no generated/runtime artifacts; unrelated changes and `.apnea/state.json` remain untouched.
+
+**Verify commands**
+
+```sh
+bun run check
+opencode2 --version
+pi --version
+jj status
+```
+
+Manual mixed-host check:
+
+```sh
+python3 -m http.server 8000
+# Inspect docs/music-session-architecture.html, then run the exact pinned OpenCode and Pi hosts against the same machine-local session on macOS.
+```
+
+**Dependencies**
+
+- Phases 1–17.
+
+**Non-goals**
+
+- Feature expansion, publishing, tagging, pushing, opening a PR, or unrelated cleanup.
+
+### Phase 19 — Produce the terminus PR description artifact
+
+**Intent**
+
+When dispatched at terminus, write the PR description to the exact artifact path supplied by that dispatch; do not open or update a PR.
+
+**Files likely touched**
+
+- Only the dispatcher-provided PR-description artifact; no product source.
+
+**Acceptance checks**
+
+- Front matter is `status: done` only.
+- The description summarizes delivered phases, user-visible architecture, Effect ownership, protocol/lifecycle guarantees, host migrations, test plan, manual pinned-host evidence, and residual risk.
+- It accurately reflects `jj` history/diff and does not claim a push, publication, or opened PR.
+
+**Verify commands**
+
+```sh
+jj log -r 'ancestors(@, 20)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+jj diff --summary
+jj status
+```
+
+**Dependencies**
+
+- Approved Phase 18 results and the terminus dispatch's exact artifact path.
+
+**Non-goals**
+
+- Product edits, commits, pushes, publishing, or opening/updating a PR.
 
 ## Whole-run definition of done
 
-- `@naxodev/music-core` ships a Node-compatible machine-local daemon and lightweight client with a schema-validated, revision-negotiated, bounded Unix-socket protocol.
-- Context services, Layers, scopes, supervised fibers/streams, `SubscriptionRef`, bounded queues, `Schedule`, `Config`, and schema-tagged failures—not imperative wrappers—own provider, listener, sockets, event flow, command lane, polling, retries, and shutdown.
-- Deterministic tests prove provider bridge/retry semantics, all coordinator authority races, 3/5/8 polling, reconciliation, exact-once cleanup, and interruption of blocked work.
-- Concurrent first use safely creates one same-user daemon. Supported mixed versions share it; unsupported versions cannot unlink, kill, replace, or loop against it.
-- A 24-client scenario proves one provider/stream/poll owner, immediate replay, bounded slow-reader isolation, and one cross-client FIFO.
-- Reconnect adopts replacement replay, rejects old generations, settles pending commands truthfully, and never replays an indeterminate command; zero-client shutdown removes owned artifacts.
-- Native provider artwork reads are centralized, identity-checked, bounded, and deduplicated. OpenCode retains catalog/rendering work; Pi and both hosts retain only local presentation state.
-- OpenCode and Pi no longer own provider creation/probes, provider retries, fallback polling, stale sample lanes, playback clocks, or general transport queues, and each tears down only its client/presentation work.
-- Existing complete snapshots, coalesced recovery, fallback provider behavior, controls, feedback, waveform, artwork cache/rendering, reload, and shutdown semantics remain green at their new owners.
-- Isolated packed-install smokes run the daemon under Node, resolve packed core from both hosts, and exit without leaked handles or workspace source resolution.
-- `docs/music-session-architecture.html` is preserved and accurately presents the daemon topology as current.
-- `bun run check` and the mixed-host macOS check pass; no generated/runtime artifacts remain; unrelated worktree changes are preserved; no push, PR, publish, Git commit, or `.apnea/state.json` edit occurs.
+- `@naxodev/music-core` ships a Node-compatible, same-user machine-local daemon and lightweight client using Effect v4 services, Layers, scopes, supervised work, schemas, config, schedules, replayable state, bounded queues/streams, caches, and tagged failures.
+- The three formerly unresolved server boundaries are proven without reopening the verified server matrix: executable cleanup failure is nonzero and diagnostic, the real production closing-refusal branch is deterministic, and all focused server tests are failure-safe.
+- The wire protocol is schema-validated, revision/capability negotiated, additive across the supported skew window, bounded, and truthful about indeterminate commands.
+- Concurrent first use produces one provider/listener owner; secure discovery never removes foreign, malformed, or healthy incompatible endpoints.
+- Reconnect adopts only the replacement generation and never replays commands; zero-client idle shutdown releases provider/listener and owned runtime artifacts exactly once.
+- A real 24-client scenario proves one provider/stream/poll owner, immediate replay, one global FIFO, bounded memory/queues, and slow-reader isolation.
+- Native provider artwork reads are daemon-owned, identity-checked, deduplicated, and bounded; catalog lookup and rendering remain OpenCode-local.
+- OpenCode and Pi own only lightweight clients and local presentation. Existing controls, feedback, waveform, artwork, reload, and teardown behavior remain green.
+- Core, OpenCode, and Pi packed-install smokes resolve no workspace source, use exact pinned host versions, and exit without leaked handles or artifacts.
+- The preserved architecture HTML and READMEs describe the completed topology as current and retain accessibility/responsive behavior.
+- `bun run check` and the real mixed-host macOS check pass; `jj status` contains no generated/runtime debris; unrelated changes and `.apnea/state.json` are preserved.
+- The terminus PR-description artifact is complete, but nothing is committed with Git, pushed, published, or opened as a PR.
