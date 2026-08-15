@@ -1,0 +1,43 @@
+---
+status: done
+---
+
+## Changed
+
+- Converted `MusicSessionStartupError` to an Effect `Schema.TaggedErrorClass` with a stable `MusicSession.StartupError` tag, typed operation, message, and optional defect cause.
+- Updated all startup, launch, occupied-peer, and timeout construction sites to preserve that structured error boundary.
+- Kept marker acquisition and lease registration in a fully uninterruptible Effect region, so the non-abortable exclusive filesystem acquisition is always followed by recording the lease for finalization before interruption can take effect.
+
+Files touched:
+
+- `packages/music-core/session/client.ts`
+
+No commit, push, or `.apnea/state.json` edit was performed.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+70 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+200 pass, 0 fail
+Verified npm package contents (21 files)
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+
+$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ jj diff --summary && git diff --check
+exit 0
+```
+
+The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+
+## Residual risks
+
+- The selected listener-first coordinator graph still has the blocked-work shutdown cycle identified in review; the existing deterministic fixture remains externally composed until scope ownership is redesigned safely.
+- Startup timing is still fixed rather than validated/configured with capped bounds and deterministic TestClock coverage.
+- Marker release errors are still ignored after the primary outcome; secondary release diagnostics and the required convergence/bind-race/skew coverage remain outstanding.

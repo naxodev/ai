@@ -2,185 +2,201 @@
 status: done
 ---
 
-# Phase 1 package: close only the three unresolved server boundaries
+# Phase 1 package: break only the selected production graph shutdown cycle
 
 ## Intent
 
-Amend the accumulated scoped-server work with only these three fixes:
+Repair the one unresolved production lifecycle defect in the current dirty tree: the selected listener-first graph owns provider and coordinator in one manually built scope, then waits for connection children before closing that scope. A real connection blocked on coordinator work can therefore prevent the interruption needed to release itself.
 
-1. deterministically prove that cleanup failure through the executable runtime path sets nonzero process status and retains tagged operation/message diagnostics;
-2. deterministically drive a real Node connection through the production `closing` refusal branch;
-3. make every focused server test release its resources if setup or an assertion fails.
+Split listener, coordinator, and provider ownership without disturbing the accumulated singleton/startup implementation. Shutdown must execute one non-cyclic sequence:
 
-Do not reopen the abandoned exhaustive lifecycle matrix. Provider, coordinator, replay, ordinary connection scoping, blocked-work interruption, late-write suppression, cleanup ordering/idempotency, and existing socket-error behavior are already verified. Their suites are regression gates only, not Phase 1 acceptance work.
+1. mark the server closing and stop/refuse acceptance;
+2. interrupt and close coordinator-owned work;
+3. interrupt/await connection children that depended on that coordinator;
+4. finalize provider ownership;
+5. close the listener and unlink only its exact bound identity.
 
-Preserve the existing server implementation, the provider/coordinator commits, unrelated worktree changes, and `docs/music-session-architecture.html`. Use the repository-pinned Effect v4 APIs only.
+Prove this through the same selected graph used by production, with a real Unix socket and blocked coordinator operation. Do not supply a prebuilt externally owned coordinator to make the test green. Existing startup markers, bind reservation, `connectOrStart`, same-process singleton tests, and their assertions are baseline regressions only.
+
+Use repository-pinned Effect v4 `Layer`, `Context`, `Scope`, supervised fibers, and finalizers. Do not add raw timers, detached Promise cleanup, or a second graph implementation.
 
 ## Files to touch
 
-Only:
+Only as required:
 
 - `packages/music-core/session/server.ts`
 - `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
-A file need not change if the narrow implementation does not require it.
-
 ## Files not to touch
 
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/session/coordinator.ts`
 - `packages/music-core/session/config.ts`
+- `packages/music-core/session/client.ts`
 - `packages/music-core/session/protocol.ts`
 - `packages/music-core/session/framing.ts`
-- `packages/music-core/session/client.ts`
+- `packages/music-core/session/provider.ts`
+- `packages/music-core/session/coordinator.ts`
 - `packages/music-core/system-media.ts`
 - `packages/music-core/index.ts`
 - `packages/music-core/package.json`
 - `packages/music-core/project.json`
-- `packages/music-core/scripts/verify-pack.ts`
-- `packages/music-core/tests/system-media.test.ts`
-- `packages/music-core/tests/session-coordinator.test.ts`
-- `packages/music-core/tests/session-protocol.test.ts`
 - `packages/music-core/tests/session-client.test.ts`
-- Anything under `packages/opencode-music-player/`
-- Anything under `packages/pi-music-dock/`
+- `packages/music-core/tests/session-protocol.test.ts`
+- `packages/music-core/tests/session-coordinator.test.ts`
+- `packages/music-core/tests/system-media.test.ts`
+- Anything under `packages/opencode-music-player/` or `packages/pi-music-dock/`
 - `README.md`, package READMEs, and `docs/music-session-architecture.html`
 - `.apnea/state.json` and unrelated `.apnea` tasks/artifacts
 
-If solving one of the three boundaries appears to require a protocol, provider, coordinator, lifecycle-discovery, host, manifest, or documentation change, stop rather than broadening this phase.
+Do not create a new source or test module. Keep graph selection, ownership, and shutdown in `server.ts`; keep the executable as a consumer of that shared graph; keep evidence in the existing server test file.
 
 ## Exact implementation steps
 
-### 1. Preserve the accepted server baseline
+### 1. Preserve the dirty baseline before editing
 
-Before editing:
+1. Inspect `jj diff` for the three allowed product/test paths and treat the existing listener-first acquisition, crash-safe bind reservation, exact-identity cleanup, startup behavior, and tests as pre-existing baseline.
+2. Do not reset, restore, clean, or rewrite the current change. Do not alter `config.ts`, `client.ts`, startup tests, or architecture HTML to simplify this phase.
+3. Keep the current public Promise adapter and executable behavior intact: explicit sockets remain foreground/unmanaged, default execution remains managed, and successful bind/hardening remains the gate before provider acquisition.
 
-1. Inspect `jj diff --summary` and retain every unrelated path.
-2. Treat the current `MusicSessionServerService`, `layerWithHooks`, `startMusicSessionServer`, scoped signal wait, connection `FiberSet`, and cleanup-outcome retention as inputs. Refactor only the seams necessary for the three requirements below.
-3. Do not add another runtime, detached Promise loop, timer, retry, protocol branch, lifecycle counter matrix, or duplicate server graph.
-4. Keep test hooks in `packages/music-core/session/server.ts`; do not export them from `packages/music-core/index.ts` or create another module.
-
-### 2. Make the executable cleanup-failure path deterministically injectable
-
-In `packages/music-core/session/music-sessiond.ts`:
-
-1. Extract the current executable body into a testable in-file runner that is also called by the existing top-level executable guard. Keep production defaults equivalent to today:
-   - parse the supplied argv;
-   - compose the production config → provider → coordinator → server graph once;
-   - run one scoped foreground Effect;
-   - wait on the scoped real process signal boundary or server failure;
-   - inspect retained cleanup outcomes after scope closure;
-   - emit diagnostics and set nonzero process status on failure.
-2. Give the runner only narrow dependency injection needed by the focused test: graph construction (or the server graph), signal emitter, diagnostic sink, and process-status sink/default. Do not add a public-package export, CLI flag, or environment variable that enables test failures in installed production use.
-3. Keep one top-level `Effect.runPromise` process boundary. The injected runner must execute the same cleanup-outcome inspection and `formatDaemonError` path as the real executable; do not test a copied formatter or a Promise-facade-only approximation.
-4. When scoped shutdown retains `MusicSessionSocketError`, set status to `1` and print all of:
-   - `MusicSession.SocketError`;
-   - the operation in the existing bracketed form, such as `[close]` or `[unlink]`;
-   - the original useful message.
-5. If foreground execution and cleanup both fail, preserve the foreground failure and report the cleanup diagnostics as well. Never turn retained cleanup failure into success.
-
-In `packages/music-core/tests/session-server.test.ts`:
-
-6. Replace environment/permission-dependent executable cleanup injection with deterministic use of the runner seam. Prefer a real child process launched from the test with an inline script that imports the runner and supplies a graph using the existing fake provider plus `layerWithHooks` cleanup injection. This avoids inventing another fixture path and yields an actual child exit status.
-7. Wait for the child to report listener readiness, send a real `SIGTERM`, and inject one cleanup error only after the corresponding real close/unlink operation has run. Do not use `chmod`, timing sleeps, undocumented environment switches, or an unrelated fake main.
-8. Assert child exit status `1`, tagged error text, operation text, injected message text, listener closure, and completion of the remaining cleanup. Always kill/await the child and remove its path/temp directory in `finally`.
-9. Name the focused test so it matches `executable.*cleanup failure`.
-
-### 3. Exercise the real production closing-refusal branch
+### 2. Replace the combined coordinator/provider selection seam
 
 In `packages/music-core/session/server.ts`:
 
-1. Replace the current synthetic pattern where a shutdown hook directly calls the acceptance callback with an observation/barrier seam around the real production state transition.
-2. Set the same production `closing` flag used by the real Node `connection` callback before signaling the hook.
-3. Allow a focused test to hold finalization after `closing = true` but before `net.Server.close()` stops acceptance. Use an Effect-owned gate/barrier; production with no hook must proceed immediately.
-4. Add a narrow observation hook for the refusal branch if needed. It may observe the exact `net.Socket`, but it must not make the refusal decision. The production callback must still execute its normal `if (closing) { socket.destroy(); return }` branch.
-5. The gate must remain inside the server finalizer and be interruption-safe. It must not become a public runtime setting or alter ordinary production ordering.
-6. Preserve shutdown behavior for already enrolled sockets. Do not add another acceptance callback, socket registry, or runtime.
+1. Remove the `defaultCoordinatorGraph = Layer.provide(coordinatorLayer, providerLayer)` ownership model. The selected graph seam must accept/select a **provider Layer only**; coordinator construction remains fixed inside the server graph.
+2. Keep production selection on the existing `providerLayer`. For `startMusicSessionServer`, map the optional legacy provider to `layerFromLegacy(provider)` and pass that provider Layer into the same selector.
+3. Change `layerWithHooks` so focused tests may select lifecycle hooks and a provider Layer, but may not inject a precomposed coordinator+provider Layer. This prevents tests from placing coordinator ownership in an outer scope that production does not use.
+4. Keep one shared constructor behind exported `layer`, `layerWithHooks`, `startMusicSessionServer`, and the executable. Do not introduce parallel “test” and “production” graph implementations.
+5. Update the existing `session-server.test.ts` call sites mechanically: where they currently pass `Layer.provide(coordinatorLayer, fixture.layer)` or `Layer.provide(coordinatorLayer, layerFromLegacy(...))`, pass only the corresponding provider Layer. Remove the now-unused coordinator-layer import if all uses disappear.
+
+### 3. Build provider and coordinator in distinct Effect scopes
+
+In the shared constructor in `packages/music-core/session/server.ts`:
+
+1. Retain listener acquisition first: create/listen/harden/capture the socket, release the short-lived bind reservation, and only then acquire provider or coordinator ownership.
+2. Capture the resolved `MusicSessionConfig` service as well as its options so the internally built coordinator receives the same selected config instance.
+3. After listener acquisition, create a dedicated provider `Scope`, immediately retain its close effect, build the selected provider Layer in that scope, and extract `SessionProvider` from its `Context`.
+4. Create a separate coordinator `Scope`, immediately retain its close effect, and build the fixed `coordinatorLayer` there while providing the already selected `SessionProvider` service and the captured `MusicSessionConfig` service. Extract `MusicSessionCoordinator` from that coordinator context.
+5. Do not rebuild or duplicate the provider while satisfying coordinator dependencies. Exactly one provider Layer instance belongs to the provider scope, and the coordinator only receives that service.
+6. Keep the listener inactive/refusing during provider/coordinator construction. Set application acceptance active only after both selected scopes build successfully.
+7. Ensure partial acquisition is failure-safe. If provider or coordinator construction fails, the outer listener finalizer must close any scope that was created, then close/unlink the listener. `Scope.close` is the sole owner of each scope's resources; do not manually call provider disposal or coordinator internals.
+8. Keep scope closing idempotent so acquisition failure, normal finalization, server fault, and the Promise adapter cannot double-finalize ownership.
+
+Use Effect v4 service/context APIs rather than casts. The ownership shape should be equivalent to:
+
+- outer selected server/listener scope;
+- provider child scope containing `SessionProvider`;
+- coordinator child scope containing `MusicSessionCoordinator` and borrowing the provider service;
+- connection fibers owned by the server and borrowing the coordinator service.
+
+The provider service is borrowed by coordinator/connection work but its scope remains open until those dependents have stopped.
+
+### 4. Encode one explicit non-cyclic shutdown order
+
+Refactor the existing listener release/finalizer in `packages/music-core/session/server.ts` so all exits use this order:
+
+1. Set `active = false` and `closing = true` before any asynchronous wait. Invoke the existing closing hook and destroy/refuse enrolled sockets so no new application work can enter. Preserve the production callback branch that destroys a socket delivered after closing.
+2. Preserve the existing `awaitClosing` test gate at the closing boundary; it must not transfer ownership or create another shutdown path.
+3. Close the coordinator scope **before** calling `FiberSet.clear`/`FiberSet.awaitEmpty` for connections. Closing that scope must interrupt blocked sampling, transport, polling, event consumption, command workers, and settle coordinator jobs.
+4. Only after coordinator closure, interrupt and await every connection child. A socket command waiting on coordinator work must now unwind, and no connection callback/write may survive this join.
+5. Close the provider scope after dependent coordinator and connection work has stopped. This is where the provider/event source finalizes exactly once.
+6. Shut down server fault observation and detach the listener error handler without dropping retained typed failures.
+7. Close the Node listener, invoke the listener-finalized observation, unlink only the captured socket identity, and release any partial bind reservation last.
+8. Preserve the existing cleanup-outcome contract: close/unlink failures remain `MusicSessionSocketError`, all cleanup attempts run, the primary failure remains observable at the executable/Promise boundary, and additional cleanup failures are retained/logged as before.
+9. Do not “fix” the cycle by ignoring `FiberSet.awaitEmpty`, leaking a scope, releasing the provider early, moving coordinator ownership back outside the server, or merely reordering finalizers within the existing combined scope.
+
+If additional order evidence is needed, add only narrow test hooks such as coordinator-scope-finalized/provider-scope-finalized observations to `ServerLifecycleHooks`. Invoke them after their corresponding `Scope.close` completes. They are observation-only and must not alter production control flow.
+
+### 5. Keep both production entry points on the selected topology
+
+In `packages/music-core/session/server.ts` and `packages/music-core/session/music-sessiond.ts`:
+
+1. `startMusicSessionServer` must select config + provider and call the shared listener/provider/coordinator constructor; it must not precompose coordinator/provider externally.
+2. `runMusicSessionDaemon` must continue to provide config to the exported production server layer, which internally selects the production provider and fixed coordinator.
+3. Keep one top-level `Effect.runPromise` at the executable boundary, the scoped signal wait, status handling, diagnostics, and cleanup-failure reporting unchanged except for type/composition adjustments required by the new graph contract.
+4. Preserve listener-first singleton behavior: bind/hardening failure still acquires zero provider/coordinator ownership. Do not change bind reservation semantics in this phase.
+
+### 6. Replace the bypassing blocked-work fixture with selected-topology evidence
 
 In `packages/music-core/tests/session-server.test.ts`:
 
-7. Start `server.close()`, await a deterministic signal that production has set `closing`, and hold listener close with the new gate.
-8. While that real listener is still accepting, create a real `net.createConnection` to its Unix path. Await observation of that exact socket entering the real production callback and then await client-side closure.
-9. Assert the socket is destroyed/refused and that accepted, enrolled, and connection-finalized counts remain zero for it.
-10. Release the closing gate, await server shutdown, and assert the path is removed.
-11. Release the gate in `finally` even if connection or assertions fail, then destroy the client and await the memoized server close. Do not permit a failed assertion to deadlock finalization.
-12. Name the focused test so it matches `closing.*refus`.
-13. Remove or rewrite the existing test that passes a synthetic `new net.Socket()` directly to the callback; synthetic callback invocation is not evidence for this requirement.
+1. Add or rename one focused test so its name matches `selected.*blocked` or `blocked.*selected`, for example: `selected graph shutdown interrupts blocked coordinator work before draining connections`.
+2. Use `makeCoordinatorProviderFixture()` only as the selected **provider Layer** and controls. Pass `fixture.layer` to the shared selected graph seam; never build `coordinatorLayer` in the test's outer scope.
+3. Build the graph in a real Effect scope over a real Unix socket. Connect with the real music-session client, negotiate hello, submit a transport command (or trigger sampling) that the fixture deterministically blocks, and wait on the fixture's latch/queue proving coordinator work actually started.
+4. Start closure of the real selected graph. Use Effect synchronization primitives for ordering and an Effect timeout only as a deadlock sentinel; do not use `setTimeout`, `setInterval`, `Bun.sleep`, or polling loops.
+5. Assert closure completes within the sentinel and proves all relevant ownership:
+   - closing was observed before teardown;
+   - blocked coordinator work was interrupted and has zero active operations;
+   - the coordinator scope completed before the dependent connection drain;
+   - the real connection/input processor finalized exactly once;
+   - provider event subscription and provider scope finalized exactly once, after dependent work;
+   - listener close and exact unlink occurred once and after provider finalization;
+   - the client socket is destroyed and the Unix path is absent.
+6. For a blocked socket command, assert its Promise settles once as `INDETERMINATE_COMMAND`. Record write attempts at connection finalization, release the fixture gate after shutdown, yield once, and prove no late response/write occurs.
+7. Make the test failure-safe with `finally`: dispose the client, release any fixture gate needed to unstick a failed assertion, close the Effect scope idempotently, destroy raw sockets, and remove only the test's temporary socket path/artifacts.
+8. Keep existing sampling, blocked-command, direct-Layer, cleanup-diagnostic, and closing-refusal tests as regressions. Update only their graph-selection syntax as required; do not expand them into a lifecycle matrix.
 
-### 4. Make the entire focused server file failure-safe
+### 7. Keep this phase isolated
 
-Audit every test in `packages/music-core/tests/session-server.test.ts`, not just the two new tests:
-
-1. Declare optional resource handles before the outer `try` and acquire resources inside it. A failed `connected(...)`, second client creation, Layer build, or subprocess readiness assertion must still reach cleanup.
-2. Release in reverse ownership order in `finally`:
-   - unsubscribe/dispose clients;
-   - destroy raw sockets;
-   - release any closing/test gates;
-   - close/await server facades or Effect scopes idempotently;
-   - kill and await subprocesses;
-   - restore changed permissions if any remain;
-   - remove temporary directories and Unix paths.
-3. For expected cleanup-failure tests, assert the failure in the body and catch the same memoized failure only in `finally`. Do not rerun cleanup resources.
-4. For Effect Layer tests, always close `Scope` in `finally`, including when `Layer.build`, queue/latch waits, or assertions fail.
-5. For tests with multiple clients/sockets, assign each handle immediately after acquisition so a later acquisition failure cannot leak earlier handles.
-6. For subprocess stream readers, release readers and terminate/await the child even if readiness or diagnostic parsing fails.
-7. Use real unique Unix paths already produced by `socketPath(...)`. Do not use wall-clock time for uniqueness.
-8. Do not add arbitrary sleeps, repeated `Effect.yieldNow`, or raw test timers. Synchronize with Node events, existing hooks, `Deferred`, `Latch`, `Queue`, or an explicit gate.
-9. Cleanup code may suppress the already asserted expected product error, but it must not silently omit resource release. Keep assertions about product cleanup in the test body.
-
-This audit is mechanical resource safety. Do not add new behavioral scenarios while touching the tests.
-
-### 5. Keep the phase diff narrow and reviewable
-
-1. Format only touched files.
-2. Run the two focused tests first, then the complete server file.
-3. Run provider/coordinator suites and package targets only as baseline regressions.
-4. Inspect `jj diff --summary` and the exact diff. Revert no unrelated path and do not edit `.apnea/state.json`.
-5. Keep work in the current Jujutsu phase child for review. Do not run `git commit`, push, or `jj squash` during this coding round. After approval, the run may use its prescribed `jj squash` step to fold only this reviewed phase into the intended server change.
+1. Do not add subprocess contender acceptance. Separate daemon winner/loser proof is Phase 2.
+2. Do not add `TestClock`, 20-client convergence, marker-release, launcher, or incompatibility-race acceptance. Those are Phase 3.
+3. Do not modify existing startup/client behavior to make server tests easier.
+4. Format only touched files and inspect the exact diff after tests. Product/test changes must remain in the three allowed paths.
+5. Keep work in the current reviewed Jujutsu phase child. Do not run `git commit`, `jj commit`, `jj squash`, push, or open a PR. After approval, the orchestrator may use the prescribed `jj squash` workflow for only this reviewed phase.
 
 ## Acceptance checks
 
-Only these checks decide Phase 1 acceptance:
+Phase 1 is complete only when:
 
-1. **Executable boundary:** deterministic cleanup failure through the executable runner produces actual nonzero child/process status and diagnostics containing the tagged error, failed operation, and useful original message; other cleanup completes.
-2. **Closing refusal:** a real connection accepted by the real Node listener after production sets `closing` is synchronously refused/destroyed by the real production callback and is never accepted, enrolled, or finalized as a connection scope.
-3. **Failure-safe focused tests:** every server test cleans all resources if setup or any assertion fails, including sockets, clients, listener/server, scopes, subprocesses, gates, temporary directories, permissions, and Unix paths.
-
-Passing replay, scoped connection, blocked sample/command, late write, normal cleanup, close/unlink typing, provider, and coordinator tests is required only to show no regression. Those behaviors are not new acceptance work and must not be re-audited unless this phase's diff changes them or a regression command fails.
+- Listener, provider, and coordinator are separately owned in the one graph selected by production, the Promise adapter, and focused tests.
+- Successful listener bind/hardening still gates all provider/coordinator acquisition.
+- Shutdown marks acceptance closed, interrupts/joins coordinator work, then drains dependent connection children, then finalizes provider ownership, then closes/unlinks the listener without deadlock.
+- A deterministic real Unix-socket selected-topology test blocks coordinator work and proves the full order, exact-once finalization, indeterminate blocked command, and no late write/leak.
+- No test obtains a green result by externally owning a precomposed coordinator.
+- Existing bind reservation, same-process singleton, startup, closing-refusal, cleanup diagnostics, protocol, client, provider, and coordinator tests remain green only as baseline regressions.
+- No Phase 2 process-contender or Phase 3 startup-matrix acceptance enters this phase.
+- Unrelated worktree changes, verified commits, `.apnea/state.json`, and `docs/music-session-architecture.html` remain untouched.
 
 ## Verify commands
 
-Run from the repository root in this order:
+Run from the repository root:
 
 ```sh
-bun test packages/music-core/tests/session-server.test.ts -t 'executable.*cleanup failure|closing.*refus'
+bun test packages/music-core/tests/session-server.test.ts -t 'selected.*blocked|blocked.*selected'
 bun test packages/music-core/tests/session-server.test.ts
-# Baseline regressions only; do not turn them into new Phase 1 findings.
-bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
+# Baseline regression only; it does not enlarge Phase 1 acceptance.
 bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
+! rg -n 'Effect\.runSync|setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
 jj diff --summary
 ```
 
-Expected focused evidence:
+Then inspect the exact diff:
 
-- both regex-selected tests execute and pass;
-- the full server suite exits without leaked handles or retained paths;
-- diagnostics assertions include `_tag`/tag text, operation, and message rather than only checking a generic nonzero exit;
-- no focused test relies on `chmod`, arbitrary sleep, or synthetic invocation of the acceptance callback for the two new boundaries.
+```sh
+jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
+git diff --check
+```
+
+Confirm manually from that diff:
+
+- no product/test path outside the three allowed paths changed during this phase;
+- `layerWithHooks` accepts provider selection, not an externally precomposed coordinator;
+- coordinator and provider have distinct scopes and close effects;
+- coordinator close precedes connection join, provider close follows it, and listener release is last;
+- startup/client, bind-reservation policy, protocol, hosts, packaging, and docs were not changed;
+- `.apnea/state.json` and unrelated dirty paths were not altered.
 
 ## Dependencies
 
-- Verified provider commit `e7103663` and coordinator commit `859fc01d`.
-- Accumulated scoped server implementation in `66bc1f91`.
-- Existing `MusicSessionSocketError`, `MusicSessionServerService` cleanup outcomes, `layerWithHooks`, fake provider, scoped signal wait, and real Unix-socket test helpers.
-- macOS/Node Unix-domain sockets, Bun test runner, and repository-pinned Effect v4.
+- Approved full plan at `.apnea/artifacts/plan.md`.
+- Verified provider (`e7103663`), coordinator (`859fc01d`), scoped server (`66bc1f91`), executable (`e70641bc`), negotiated protocol (`f059efc8`), truthful client (`1411d281`), and secure runtime (`ca96d66d`) commits.
+- Current dirty listener-first acquisition, bind reservation, exact bound-path cleanup, startup marker/launcher/client work, and baseline tests.
+- Existing `makeCoordinatorProviderFixture`, `layerFromLegacy`, real Unix-socket/client helpers, lifecycle hooks, `FiberSet`, and cleanup outcome plumbing.
+- Repository-pinned Effect v4 `Layer`, `Context`, `Scope`, `Effect`, `FiberSet`, `Deferred`, `Latch`, `Queue`, and scoped-finalizer APIs.
 
 ## Non-goals
 
-- Reworking or adding acceptance evidence for provider attempts, bridge bounds, retry schedules, coordinator authority, polling/reconciliation, command FIFO, replay, ordinary connection ownership, blocked work, late writes, normal cleanup ordering/idempotency, or existing listen/close/unlink semantics.
-- Schema/protocol revisions, capability negotiation, client request semantics, runtime-directory security, stale endpoint recovery, singleton startup, reconnect, idle shutdown, lifecycle diagnostics expansion, 24-client fan-out, slow readers, or backpressure.
-- Artwork, OpenCode migration, Pi migration, host UI behavior, manifests, packing, pinned host smokes, READMEs, or architecture HTML.
-- New source/test modules or public exports.
-- Publishing, committing, squashing before approval, pushing, opening a PR, editing `.apnea/state.json`, or cleaning/resetting unrelated worktree changes.
+- Separate-process daemon contention, winner hello, loser status, or loser socket non-interference evidence.
+- Startup retry pacing, `TestClock`, twenty concurrent `connectOrStart` callers, marker release diagnostics, launcher races, or protocol incompatibility races.
+- Reconnect, replacement-generation filtering, idle grace/exit, 24-client load, queue/backpressure policy, artwork, caching, OpenCode, Pi, manifests, packed smokes, READMEs, or architecture HTML.
+- Provider/coordinator behavioral redesign, protocol/schema changes, new public client APIs, process killing, launchd/service installation, remote sockets, or multi-user support.
+- New source/test modules, unrelated cleanup, Git/Jujutsu commits during coding, squashing before approval, pushing, publishing, opening a PR, or editing `.apnea/state.json`.

@@ -1,0 +1,44 @@
+---
+status: done
+---
+
+## Changed
+
+- Added validated startup policy overrides for attempts, initial delay, and maximum delay.
+- Invalid or reversed timing values now fail with `MusicSession.ConfigError` rather than being misclassified as a timeout.
+- Capped the exponential Effect schedule before jittering, retaining the bounded retry count.
+- Replaced silent marker-release suppression with a structured warning that retains the release failure in diagnostics while preserving the primary startup outcome.
+
+Files touched:
+
+- `packages/music-core/session/client.ts`
+
+No commit, push, or `.apnea/state.json` edit was performed.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+70 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+200 pass, 0 fail
+Verified npm package contents (21 files)
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+
+$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ jj diff --summary && git diff --check
+exit 0
+```
+
+The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+
+## Residual risks
+
+- The startup policy is configurable at the client workflow boundary, but has not yet been threaded through resolved/environment config or covered by deterministic TestClock tests.
+- Release failure is logged while the primary outcome is preserved; a structured aggregate outcome is still absent.
+- The selected listener-first coordinator graph blocked-work shutdown cycle remains unresolved; the existing blocked-sampling fixture remains externally composed. Required convergence, bind-race, marker interruption/spawn-failure, and skew-race evidence also remains outstanding.

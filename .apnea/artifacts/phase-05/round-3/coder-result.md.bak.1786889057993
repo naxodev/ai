@@ -1,0 +1,44 @@
+---
+status: done
+---
+
+## Changed
+
+Expanded focused startup-policy validation evidence at the tagged configuration boundary:
+
+- Valid policies normalize as expected.
+- Zero attempts, non-finite initial delay, and reversed delay bounds each fail as `MusicSession.ConfigError` with the corresponding setting.
+
+Files touched:
+
+- `packages/music-core/tests/session-client.test.ts`
+
+No commit, push, or `.apnea/state.json` edit was performed.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+71 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+201 pass, 0 fail
+Verified npm package contents (21 files)
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+
+$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ jj diff --summary && git diff --check
+exit 0
+```
+
+The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+
+## Residual risks
+
+- Selected listener-first graph shutdown can still deadlock on blocked coordinator work; the blocked-sampling fixture remains externally composed.
+- Deterministic TestClock coverage of pacing/capping/exhaustion/interruption and release diagnostics remains incomplete.
+- Required 20-way convergence, bind-race, spawn-failure release, and protocol-skew race evidence remains outstanding.

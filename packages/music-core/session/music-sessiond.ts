@@ -6,8 +6,6 @@ import {
   type MusicSessionOptions,
   type MusicSessionRuntimePaths,
 } from "./config.ts"
-import { layer as providerLayer } from "./provider.ts"
-import { layer as coordinatorLayer } from "./coordinator.ts"
 import { layer as serverLayer, MusicSessionServerService } from "./server.ts"
 
 function usage() {
@@ -71,14 +69,8 @@ export const waitForSignal = (
     return Effect.sync(remove)
   })
 
-const productionGraph = (options: MusicSessionOptions) => {
-  const coordinatorWithProvider = Layer.provide(coordinatorLayer, providerLayer)
-  const serverWithCoordinator = Layer.provide(
-    serverLayer,
-    coordinatorWithProvider,
-  )
-  return Layer.provide(serverWithCoordinator, configLayer(options))
-}
+const productionGraph = (options: MusicSessionOptions) =>
+  Layer.provide(serverLayer, configLayer(options))
 
 /** Narrow executable seam; production continues to use the defaults below. */
 export type MusicSessionDaemonOptions = {

@@ -1,0 +1,26 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 5 package remains aligned with the approved plan. It remains confined to singleton auto-start, listener-first ownership, bounded Effect scheduling, and terminal skew handling.
+
+## Findings
+
+### High — Startup remains a raw Promise loop rather than the required Effect workflow
+
+`packages/music-core/session/client.ts:685-764` still constructs startup as an async `for` loop and runs a new one-step schedule only in the final pending branch. It lacks validated initial/capped timing, one bounded jittered schedule retrying only typed pending state, Effect `Ref` state, scoped lease finalization, a schema-tagged startup error, and preservation of a primary error when release also fails. Contention and other transitions can consume attempts without pacing. Implement the package's Effect-native workflow and deterministic timeout/interruption/finalizer behavior.
+
+### High — One coordinator fixture still bypasses listener-first ownership
+
+Most direct-Layer and executable fixtures now use `layerWithHooks`'s selected coordinator-graph argument. The blocked-sampling fixture at `packages/music-core/tests/session-server.test.ts:1586-1618` intentionally retains the old external `Layer.provide(layerWithHooks(...), coordinatorWithProvider)` composition. That acquires coordinator/provider ownership outside the server's post-bind graph seam, contrary to the package requirement that test provider replacement not bypass listener-first ordering. The coder result acknowledges that this still needs an ownership-safe cancellation design. Preserve the cancellation assertion while routing its coordinator through the listener-first seam.
+
+### High — Required concurrent startup, true bind-race, schedule, and skew evidence remains incomplete
+
+There is still no at-least-20-way `connectOrStart` convergence test proving one listener/provider owner, no true two-daemon bind race, and no deterministic schedule pacing/capping/exhaustion/interruption evidence. Complete-workflow spawn failure with exact marker release/no retry and incompatibility before/after acquisition and while waiting also remain unproved. These are explicit Phase 5 acceptance checks and are listed as residual risks by the coder.
+
+## Verification
+
+The coder reports 70 focused tests and 200 full music-core tests passing, including build, typecheck, format, package, timer scan, summary, and diff checks. The cumulative product diff remains confined to allowed Phase 5 paths, but the remaining workflow, ownership-fixture, and acceptance-evidence gaps prevent approval.

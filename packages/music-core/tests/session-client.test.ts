@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
   rename,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -14,19 +16,47 @@ import net from "node:net"
 import { NdjsonFramer } from "../session/framing.ts"
 import {
   MusicSessionClientError,
+  connectOrStartMusicSession,
   createMusicSessionClient,
+  launchManagedMusicSessionDaemon,
   discoverMusicSession,
 } from "../session/client.ts"
 import {
+  acquireStartupMarkerLease,
   MusicSessionRuntimeError,
   prepareManagedRuntimeDirectory,
   resolveMusicSessionRuntimePaths,
+  resolveMusicSessionStartup,
 } from "../session/config.ts"
 import { Effect } from "effect"
 import {
   createFakeProvider,
   startMusicSessionServer,
 } from "../session/server.ts"
+
+test("startup timing resolves through the tagged config boundary", async () => {
+  await expect(
+    Effect.runPromise(
+      resolveMusicSessionStartup({
+        attempts: 3,
+        initialDelayMs: 10,
+        maxDelayMs: 40,
+      }),
+    ),
+  ).resolves.toEqual({ attempts: 3, initialDelayMs: 10, maxDelayMs: 40 })
+  for (const [settings, setting] of [
+    [{ attempts: 0 }, "startup.attempts"],
+    [{ initialDelayMs: Number.POSITIVE_INFINITY }, "startup.initialDelayMs"],
+    [{ initialDelayMs: 41, maxDelayMs: 40 }, "startup.maxDelayMs"],
+  ] as const) {
+    await expect(
+      Effect.runPromise(resolveMusicSessionStartup(settings)),
+    ).rejects.toMatchObject({
+      _tag: "MusicSession.ConfigError",
+      setting,
+    })
+  }
+})
 
 type ScriptedFrame = { type: string; requestId: number; action?: string }
 type ScriptedDaemon = {
@@ -131,6 +161,88 @@ async function startScriptedDaemon(helloTail = ""): Promise<ScriptedDaemon> {
     },
   }
 }
+
+test("managed launcher uses detached packaged entry and releases its child handle", async () => {
+  const listeners = new Map<string, (cause?: Error) => void>()
+  const removed: string[] = []
+  let unrefs = 0
+  let invocation:
+    | {
+        readonly command: string
+        readonly args: readonly string[]
+        readonly options: unknown
+      }
+    | undefined
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const launched = launchManagedMusicSessionDaemon(runtime, {
+    entry: () => "/absolute/music-sessiond.js",
+    spawn: (command, args, options) => {
+      invocation = { command, args, options }
+      return {
+        once: (event, listener) => {
+          listeners.set(event, listener)
+        },
+        off: (event) => {
+          removed.push(event)
+        },
+        unref: () => {
+          unrefs++
+        },
+      }
+    },
+  })
+  await Promise.resolve()
+  listeners.get("spawn")?.()
+  await launched
+  expect(invocation).toEqual({
+    command: process.execPath,
+    args: ["/absolute/music-sessiond.js"],
+    options: {
+      detached: true,
+      stdio: "ignore",
+      shell: false,
+      env: { PATH: process.env.PATH ?? "" },
+    },
+  })
+  expect(removed).toEqual(["spawn", "error"])
+  expect(unrefs).toBe(1)
+})
+
+test("managed launcher reports synchronous and initial spawn failures", async () => {
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  await expect(
+    launchManagedMusicSessionDaemon(runtime, {
+      entry: () => "/absolute/music-sessiond.js",
+      spawn: () => {
+        throw new Error("spawn throw")
+      },
+    }),
+  ).rejects.toMatchObject({
+    operation: "spawn",
+    message: "unable to spawn music session daemon",
+  })
+
+  const listeners = new Map<string, (cause?: Error) => void>()
+  const launched = launchManagedMusicSessionDaemon(runtime, {
+    entry: () => "/absolute/music-sessiond.js",
+    spawn: () => ({
+      once: (event, listener) => {
+        listeners.set(event, listener)
+      },
+      off: () => {},
+      unref: () => {},
+    }),
+  })
+  await Promise.resolve()
+  listeners.get("error")?.(new Error("initial error"))
+  await expect(launched).rejects.toMatchObject({ operation: "spawn" })
+})
 
 test("explicit client requires a socket", async () => {
   await expect(
@@ -273,6 +385,95 @@ test("managed runtime rejects non-directory and simulated foreign-owned roots wi
     expect(after.ino).toBe(before.ino)
     expect(after.mode).toBe(before.mode)
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("exclusive startup marker lease has one winner and preserves replacements", async () => {
+  const root = await mkdtemp("/tmp/music-session-lease-")
+  try {
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    const leases = await Promise.all(
+      Array.from({ length: 20 }, () => acquireStartupMarkerLease(runtime)),
+    )
+    const acquired = leases.filter(
+      (result): result is Extract<typeof result, { type: "acquired" }> =>
+        result.type === "acquired",
+    )
+    expect(acquired).toHaveLength(1)
+    expect(leases.filter((result) => result.type === "contended")).toHaveLength(
+      19,
+    )
+    const before = await lstat(runtime.markerPath)
+    await acquired[0]!.lease.release()
+    await acquired[0]!.lease.release()
+    await expect(lstat(runtime.markerPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    })
+
+    const replacement = await acquireStartupMarkerLease(runtime)
+    if (replacement.type !== "acquired") throw new Error("lease contention")
+    await rm(runtime.markerPath)
+    await writeFile(
+      runtime.markerPath,
+      JSON.stringify({
+        version: 1,
+        uid: runtime.uid,
+        pid: process.pid,
+        attemptToken: replacement.lease.attemptToken,
+      }),
+      { mode: 0o600 },
+    )
+    await chmod(runtime.markerPath, 0o600)
+    const replacementDiscovery = await discoverMusicSession({
+      runtime,
+      ownedLease: replacement.lease,
+      clientId: "replacement",
+      hostKind: "test",
+    })
+    expect(replacementDiscovery.type).toBe("starting")
+    await expect(replacement.lease.release()).rejects.toBeInstanceOf(
+      MusicSessionRuntimeError,
+    )
+    const after = await lstat(runtime.markerPath)
+    expect(before.ino).not.toBe(after.ino)
+    expect(await readFile(runtime.markerPath, "utf8")).toContain(
+      replacement.lease.attemptToken,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("connect-or-start acquires one marker, launches once, and returns a hello client", async () => {
+  const root = await mkdtemp("/tmp/music-session-connect-start-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let client: Awaited<ReturnType<typeof connectOrStartMusicSession>> | undefined
+  let launches = 0
+  try {
+    client = await connectOrStartMusicSession({
+      runtime,
+      clientId: "starter",
+      hostKind: "test",
+      launcher: async () => {
+        launches++
+        server = await startMusicSessionServer({ runtime }, provider)
+      },
+    })
+    expect(launches).toBe(1)
+    expect(client.daemonInstanceId).not.toBe("")
+    expect(existsSync(runtime.markerPath)).toBe(false)
+  } finally {
+    client?.dispose()
+    await server?.close().catch(() => {})
     await rm(root, { recursive: true, force: true })
   }
 })
@@ -709,6 +910,48 @@ test("managed discovery preserves a live incompatible daemon generation", async 
     expect(healthy.type).toBe("healthy")
   } finally {
     if (healthy?.type === "healthy") healthy.client.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("healthy discovery grants cleanup only for a separately proven dead marker", async () => {
+  const root = await mkdtemp("/tmp/music-session-healthy-dead-marker-")
+  const uid = process.getuid?.() ?? -1
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid,
+    dependencies: {
+      processExists: () => {
+        throw Object.assign(new Error("gone"), { code: "ESRCH" })
+      },
+    },
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let discovered: Awaited<ReturnType<typeof discoverMusicSession>> | undefined
+  try {
+    server = await startMusicSessionServer({ runtime }, createFakeProvider())
+    await writeFile(
+      runtime.markerPath,
+      JSON.stringify({ version: 1, uid, pid: 123, attemptToken: "dead" }),
+      { mode: 0o600 },
+    )
+    await chmod(runtime.markerPath, 0o600)
+    const socket = await lstat(runtime.socketPath)
+    discovered = await discoverMusicSession({
+      runtime,
+      clientId: "dead-marker-healthy",
+      hostKind: "test",
+    })
+    expect(discovered.type).toBe("healthy")
+    if (discovered?.type === "healthy") await discovered.cleanup?.()
+    await expect(lstat(runtime.markerPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    })
+    const after = await lstat(runtime.socketPath)
+    expect([after.dev, after.ino]).toEqual([socket.dev, socket.ino])
+  } finally {
+    if (discovered?.type === "healthy") discovered.client.dispose()
     await server?.close().catch(() => {})
     await rm(root, { recursive: true, force: true })
   }

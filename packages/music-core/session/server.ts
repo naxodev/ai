@@ -1,14 +1,19 @@
 import net from "node:net"
-import { chmod, lstat, unlink } from "node:fs/promises"
+import type { Stats } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { chmod, link, lstat, open, readFile, unlink } from "node:fs/promises"
 import {
   Cause,
   Context,
   Deferred,
   Effect,
+  Exit,
+  Fiber,
   FiberSet,
   Layer,
   Queue,
   Schema,
+  Scope,
   Stream,
 } from "effect"
 import {
@@ -45,6 +50,7 @@ import {
   createFakeProvider,
   layer as providerLayer,
   layerFromLegacy,
+  SessionProvider,
   type LegacySessionProvider,
 } from "./provider.ts"
 
@@ -107,6 +113,10 @@ export type ServerLifecycleHooks = {
   /** Test-only synchronous enrollment refusal; production always enrolls. */
   readonly canEnroll?: (socket: net.Socket) => boolean
   readonly onCoordinator?: () => void
+  /** Observes completion of the server-owned coordinator child scope. */
+  readonly onCoordinatorScopeFinalized?: () => void
+  /** Observes completion of the server-owned provider child scope. */
+  readonly onProviderScopeFinalized?: () => void
   /** Runs after partial identity capture and before socket hardening. */
   readonly onPartialBound?: (identity: BoundPathIdentity) => void
   readonly onListener?: (server: net.Server) => void
@@ -223,6 +233,162 @@ type BoundPathIdentity = {
   readonly ino: number
   readonly uid: number
 }
+
+type PathStat = Stats
+
+type BindLock = {
+  readonly path: string
+  readonly handle: Awaited<ReturnType<typeof open>>
+  readonly identity: BoundPathIdentity
+}
+
+const bindLockIdentity = (stat: PathStat) =>
+  ({
+    dev: stat.dev,
+    ino: stat.ino,
+    uid: stat.uid,
+  }) satisfies BoundPathIdentity
+
+const sameBindLockIdentity = (stat: PathStat, identity: BoundPathIdentity) =>
+  stat.isFile() &&
+  stat.dev === identity.dev &&
+  stat.ino === identity.ino &&
+  stat.uid === identity.uid
+
+const unlinkExactBindLock = async (
+  path: string,
+  identity: BoundPathIdentity,
+) => {
+  let stat: PathStat
+  try {
+    stat = await lstat(path)
+  } catch (cause: unknown) {
+    if (
+      typeof cause === "object" &&
+      cause !== null &&
+      "code" in cause &&
+      cause.code === "ENOENT"
+    )
+      return
+    throw cause
+  }
+  if (!sameBindLockIdentity(stat, identity))
+    throw new Error("bind reservation changed before cleanup")
+  await unlink(path)
+}
+
+const validBindLock = (stat: PathStat, uid: number) =>
+  stat.isFile() && stat.uid === uid && (stat.mode & 0o777) === 0o600
+
+const reclaimDeadBindLock = async (path: string) => {
+  const uid = process.getuid?.()
+  const stat = await lstat(path)
+  if (typeof uid !== "number" || !validBindLock(stat, uid))
+    throw new Error("bind reservation is not an owner-only regular file")
+  if (stat.size > 256) throw new Error("bind reservation is too large")
+  let payload: unknown
+  try {
+    payload = JSON.parse(await readFile(path, "utf8"))
+  } catch {
+    throw new Error("bind reservation is malformed")
+  }
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    !(
+      "version" in payload &&
+      "uid" in payload &&
+      "pid" in payload &&
+      payload.version === 1 &&
+      payload.uid === uid &&
+      typeof payload.pid === "number" &&
+      Number.isSafeInteger(payload.pid) &&
+      payload.pid > 0
+    )
+  )
+    throw new Error("bind reservation is malformed")
+  try {
+    process.kill(payload.pid, 0)
+    return false
+  } catch (cause: unknown) {
+    if (
+      typeof cause !== "object" ||
+      cause === null ||
+      !("code" in cause) ||
+      cause.code !== "ESRCH"
+    )
+      return false
+  }
+  await unlinkExactBindLock(path, bindLockIdentity(stat))
+  return true
+}
+
+// Bun's Node-compatible Unix listener can accept simultaneous `listen` calls
+// for one missing pathname. `link` publishes a fully written reservation, so
+// a crash before publication leaves only an inert private temporary file.
+const acquireBindLock = (socketPath: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const path = `${socketPath}.bind-lock`
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const temporaryPath = `${path}.${randomUUID()}.tmp`
+        const handle = await open(temporaryPath, "wx", 0o600)
+        const stat = await handle.stat()
+        const identity = bindLockIdentity(stat)
+        let published = false
+        try {
+          const uid = process.getuid?.()
+          if (typeof uid !== "number" || !validBindLock(stat, uid))
+            throw new Error(
+              "bind reservation is not an owner-only regular file",
+            )
+          await handle.writeFile(
+            JSON.stringify({ version: 1, uid, pid: process.pid }),
+          )
+          await handle.sync()
+          try {
+            await link(temporaryPath, path)
+            published = true
+          } catch (cause: unknown) {
+            if (
+              typeof cause === "object" &&
+              cause !== null &&
+              "code" in cause &&
+              cause.code === "EEXIST" &&
+              (await reclaimDeadBindLock(path))
+            ) {
+              await handle.close().catch(() => {})
+              await unlinkExactBindLock(temporaryPath, identity).catch(() => {})
+              continue
+            }
+            throw cause
+          }
+          await unlinkExactBindLock(temporaryPath, identity)
+          return { path, handle, identity } satisfies BindLock
+        } catch (cause) {
+          await handle.close().catch(() => {})
+          if (published)
+            await unlinkExactBindLock(path, identity).catch(() => {})
+          await unlinkExactBindLock(temporaryPath, identity).catch(() => {})
+          throw cause
+        }
+      }
+      throw new Error(
+        "bind reservation remained contested after stale recovery",
+      )
+    },
+    catch: (cause) => socketError("listen", cause),
+  })
+
+const releaseBindLock = (lock: BindLock | undefined) =>
+  Effect.tryPromise({
+    try: async () => {
+      if (!lock) return
+      await lock.handle.close()
+      await unlinkExactBindLock(lock.path, lock.identity)
+    },
+    catch: (cause) => socketError("unlink", cause),
+  })
 
 const captureBoundPath = (
   socketPath: string,
@@ -524,13 +690,22 @@ const connection = (
   })
 
 /** Scoped Unix listener. Accepted sockets enter a server-owned FiberSet. */
-const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
+const makeLayer = (
+  hooks: ServerLifecycleHooks = {},
+  selectedProvider = providerLayer,
+) =>
   Layer.effect(
     MusicSessionServerService,
     Effect.gen(function* () {
-      const config = (yield* MusicSessionConfig).options
-      const coordinator = yield* MusicSessionCoordinator
-      invokeHook(hooks.onCoordinator)
+      const configService = yield* MusicSessionConfig
+      const config = configService.options
+      // These remain unassigned until the listener has bound and hardened.
+      // Provider and coordinator ownership are deliberately built below that
+      // acquisition point, in distinct child scopes.
+      let coordinator: Coordinator
+      let closeCoordinator: Effect.Effect<void> = Effect.void
+      let closeProvider: Effect.Effect<void> = Effect.void
+      let active = false
       const connections = yield* FiberSet.make<void, never>()
       const runConnection = yield* FiberSet.runtime(connections)()
       // Keep a bounded synchronous diagnostic metric: every locally-contained
@@ -554,6 +729,12 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
         invokeHook(() => hooks.onNodeConnection?.(socket))
         if (closing) {
           invokeHook(() => hooks.onRefused?.(socket))
+          socket.destroy()
+          return
+        }
+        // Binding precedes coordinator construction. Refuse the tiny interval
+        // before the real application handler becomes active.
+        if (!active) {
           socket.destroy()
           return
         }
@@ -620,12 +801,14 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
       )
       let boundPath: BoundPathIdentity | undefined
       let partialBoundPath: BoundPathIdentity | undefined
+      let bindLock: BindLock | undefined
       const cleanupPartial = Effect.gen(function* () {
         yield* Effect.sync(() => server.off("error", onServerError))
         yield* closeServer(server, hooks).pipe(Effect.ignore)
         yield* unlinkOwnedPath(config.socketPath, partialBoundPath, hooks).pipe(
           Effect.ignore,
         )
+        yield* releaseBindLock(bindLock).pipe(Effect.ignore)
       })
       yield* Effect.acquireRelease(
         Effect.gen(function* () {
@@ -634,15 +817,23 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
             yield* prepareManagedRuntimeDirectory(config.runtime).pipe(
               Effect.mapError((cause) => socketError("prepare", cause)),
             )
+          bindLock = yield* acquireBindLock(config.socketPath)
           yield* listen(server, config.socketPath)
           boundPath = yield* captureBoundPath(config.socketPath, (identity) => {
             partialBoundPath = identity
             hooks.onPartialBound?.(identity)
           })
+          // The fully hardened socket is now singleton authority. Releasing
+          // the acquisition reservation lets later contenders observe the
+          // bound path rather than making the sidecar long-lived authority.
+          yield* releaseBindLock(bindLock)
+          bindLock = undefined
         }).pipe(Effect.onError(() => cleanupPartial)),
 
         () =>
           Effect.gen(function* () {
+            // Stop application acceptance before any asynchronous teardown.
+            active = false
             closing = true
             yield* Effect.sync(() => {
               invokeHook(hooks.onClosing)
@@ -651,10 +842,17 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
             // A focused test can hold this finalizer while the real listener
             // remains live, then connect through Node's production callback.
             yield* hooks.awaitClosing ?? Effect.void
-            yield* Queue.shutdown(serverFaults)
-            // Interrupt and await connection scopes before listener teardown.
+            // Coordinator-owned work may be blocking a connection command.
+            // Close it before joining that connection, breaking the cycle.
+            yield* closeCoordinator.pipe(Effect.ignore)
+            invokeHook(hooks.onCoordinatorScopeFinalized)
             yield* FiberSet.clear(connections)
             yield* FiberSet.awaitEmpty(connections)
+            // The provider remains alive while its coordinator and all of its
+            // borrowing connection children unwind.
+            yield* closeProvider.pipe(Effect.ignore)
+            invokeHook(hooks.onProviderScopeFinalized)
+            yield* Queue.shutdown(serverFaults)
             yield* Effect.sync(() => server.off("error", onServerError))
             const capture = <A>(
               effect: Effect.Effect<A, MusicSessionSocketError>,
@@ -668,6 +866,7 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
             const unlinked = yield* capture(
               unlinkOwnedPath(config.socketPath, boundPath, hooks),
             )
+            const lockReleased = yield* capture(releaseBindLock(bindLock))
             // Finalizers cannot fail typed in Effect v4. Retain every tagged
             // cleanup outcome for outer boundaries after all cleanup completes.
             if (closed) {
@@ -678,12 +877,67 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
               cleanupFailures.push(unlinked)
               invokeHook(() => hooks.onCleanupFailure?.(unlinked))
             }
+            if (lockReleased) {
+              cleanupFailures.push(lockReleased)
+              invokeHook(() => hooks.onCleanupFailure?.(lockReleased))
+            }
             serverFailure ??= cleanupFailures[0]
             if (cleanupFailures.length > 1)
               yield* Effect.logWarning(cleanupFailures[1])
             yield* Deferred.succeed(cleanupComplete, cleanupFailures)
           }),
       )
+      // Building these scoped graphs here, rather than declaring them as Layer
+      // dependencies, gates their ownership on successful bind. The provider
+      // is built once and explicitly loaned to the coordinator child scope.
+      const providerScope = yield* Scope.make()
+      closeProvider = Scope.close(providerScope, Exit.void)
+      const providerServices = yield* Scope.provide(providerScope)(
+        Layer.build(selectedProvider),
+      )
+      const provider = Context.get(providerServices, SessionProvider)
+      const coordinatorScope = yield* Scope.make()
+      closeCoordinator = Scope.close(coordinatorScope, Exit.void)
+      // Start the selected event source in the coordinator scope before
+      // activation. `startImmediately` runs the first pull through source
+      // acquisition (and thus the provider subscription) before this effect
+      // can return. The coordinator consumes that exact first pull, so this
+      // readiness boundary neither loses an event nor creates a second source.
+      const eventsPull = yield* Scope.provide(coordinatorScope)(
+        Stream.toPull(provider.events),
+      )
+      const firstEventPull = yield* Effect.forkIn(coordinatorScope, {
+        startImmediately: true,
+      })(eventsPull)
+      yield* Effect.yieldNow
+      let firstEventPullPending = true
+      const coordinatorEvents = Stream.fromPull(
+        Effect.sync(() => {
+          if (firstEventPullPending) {
+            firstEventPullPending = false
+            return Fiber.join(firstEventPull)
+          }
+          return eventsPull
+        }),
+      )
+      const coordinatorProvider = SessionProvider.of({
+        ...provider,
+        events: coordinatorEvents,
+      })
+      const coordinatorServices = yield* Scope.provide(coordinatorScope)(
+        Layer.build(
+          Layer.provide(
+            coordinatorLayer,
+            Layer.merge(
+              Layer.succeed(SessionProvider, coordinatorProvider),
+              Layer.succeed(MusicSessionConfig, configService),
+            ),
+          ),
+        ),
+      )
+      coordinator = Context.get(coordinatorServices, MusicSessionCoordinator)
+      active = true
+      invokeHook(hooks.onCoordinator)
       return MusicSessionServerService.of({
         coordinator,
         awaitFailure,
@@ -697,7 +951,10 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
 
 /** Production server layer; focused tests may use `layerWithHooks` directly. */
 export const layer = makeLayer()
-export const layerWithHooks = (hooks: ServerLifecycleHooks) => makeLayer(hooks)
+export const layerWithHooks = (
+  hooks: ServerLifecycleHooks,
+  selectedProvider = providerLayer,
+) => makeLayer(hooks, selectedProvider)
 
 /** Compatibility adapter: one scoped graph, with Promise calls only at its edge. */
 export async function startMusicSessionServer(
@@ -707,15 +964,10 @@ export async function startMusicSessionServer(
 ): Promise<MusicSessionServer> {
   const { layer: configLayer } = await import("./config.ts")
   const selectedProvider = provider ? layerFromLegacy(provider) : providerLayer
-  const coordinatorWithProvider = Layer.provide(
-    coordinatorLayer,
-    selectedProvider,
+  const graph = Layer.provide(
+    layerWithHooks(hooks, selectedProvider),
+    configLayer(options),
   )
-  const serverWithCoordinator = Layer.provide(
-    layerWithHooks(hooks),
-    coordinatorWithProvider,
-  )
-  const graph = Layer.provide(serverWithCoordinator, configLayer(options))
   const stop = Deferred.makeUnsafe<void>()
   let resolveReady: (server: MusicSessionServer) => void = () => {}
   let rejectReady: (cause: unknown) => void = () => {}

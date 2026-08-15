@@ -1,7 +1,8 @@
 import { Config, Context, Effect, Layer, Schema } from "effect"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
-import { lstat, mkdir, readFile, unlink } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { lstat, mkdir, open, readFile, unlink } from "node:fs/promises"
 import type { Stats } from "node:fs"
 
 const manifest = createRequire(import.meta.url)("../package.json") as {
@@ -45,6 +46,7 @@ export type RuntimeDependencies = {
   readonly unlink?: typeof unlink
   /** Throws the platform process-check error, exactly like `process.kill(pid, 0)`. */
   readonly processExists?: (pid: number) => void
+  readonly createAttemptToken?: () => string
 }
 
 const runtimeDependencies = new WeakMap<
@@ -85,6 +87,12 @@ export const resolveMusicSessionRuntimePaths = (
   return paths
 }
 
+export type MusicSessionStartupOptions = {
+  attempts?: number
+  initialDelayMs?: number
+  maxDelayMs?: number
+}
+
 export type MusicSessionOptions = {
   socketPath?: string
   /** Narrow test seam; production callers use the resolver's /tmp default. */
@@ -93,6 +101,7 @@ export type MusicSessionOptions = {
   commandQueueCapacity?: number
   reconciliationMs?: { transport: number; navigation: number }
   pollMs?: { playing: number; paused: number; idle: number }
+  startup?: MusicSessionStartupOptions
 }
 
 export const defaults = {
@@ -100,6 +109,7 @@ export const defaults = {
   commandQueueCapacity: 128,
   reconciliationMs: { transport: 120, navigation: 150 },
   pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
+  startup: { attempts: 8, initialDelayMs: 25, maxDelayMs: 1_000 },
 } as const
 
 export type ResolvedMusicSessionOptions = {
@@ -117,6 +127,7 @@ export type ResolvedMusicSessionOptions = {
     readonly paused: number
     readonly idle: number
   }
+  readonly startup: Required<MusicSessionStartupOptions>
 }
 
 export class MusicSessionConfigError extends Schema.TaggedErrorClass<MusicSessionConfigError>()(
@@ -137,6 +148,32 @@ const positiveSafeInteger = (
           message: "must be a positive safe integer",
         }),
       )
+
+export const resolveMusicSessionStartup = Effect.fn(
+  "MusicSession.Config.resolveStartup",
+)(function* (options: MusicSessionStartupOptions = {}) {
+  const attempts = yield* positiveSafeInteger(
+    "startup.attempts",
+    options.attempts ?? defaults.startup.attempts,
+  )
+  const initialDelayMs = yield* positiveSafeInteger(
+    "startup.initialDelayMs",
+    options.initialDelayMs ?? defaults.startup.initialDelayMs,
+  )
+  const maxDelayMs = yield* positiveSafeInteger(
+    "startup.maxDelayMs",
+    options.maxDelayMs ?? defaults.startup.maxDelayMs,
+  )
+  if (maxDelayMs < initialDelayMs)
+    return yield* Effect.fail(
+      new MusicSessionConfigError({
+        setting: "startup.maxDelayMs",
+        operation: "resolve",
+        message: "must be greater than or equal to startup.initialDelayMs",
+      }),
+    )
+  return { attempts, initialDelayMs, maxDelayMs }
+})
 
 const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
   options: MusicSessionOptions,
@@ -202,6 +239,7 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     "pollMs.idle",
     options.pollMs?.idle ?? defaults.pollMs.idle,
   )
+  const startup = yield* resolveMusicSessionStartup(options.startup)
   return {
     socketPath,
     runtime,
@@ -209,6 +247,7 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     commandQueueCapacity,
     reconciliationMs: { transport, navigation },
     pollMs: { playing, paused, idle },
+    startup,
   } satisfies ResolvedMusicSessionOptions
 })
 
@@ -284,6 +323,27 @@ export const layerFromConfig = Layer.effect(
         "pollMs.idle",
         optionalNumber("MUSIC_SESSION_POLL_IDLE_MS", defaults.pollMs.idle),
       ),
+      startupAttempts: number(
+        "startup.attempts",
+        optionalNumber(
+          "MUSIC_SESSION_STARTUP_ATTEMPTS",
+          defaults.startup.attempts,
+        ),
+      ),
+      startupInitialDelayMs: number(
+        "startup.initialDelayMs",
+        optionalNumber(
+          "MUSIC_SESSION_STARTUP_INITIAL_DELAY_MS",
+          defaults.startup.initialDelayMs,
+        ),
+      ),
+      startupMaxDelayMs: number(
+        "startup.maxDelayMs",
+        optionalNumber(
+          "MUSIC_SESSION_STARTUP_MAX_DELAY_MS",
+          defaults.startup.maxDelayMs,
+        ),
+      ),
     })
     const resolved = yield* resolve({
       ...(options.socketPath ? { socketPath: options.socketPath } : {}),
@@ -297,6 +357,11 @@ export const layerFromConfig = Layer.effect(
         playing: options.playing,
         paused: options.paused,
         idle: options.idle,
+      },
+      startup: {
+        attempts: options.startupAttempts,
+        initialDelayMs: options.startupInitialDelayMs,
+        maxDelayMs: options.startupMaxDelayMs,
       },
     })
     return MusicSessionConfig.of({ options: resolved })
@@ -408,8 +473,14 @@ const MarkerSchema = Schema.Struct({
 })
 
 /** lstat-only inspection of managed children; malformed/unsafe artifacts fail closed. */
+type LeaseAuthority = {
+  readonly attemptToken: string
+  readonly marker: ArtifactProof
+}
+
 const inspectManagedRuntime = async (
   paths: MusicSessionRuntimePaths,
+  ownedMarker?: LeaseAuthority,
 ): Promise<ManagedRuntimeInspection> => {
   await Effect.runPromise(prepareManagedRuntimeDirectory(paths))
   const socketStat = await missing(paths, paths.socketPath)
@@ -463,6 +534,20 @@ const inspectManagedRuntime = async (
         paths.markerPath,
         "startup marker UID does not match runtime owner",
       )
+    if (
+      marker.attemptToken === ownedMarker?.attemptToken &&
+      markerStat.dev === ownedMarker.marker.dev &&
+      markerStat.ino === ownedMarker.marker.ino &&
+      markerStat.uid === ownedMarker.marker.uid &&
+      markerStat.mode === ownedMarker.marker.mode
+    )
+      return {
+        socket: socketStat
+          ? { ...identity(paths.socketPath, socketStat), kind: "socket" }
+          : undefined,
+        marker: undefined,
+        deadMarker: false,
+      }
     try {
       ;(runtimeIo(paths).processExists ?? ((pid) => process.kill(pid, 0)))(
         marker.pid,
@@ -563,7 +648,12 @@ const inspectEndpoint = async (paths: MusicSessionRuntimePaths) => {
 }
 
 export type ManagedRuntimeProbeResult<T> =
-  | { readonly type: "healthy"; readonly value: T }
+  | {
+      readonly type: "healthy"
+      readonly value: T
+      /** Present only for a separately proven dead marker. */
+      readonly cleanup?: () => Promise<void>
+    }
   | { readonly type: "incompatible"; readonly value: T }
   | { readonly type: "missing" }
   | { readonly type: "starting" }
@@ -575,23 +665,51 @@ export type ManagedRuntimeProbeResult<T> =
  * retain the lstat proof; client code can only ask it to revalidate after the
  * transport result it observed itself.
  */
+const leaseAuthorities = new WeakMap<object, LeaseAuthority>()
+
 export class ManagedRuntimeProbe {
   readonly socketPath: string | undefined
   #paths: MusicSessionRuntimePaths
   #socket: ArtifactProof | undefined
+  #ownedAuthority: LeaseAuthority | undefined
   private constructor(
     paths: MusicSessionRuntimePaths,
     socket: ArtifactProof | undefined,
+    ownedAuthority?: LeaseAuthority,
   ) {
     this.#paths = paths
     this.#socket = socket
+    this.#ownedAuthority = ownedAuthority
     this.socketPath = socket?.path
   }
-  static async inspect(paths: MusicSessionRuntimePaths) {
-    return new ManagedRuntimeProbe(paths, await inspectEndpoint(paths))
+  static async inspect(
+    paths: MusicSessionRuntimePaths,
+    lease?: StartupMarkerLease,
+  ) {
+    return new ManagedRuntimeProbe(
+      paths,
+      await inspectEndpoint(paths),
+      lease && lease.paths === paths ? leaseAuthorities.get(lease) : undefined,
+    )
   }
-  healthy<T>(value: T): ManagedRuntimeProbeResult<T> {
-    return { type: "healthy", value }
+  async healthy<T>(value: T): Promise<ManagedRuntimeProbeResult<T>> {
+    // A completed hello already proved the socket endpoint. An unrelated bad
+    // marker must not relabel that healthy generation as unusable.
+    let inspected: ManagedRuntimeInspection
+    try {
+      inspected = await inspectManagedRuntime(this.#paths)
+    } catch (cause) {
+      if (cause instanceof MusicSessionRuntimeError)
+        return { type: "healthy", value }
+      throw cause
+    }
+    return inspected.marker && inspected.deadMarker
+      ? {
+          type: "healthy",
+          value,
+          cleanup: staleCleanup(this.#paths, [inspected.marker]),
+        }
+      : { type: "healthy", value }
   }
   incompatible<T>(value: T): ManagedRuntimeProbeResult<T> {
     return { type: "incompatible", value }
@@ -608,7 +726,10 @@ export class ManagedRuntimeProbe {
   async #markerResult(
     socket: ArtifactProof | undefined,
   ): Promise<ManagedRuntimeProbeResult<never>> {
-    const inspected = await inspectManagedRuntime(this.#paths)
+    const inspected = await inspectManagedRuntime(
+      this.#paths,
+      this.#ownedAuthority,
+    )
     if (
       socket &&
       inspected.socket &&
@@ -633,6 +754,166 @@ export class ManagedRuntimeProbe {
 
 /** Starts one opaque filesystem inspection; client.ts owns connection/hello. */
 export const inspectManagedRuntimeForDiscovery = ManagedRuntimeProbe.inspect
+
+export type StartupMarkerLease = {
+  readonly paths: MusicSessionRuntimePaths
+  readonly attemptToken: string
+  release(): Promise<void>
+}
+export type StartupMarkerLeaseResult =
+  | { readonly type: "acquired"; readonly lease: StartupMarkerLease }
+  | { readonly type: "contended" }
+
+/**
+ * Exclusive, same-user coordination marker. The lease retains the lstat proof;
+ * callers can release only this exact marker and cannot request path cleanup.
+ */
+export const acquireStartupMarkerLease = async (
+  paths: MusicSessionRuntimePaths,
+): Promise<StartupMarkerLeaseResult> => {
+  await Effect.runPromise(prepareManagedRuntimeDirectory(paths))
+  const attemptToken = runtimeIo(paths).createAttemptToken?.() ?? randomUUID()
+  if (!attemptToken || Buffer.byteLength(attemptToken, "utf8") > 256)
+    throw runtimeError(
+      "acquire",
+      paths.markerPath,
+      "invalid startup attempt token",
+    )
+  let handle: Awaited<ReturnType<typeof open>>
+  try {
+    handle = await open(paths.markerPath, "wx", 0o600)
+  } catch (cause: unknown) {
+    if (
+      typeof cause === "object" &&
+      cause !== null &&
+      "code" in cause &&
+      cause.code === "EEXIST"
+    )
+      return { type: "contended" }
+    throw runtimeError("acquire", paths.markerPath, cause)
+  }
+  let openedMarker: ArtifactProof | undefined
+  try {
+    const stat = await handle.stat()
+    if (
+      !stat.isFile() ||
+      !sameOwner(stat, paths.uid) ||
+      !hasExactMode(stat, 0o600)
+    )
+      throw new Error(
+        "exclusive startup marker is not an owner-only regular file",
+      )
+    openedMarker = { ...identity(paths.markerPath, stat), kind: "marker" }
+    await handle.writeFile(
+      JSON.stringify({
+        version: 1,
+        uid: paths.uid,
+        pid: process.pid,
+        attemptToken,
+      }),
+      "utf8",
+    )
+    await handle.sync()
+  } catch (cause) {
+    await handle.close().catch(() => {})
+    // The proof came from our file descriptor, never a later path occupant.
+    if (
+      openedMarker &&
+      (await unchanged(paths, openedMarker).catch(() => false))
+    )
+      await (runtimeIo(paths).unlink ?? unlink)(paths.markerPath).catch(
+        () => {},
+      )
+    throw runtimeError("acquire", paths.markerPath, cause)
+  }
+  let stat: Awaited<ReturnType<typeof missing>>
+  try {
+    await handle.close()
+    stat = await missing(paths, paths.markerPath)
+    if (
+      !stat ||
+      !stat.isFile() ||
+      !sameOwner(stat, paths.uid) ||
+      !hasExactMode(stat, 0o600) ||
+      stat.dev !== openedMarker.dev ||
+      stat.ino !== openedMarker.ino ||
+      stat.uid !== openedMarker.uid ||
+      stat.mode !== openedMarker.mode
+    )
+      throw new Error(
+        "exclusive startup marker changed before acquisition completed",
+      )
+  } catch (cause) {
+    if (await unchanged(paths, openedMarker).catch(() => false))
+      await (runtimeIo(paths).unlink ?? unlink)(paths.markerPath).catch(
+        () => {},
+      )
+    throw runtimeError("acquire", paths.markerPath, cause)
+  }
+  const proof: ArtifactProof = {
+    ...identity(paths.markerPath, stat),
+    kind: "marker",
+  }
+  let released = false
+  const lease: StartupMarkerLease = {
+    paths,
+    attemptToken,
+    async release() {
+      if (released) return
+      await Effect.runPromise(prepareManagedRuntimeDirectory(paths))
+      const current = await missing(paths, paths.markerPath)
+      if (!current) {
+        released = true
+        return
+      }
+      if (
+        !current.isFile() ||
+        current.dev !== proof.dev ||
+        current.ino !== proof.ino ||
+        current.uid !== proof.uid ||
+        current.mode !== proof.mode
+      )
+        throw runtimeError(
+          "release",
+          paths.markerPath,
+          "startup marker changed before release",
+        )
+      let marker: Schema.Schema.Type<typeof MarkerSchema>
+      try {
+        marker = Schema.decodeUnknownSync(MarkerSchema)(
+          JSON.parse(
+            await (runtimeIo(paths).readFile ?? readFile)(
+              paths.markerPath,
+              "utf8",
+            ),
+          ),
+        )
+      } catch (cause) {
+        throw runtimeError("release", paths.markerPath, cause)
+      }
+      if (marker.attemptToken !== attemptToken)
+        throw runtimeError(
+          "release",
+          paths.markerPath,
+          "startup marker token changed before release",
+        )
+      try {
+        await (runtimeIo(paths).unlink ?? unlink)(paths.markerPath)
+      } catch (cause: unknown) {
+        if (!(
+          typeof cause === "object" &&
+          cause !== null &&
+          "code" in cause &&
+          cause.code === "ENOENT"
+        ))
+          throw runtimeError("release", paths.markerPath, cause)
+      }
+      released = true
+    },
+  }
+  leaseAuthorities.set(lease, { attemptToken, marker: proof })
+  return { type: "acquired", lease }
+}
 
 /** Compatibility helper for the outer Promise/socket boundary. */
 export const resolveConfig = (options: MusicSessionOptions) =>

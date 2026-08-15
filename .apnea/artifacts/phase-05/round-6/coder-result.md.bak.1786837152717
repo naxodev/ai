@@ -1,0 +1,50 @@
+---
+status: done
+---
+
+## Changed
+
+Refactored server ownership so listener acquisition gates coordinator/provider work:
+
+- `server.ts` now binds, captures identity, and hardens the listener before dynamically building its coordinator/provider graph in a dedicated scope.
+- The pre-activation connection callback refuses sockets until coordinator-backed handling is active, closing the post-bind ownership gap.
+- Listener finalization closes acceptance/connections, closes/unlinks only the owned bound socket path, then releases the coordinator scope.
+- The daemon executable now uses the same server-owned listener-first graph rather than eagerly providing provider/coordinator Layers.
+- Test provider replacement remains available through the server graph seam.
+- Added occupied-socket evidence that the bind loser has zero provider disposal/event ownership while the winning listener remains connectable.
+- Updated hardening-failure expectation: because hardening precedes graph acquisition, its provider is never acquired or finalized.
+
+Files touched:
+
+- `packages/music-core/session/server.ts`
+- `packages/music-core/session/music-sessiond.ts`
+- `packages/music-core/tests/session-server.test.ts`
+
+No commit, push, or `.apnea/state.json` edit was performed.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+70 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+200 pass, 0 fail
+Verified npm package contents (21 files)
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+
+$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ jj diff --summary && git diff --check
+exit 0
+```
+
+The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+
+## Residual risks
+
+- The startup client remains a raw Promise loop rather than the required Effect-scoped bounded state machine with validated timing and release-error preservation.
+- Required 20-way singleton convergence, deterministic scheduling/interruption, spawn-release, and protocol-skew race coverage remain to be implemented.

@@ -1,0 +1,31 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 5 package remains aligned with the approved plan. It stays within singleton startup, listener-first ownership, bounded Effect scheduling, and terminal skew handling.
+
+## Findings
+
+### Critical — Production listener-first shutdown still deadlocks on blocked coordinator work
+
+No safe fix was retained. `packages/music-core/session/server.ts:665-724` still awaits connection children before closing the selected coordinator scope. Connection forwarding can wait for a blocked coordinator worker, while that worker is interrupted only by the later `closeCoordinator`. Moving the existing `Scope.close` call is insufficient, as the coder observed; the ownership topology itself must be redesigned so listener-first acquisition and coordinator/connection cancellation share a non-cyclic lifetime. The blocked-sampling regression must then use that selected post-bind graph instead of its current external coordinator composition.
+
+### High — Required startup and singleton acceptance evidence remains incomplete
+
+The package still lacks evidence for:
+
+- deterministic `TestClock` schedule pacing, final jittered cap, exhaustion, success before exhaustion, and interruption;
+- exact marker release on interruption and complete-workflow spawn failure, with no second spawn;
+- release-failure diagnostics while preserving the primary outcome;
+- at least 20 concurrent `connectOrStart` callers converging on one listener, provider/coordinator owner, and daemon instance;
+- a true two-daemon bind race proving the loser acquires no provider ownership and cannot disturb the winner;
+- terminal incompatibility before acquisition, after acquisition, and while waiting, without cleanup/spawn/replacement and while preserving a supported live peer.
+
+These are explicit Phase 5 acceptance checks.
+
+## Verification
+
+No product change was retained this round. The coder reports 71 focused tests and 201 full music-core tests passing with build, typecheck, format, package, timer scan, summary, and diff checks. The suite remains green by bypassing the selected-graph shutdown cycle and does not satisfy the outstanding acceptance matrix.

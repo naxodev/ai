@@ -1,0 +1,41 @@
+---
+status: done
+---
+
+## Result
+
+No safe product change was retained this round.
+
+I retried the listener-first shutdown fix with listener-first test-provider ownership and concurrent coordinator/connection finalization. The repository-pinned Effect v4 API uses `Effect.all(..., { concurrency: "unbounded" })`, not the removed `zipPar`; the correct parallel form still fails established disposal ordering and leaves the deliberately blocked selected worker unable to complete scope closure. Listener-close-first ordering similarly leaves the Node listener awaiting the active transport while coordinator shutdown awaits that transport.
+
+The attempted changes were reverted, leaving the verified server lifecycle implementation intact. The blocked-sampling fixture remains on its outer coordinator scope; resolving it requires replacing the manually nested coordinator scope with a lifecycle topology whose cancellation scope owns both connection work and coordinator worker interruption.
+
+No commit, push, or `.apnea/state.json` edit was performed.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+70 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+200 pass, 0 fail
+Verified npm package contents (21 files)
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+
+$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ jj diff --summary && git diff --check
+exit 0
+```
+
+The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+
+## Residual risks
+
+- Listener-first selected-graph blocked-sampling shutdown remains unresolved.
+- Startup remains a raw Promise loop rather than the required bounded Effect workflow.
+- Singleton convergence, true bind-race, scheduling, spawn-release, and protocol-skew acceptance evidence remains missing.

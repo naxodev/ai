@@ -2,40 +2,42 @@
 status: done
 ---
 
-## Blocked: phase package does not match this repository or dispatch goal
+Implemented the selected production graph split: provider and coordinator now build once in separate child scopes after listener hardening; shutdown closes coordinator, drains connections, closes provider, then releases listener/path. `layerWithHooks` and the Promise adapter now accept provider layers only. Added selected-topology blocked-command evidence with real Unix client, ordering hooks, interruption, exact-once finalization, indeterminate settlement, and no late write.
 
-No product files were changed.
-
-The dispatched goal and approved plan target the `ai` workspace’s Effect TypeScript music-session migration, whose Phase 1 is limited to the three unresolved server boundaries in:
-
+Files changed for this phase:
 - `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
-However, the required current phase package is a publish/packing package for a different `@naxodev/apnea` repository. Its prescribed manifest, `extension/` paths, and 115/75-file tarball checks do not exist in this workspace; applying it here would replace the `@naxodev/ai` workspace manifest and violate the dispatch scope.
-
-The saved prior phase-package artifact also describes an already-completed provider phase, while the current approved plan identifies the server-boundary phase above. A corrected Phase 1 package is required before implementation can proceed.
-
-## Verification
+Verification:
 
 ```text
-$ pwd
-aI workspace: /Users/nachovazquez/work/1-projects/naxodev/ai
+$ bun test packages/music-core/tests/session-server.test.ts -t 'selected.*blocked|blocked.*selected'
+exit: 0
+(pass) selected graph shutdown interrupts blocked coordinator work before draining connections
+1 pass, 0 fail
 
-$ bun --version
-1.3.7
+$ bun test packages/music-core/tests/session-server.test.ts
+exit: 0
+35 pass, 0 fail
 
-$ git log --oneline -5
-66bc1f9 refactor(music): scope local session server lifecycle
-859fc01 refactor(music): serialize authoritative session state
-e710366 refactor(music): own provider lifecycle with Effect
-6b39329 refactor(music): adopt authoritative snapshots and transport queues (#44)
-fe45368 fix(apnea): make workflow dispatch failures atomic (#45)
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit: 0
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+203 pass, 0 fail
+
+$ ! rg -n 'Effect\.runSync|setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit: 0
+
+$ jj diff --summary
+exit: 0
+Inspected: phase paths remain limited to server, daemon, and server-test alongside pre-existing dirty worktree files.
+
+$ jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
+exit: 0
+Inspected: provider-only selection, separate scopes, and coordinator -> connections -> provider -> listener order are present.
+
+$ git diff --check
+exit: 0
 ```
 
-No package verification commands were run because the supplied package cannot be safely applied to this repository.
-
-## Residual risks
-
-- Phase 1 remains unimplemented pending a corrected, approved server-boundary phase package.
-- The pre-existing dirty `.apnea` worktree state, including `.apnea/state.json`, was not modified.
+Residual risks: none identified for the Phase 1 selected shutdown topology. Existing unrelated dirty worktree changes (including `.apnea/state.json`) were not modified.

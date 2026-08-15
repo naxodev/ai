@@ -1,0 +1,45 @@
+---
+status: done
+---
+
+## Changed
+
+Routed executable and direct-layer fixtures through the listener-first coordinator graph seam:
+
+- Updated executable graph injections, unsafe-runtime coverage, cleanup-failure subprocess coverage, direct Layer ownership, blocked-command, and FIFO-admission fixtures to pass their replacement coordinator/provider graph as `layerWithHooks`'s second argument.
+- These fixtures now exercise the selected coordinator graph only after listener bind, instead of eagerly providing an unrelated graph outside the server seam.
+- Retained the blocked-sampling cancellation fixture's outer coordinator scope: its test specifically verifies interruption of a provider worker by the enclosing test scope and would otherwise deadlock while the server finalizer awaits its admitted connection.
+
+Files touched:
+
+- `packages/music-core/tests/session-server.test.ts`
+
+No commit, push, or `.apnea/state.json` edit was performed.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+70 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+200 pass, 0 fail
+Verified npm package contents (21 files)
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+
+$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ jj diff --summary && git diff --check
+exit 0
+```
+
+The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+
+## Residual risks
+
+- The startup client remains a raw Promise loop rather than the required Effect-scoped bounded workflow with validated timing and release-error preservation.
+- Required 20-way singleton convergence, deterministic schedule/interruption, spawn-release, protocol-skew race coverage, and a true two-daemon bind race remain to be implemented.
+- The specialized blocked-sampling fixture retains its outer coordinator scope; listener-first ownership is covered by the selected-graph fixtures and bind-loser test, but this interruption fixture needs a future ownership-safe cancellation design.

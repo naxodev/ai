@@ -1,0 +1,26 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 5 package remains aligned with the approved plan. It remains confined to singleton auto-start, listener-first ownership, bounded Effect scheduling, and terminal version-skew handling.
+
+## Findings
+
+### Critical — Listener bind still does not gate provider/coordinator ownership
+
+`packages/music-core/session/server.ts:531-637` still resolves `MusicSessionCoordinator` before creating and binding the listener, and `music-sessiond.ts:74-80` still composes that coordinator-first graph. A bind-racing loser can acquire provider/coordinator work before discovering the socket conflict. Implement the shared listener-first topology and prove the loser acquires no provider/event/coordinator ownership and cannot alter the winner's endpoint.
+
+### High — Startup remains outside the required Effect-scoped bounded workflow
+
+`packages/music-core/session/client.ts:684-756` still uses a raw async loop and runs a newly constructed one-step schedule only in the final pending branch. It lacks validated initial/capped startup timing, one jittered bounded schedule retrying only typed pending state, Effect `Ref` state, scoped lease finalization, a schema-tagged startup error, and preservation of the primary error when release also fails. Contention and state transitions can consume attempts without pacing. Implement the package's Effect-native state machine and deterministic timeout/interruption/finalizer behavior.
+
+### High — Concurrent singleton, bind-race, schedule, and skew acceptance evidence is still missing
+
+The launcher seam and its exact spawn/listener/unref tests now satisfy the prior launcher-specific finding. The suite still does not prove at least 20 concurrent `connectOrStart` callers converging on one listener/provider, a two-daemon bind loser acquiring zero provider work, schedule pacing/capping/exhaustion/interruption, spawn failure releasing the workflow's marker without retry, or terminal incompatibility before/after marker acquisition and while waiting. The coder result explicitly leaves these checks outstanding.
+
+## Verification
+
+The coder reports 70 focused tests and 200 full music-core tests passing, including build, typecheck, format, package, timer scan, summary, and diff checks. Product changes remain within allowed Phase 5 paths, but the unimplemented ownership/scheduling work and missing acceptance evidence prevent approval.

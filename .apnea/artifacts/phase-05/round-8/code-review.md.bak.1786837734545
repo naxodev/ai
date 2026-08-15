@@ -1,0 +1,26 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 5 package remains aligned with the approved plan. It stays within singleton startup, listener-first ownership, bounded Effect scheduling, and terminal skew handling.
+
+## Findings
+
+### Critical — The listener-first nested scope can deadlock server finalization
+
+The failed round-8 attempt exposes a product lifecycle defect, not merely a fixture limitation. In `packages/music-core/session/server.ts:665-724`, the server finalizer clears and awaits connection children before closing the manually nested coordinator scope. When coordinator sampling is blocked, a connection's forwarding shutdown can wait on that coordinator worker, while the worker is not interrupted until `closeCoordinator` runs afterward. Routing the existing blocked-sampling regression through the real post-bind graph therefore deadlocks. The current fixture at `packages/music-core/tests/session-server.test.ts:1586-1618` avoids the deadlock only by eagerly owning the coordinator outside the listener-first seam, so it does not validate production ownership. Restructure listener/coordinator scopes to retain listener-first acquisition without this shutdown dependency cycle, and run the blocked-sampling regression through that real topology.
+
+### High — Startup remains outside the required Effect-scoped bounded workflow
+
+`packages/music-core/session/client.ts:685-764` is still a raw async loop with a newly run one-step schedule only in its final pending branch. It lacks validated initial/capped timing, one bounded jittered schedule retrying only typed pending state, Effect `Ref` state, scoped marker finalization, a schema-tagged startup error, and preservation of a primary error when release also fails. Implement the package's Effect-native state machine and deterministic timeout/interruption/finalizer behavior.
+
+### High — Required singleton, bind-race, schedule, spawn-release, and skew evidence remains missing
+
+There is still no 20-way `connectOrStart` convergence proof, true two-daemon bind race, deterministic schedule pacing/capping/exhaustion/interruption coverage, complete-workflow spawn failure with exact marker release/no retry, or terminal incompatibility evidence before/after acquisition and while waiting. These are explicit Phase 5 acceptance checks and remain acknowledged by the coder result.
+
+## Verification
+
+No product change was retained this round. The coder reports the existing 70 focused and 200 full music-core tests passing with build, typecheck, format, package, timer scan, summary, and diff checks. Those green tests rely on the ownership-bypassing blocked-sampling fixture and do not resolve the deadlock or remaining acceptance gaps.

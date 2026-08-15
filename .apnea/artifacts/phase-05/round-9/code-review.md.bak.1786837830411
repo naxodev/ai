@@ -1,0 +1,26 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 5 package remains aligned with the approved plan. It stays within singleton startup, listener-first server ownership, bounded Effect scheduling, and terminal skew handling.
+
+## Findings
+
+### Critical — Production listener-first shutdown remains deadlock-prone
+
+No fix was retained for the lifecycle cycle identified in round 8. In `packages/music-core/session/server.ts:665-724`, finalization clears and awaits connection children before closing the selected coordinator scope. A connection forwarding from a blocked coordinator worker can wait for that worker during shutdown, but the worker is interrupted only by the later `closeCoordinator`, so the production selected-graph topology deadlocks. The blocked-sampling fixture at `packages/music-core/tests/session-server.test.ts:1586-1618` remains green only because it acquires the coordinator outside the listener-first seam. Redesign the listener/coordinator scopes so post-bind ownership is retained while blocked coordinator work is interrupted without a cyclic finalization dependency, then run this regression through the actual selected graph.
+
+### High — Startup remains outside the required Effect-scoped bounded workflow
+
+`packages/music-core/session/client.ts:685-764` is still a raw async loop with a newly run one-step schedule only in its final pending branch. It lacks validated initial/capped timing, one bounded jittered schedule retrying only typed pending state, Effect `Ref` state, scoped marker finalization, a schema-tagged startup error, and preservation of a primary error when release also fails. This client workflow can be completed independently of the server-scope redesign and remains required by the package.
+
+### High — Required singleton, bind-race, schedule, spawn-release, and skew evidence remains missing
+
+The suite still lacks 20-way `connectOrStart` convergence, a true two-daemon bind race, deterministic schedule pacing/capping/exhaustion/interruption, complete-workflow spawn failure with exact marker release/no retry, and incompatibility before/after acquisition and while waiting. These are explicit acceptance checks and remain acknowledged by the coder result.
+
+## Verification
+
+No product change was retained this round. The coder reports the existing 70 focused and 200 full music-core tests passing with build, typecheck, format, package, timer scan, summary, and diff checks. The green suite continues to bypass the selected-graph deadlock and does not satisfy the remaining Phase 5 checks.

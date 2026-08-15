@@ -1,0 +1,31 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 5 package remains aligned with the approved plan. It stays within singleton startup, listener-first ownership, bounded Effect scheduling, and terminal skew handling.
+
+## Findings
+
+### Critical — Production listener-first shutdown still deadlocks on blocked coordinator work
+
+`packages/music-core/session/server.ts:665-724` still awaits connection children before closing the selected coordinator scope. Connection forwarding can wait for a blocked coordinator worker, while that worker is interrupted only by the later `closeCoordinator`. The blocked-sampling fixture still owns its coordinator outside the selected post-bind graph, so the suite bypasses this production cancellation cycle. Redesign the listener/coordinator scopes and run the blocked-work regression through the real selected graph.
+
+### High — Required startup and singleton acceptance evidence remains missing
+
+The startup policy is now centralized at the tagged config boundary and the post-jitter cap addresses the prior timing findings. However, no focused tests were added. The suite still lacks:
+
+- deterministic `TestClock` pacing, cap, exhaustion, success-before-exhaustion, and interruption coverage;
+- release-diagnostic retention with the primary outcome preserved;
+- marker release and no second spawn after complete-workflow spawn failure;
+- at least 20 concurrent `connectOrStart` callers converging on one listener/provider/daemon instance;
+- a true two-daemon bind race proving the loser acquires no provider ownership and cannot disturb the winner;
+- terminal incompatibility before acquisition, after acquisition, and while waiting, with no cleanup/spawn/replacement and an existing supported client remaining live.
+
+These are explicit Phase 5 acceptance checks, not optional follow-up coverage.
+
+## Verification
+
+The coder reports 70 focused and 200 full music-core tests passing with build, typecheck, format, package, timer scan, summary, and diff checks. The cumulative product diff remains confined to allowed Phase 5 paths, but the selected-graph shutdown defect and missing acceptance evidence prevent approval.

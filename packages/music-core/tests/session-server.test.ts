@@ -20,11 +20,11 @@ import {
   prepareManagedRuntimeDirectory,
   resolveMusicSessionRuntimePaths,
 } from "../session/config.ts"
-import { layer as coordinatorLayer } from "../session/coordinator.ts"
 import {
   createFakeProvider,
   layerFromLegacy,
   makeCoordinatorProviderFixture,
+  type CoordinatorProviderFixture,
 } from "../session/provider.ts"
 import {
   layerWithHooks,
@@ -195,7 +195,8 @@ test("post-bind hardening failure closes and removes only the partial managed so
     expect(existsSync(runtime.socketPath)).toBe(false)
     expect(existsSync(runtime.directory)).toBe(true)
     expect(existsSync(neighbor)).toBe(true)
-    expect(provider.counts.providerDisposals).toBe(1)
+    // Listener hardening failed before provider ownership could be acquired.
+    expect(provider.counts.providerDisposals).toBe(0)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -1006,18 +1007,20 @@ test("an occupied path reports listen failure without disrupting its owner", asy
   const path = socketPath("occupied")
   let owner: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
   let peer: net.Socket | undefined
+  const ownerProvider = createFakeProvider()
+  const losingProvider = createFakeProvider()
   try {
-    owner = await startMusicSessionServer(
-      { socketPath: path },
-      createFakeProvider(),
-    )
+    owner = await startMusicSessionServer({ socketPath: path }, ownerProvider)
     await expect(
-      startMusicSessionServer({ socketPath: path }, createFakeProvider()),
+      startMusicSessionServer({ socketPath: path }, losingProvider),
     ).rejects.toMatchObject({
       _tag: "MusicSession.SocketError",
       operation: "listen",
     })
     expect(existsSync(path)).toBe(true)
+    // A bind loser never enters provider/coordinator ownership.
+    expect(losingProvider.counts.providerDisposals).toBe(0)
+    expect(losingProvider.counts.disposals).toBe(0)
     peer = await connected(path)
     peer.destroy()
     await owner.close()
@@ -1025,6 +1028,60 @@ test("an occupied path reports listen failure without disrupting its owner", asy
   } finally {
     peer?.destroy()
     await owner?.close().catch(() => {})
+  }
+})
+
+test("a dead exact bind reservation is reclaimed before binding", async () => {
+  const path = socketPath("stale-bind-reservation")
+  const reservation = `${path}.bind-lock`
+  const uid = process.getuid?.()
+  if (typeof uid !== "number") throw new Error("expected a POSIX test runtime")
+  await writeFile(
+    reservation,
+    JSON.stringify({ version: 1, uid, pid: 999_999_999 }),
+    { mode: 0o600 },
+  )
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  try {
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+    )
+    expect(existsSync(path)).toBe(true)
+    expect(existsSync(reservation)).toBe(false)
+  } finally {
+    await server?.close().catch(() => {})
+  }
+  expect(existsSync(reservation)).toBe(false)
+})
+
+test("simultaneous daemon bind contenders retain one provider owner", async () => {
+  const path = socketPath("bind-race")
+  const firstProvider = createFakeProvider()
+  const secondProvider = createFakeProvider()
+  let winner: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  try {
+    const results = await Promise.allSettled([
+      startMusicSessionServer({ socketPath: path }, firstProvider),
+      startMusicSessionServer({ socketPath: path }, secondProvider),
+    ])
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1)
+    expect(
+      results.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1)
+    const firstWon = results[0]?.status === "fulfilled"
+    const result = results[firstWon ? 0 : 1]
+    if (!result || result.status !== "fulfilled")
+      throw new Error("expected one bind winner")
+    winner = result.value
+    const loser = firstWon ? secondProvider : firstProvider
+    expect(loser.counts.disposals).toBe(0)
+    expect(loser.counts.providerDisposals).toBe(0)
+    expect(existsSync(path)).toBe(true)
+  } finally {
+    await winner?.close().catch(() => {})
   }
 })
 
@@ -1398,10 +1455,8 @@ test("executable composes one real graph for managed default and explicit socket
         graph: (options) => {
           graphs++
           return Layer.provide(
-            Layer.provide(
-              layerWithHooks({}),
-              Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
-            ),
+            layerWithHooks({}, layerFromLegacy(provider)),
+
             configLayer(options),
           )
         },
@@ -1443,13 +1498,8 @@ test("executable reports actual unsafe managed-runtime preparation with nonzero 
       setStatus: (status) => statuses.push(status),
       graph: (options) =>
         Layer.provide(
-          Layer.provide(
-            layerWithHooks({}),
-            Layer.provide(
-              coordinatorLayer,
-              layerFromLegacy(createFakeProvider()),
-            ),
-          ),
+          layerWithHooks({}, layerFromLegacy(createFakeProvider())),
+
           configLayer(options),
         ),
     })
@@ -1472,8 +1522,6 @@ test("executable reports cleanup failure with nonzero status after SIGTERM", asy
     directory = await mkdtemp("/tmp/music-sessiond-executable-")
     const runner = new URL("../session/music-sessiond.ts", import.meta.url).href
     const config = new URL("../session/config.ts", import.meta.url).href
-    const coordinator = new URL("../session/coordinator.ts", import.meta.url)
-      .href
     const provider = new URL("../session/provider.ts", import.meta.url).href
     const server = new URL("../session/server.ts", import.meta.url).href
     const path = `${directory}/daemon.sock`
@@ -1486,19 +1534,16 @@ test("executable reports cleanup failure with nonzero status after SIGTERM", asy
         `import { Layer } from "effect";
          import { runMusicSessionDaemon } from ${JSON.stringify(runner)};
          import { layer as configLayer } from ${JSON.stringify(config)};
-         import { layer as coordinatorLayer } from ${JSON.stringify(coordinator)};
          import { createFakeProvider, layerFromLegacy } from ${JSON.stringify(provider)};
          import { layerWithHooks } from ${JSON.stringify(server)};
          await runMusicSessionDaemon({
            argv: process.argv.slice(1),
            graph: (options) => Layer.provide(
-             Layer.provide(
-               layerWithHooks({
-                 closeFailure: () => new Error("injected executable close failure"),
-                 onUnlink: () => console.error("test unlink completed"),
-               }),
-               Layer.provide(coordinatorLayer, layerFromLegacy(createFakeProvider())),
-             ),
+             layerWithHooks({
+               closeFailure: () => new Error("injected executable close failure"),
+               onUnlink: () => console.error("test unlink completed"),
+             }, layerFromLegacy(createFakeProvider())),
+
              configLayer(options),
            ),
          });`,
@@ -1534,13 +1579,9 @@ test("executable reports cleanup failure with nonzero status after SIGTERM", asy
 test("direct Layer owners join tagged cleanup in one outer program", async () => {
   const path = socketPath("direct-layer-cleanup")
   const provider = createFakeProvider()
-  const coordinatorWithProvider = Layer.provide(
-    coordinatorLayer,
+  const serverWithCoordinator = layerWithHooks(
+    { closeFailure: () => new Error("direct close failure") },
     layerFromLegacy(provider),
-  )
-  const serverWithCoordinator = Layer.provide(
-    layerWithHooks({ closeFailure: () => new Error("direct close failure") }),
-    coordinatorWithProvider,
   )
   const graph = Layer.provide(
     serverWithCoordinator,
@@ -1583,13 +1624,9 @@ test("server close interrupts blocked coordinator sampling and finalizes ownersh
     const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
     const scope = await Effect.runPromise(Scope.make())
     closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
-    const coordinatorWithProvider = Layer.provide(
-      coordinatorLayer,
-      fixture.layer,
-    )
     const graph = Layer.provide(
-      Layer.provide(
-        layerWithHooks({
+      layerWithHooks(
+        {
           onClose: () => {
             counts.closes += 1
           },
@@ -1611,12 +1648,13 @@ test("server close interrupts blocked coordinator sampling and finalizes ownersh
           onConnectionFinalized: () => {
             counts.connection += 1
           },
-        }),
-        coordinatorWithProvider,
+        },
+        fixture.layer,
       ),
       configLayer({ socketPath: path }),
     )
     await Effect.runPromise(Scope.provide(scope)(Layer.build(graph)))
+    await Effect.runPromise(Latch.await(fixture.eventSubscribed))
     socket = await connected(path)
     // Consume the completed initial sample, then block the invalidation sample.
     await Effect.runPromise(Queue.take(fixture.sampleStarts))
@@ -1648,32 +1686,45 @@ test("server close interrupts blocked coordinator sampling and finalizes ownersh
   }
 })
 
-test("server scope interrupts a blocked socket command without a late response", async () => {
+test("selected graph shutdown interrupts blocked coordinator work before draining connections", async () => {
   const path = socketPath("blocked-command")
   let closeScope: (() => Promise<void>) | undefined
   let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let accepted: net.Socket | undefined
   let writes = 0
-  let finalized = 0
+  let settled = 0
+  let inputFinalized = 0
+  let connectionFinalized = 0
+  const order: string[] = []
+  let fixture!: CoordinatorProviderFixture
   try {
-    const fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
+    fixture = await Effect.runPromise(makeCoordinatorProviderFixture())
     await Effect.runPromise(fixture.blockTransport)
     const scope = await Effect.runPromise(Scope.make())
     closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
-    const coordinatorWithProvider = Layer.provide(
-      coordinatorLayer,
-      fixture.layer,
-    )
     const graph = Layer.provide(
-      Layer.provide(
-        layerWithHooks({
+      layerWithHooks(
+        {
+          onClosing: () => order.push("closing"),
+          onCoordinatorScopeFinalized: () => order.push("coordinator"),
+          onAccepted: (socket) => {
+            accepted = socket
+          },
+          onInputProcessorFinalized: () => {
+            inputFinalized += 1
+          },
+          onConnectionFinalized: () => {
+            connectionFinalized += 1
+            order.push("connection")
+          },
+          onProviderScopeFinalized: () => order.push("provider"),
+          onListenerFinalized: () => order.push("listener"),
+          onUnlink: () => order.push("unlink"),
           onWriteAttempt: () => {
             writes += 1
           },
-          onConnectionFinalized: () => {
-            finalized += 1
-          },
-        }),
-        coordinatorWithProvider,
+        },
+        fixture.layer,
       ),
       configLayer({ socketPath: path }),
     )
@@ -1684,22 +1735,44 @@ test("server scope interrupts a blocked socket command without a late response",
       hostKind: "test",
     })
     const pending = client.play()
-    void pending.catch(() => {})
+    void pending.then(
+      () => settled++,
+      () => settled++,
+    )
     await Effect.runPromise(Latch.await(fixture.transportStarted))
-    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await Effect.runPromise(
+      Scope.close(scope, Exit.void).pipe(Effect.timeout("5 seconds")),
+    )
     await expect(pending).rejects.toMatchObject({
       name: "MusicSessionClientError",
       code: "INDETERMINATE_COMMAND",
     })
-    expect(finalized).toBe(1)
+    expect(settled).toBe(1)
     expect(await Effect.runPromise(Ref.get(fixture.activeTransports))).toBe(0)
+    expect(inputFinalized).toBe(1)
+    expect(connectionFinalized).toBe(1)
+    expect(await Effect.runPromise(Ref.get(fixture.subscriptions))).toBe(1)
+    expect(await Effect.runPromise(Ref.get(fixture.eventFinalizations))).toBe(1)
+    expect(await Effect.runPromise(Ref.get(fixture.finalizations))).toBe(1)
+    expect(order).toEqual([
+      "closing",
+      "coordinator",
+      "connection",
+      "provider",
+      "listener",
+      "unlink",
+    ])
+    expect(accepted?.destroyed).toBe(true)
+    expect(existsSync(path)).toBe(false)
     const writesAfterFinalization = writes
     await Effect.runPromise(fixture.releaseTransport)
     await Promise.resolve()
     expect(writes).toBe(writesAfterFinalization)
-    expect(existsSync(path)).toBe(false)
   } finally {
     client?.dispose()
+    await Effect.runPromise(fixture?.releaseTransport ?? Effect.void).catch(
+      () => {},
+    )
     await closeScope?.()
   }
 })
@@ -1720,14 +1793,14 @@ test("two socket admissions retain FIFO order while the first transport blocks",
     closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
     await Effect.runPromise(fixture.blockTransport)
     const graph = Layer.provide(
-      Layer.provide(
-        layerWithHooks({
+      layerWithHooks(
+        {
           onCommandAdmission: (action) => {
             admissions.push(action)
             if (admissions.length === 2) resolveSecondAdmission()
           },
-        }),
-        Layer.provide(coordinatorLayer, fixture.layer),
+        },
+        fixture.layer,
       ),
       configLayer({ socketPath: path }),
     )

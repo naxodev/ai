@@ -1,9 +1,16 @@
 import net from "node:net"
+import { spawn as spawnChild } from "node:child_process"
+import { fileURLToPath } from "node:url"
+import { Duration, Effect, Ref, Schedule, Schema } from "effect"
 import {
   PACKAGE_VERSION,
+  acquireStartupMarkerLease,
   inspectManagedRuntimeForDiscovery,
   resolveMusicSessionRuntimePaths,
+  resolveMusicSessionStartup,
+  type MusicSessionStartupOptions,
   type MusicSessionRuntimePaths,
+  type StartupMarkerLease,
 } from "./config.ts"
 import { NdjsonFramer, encodeFrame } from "./framing.ts"
 import {
@@ -516,9 +523,15 @@ export type MusicSessionDiscoveryOptions = Omit<
 > & {
   /** Test-only alternate secure runtime layout; production omits this. */
   runtime?: MusicSessionRuntimePaths
+  /** Internal opaque lease: discovery may ignore only this exact owned marker. */
+  ownedLease?: StartupMarkerLease
 }
 export type MusicSessionDiscovery =
-  | { readonly type: "healthy"; readonly client: MusicSessionClient }
+  | {
+      readonly type: "healthy"
+      readonly client: MusicSessionClient
+      readonly cleanup?: () => Promise<void>
+    }
   | { readonly type: "incompatible"; readonly error: MusicSessionClientError }
   | { readonly type: "missing" }
   | { readonly type: "starting" }
@@ -533,7 +546,10 @@ export async function discoverMusicSession(
   options: MusicSessionDiscoveryOptions,
 ): Promise<MusicSessionDiscovery> {
   const runtime = options.runtime ?? resolveMusicSessionRuntimePaths()
-  const probe = await inspectManagedRuntimeForDiscovery(runtime)
+  const probe = await inspectManagedRuntimeForDiscovery(
+    runtime,
+    options.ownedLease,
+  )
   const nonEndpoint = async () => {
     const result = probe.socketPath
       ? await probe.refused()
@@ -554,7 +570,12 @@ export async function discoverMusicSession(
       ...options,
       socketPath: probe.socketPath,
     })
-    return { type: "healthy", client }
+    const found = await probe.healthy(client)
+    if (found.type !== "healthy")
+      throw new Error("invalid managed runtime healthy probe")
+    return found.cleanup
+      ? { type: "healthy", client, cleanup: found.cleanup }
+      : { type: "healthy", client }
   } catch (cause) {
     if (
       cause instanceof MusicSessionClientError &&
@@ -573,3 +594,250 @@ export async function discoverMusicSession(
 
 /** Compatibility spelling for callers that name the operation an endpoint probe. */
 export const discoverMusicSessionEndpoint = discoverMusicSession
+
+export class MusicSessionStartupError extends Schema.TaggedErrorClass<MusicSessionStartupError>()(
+  "MusicSession.StartupError",
+  {
+    operation: Schema.Union([
+      Schema.Literal("spawn"),
+      Schema.Literal("timeout"),
+      Schema.Literal("occupied"),
+    ]),
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+type SpawnedDaemon = {
+  once(event: "spawn" | "error", listener: (cause?: Error) => void): unknown
+  off(event: "spawn" | "error", listener: (cause?: Error) => void): unknown
+  unref(): void
+}
+export type MusicSessionDaemonLauncher = (
+  runtime: MusicSessionRuntimePaths,
+) => Promise<void>
+type ManagedSpawnOptions = {
+  readonly detached: true
+  readonly stdio: "ignore"
+  readonly shell: false
+  readonly env: NodeJS.ProcessEnv
+}
+export type MusicSessionDaemonLauncherDependencies = {
+  readonly entry: () => string
+  readonly spawn: (
+    command: string,
+    args: readonly string[],
+    options: ManagedSpawnOptions,
+  ) => SpawnedDaemon
+}
+const productionLauncherDependencies: MusicSessionDaemonLauncherDependencies = {
+  entry: () =>
+    fileURLToPath(new URL("../dist/music-sessiond.js", import.meta.url)),
+  spawn: (command, args, options) => spawnChild(command, args, options),
+}
+
+/** Narrow process boundary; the managed daemon receives no socket override. */
+export const launchManagedMusicSessionDaemon = async (
+  _runtime: MusicSessionRuntimePaths,
+  dependencies: MusicSessionDaemonLauncherDependencies = productionLauncherDependencies,
+): Promise<void> => {
+  let child: SpawnedDaemon
+  try {
+    child = dependencies.spawn(process.execPath, [dependencies.entry()], {
+      detached: true,
+      stdio: "ignore",
+      shell: false,
+      env: { PATH: process.env.PATH ?? "" },
+    })
+  } catch (cause) {
+    throw new MusicSessionStartupError({
+      operation: "spawn",
+      message: "unable to spawn music session daemon",
+      cause,
+    })
+  }
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      child.off("spawn", spawned)
+      child.off("error", failed)
+    }
+    const spawned = () => {
+      cleanup()
+      child.unref()
+      resolve()
+    }
+    const failed = (cause?: Error) => {
+      cleanup()
+      reject(
+        new MusicSessionStartupError({
+          operation: "spawn",
+          message: "unable to spawn music session daemon",
+          cause,
+        }),
+      )
+    }
+    child.once("spawn", spawned)
+    child.once("error", failed)
+  })
+}
+
+export type ConnectOrStartMusicSessionOptions = MusicSessionDiscoveryOptions & {
+  readonly launcher?: MusicSessionDaemonLauncher
+  /** Resolved through the tagged config boundary before scheduling. */
+  readonly startup?: MusicSessionStartupOptions
+}
+
+const startupSchedule = (
+  attempts: number,
+  initialDelayMs: number,
+  maxDelayMs: number,
+) =>
+  Schedule.exponential(Duration.millis(initialDelayMs)).pipe(
+    Schedule.jittered,
+    // Cap the final jittered duration, never merely its pre-jitter input.
+    Schedule.modifyDelay(({ duration }) =>
+      Effect.succeed(Duration.min(duration, Duration.millis(maxDelayMs))),
+    ),
+    Schedule.upTo({ times: attempts }),
+  )
+
+/**
+ * Managed startup coordinator. It never sends commands or owns a reconnecting
+ * client; a returned client belongs solely to its caller.
+ */
+class StartupPending extends Error {
+  readonly _tag = "MusicSession.StartupPending"
+}
+
+/**
+ * Managed startup coordinator. Pending discovery alone is retried; every
+ * terminal endpoint, launch, and protocol error remains visible immediately.
+ */
+export const connectOrStartMusicSessionEffect = (
+  options: ConnectOrStartMusicSessionOptions,
+) => {
+  const runtime = options.runtime ?? resolveMusicSessionRuntimePaths()
+  const launcher = options.launcher ?? launchManagedMusicSessionDaemon
+  // Preserve errors from the secure discovery/lease/launcher boundaries. Only
+  // schedule exhaustion below is translated to the startup timeout operation.
+  const promise = <A>(run: () => Promise<A>) =>
+    Effect.tryPromise({
+      try: run,
+      catch: (cause) =>
+        cause instanceof Error
+          ? cause
+          : new MusicSessionStartupError({
+              operation: "timeout",
+              message: "music session startup operation failed",
+              cause,
+            }),
+    })
+  return Effect.gen(function* () {
+    const { attempts, initialDelayMs, maxDelayMs } =
+      yield* resolveMusicSessionStartup(options.startup)
+    const lease = yield* Ref.make<StartupMarkerLease | undefined>(undefined)
+    const spawned = yield* Ref.make(false)
+    const attempt = Effect.gen(function* () {
+      const ownedLease = yield* Ref.get(lease)
+      const discovery = yield* promise(() =>
+        discoverMusicSession({
+          ...options,
+          runtime,
+          ...(ownedLease ? { ownedLease } : {}),
+        }),
+      )
+      if (discovery.type === "healthy") {
+        if (discovery.cleanup)
+          yield* promise(async () => {
+            try {
+              await discovery.cleanup?.()
+            } catch (cause) {
+              discovery.client.dispose()
+              throw cause
+            }
+          })
+        return discovery.client
+      }
+      if (discovery.type === "incompatible")
+        return yield* Effect.fail(discovery.error)
+      if (discovery.type === "occupied")
+        return yield* Effect.fail(
+          new MusicSessionStartupError({
+            operation: "occupied",
+            message:
+              "music session endpoint is occupied by an unclassifiable peer",
+          }),
+        )
+      if (discovery.type === "stale") {
+        yield* promise(discovery.cleanup)
+        return yield* Effect.fail(new StartupPending())
+      }
+      if (discovery.type === "missing" && !ownedLease) {
+        // Once exclusive acquisition returns a lease, recording it for the
+        // finalizer is uninterruptible; cancellation cannot strand a marker.
+        yield* Effect.uninterruptible(
+          promise(() => acquireStartupMarkerLease(runtime)).pipe(
+            Effect.tap((next) =>
+              next.type === "acquired"
+                ? Ref.set(lease, next.lease)
+                : Effect.void,
+            ),
+          ),
+        )
+        return yield* Effect.fail(new StartupPending())
+      }
+      if (discovery.type === "missing" && ownedLease) {
+        if (!(yield* Ref.get(spawned))) {
+          yield* Ref.set(spawned, true)
+          yield* promise(() => launcher(runtime))
+        }
+        return yield* Effect.fail(new StartupPending())
+      }
+      return yield* Effect.fail(new StartupPending())
+    })
+    return yield* attempt.pipe(
+      Effect.retry({
+        schedule: startupSchedule(attempts - 1, initialDelayMs, maxDelayMs),
+        while: (error) => error instanceof StartupPending,
+      }),
+      Effect.catchIf(
+        (error): error is StartupPending => error instanceof StartupPending,
+        () =>
+          Effect.fail(
+            new MusicSessionStartupError({
+              operation: "timeout",
+              message: "music session startup timed out",
+            }),
+          ),
+      ),
+      Effect.ensuring(
+        Ref.get(lease).pipe(
+          Effect.flatMap((ownedLease) =>
+            ownedLease
+              ? Effect.matchEffect(
+                  promise(() => ownedLease.release()),
+                  {
+                    onSuccess: () => Effect.void,
+                    onFailure: (error) =>
+                      Effect.logWarning(
+                        "music session startup marker release failed",
+                        error,
+                      ),
+                  },
+                )
+              : Effect.void,
+          ),
+        ),
+      ),
+    )
+  })
+}
+
+/** Thin Promise boundary for existing callers. */
+export const connectOrStartMusicSession = (
+  options: ConnectOrStartMusicSessionOptions,
+): Promise<MusicSessionClient> =>
+  Effect.runPromise(connectOrStartMusicSessionEffect(options))
+
+/** Promise adapter spelling retained for callers that use the shorter name. */
+export const connectOrStart = connectOrStartMusicSession

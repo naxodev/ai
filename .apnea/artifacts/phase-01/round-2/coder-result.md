@@ -2,57 +2,42 @@
 status: done
 ---
 
-## Changed
+Fixed the review finding in the selected server graph. The coordinator scope now starts and retains the selected provider event stream's first pull before activation, then supplies that exact pull to the fixed coordinator graph. This preserves a single event source, prevents first-event loss, and retains event-source finalization in the coordinator scope. Restored the three legacy event-disposal assertions to exact-once behavior.
 
-- Extracted the daemon executable into an injectable in-file runner. It retains the production graph and single `Effect.runPromise` boundary, installs signal handling before reporting readiness, and reports retained tagged cleanup failures with a nonzero status.
-- Replaced synthetic closing-callback invocation with an Effect-owned finalizer gate and refusal observation hook around the real Node acceptance callback.
-- Reworked the focused executable test to use a real child process, real `SIGTERM`, injected post-close failure, and cleanup in `finally`; it asserts exit status, tagged operation/message diagnostics, remaining unlink cleanup, and path removal.
-- Reworked the closing-refusal test to connect to the real Unix listener after `closing` is set and before listener close, then releases its gate in `finally`.
-- Moved vulnerable early socket/server acquisitions into `try` blocks so their resources are released if later setup or assertions fail.
-
-Files touched:
-
-- `packages/music-core/session/music-sessiond.ts`
+Files changed for this rework:
 - `packages/music-core/session/server.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
-## Verify transcript
+Verification:
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts -t 'executable.*cleanup failure|closing.*refus'
-exit 0
-2 pass, 0 fail
+$ bun test packages/music-core/tests/session-server.test.ts -t 'selected.*blocked|blocked.*selected'
+exit: 0
+(pass) selected graph shutdown interrupts blocked coordinator work before draining connections
+1 pass, 0 fail
 
 $ bun test packages/music-core/tests/session-server.test.ts
-exit 0
-25 pass, 0 fail
-111 expect() calls
-
-$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
-exit 0
-65 pass, 0 fail
-241 expect() calls
+exit: 0
+35 pass, 0 fail
 
 $ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-152 pass, 0 fail
-Verified npm package contents (21 files)
-NX   Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+exit: 0
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+203 pass, 0 fail
 
-$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
-exit 0
-(no matches)
+$ ! rg -n 'Effect\.runSync|setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit: 0
 
 $ jj diff --summary
-exit 0
-M packages/music-core/session/music-sessiond.ts
-M packages/music-core/session/server.ts
-M packages/music-core/tests/session-server.test.ts
-(existing unrelated .apnea artifacts/state/task changes remain preserved)
+exit: 0
+Inspected: only the package's server, daemon, and server-test product paths are present alongside pre-existing dirty worktree files.
+
+$ jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
+exit: 0
+Inspected: provider-only selection, separate ownership scopes, eager selected event pull, and coordinator -> connection -> provider -> listener teardown order are present.
+
+$ git diff --check
+exit: 0
 ```
 
-## Residual risks
-
-- The child-process test intentionally imports the in-file runner directly; it is not added to the public package barrel.
-- Existing expected-cleanup-failure coverage emits its existing warning during the complete server suite.
-- No commit, squash, push, or `.apnea/state.json` edit was performed.
+Residual risks: none identified. `.apnea/state.json` and unrelated dirty worktree changes were not modified.
