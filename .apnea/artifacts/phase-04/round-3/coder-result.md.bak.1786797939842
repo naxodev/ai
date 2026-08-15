@@ -1,0 +1,55 @@
+---
+status: done
+---
+
+## Changed
+
+Addressed the Phase 4 round-2 findings:
+
+- Corrected managed probe reinspection: a disappeared refused endpoint is classified through marker absence, while an endpoint that appears during an absent-path classification is conservatively occupied.
+- Carried runtime paths through `MusicSessionSocketError`, preserving managed-directory path diagnostics at the executable boundary.
+- Added deterministic coverage for the disappeared-endpoint race.
+
+Files touched:
+
+- `packages/music-core/session/config.ts`
+- `packages/music-core/session/server.ts`
+- `packages/music-core/tests/session-client.test.ts`
+
+Existing Phase 4 changes remain in the other package-authorized files. No commit, push, or `.apnea/state.json` edit was performed.
+
+## Verify transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+49 pass, 0 fail
+
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+179 pass, 0 fail
+Verified npm package contents (21 files)
+NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+
+$ ! rg -n "Bun\\.spawn|child_process|spawn\\(" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+exit 0
+
+$ jj diff --summary
+exit 0
+M packages/music-core/session/client.ts
+M packages/music-core/session/config.ts
+M packages/music-core/session/music-sessiond.ts
+M packages/music-core/session/server.ts
+M packages/music-core/tests/session-client.test.ts
+M packages/music-core/tests/session-server.test.ts
+
+$ git diff --check
+exit 0
+```
+
+The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+
+## Residual risks
+
+- The remaining startup-marker creation/arbitration, process spawning, retry/reconnect, and idle-shutdown work is intentionally outside Phase 4.
+- Managed runtime tests use deterministic local files/sockets and do not introduce polling or production process launch.

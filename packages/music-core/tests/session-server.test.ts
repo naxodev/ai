@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, lstat, mkdtemp, rm, unlink, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
 import net from "node:net"
@@ -15,7 +15,11 @@ import {
   Ref,
   Scope,
 } from "effect"
-import { layer as configLayer } from "../session/config.ts"
+import {
+  layer as configLayer,
+  prepareManagedRuntimeDirectory,
+  resolveMusicSessionRuntimePaths,
+} from "../session/config.ts"
 import { layer as coordinatorLayer } from "../session/coordinator.ts"
 import {
   createFakeProvider,
@@ -28,7 +32,10 @@ import {
   startMusicSessionServer,
 } from "../session/server.ts"
 import { createMusicSessionClient } from "../session/client.ts"
-import { waitForSignal } from "../session/music-sessiond.ts"
+import {
+  runMusicSessionDaemon,
+  waitForSignal,
+} from "../session/music-sessiond.ts"
 import { NdjsonFramer } from "../session/framing.ts"
 import { LEGACY_PROTOCOL, PROTOCOL } from "../session/protocol.ts"
 
@@ -134,6 +141,118 @@ const frameReader = (socket: net.Socket) => {
     received,
   }
 }
+
+test("managed server owns only its bound owner-only socket", async () => {
+  const root = await mkdtemp("/tmp/music-session-managed-server-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  try {
+    server = await startMusicSessionServer({ runtime }, createFakeProvider())
+    const directory = await lstat(runtime.directory)
+    const socket = await lstat(runtime.socketPath)
+    expect(directory.mode & 0o077).toBe(0)
+    expect(socket.isSocket()).toBe(true)
+    expect(socket.mode & 0o077).toBe(0)
+    const neighbor = `${runtime.directory}/unrelated`
+    await writeFile(neighbor, "keep")
+    await server.close()
+    expect(existsSync(runtime.socketPath)).toBe(false)
+    expect(existsSync(runtime.directory)).toBe(true)
+    expect(existsSync(neighbor)).toBe(true)
+    server = undefined
+  } finally {
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("post-bind hardening failure closes and removes only the partial managed socket", async () => {
+  const root = await mkdtemp("/tmp/music-session-managed-harden-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let closed = false
+  const provider = createFakeProvider()
+  try {
+    const neighbor = `${runtime.directory}/unrelated`
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await writeFile(neighbor, "keep")
+    await expect(
+      startMusicSessionServer({ runtime }, provider, {
+        onPartialBound: () => {
+          throw new Error("injected hardening failure")
+        },
+        onClose: () => {
+          closed = true
+        },
+      }),
+    ).rejects.toMatchObject({ operation: "harden" })
+    expect(closed).toBe(true)
+    expect(existsSync(runtime.socketPath)).toBe(false)
+    expect(existsSync(runtime.directory)).toBe(true)
+    expect(existsSync(neighbor)).toBe(true)
+    expect(provider.counts.providerDisposals).toBe(1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("second managed server leaves the first endpoint unchanged and connectable", async () => {
+  const root = await mkdtemp("/tmp/music-session-managed-second-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let owner: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    owner = await startMusicSessionServer({ runtime }, createFakeProvider())
+    const before = await lstat(runtime.socketPath)
+    await expect(
+      startMusicSessionServer({ runtime }, createFakeProvider()),
+    ).rejects.toMatchObject({ operation: "listen" })
+    const after = await lstat(runtime.socketPath)
+    expect([after.dev, after.ino, after.mode & 0o777]).toEqual([
+      before.dev,
+      before.ino,
+      before.mode & 0o777,
+    ])
+    client = await createMusicSessionClient({
+      socketPath: runtime.socketPath,
+      clientId: "second-server-check",
+      hostKind: "test",
+    })
+    expect(client.daemonInstanceId).not.toBe("")
+  } finally {
+    client?.dispose()
+    await owner?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("managed shutdown retains a replacement bound path", async () => {
+  const root = await mkdtemp("/tmp/music-session-managed-replacement-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  try {
+    server = await startMusicSessionServer({ runtime }, createFakeProvider())
+    await unlink(runtime.socketPath)
+    await writeFile(runtime.socketPath, "replacement")
+    await expect(server.close()).rejects.toMatchObject({ operation: "unlink" })
+    server = undefined
+    expect(await lstat(runtime.socketPath)).toMatchObject({ size: 11 })
+  } finally {
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("legacy and current peers share replay and live updates", async () => {
   const path = socketPath("negotiation")
@@ -1240,6 +1359,111 @@ test("unlink failures are typed after listener cleanup and ENOENT is tolerated",
   }
 })
 
+test("executable composes one real graph for managed default and explicit sockets", async () => {
+  for (const mode of ["managed", "explicit"] as const) {
+    const root = await mkdtemp(`/tmp/music-sessiond-${mode}-`)
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    const explicitPath = `${root}/explicit.sock`
+    const signals = new EventEmitter()
+    const provider = createFakeProvider()
+    let graphs = 0
+    let observed: Awaited<ReturnType<typeof lstat>> | undefined
+    let observation: Promise<void> | undefined
+    let observationError: unknown
+    try {
+      await runMusicSessionDaemon({
+        argv: mode === "managed" ? [] : ["--socket", explicitPath],
+        runtime,
+        signals,
+        diagnostic: (message) => {
+          if (
+            message.startsWith("music-sessiond listening") &&
+            observation === undefined
+          )
+            observation = (async () => {
+              try {
+                observed = await lstat(
+                  mode === "managed" ? runtime.socketPath : explicitPath,
+                )
+              } catch (cause) {
+                observationError = cause
+              } finally {
+                signals.emit("SIGTERM")
+              }
+            })()
+        },
+        graph: (options) => {
+          graphs++
+          return Layer.provide(
+            Layer.provide(
+              layerWithHooks({}),
+              Layer.provide(coordinatorLayer, layerFromLegacy(provider)),
+            ),
+            configLayer(options),
+          )
+        },
+      })
+      await observation
+      if (observationError) throw observationError
+      expect(graphs).toBe(1)
+      expect(observed?.isSocket()).toBe(true)
+      expect(Number(observed?.mode) & 0o777).toBe(0o600)
+      expect(provider.counts.providerDisposals).toBe(1)
+      if (mode === "managed") {
+        expect((await lstat(runtime.directory)).mode & 0o777).toBe(0o700)
+        expect(existsSync(runtime.socketPath)).toBe(false)
+      } else {
+        expect(existsSync(runtime.directory)).toBe(false)
+        expect(existsSync(explicitPath)).toBe(false)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("executable reports actual unsafe managed-runtime preparation with nonzero status", async () => {
+  const root = await mkdtemp("/tmp/music-sessiond-unsafe-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const diagnostics: string[] = []
+  const statuses: number[] = []
+  try {
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await chmod(runtime.directory, 0o755)
+    await runMusicSessionDaemon({
+      argv: [],
+      runtime,
+      diagnostic: (message) => diagnostics.push(message),
+      setStatus: (status) => statuses.push(status),
+      graph: (options) =>
+        Layer.provide(
+          Layer.provide(
+            layerWithHooks({}),
+            Layer.provide(
+              coordinatorLayer,
+              layerFromLegacy(createFakeProvider()),
+            ),
+          ),
+          configLayer(options),
+        ),
+    })
+    expect(statuses).toEqual([1])
+    expect(diagnostics.join("\n")).toContain("MusicSession.SocketError")
+    expect(diagnostics.join("\n")).toContain("[prepare]")
+    expect(diagnostics.join("\n")).toContain(runtime.directory)
+    expect(diagnostics.join("\n")).toContain("owner-only directory")
+    expect((await lstat(runtime.directory)).mode & 0o777).toBe(0o755)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("executable reports cleanup failure with nonzero status after SIGTERM", async () => {
   let directory: string | undefined
   let daemon: ReturnType<typeof Bun.spawn> | undefined
@@ -1267,7 +1491,7 @@ test("executable reports cleanup failure with nonzero status after SIGTERM", asy
          import { layerWithHooks } from ${JSON.stringify(server)};
          await runMusicSessionDaemon({
            argv: process.argv.slice(1),
-           graph: (socketPath) => Layer.provide(
+           graph: (options) => Layer.provide(
              Layer.provide(
                layerWithHooks({
                  closeFailure: () => new Error("injected executable close failure"),
@@ -1275,7 +1499,7 @@ test("executable reports cleanup failure with nonzero status after SIGTERM", asy
                }),
                Layer.provide(coordinatorLayer, layerFromLegacy(createFakeProvider())),
              ),
-             configLayer({ socketPath }),
+             configLayer(options),
            ),
          });`,
         "--",

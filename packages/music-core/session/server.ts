@@ -1,6 +1,5 @@
 import net from "node:net"
-import { existsSync } from "node:fs"
-import { unlink } from "node:fs/promises"
+import { chmod, lstat, unlink } from "node:fs/promises"
 import {
   Cause,
   Context,
@@ -12,7 +11,11 @@ import {
   Schema,
   Stream,
 } from "effect"
-import { MusicSessionConfig, type MusicSessionOptions } from "./config.ts"
+import {
+  MusicSessionConfig,
+  prepareManagedRuntimeDirectory,
+  type MusicSessionOptions,
+} from "./config.ts"
 import { NdjsonFramer, encodeFrame } from "./framing.ts"
 import {
   baselineCapabilities,
@@ -49,16 +52,26 @@ export class MusicSessionSocketError extends Schema.TaggedErrorClass<MusicSessio
   "MusicSession.SocketError",
   {
     operation: Schema.String,
+    path: Schema.optional(Schema.String),
     message: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
-const socketError = (operation: string, cause: unknown) =>
-  new MusicSessionSocketError({
+const socketError = (operation: string, cause: unknown) => {
+  const path =
+    typeof cause === "object" &&
+    cause !== null &&
+    "path" in cause &&
+    typeof cause.path === "string"
+      ? cause.path
+      : undefined
+  return new MusicSessionSocketError({
     operation,
+    ...(path ? { path } : {}),
     message: cause instanceof Error ? cause.message : String(cause),
     cause: { cause },
   })
+}
 
 type Coordinator = {
   readonly daemonInstanceId: string
@@ -94,6 +107,8 @@ export type ServerLifecycleHooks = {
   /** Test-only synchronous enrollment refusal; production always enrolls. */
   readonly canEnroll?: (socket: net.Socket) => boolean
   readonly onCoordinator?: () => void
+  /** Runs after partial identity capture and before socket hardening. */
+  readonly onPartialBound?: (identity: BoundPathIdentity) => void
   readonly onListener?: (server: net.Server) => void
   readonly onListenerFinalized?: () => void
   readonly onAccepted?: (socket: net.Socket) => void
@@ -131,14 +146,29 @@ export class MusicSessionServerService extends Context.Service<
 >()("@naxodev/music-core/MusicSessionServer") {}
 
 const listen = (server: net.Server, socketPath: string) =>
-  Effect.sync(() => {
-    // Node permits rebinding an existing Unix socket on some platforms. Never
-    // replace a path this server did not bind; lifecycle recovery owns stale
-    // artifact policy in a later phase.
-    if (existsSync(socketPath))
-      throw socketError("listen", new Error("socket path is already occupied"))
+  Effect.tryPromise({
+    try: async () => {
+      try {
+        await lstat(socketPath)
+        throw new Error("socket path is already occupied")
+      } catch (cause: unknown) {
+        if (
+          typeof cause === "object" &&
+          cause !== null &&
+          "code" in cause &&
+          cause.code === "ENOENT"
+        )
+          return
+        if (
+          cause instanceof Error &&
+          cause.message === "socket path is already occupied"
+        )
+          throw cause
+        throw cause
+      }
+    },
+    catch: (cause) => socketError("listen", cause),
   }).pipe(
-    Effect.mapError((cause) => socketError("listen", cause)),
     Effect.andThen(
       Effect.tryPromise({
         try: (signal) =>
@@ -188,12 +218,72 @@ const closeServer = (server: net.Server, hooks: ServerLifecycleHooks) =>
     catch: (cause) => socketError("close", cause),
   })
 
-const unlinkOwnedPath = (socketPath: string, hooks: ServerLifecycleHooks) =>
+type BoundPathIdentity = {
+  readonly dev: number
+  readonly ino: number
+  readonly uid: number
+}
+
+const captureBoundPath = (
+  socketPath: string,
+  onPartialBound?: (identity: BoundPathIdentity) => void,
+) =>
   Effect.tryPromise({
     try: async () => {
-      await unlink(socketPath).catch((cause: NodeJS.ErrnoException) => {
-        if (cause.code !== "ENOENT") throw cause
-      })
+      const before = await lstat(socketPath)
+      const uid = process.getuid?.()
+      if (!before.isSocket() || typeof uid !== "number" || before.uid !== uid)
+        throw new Error("bound path is not a same-user Unix socket")
+      const identity = {
+        dev: before.dev,
+        ino: before.ino,
+        uid: before.uid,
+      } satisfies BoundPathIdentity
+      onPartialBound?.(identity)
+      await chmod(socketPath, 0o600)
+      const stat = await lstat(socketPath)
+      if (
+        !stat.isSocket() ||
+        stat.dev !== identity.dev ||
+        stat.ino !== identity.ino ||
+        stat.uid !== identity.uid ||
+        (stat.mode & 0o777) !== 0o600
+      )
+        throw new Error("bound socket changed or permissions are not 0600")
+      return identity
+    },
+    catch: (cause) => socketError("harden", cause),
+  })
+
+const unlinkOwnedPath = (
+  socketPath: string,
+  bound: BoundPathIdentity | undefined,
+  hooks: ServerLifecycleHooks,
+) =>
+  Effect.tryPromise({
+    try: async () => {
+      if (!bound) return
+      let stat
+      try {
+        stat = await lstat(socketPath)
+      } catch (cause: unknown) {
+        if (
+          typeof cause === "object" &&
+          cause !== null &&
+          "code" in cause &&
+          cause.code === "ENOENT"
+        )
+          return
+        throw cause
+      }
+      if (
+        !stat.isSocket() ||
+        stat.dev !== bound.dev ||
+        stat.ino !== bound.ino ||
+        stat.uid !== bound.uid
+      )
+        throw new Error("bound socket path changed before cleanup")
+      await unlink(socketPath)
       invokeHook(hooks.onUnlink)
       const injected = hooks.unlinkFailure?.()
       if (injected?.code !== "ENOENT" && injected) throw injected
@@ -528,15 +618,29 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
       const awaitFailure = Queue.take(serverFaults).pipe(
         Effect.flatMap((error) => Effect.fail(error)),
       )
+      let boundPath: BoundPathIdentity | undefined
+      let partialBoundPath: BoundPathIdentity | undefined
       const cleanupPartial = Effect.gen(function* () {
         yield* Effect.sync(() => server.off("error", onServerError))
         yield* closeServer(server, hooks).pipe(Effect.ignore)
+        yield* unlinkOwnedPath(config.socketPath, partialBoundPath, hooks).pipe(
+          Effect.ignore,
+        )
       })
       yield* Effect.acquireRelease(
-        Effect.sync(() => server.on("error", onServerError)).pipe(
-          Effect.andThen(listen(server, config.socketPath)),
-          Effect.onError(() => cleanupPartial),
-        ),
+        Effect.gen(function* () {
+          yield* Effect.sync(() => server.on("error", onServerError))
+          if (config.runtime)
+            yield* prepareManagedRuntimeDirectory(config.runtime).pipe(
+              Effect.mapError((cause) => socketError("prepare", cause)),
+            )
+          yield* listen(server, config.socketPath)
+          boundPath = yield* captureBoundPath(config.socketPath, (identity) => {
+            partialBoundPath = identity
+            hooks.onPartialBound?.(identity)
+          })
+        }).pipe(Effect.onError(() => cleanupPartial)),
+
         () =>
           Effect.gen(function* () {
             closing = true
@@ -562,7 +666,7 @@ const makeLayer = (hooks: ServerLifecycleHooks = {}) =>
             const closed = yield* capture(closeServer(server, hooks))
             invokeHook(hooks.onListenerFinalized)
             const unlinked = yield* capture(
-              unlinkOwnedPath(config.socketPath, hooks),
+              unlinkOwnedPath(config.socketPath, boundPath, hooks),
             )
             // Finalizers cannot fail typed in Effect v4. Retain every tagged
             // cleanup outcome for outer boundaries after all cleanup completes.

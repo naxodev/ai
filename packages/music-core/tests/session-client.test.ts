@@ -1,12 +1,28 @@
 import { expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
-import { rm } from "node:fs/promises"
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import net from "node:net"
 import { NdjsonFramer } from "../session/framing.ts"
 import {
   MusicSessionClientError,
   createMusicSessionClient,
+  discoverMusicSession,
 } from "../session/client.ts"
+import {
+  MusicSessionRuntimeError,
+  prepareManagedRuntimeDirectory,
+  resolveMusicSessionRuntimePaths,
+} from "../session/config.ts"
+import { Effect } from "effect"
 import {
   createFakeProvider,
   startMusicSessionServer,
@@ -124,6 +140,632 @@ test("explicit client requires a socket", async () => {
       hostKind: "test",
     }),
   ).rejects.toBeInstanceOf(MusicSessionClientError)
+})
+
+test("managed runtime resolver and preparation keep a compact owner-only layout", async () => {
+  const root = await mkdtemp("/tmp/music-session-runtime-")
+  try {
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    expect(runtime.directory).toBe(
+      `${root}/naxodev-music-${process.getuid?.() ?? -1}`,
+    )
+    expect(runtime.socketPath).toBe(`${runtime.directory}/s.sock`)
+    expect(runtime.markerPath).toBe(`${runtime.directory}/start.lock`)
+    expect(
+      Buffer.byteLength(runtime.socketPath, "utf8") + 1,
+    ).toBeLessThanOrEqual(104)
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    const directory = await lstat(runtime.directory)
+    expect(directory.isDirectory()).toBe(true)
+    expect(directory.mode & 0o077).toBe(0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("managed runtime rejects wrong-mode and symlinked roots without repair", async () => {
+  const root = await mkdtemp("/tmp/music-session-runtime-unsafe-")
+  try {
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await chmod(runtime.directory, 0o755)
+    await expect(
+      Effect.runPromise(prepareManagedRuntimeDirectory(runtime)),
+    ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+    expect((await lstat(runtime.directory)).mode & 0o777).toBe(0o755)
+
+    await rm(runtime.directory, { recursive: true })
+    const target = `${root}/target`
+    await writeFile(target, "not a directory")
+    await symlink(target, runtime.directory)
+    await expect(
+      Effect.runPromise(prepareManagedRuntimeDirectory(runtime)),
+    ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+    expect((await lstat(runtime.directory)).isSymbolicLink()).toBe(true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("managed discovery rejects unsafe socket artifacts without connecting or removing them", async () => {
+  for (const kind of ["file", "symlink", "wrong-mode"] as const) {
+    const root = await mkdtemp(`/tmp/music-session-runtime-artifact-${kind}-`)
+    try {
+      const runtime = resolveMusicSessionRuntimePaths({
+        root,
+        uid: process.getuid?.() ?? -1,
+      })
+      await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+      if (kind === "symlink") {
+        const target = `${root}/socket-target`
+        await writeFile(target, "not a socket", { mode: 0o600 })
+        await symlink(target, runtime.socketPath)
+      } else if (kind === "wrong-mode") {
+        await leaveStaleSocket(runtime)
+        await chmod(runtime.socketPath, 0o644)
+      } else {
+        await writeFile(runtime.socketPath, "not a socket", { mode: 0o600 })
+      }
+      const before = await lstat(runtime.socketPath)
+      await expect(
+        discoverMusicSession({ runtime, clientId: kind, hostKind: "test" }),
+      ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+      const after = await lstat(runtime.socketPath)
+      expect(after.dev).toBe(before.dev)
+      expect(after.ino).toBe(before.ino)
+      expect(after.mode).toBe(before.mode)
+      expect(
+        kind === "symlink"
+          ? after.isSymbolicLink()
+          : kind === "wrong-mode"
+            ? after.isSocket()
+            : after.isFile(),
+      ).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("managed runtime rejects non-directory and simulated foreign-owned roots without repair", async () => {
+  const root = await mkdtemp("/tmp/music-session-runtime-root-")
+  try {
+    const uid = process.getuid?.() ?? -1
+    const runtime = resolveMusicSessionRuntimePaths({ root, uid })
+    await writeFile(runtime.directory, "not a directory", { mode: 0o600 })
+    const file = await lstat(runtime.directory)
+    await expect(
+      Effect.runPromise(prepareManagedRuntimeDirectory(runtime)),
+    ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+    expect((await lstat(runtime.directory)).ino).toBe(file.ino)
+    await rm(runtime.directory)
+
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    const foreignRuntime = resolveMusicSessionRuntimePaths({
+      root,
+      uid,
+      dependencies: {
+        lstat: (async (path) => {
+          const stat = await lstat(path)
+          return path === runtime.directory
+            ? new Proxy(stat, {
+                get(target, property, receiver) {
+                  return property === "uid"
+                    ? uid + 1
+                    : Reflect.get(target, property, receiver)
+                },
+              })
+            : stat
+        }) as typeof lstat,
+      },
+    })
+    const before = await lstat(runtime.directory)
+    await expect(
+      Effect.runPromise(prepareManagedRuntimeDirectory(foreignRuntime)),
+    ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+    const after = await lstat(runtime.directory)
+    expect(after.ino).toBe(before.ino)
+    expect(after.mode).toBe(before.mode)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("managed marker EPERM process checks stay conservative through the seam", async () => {
+  const root = await mkdtemp("/tmp/music-session-runtime-marker-")
+  try {
+    const uid = process.getuid?.() ?? -1
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid,
+      dependencies: {
+        processExists: () => {
+          throw Object.assign(new Error("operation not permitted"), {
+            code: "EPERM",
+          })
+        },
+      },
+    })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await writeFile(
+      runtime.markerPath,
+      JSON.stringify({ version: 1, uid, pid: 1, attemptToken: "attempt" }),
+      { mode: 0o600 },
+    )
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "marker",
+      hostKind: "test",
+    })
+    expect(found.type).toBe("starting")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("invalid managed markers fail closed and remain untouched", async () => {
+  for (const kind of [
+    "malformed",
+    "oversized",
+    "uid-mismatch",
+    "wrong-mode",
+    "symlink",
+    "directory",
+  ] as const) {
+    const root = await mkdtemp(`/tmp/music-session-marker-${kind}-`)
+    try {
+      const uid = process.getuid?.() ?? -1
+      const runtime = resolveMusicSessionRuntimePaths({ root, uid })
+      await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+      if (kind === "directory") await mkdir(runtime.markerPath, { mode: 0o600 })
+      else if (kind === "symlink") {
+        const target = `${root}/marker-target`
+        await writeFile(target, "marker")
+        await symlink(target, runtime.markerPath)
+      } else {
+        await writeFile(
+          runtime.markerPath,
+          kind === "malformed"
+            ? "not json"
+            : kind === "oversized"
+              ? "x".repeat(4097)
+              : JSON.stringify({
+                  version: 1,
+                  uid: kind === "uid-mismatch" ? uid + 1 : uid,
+                  pid: process.pid,
+                  attemptToken: "mode",
+                }),
+        )
+        await chmod(runtime.markerPath, kind === "wrong-mode" ? 0o644 : 0o600)
+      }
+      await expect(
+        discoverMusicSession({ runtime, clientId: kind, hostKind: "test" }),
+      ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+      const artifact = await lstat(runtime.markerPath)
+      expect(kind === "symlink" ? artifact.isSymbolicLink() : true).toBe(true)
+      expect(kind === "directory" ? artifact.isDirectory() : true).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("dead managed marker grants guarded idempotent cleanup", async () => {
+  const root = await mkdtemp("/tmp/music-session-dead-marker-")
+  try {
+    const uid = process.getuid?.() ?? -1
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid,
+      dependencies: {
+        processExists: () => {
+          throw Object.assign(new Error("no such process"), { code: "ESRCH" })
+        },
+      },
+    })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await writeFile(
+      runtime.markerPath,
+      JSON.stringify({ version: 1, uid, pid: 123, attemptToken: "dead" }),
+    )
+    await chmod(runtime.markerPath, 0o600)
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "dead-marker",
+      hostKind: "test",
+    })
+    expect(found.type).toBe("stale")
+    if (found.type === "stale") {
+      await found.cleanup()
+      await found.cleanup()
+    }
+    await expect(lstat(runtime.markerPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("unknown marker process errors remain starting without cleanup", async () => {
+  const root = await mkdtemp("/tmp/music-session-unknown-marker-")
+  try {
+    const uid = process.getuid?.() ?? -1
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid,
+      dependencies: {
+        processExists: () => {
+          throw Object.assign(new Error("unknown process failure"), {
+            code: "EIO",
+          })
+        },
+      },
+    })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await writeFile(
+      runtime.markerPath,
+      JSON.stringify({ version: 1, uid, pid: 123, attemptToken: "unknown" }),
+    )
+    await chmod(runtime.markerPath, 0o600)
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "unknown-marker",
+      hostKind: "test",
+    })
+    expect(found.type).toBe("starting")
+    expect("cleanup" in found).toBe(false)
+    expect((await lstat(runtime.markerPath)).isFile()).toBe(true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+async function leaveStaleSocket(
+  runtime: ReturnType<typeof resolveMusicSessionRuntimePaths>,
+) {
+  const boundPath = `${runtime.directory}/b.sock`
+  const server = net.createServer()
+  let listening = false
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(boundPath, () => {
+        listening = true
+        resolve()
+      })
+    })
+    await chmod(boundPath, 0o600)
+    await rename(boundPath, runtime.socketPath)
+    await new Promise<void>((resolve, reject) =>
+      server.close((cause) => (cause ? reject(cause) : resolve())),
+    )
+    listening = false
+  } finally {
+    if (listening)
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+}
+
+test("refused socket disappearance after the connection attempt is missing without cleanup authority", async () => {
+  const root = await mkdtemp("/tmp/music-session-disappeared-")
+  try {
+    const uid = process.getuid?.() ?? -1
+    const base = resolveMusicSessionRuntimePaths({ root, uid })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(base))
+    await leaveStaleSocket(base)
+    let socketStats = 0
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid,
+      dependencies: {
+        lstat: (async (path) => {
+          if (path === base.socketPath && ++socketStats > 1)
+            throw Object.assign(new Error("gone"), { code: "ENOENT" })
+          return lstat(path)
+        }) as typeof lstat,
+      },
+    })
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "disappeared",
+      hostKind: "test",
+    })
+    expect(found.type).toBe("missing")
+    expect("cleanup" in found).toBe(false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("refused managed socket yields guarded idempotent stale cleanup", async () => {
+  const root = await mkdtemp("/tmp/music-session-stale-")
+  try {
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await leaveStaleSocket(runtime)
+    const discovered = await discoverMusicSession({
+      runtime,
+      clientId: "stale",
+      hostKind: "test",
+    })
+    expect(discovered.type).toBe("stale")
+    if (discovered.type === "stale") {
+      await discovered.cleanup()
+      await discovered.cleanup()
+    }
+    await expect(lstat(runtime.socketPath)).rejects.toMatchObject({
+      code: "ENOENT",
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("stale cleanup refuses a replacement artifact", async () => {
+  const root = await mkdtemp("/tmp/music-session-stale-replacement-")
+  try {
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await leaveStaleSocket(runtime)
+    const discovered = await discoverMusicSession({
+      runtime,
+      clientId: "replacement",
+      hostKind: "test",
+    })
+    expect(discovered.type).toBe("stale")
+    await rm(runtime.socketPath, { force: true })
+    await writeFile(runtime.socketPath, "replacement", { mode: 0o600 })
+    if (discovered.type === "stale")
+      await expect(discovered.cleanup()).rejects.toBeInstanceOf(
+        MusicSessionRuntimeError,
+      )
+    expect((await lstat(runtime.socketPath)).isFile()).toBe(true)
+    await rm(runtime.socketPath)
+    await symlink(`${root}/target`, runtime.socketPath)
+    if (discovered.type === "stale")
+      await expect(discovered.cleanup()).rejects.toBeInstanceOf(
+        MusicSessionRuntimeError,
+      )
+    expect((await lstat(runtime.socketPath)).isSymbolicLink()).toBe(true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("simulated foreign socket and marker ownership fail closed without cleanup", async () => {
+  for (const artifact of ["socket", "marker"] as const) {
+    const root = await mkdtemp(`/tmp/music-session-foreign-${artifact}-`)
+    try {
+      const uid = process.getuid?.() ?? -1
+      const base = resolveMusicSessionRuntimePaths({ root, uid })
+      await Effect.runPromise(prepareManagedRuntimeDirectory(base))
+      if (artifact === "socket") await leaveStaleSocket(base)
+      else {
+        await writeFile(
+          base.markerPath,
+          JSON.stringify({
+            version: 1,
+            uid,
+            pid: 123,
+            attemptToken: "foreign",
+          }),
+          { mode: 0o600 },
+        )
+      }
+      let unlinks = 0
+      const runtime = resolveMusicSessionRuntimePaths({
+        root,
+        uid,
+        dependencies: {
+          lstat: (async (path) => {
+            const stat = await lstat(path)
+            return path ===
+              (artifact === "socket" ? base.socketPath : base.markerPath)
+              ? new Proxy(stat, {
+                  get(target, property, receiver) {
+                    return property === "uid"
+                      ? uid + 1
+                      : Reflect.get(target, property, receiver)
+                  },
+                })
+              : stat
+          }) as typeof lstat,
+          unlink: async (path) => {
+            unlinks++
+            return rm(path)
+          },
+        },
+      })
+      const path = artifact === "socket" ? base.socketPath : base.markerPath
+      const before = await lstat(path)
+      await expect(
+        discoverMusicSession({ runtime, clientId: artifact, hostKind: "test" }),
+      ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+      const after = await lstat(path)
+      expect(after.ino).toBe(before.ino)
+      expect(after.mode).toBe(before.mode)
+      expect(unlinks).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("malformed and reset managed peers stay occupied without cleanup", async () => {
+  for (const mode of ["malformed", "reset"] as const) {
+    const root = await mkdtemp(`/tmp/music-session-${mode}-peer-`)
+    let server: net.Server | undefined
+    try {
+      const runtime = resolveMusicSessionRuntimePaths({
+        root,
+        uid: process.getuid?.() ?? -1,
+      })
+      await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+      let closed: Promise<void> | undefined
+      server = net.createServer((socket) => {
+        closed = new Promise<void>((resolve) => socket.once("close", resolve))
+        if (mode === "malformed") socket.end("not json\\n")
+        else socket.destroy()
+      })
+      await new Promise<void>((resolve, reject) => {
+        server!.once("error", reject)
+        server!.listen(runtime.socketPath, resolve)
+      })
+      await chmod(runtime.socketPath, 0o600)
+      const found = await discoverMusicSession({
+        runtime,
+        clientId: mode,
+        hostKind: "test",
+      })
+      expect(found.type).toBe("occupied")
+      expect("cleanup" in found).toBe(false)
+      await closed
+      expect((await lstat(runtime.socketPath)).isSocket()).toBe(true)
+    } finally {
+      await new Promise<void>(
+        (resolve) => server?.close(() => resolve()) ?? resolve(),
+      )
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("managed discovery returns a handshaken healthy client", async () => {
+  const root = await mkdtemp("/tmp/music-session-discovery-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let discovered: Awaited<ReturnType<typeof discoverMusicSession>> | undefined
+  try {
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    server = await startMusicSessionServer(
+      { socketPath: runtime.socketPath },
+      createFakeProvider(),
+    )
+    discovered = await discoverMusicSession({
+      runtime,
+      clientId: "discovery",
+      hostKind: "test",
+    })
+    expect(discovered.type).toBe("healthy")
+    if (discovered.type === "healthy") {
+      expect(discovered.client.daemonInstanceId).not.toBe("")
+      discovered.client.dispose()
+    }
+  } finally {
+    if (discovered?.type === "healthy") discovered.client.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("managed discovery preserves a live incompatible daemon generation", async () => {
+  const root = await mkdtemp("/tmp/music-session-incompatible-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let healthy: Awaited<ReturnType<typeof discoverMusicSession>> | undefined
+  try {
+    server = await startMusicSessionServer({ runtime }, createFakeProvider())
+    const before = await lstat(runtime.socketPath)
+    const incompatible = await discoverMusicSession({
+      runtime,
+      clientId: "future",
+      hostKind: "test",
+      protocolRange: { major: 1, minRevision: 9, maxRevision: 10 },
+    })
+    expect(incompatible.type).toBe("incompatible")
+    if (incompatible.type === "incompatible") {
+      expect(incompatible.error.details).toMatchObject({
+        client: { minRevision: 9, maxRevision: 10 },
+        daemon: { minRevision: 0, maxRevision: 1 },
+      })
+      expect("cleanup" in incompatible).toBe(false)
+    }
+    const after = await lstat(runtime.socketPath)
+    expect([after.dev, after.ino]).toEqual([before.dev, before.ino])
+    healthy = await discoverMusicSession({
+      runtime,
+      clientId: "supported",
+      hostKind: "test",
+    })
+    expect(healthy.type).toBe("healthy")
+  } finally {
+    if (healthy?.type === "healthy") healthy.client.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("healthy discovery wins over an untrusted startup marker", async () => {
+  const root = await mkdtemp("/tmp/music-session-marker-precedence-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let discovered: Awaited<ReturnType<typeof discoverMusicSession>> | undefined
+  try {
+    server = await startMusicSessionServer({ runtime }, createFakeProvider())
+    await writeFile(runtime.markerPath, "not marker json")
+    discovered = await discoverMusicSession({
+      runtime,
+      clientId: "marker-precedence",
+      hostKind: "test",
+    })
+    expect(discovered.type).toBe("healthy")
+  } finally {
+    if (discovered?.type === "healthy") discovered.client.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("a valid live startup marker is starting and grants no cleanup", async () => {
+  const root = await mkdtemp("/tmp/music-session-live-marker-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  try {
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    await writeFile(
+      runtime.markerPath,
+      JSON.stringify({
+        version: 1,
+        uid: runtime.uid,
+        pid: process.pid,
+        attemptToken: "live-attempt",
+      }),
+    )
+    await chmod(runtime.markerPath, 0o600)
+    await expect(
+      discoverMusicSession({
+        runtime,
+        clientId: "live-marker",
+        hostKind: "test",
+      }),
+    ).resolves.toEqual({ type: "starting" })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("malformed negotiated hello result fails once and destroys the socket", async () => {

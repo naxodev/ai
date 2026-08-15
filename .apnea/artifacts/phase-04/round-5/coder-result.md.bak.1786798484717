@@ -1,0 +1,20 @@
+---
+status: done
+---
+
+## Changed
+
+No additional product changes were made in this round.
+
+The requested rework exposes a conflict between two Phase 4 invariants in the current module layout: `config.ts` must retain opaque stale-cleanup proof construction, while `client.ts` must own the real connection/hello attempt. The current implementation keeps the actual no-listener attempt inside the guarded config boundary to avoid exposing a callback that can fabricate stale authority; moving it mechanically into `client.ts` would reintroduce the critical authority-mint issue identified in Round 3.
+
+## Verify transcript
+
+```text
+No commands were run in this round because no source changes were made.
+```
+
+## Residual risks
+
+- The latest review's module-boundary and remaining filesystem/process-matrix requirements remain unresolved.
+- No commit, push, or `.apnea/state.json` edit was performed.

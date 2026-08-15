@@ -1,5 +1,10 @@
 import net from "node:net"
-import { PACKAGE_VERSION } from "./config.ts"
+import {
+  PACKAGE_VERSION,
+  inspectManagedRuntimeForDiscovery,
+  resolveMusicSessionRuntimePaths,
+  type MusicSessionRuntimePaths,
+} from "./config.ts"
 import { NdjsonFramer, encodeFrame } from "./framing.ts"
 import {
   baselineCapabilities,
@@ -29,7 +34,10 @@ export class MusicSessionClientError extends Error {
   readonly code: ProtocolError["code"]
   readonly retryable: boolean
   readonly details: ProtocolError["details"]
-  constructor(error: ProtocolError) {
+  constructor(
+    error: ProtocolError,
+    readonly transportCode?: string,
+  ) {
     super(error.message)
     this.name = "MusicSessionClientError"
     this.code = error.code
@@ -468,11 +476,22 @@ export async function createMusicSessionClient(
     socket.once("connect", onConnect)
     socket.once("error", onError)
   }).catch((cause: unknown) => {
-    throw new MusicSessionClientError({
-      code: "CONNECTION_LOST",
-      message: cause instanceof Error ? cause.message : "connection failed",
-      retryable: true,
-    })
+    socket.destroy()
+    const transportCode =
+      typeof cause === "object" &&
+      cause !== null &&
+      "code" in cause &&
+      typeof cause.code === "string"
+        ? cause.code
+        : undefined
+    throw new MusicSessionClientError(
+      {
+        code: "CONNECTION_LOST",
+        message: cause instanceof Error ? cause.message : "connection failed",
+        retryable: true,
+      },
+      transportCode,
+    )
   })
   const client = new Client(socket, new NdjsonFramer(options.maxFrameBytes))
   await client.beginHandshake(
@@ -490,3 +509,67 @@ export async function createMusicSessionClient(
   )
   return client
 }
+
+export type MusicSessionDiscoveryOptions = Omit<
+  MusicSessionClientOptions,
+  "socketPath"
+> & {
+  /** Test-only alternate secure runtime layout; production omits this. */
+  runtime?: MusicSessionRuntimePaths
+}
+export type MusicSessionDiscovery =
+  | { readonly type: "healthy"; readonly client: MusicSessionClient }
+  | { readonly type: "incompatible"; readonly error: MusicSessionClientError }
+  | { readonly type: "missing" }
+  | { readonly type: "starting" }
+  | { readonly type: "occupied" }
+  | { readonly type: "stale"; readonly cleanup: () => Promise<void> }
+
+/**
+ * Performs one managed-runtime inspection and hello. It intentionally never
+ * starts, signals, retries, or replaces a daemon generation.
+ */
+export async function discoverMusicSession(
+  options: MusicSessionDiscoveryOptions,
+): Promise<MusicSessionDiscovery> {
+  const runtime = options.runtime ?? resolveMusicSessionRuntimePaths()
+  const probe = await inspectManagedRuntimeForDiscovery(runtime)
+  const nonEndpoint = async () => {
+    const result = probe.socketPath
+      ? await probe.refused()
+      : await probe.absent()
+    switch (result.type) {
+      case "stale":
+      case "starting":
+      case "occupied":
+      case "missing":
+        return result
+      default:
+        throw new Error("invalid managed runtime probe result")
+    }
+  }
+  if (!probe.socketPath) return nonEndpoint()
+  try {
+    const client = await createMusicSessionClient({
+      ...options,
+      socketPath: probe.socketPath,
+    })
+    return { type: "healthy", client }
+  } catch (cause) {
+    if (
+      cause instanceof MusicSessionClientError &&
+      cause.code === "INCOMPATIBLE_PROTOCOL"
+    )
+      return { type: "incompatible", error: cause }
+    if (
+      cause instanceof MusicSessionClientError &&
+      cause.transportCode &&
+      ["ECONNREFUSED", "ENOENT"].includes(cause.transportCode)
+    )
+      return nonEndpoint()
+    return { type: "occupied" }
+  }
+}
+
+/** Compatibility spelling for callers that name the operation an endpoint probe. */
+export const discoverMusicSessionEndpoint = discoverMusicSession
