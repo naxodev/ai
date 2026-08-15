@@ -5,22 +5,34 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The phase package is aligned with approved Phase 2 and correctly excludes socket/server behavior. The implementation stays within the allowed coordinator/provider-test seam, but the phase acceptance gate is substantially incomplete.
+The Phase 2 package is aligned with the approved plan: it remains an explicit-path, schema/negotiation slice and keeps discovery, process lifecycle, reconnect, load hardening, artwork, hosts, manifests, and documentation out of scope. The product diff is confined to allowed paths.
 
 ## Findings
 
-### High — The required deterministic acceptance matrix is largely absent
+### High — Legacy protocol values are ignored during negotiation
 
-The focused suite contains only five tests, and the coder result explicitly acknowledges that the broader race/closure/config matrix remains unfinished. Missing direct evidence includes invalidation coalescing and maximum sample concurrency; pre-trigger/pre-snapshot/pre-command stale rejection; blocked-transport snapshot races for play, pause, and seek; poll boundary/reset/stale-install behavior; transport versus navigation reconciliation; provider failure recovery; queue saturation; multi-submitter FIFO; and every enrollment, blocked-work, queued-work, reconciliation, and late-completion closure race. The existing seek test publishes its snapshot before submitting an unblocked command, so it does not reproduce the race this phase was created to prevent. Passing these five tests cannot substantiate the package's acceptance checks.
+`negotiateHello()` maps every decoded legacy hello through `legacyRange()`, which always returns the constants from `LEGACY_PROTOCOL`. Because `LegacyProtocolSchema` accepts arbitrary integer `major` and `minor` values, a peer advertising legacy `{ major: 2, minor: 99 }` is silently treated as `{ major: 1, minor: 0 }` and can negotiate successfully. Major/range incompatibility is therefore not enforced for the legacy wire shape. Make the legacy schema literal `1.0`, or normalize the decoded values and reject anything other than the supported preceding revision.
 
-### High — The Effect-native fixture cannot drive the required scenarios
+### High — The schema-owned contract is still partly manual
 
-`CoordinatorProviderFixture` (`provider.ts:409-433`) exposes one permanently opening `sampleStarted` latch, one sample gate, aggregate sample count, calls, subscriptions, and finalizations. It has no per-call sample/transport start controls, transport blocker, next sample/transport failure, null sample, active/max-concurrency or interruption counters, completed sample counter, or source-finalization counter. Consequently, deterministic testing of the package's sampling, command-failure, and closure invariants is impossible with this fixture. The tests instead use `Effect.yieldNow` at `session-coordinator.test.ts:80,131,157`, contrary to the package's explicit synchronization requirement.
+Several required semantic invariants are not represented by the exported schemas:
 
-### High — No-op sampled states still advance authority
+- `ProtocolRangeSchema` permits negative/reversed ranges; range validity is checked later by `validRange()`.
+- `TransportRequestSchema` permits seek without `positionMs` and non-seek actions with it; `decodeRequest()` repeats action/position logic through `TransportEnvelopeSchema` and manual branches.
+- Numeric non-negativity is checked after decoding for requests/state/responses rather than in the schemas themselves.
+- `ProtocolErrorSchema` permits `INCOMPATIBLE_PROTOCOL` without range details and permits unrelated error codes with those details.
+- Success/failure response schemas tolerate the opposite known payload as an extra field, despite the package requiring contradictory envelopes to be rejected.
 
-`coordinator.ts:132-149` increments the revision whenever `mergePlayer` returns a state. It does not detect that the merged state is unchanged, so an identical sampled state is accepted as a new authority revision and resets polling. This contradicts the package invariant that a no-op/invalid merge must not increment revision, and can create needless revision churn from unchanged polls.
+The server also retains synchronous `decodeRequest()` plus `try/catch` instead of the package's Effect-based unknown decoder for its Effect request path. As a result, schemas are not yet the single semantic wire definition required by the acceptance gate.
 
-### High — Config acceptance is not covered
+### High — Required real-socket and explicit-client acceptance evidence is absent
 
-The sole config test checks defaults and an empty socket path. It does not exercise concrete overrides, `ConfigProvider` parity/defaulting, malformed numeric text, or invalid frame, capacity, reconciliation, and poll values as required. No Phase 2 config implementation or focused evidence was added to close that portion of the package.
+Neither `session-server.test.ts` nor `session-client.test.ts` changed. The client suite still contains only the pre-existing empty-socket-path test, and the server suite has no legacy/current negotiation scenarios. Consequently there is no evidence that:
+
+- a real legacy `1.0` peer and current client share one daemon/provider and both receive replay/live updates;
+- a disjoint peer gets structured incompatibility and closes without disturbing a healthy peer;
+- a state-only peer is admitted but transport is rejected before coordinator admission;
+- malformed/second hello, increasing IDs, action/seek, oversize, and incomplete EOF remain correct under the negotiated boundary;
+- the explicit client exposes valid selected revision/capabilities and destroys its socket on malformed or impossible hello results.
+
+The reported 32 focused tests and package gates pass, but they do not exercise these Phase 2 acceptance checks.

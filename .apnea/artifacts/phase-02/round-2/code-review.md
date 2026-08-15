@@ -1,16 +1,34 @@
 ---
 status: done
-verdict: APPROVED
+verdict: CHANGES_REQUIRED
 ---
 
 ## Package comparison
 
-The phase package remains aligned with the approved Phase 2 plan: it confines acceptance to coordinator authority, Effect-time scheduling, bounded global commands, the Effect-native provider fixture, and focused tests without requiring socket or later-phase behavior.
+The Phase 2 package remains aligned with the approved plan, and the cumulative source diff remains within allowed paths. The round correctly fixes arbitrary legacy major/minor acceptance and adds non-negative numeric schema checks plus one current-client happy-path test.
 
-## Review
+## Findings
 
-The revised command tests close the remaining acceptance gap. With the active transport blocked, each test waits for a competing submission to settle as `SERVER_BUSY`; because an enrolled command cannot complete while the worker is occupied, this deterministically establishes that its peer crossed admission and occupies the sole configured queue slot. The tests then prove that peer either executes in FIFO order after release or settles as `DISPOSED` after scope closure.
+### High — The schema-owned contract remains incomplete
 
-The accumulated Phase 2 implementation and focused suite cover the package's atomic sampling, stale-result rejection, atomic command projection, deadline replacement, polling/reconciliation, bounded admission, closure, config, and tagged-error requirements. Changes remain within the approved product/test paths.
+Most of the prior schema finding is unchanged:
 
-Independent verification passed: 23 coordinator tests, 42 Phase 1 provider tests, the forbidden-pattern checks, and the music-core typecheck/test/format/package gate (131 tests total).
+- `ProtocolRangeSchema` still does not enforce `minRevision <= maxRevision`, and `NegotiatedProtocolSchema` does not enforce that `selectedRevision` lies in its range; both are checked later by manual helpers.
+- `TransportRequestSchema` still permits seek without `positionMs` and non-seek actions with it. `TransportEnvelopeSchema`, a manual action list, and imperative branches duplicate those semantics in `decodeRequest()`.
+- `ProtocolErrorSchema` still permits `INCOMPATIBLE_PROTOCOL` without details and permits every other code with incompatibility details.
+- Success/failure schemas still accept the opposite known payload as an additive extra instead of rejecting contradictory envelopes.
+- The server still calls the synchronous throwing `decodeRequest()` inside `try/catch`; the required Effect decoder for the Effect request path is absent.
+
+The exported schemas therefore are not yet the single semantic contract required by acceptance. The protocol tests also do not exercise malformed nested state/track/device/status/error/response data, contradictory envelopes, additive fields, major mismatch, range endpoints, or missing required capability.
+
+### High — Real-socket compatibility and isolation evidence is still absent
+
+`session-server.test.ts` remains untouched. The new client test proves only a current client's selected revision and default capability list. Phase 2 still lacks the required real-socket evidence that:
+
+- an actual legacy `1.0` peer and a current client share one daemon/provider and both receive replay plus a live update;
+- a disjoint peer receives actionable structured ranges, closes alone, and leaves an existing healthy peer usable;
+- a state-only peer negotiates successfully and transport is rejected before coordinator admission;
+- missing replay, malformed/second hello, non-increasing IDs, invalid action/seek, oversized frames, and incomplete EOF remain connection-local under negotiation;
+- malformed or out-of-offer hello results make the explicit client fail once and destroy its socket.
+
+The reported 33 focused tests and package gates pass, but they still do not establish these acceptance checks.

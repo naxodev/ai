@@ -12,21 +12,20 @@ import {
   Schema,
   Stream,
 } from "effect"
-import {
-  PACKAGE_VERSION,
-  MusicSessionConfig,
-  type MusicSessionOptions,
-} from "./config.ts"
+import { MusicSessionConfig, type MusicSessionOptions } from "./config.ts"
 import { NdjsonFramer, encodeFrame } from "./framing.ts"
 import {
   baselineCapabilities,
-  decodeRequest,
+  decodeRequestEffect,
   failure,
-  PROTOCOL,
+  helloResult,
+  negotiateHello,
   protocolError,
+  protocolErrorFromUnknown,
+  PROTOCOL,
   requestIdFromUnknown,
   response,
-  type ProtocolError,
+  type NegotiatedSession,
   type Request,
 } from "./protocol.ts"
 import {
@@ -269,7 +268,7 @@ const connection = (
           ),
         ),
     )
-    let hello = false
+    let session: NegotiatedSession | undefined
     let highestId = -1
     const send = (value: unknown) =>
       Effect.sync(() => {
@@ -286,10 +285,12 @@ const connection = (
     const process = Effect.fn("MusicSession.Connection.frame")(function* (
       raw: unknown,
     ) {
-      let request: Request
-      try {
-        request = decodeRequest(raw)
-      } catch (cause) {
+      const decoded = yield* Effect.match(decodeRequestEffect(raw), {
+        onFailure: (cause) => ({ ok: false as const, cause }),
+        onSuccess: (request) => ({ ok: true as const, request }),
+      })
+      if (!decoded.ok) {
+        const cause = decoded.cause
         const requestId = requestIdFromUnknown(raw)
         if (requestId === undefined) return close()
         if (requestId <= highestId)
@@ -303,21 +304,15 @@ const connection = (
             ),
           )
         highestId = requestId
-        const candidate = cause as Partial<ProtocolError>
         return yield* send(
           failure(
             requestId,
-            typeof candidate.code === "string" &&
-              typeof candidate.message === "string"
-              ? protocolError(
-                  candidate.code as ProtocolError["code"],
-                  candidate.message,
-                  candidate.retryable,
-                )
-              : protocolError("INVALID_REQUEST", "invalid request"),
+            protocolErrorFromUnknown(cause) ??
+              protocolError("INVALID_REQUEST", "invalid request"),
           ),
         )
       }
+      const request: Request = decoded.request
       if (request.requestId <= highestId)
         return yield* reject(
           request,
@@ -325,41 +320,28 @@ const connection = (
           "request IDs must strictly increase",
         )
       highestId = request.requestId
-      if (!hello) {
+      if (!session) {
         if (request.type !== "hello") {
           yield* reject(request, "INVALID_REQUEST", "hello is required first")
           return close()
         }
-        if (request.protocol.major !== PROTOCOL.major) {
-          yield* reject(
-            request,
-            "INCOMPATIBLE_PROTOCOL",
-            `protocol major ${PROTOCOL.major} is required`,
-          )
-          return close()
+        const negotiated = negotiateHello(
+          request,
+          PROTOCOL,
+          baselineCapabilities,
+        )
+        if ("code" in negotiated) {
+          yield* send(failure(request.requestId, negotiated))
+          if (negotiated.code === "INCOMPATIBLE_PROTOCOL")
+            return yield* Effect.sync(() => socket.end())
+          return
         }
-        if (
-          !baselineCapabilities.every((capability) =>
-            request.capabilities.includes(capability),
-          )
-        ) {
-          yield* reject(
-            request,
-            "UNSUPPORTED_CAPABILITY",
-            "peer is missing baseline capabilities",
-          )
-          return close()
-        }
-        hello = true
+        session = negotiated
         yield* send(
-          response(request.requestId, {
-            daemonInstanceId: coordinator.daemonInstanceId,
-            packageVersion: PACKAGE_VERSION,
-            protocol: PROTOCOL,
-            capabilities: baselineCapabilities.filter((capability) =>
-              request.capabilities.includes(capability),
-            ),
-          }),
+          response(
+            request.requestId,
+            helloResult(coordinator.daemonInstanceId, session),
+          ),
         )
         yield* Effect.sync(() => invokeHook(hooks.onForwarderStarted))
         yield* coordinator.status.pipe(
@@ -390,6 +372,12 @@ const connection = (
           request,
           "INVALID_REQUEST",
           "hello was already completed",
+        )
+      if (!session.capabilities.includes("transport"))
+        return yield* reject(
+          request,
+          "UNSUPPORTED_CAPABILITY",
+          "transport capability was not negotiated",
         )
       yield* Effect.sync(() =>
         invokeHook(() => hooks.onCommandAdmission?.(request.action)),

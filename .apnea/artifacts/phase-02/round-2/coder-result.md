@@ -4,35 +4,39 @@ status: done
 
 ## Changed
 
-- Reworked bounded-command tests to publish every competing submission result through test-side Effect queues.
-- While the active transport remains blocked, each test now awaits `SERVER_BUSY`; that outcome deterministically proves the peer crossed admission and occupies the configured queue slot before release or scope close.
-- After the boundary, tests prove the enrolled command runs FIFO after release or settles `DISPOSED` after close.
+- Restricted the legacy protocol schema to the only supported preceding wire shape: `{ major: 1, minor: 0 }`; arbitrary legacy major/minor values now fail decoding rather than being normalized into compatibility.
+- Moved non-negative integer semantics into the shared `SafeInt` schema, covering request IDs, revisions, times, durations, ranges, and seek positions at decode time.
+- Added an explicit-client real-socket negotiation test that verifies selected revision and deterministic capability exposure.
 
 Files touched:
-- `packages/music-core/tests/session-coordinator.test.ts`
+
+- `packages/music-core/session/protocol.ts`
+- `packages/music-core/tests/session-client.test.ts`
 
 ## Verify transcript
 
 ```text
-$ bun test packages/music-core/tests/session-coordinator.test.ts
-exit 0 — 23 pass, 0 fail
-
-$ bun test packages/music-core/tests/system-media.test.ts
-exit 0 — 42 pass, 0 fail
-
-$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
-exit 0 — typecheck, test, format:check, and package:check passed
-
-$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(|Date\.now\(" packages/music-core/session/coordinator.ts
+$ bun test packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
 exit 0
+33 pass, 0 fail
 
-$ ! rg -n "createFakeProvider|layerFromLegacy|Effect\.repeat\(Effect\.yieldNow|new Promise" packages/music-core/tests/session-coordinator.test.ts
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 exit 0
+155 pass, 0 fail
+Verified npm package contents (21 files)
+NX   Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
 $ jj diff --summary
-exit 0 — Phase 2 product/test changes are confined to approved paths; pre-existing `.apnea/state.json` remains untouched.
+exit 0
+M packages/music-core/session/client.ts
+M packages/music-core/session/protocol.ts
+M packages/music-core/session/server.ts
+M packages/music-core/tests/session-client.test.ts
+M packages/music-core/tests/session-protocol.test.ts
+(existing phase artifact/state/task changes remain preserved)
 ```
 
 ## Residual risks
 
-- No known Phase 2 acceptance gaps remain in the focused coordinator coverage.
+- Existing intentional multiple-cleanup-failure coverage continues to emit its expected warning in the full server suite.
+- No commit, squash, push, or `.apnea/state.json` edit was performed.

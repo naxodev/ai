@@ -5,18 +5,24 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The package remains aligned with the approved Phase 2 plan and the changes stay within the coordinator seam. The claimed focused checks are reproducible (21 coordinator tests and 42 provider tests pass), but the three required concurrency interleavings still lack deterministic acceptance evidence.
+The Phase 2 package remains aligned with the approved plan, and the cumulative source diff remains confined to allowed paths. The client handshake leak, capability-option validation, incompatible-error constructor, replay assertions, and structured incompatibility assertions from the prior review are addressed.
 
 ## Findings
 
-### High — Event acknowledgement still precedes coordinator claim
+### High — The new frame reader cannot settle pending reads on close/EOF
 
-The fixture now uses `Stream.flatMap`, but it offers to `eventConsumed` before emitting the event downstream (`provider.ts:509-512`). Consequently, `invalidation()` can resume after `Queue.take(eventConsumed)` while the coordinator's `Stream.runForEach` callback has not yet executed `claimSample`. Releasing the blocked sample after that acknowledgement remains scheduler-dependent and does not prove the active generation was invalidated before publication. Synchronize on coordinator claim itself, or directly test the atomic sampling transition without coupling the production service to fixture controls.
+`frameReader()` listens only for `data` and `error`. A normal socket `close` neither rejects pending `next()` calls nor invokes `framer.end()`. If a peer closes before the expected response—or sends an incomplete final frame—the test waits forever rather than failing and entering `finally`. This also prevents the helper from proving the package's incomplete-EOF behavior. Track terminal state, process `end`/`close` through `NdjsonFramer.end()`, reject all pending/future reads, and remove all listeners in `dispose()`.
 
-### High — Command boundary tests still close/release before proving enrollment
+### High — Required negotiated-boundary cases remain untested
 
-Both the saturation test and queued-close test fork the competing submissions and immediately release the active transport or close the scope (`session-coordinator.test.ts:514-522`, `:559-568`). The stronger `SERVER_BUSY` and `DISPOSED` assertions identify outcomes, but they do not prove that one caller occupied the configured queue while another crossed the overflow boundary, nor that close raced an enrolled queued caller rather than submissions that first ran after closure. Keep the transport blocked and await the overflow result (which proves the other competing caller enrolled) before release/close, then verify queued settlement and FIFO continuation.
+The package explicitly requires compact real-socket coverage for malformed current hello range, missing required replay capability, second hello, non-increasing request IDs, post-hello invalid action/seek, oversized frame, and incomplete EOF. None of those cases was added. Existing tests cover a pre-hello unknown action and partial EOF from the old baseline, but they do not establish the complete post-negotiation policy or all stable response classifications.
 
-### High — Poll test covers reservation ordering, not stale installation
+The incompatibility socket test also exercises a different protocol major, not a same-major disjoint revision range, and does not assert that exactly one failure response was emitted before closure. Add the specified focused cases without reopening lifecycle behavior.
 
-`stale poll-deadline reservation cannot replace newer authority` initializes an already-newer revision and invokes `reservePollDeadline` sequentially with no fibers. It verifies the comparison branch, but not the required interleaving where an older `restartPoll` candidate is delayed while a newer revision installs its deadline, after which the older candidate must fail attachment/interrupt itself without replacing the newer fiber. Add deterministic coverage of the reserve-to-attach race and assert the newer installed deadline remains the sole live deadline.
+### Medium — Nested schema rejection evidence remains partial
+
+The protocol tests now cover range, selected revision, transport, incompatible-error details, contradictory success, additive fields, and required replay. They still do not prove malformed nested state, track, device, provider status, failure response, or the contradictory failure-with-`data` branch required by the schema-focused package. These should decode through the public shared server-frame schemas/functions so the wire boundary—not only individual construction—is exercised.
+
+## Verification
+
+The coder reports 38 focused tests and all 160 music-core/package checks passing. That confirms the implemented happy paths and regressions, but the missing deterministic close handling and required boundary cases remain acceptance blockers.

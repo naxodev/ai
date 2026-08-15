@@ -1,75 +1,122 @@
+import { Effect } from "effect"
 import * as Schema from "effect/Schema"
 import type { PlayerState as CorePlayerState } from "../types.ts"
 import { PACKAGE_VERSION } from "./config.ts"
 
-export const PROTOCOL = { major: 1, minor: 0 } as const
 export { PACKAGE_VERSION }
-export const baselineCapabilities = ["state-replay", "transport"] as const
-export type Capability = (typeof baselineCapabilities)[number]
-export type HostKind = "opencode" | "pi" | "test"
-export type TransportAction =
-  "toggle" | "play" | "pause" | "next" | "previous" | "seek"
-export type ProtocolErrorCode =
-  | "INCOMPATIBLE_PROTOCOL"
-  | "INVALID_REQUEST"
-  | "DUPLICATE_REQUEST_ID"
-  | "UNSUPPORTED_CAPABILITY"
-  | "UNSUPPORTED_ACTION"
-  | "INVALID_SEEK"
-  | "PROVIDER_FAILURE"
-  | "SERVER_BUSY"
-  | "CONNECTION_LOST"
-  | "INDETERMINATE_COMMAND"
-  | "DISPOSED"
-export type ProtocolError = {
-  code: ProtocolErrorCode
-  message: string
-  retryable: boolean
-}
-export type ProviderStatus = {
-  kind: "ready" | "degraded" | "unavailable"
-  provider: "media-control" | "nowplaying-cli" | null
-  message: string
-}
-export type RevisionedState = {
-  daemonInstanceId: string
-  revision: number
-  state: CorePlayerState
-}
-export type HelloRequest = {
-  type: "hello"
-  requestId: number
-  protocol: { major: number; minor: number }
-  packageVersion: string
-  clientId: string
-  hostKind: HostKind
-  capabilities: string[]
-}
-export type StateRequest = { type: "state"; requestId: number }
-export type TransportRequest = {
-  type: "transport"
-  requestId: number
-  action: TransportAction
-  positionMs?: number
-}
-export type Request = HelloRequest | StateRequest | TransportRequest
-export type Event =
-  | { type: "status"; status: ProviderStatus }
-  | { type: "state"; snapshot: RevisionedState }
-export type Response =
-  | { type: "response"; requestId: number; ok: true; data: unknown }
-  | { type: "response"; requestId: number; ok: false; error: ProtocolError }
-export type HelloResult = {
-  daemonInstanceId: string
-  packageVersion: string
-  protocol: { major: number; minor: number }
-  capabilities: string[]
-}
 
-// Public schemas make the wire model discoverable to Effect users. Parsers below
-// additionally enforce semantic constraints and tolerate additive object fields.
-const SafeInt = Schema.Finite.check(Schema.isInt())
-export const ProtocolVersion = Schema.Struct({ major: SafeInt, minor: SafeInt })
+export const LEGACY_PROTOCOL = { major: 1, minor: 0 } as const
+export const PROTOCOL = { major: 1, minRevision: 0, maxRevision: 1 } as const
+export const baselineCapabilities = ["state-replay", "transport"] as const
+
+const SafeInt = Schema.Finite.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(0),
+)
+const ProtocolErrorCodeSchema = Schema.Literals([
+  "INCOMPATIBLE_PROTOCOL",
+  "INVALID_REQUEST",
+  "DUPLICATE_REQUEST_ID",
+  "UNSUPPORTED_CAPABILITY",
+  "UNSUPPORTED_ACTION",
+  "INVALID_SEEK",
+  "PROVIDER_FAILURE",
+  "SERVER_BUSY",
+  "CONNECTION_LOST",
+  "INDETERMINATE_COMMAND",
+  "DISPOSED",
+])
+
+export const ProtocolRangeSchema = Schema.Struct({
+  major: SafeInt,
+  minRevision: SafeInt,
+  maxRevision: SafeInt,
+}).check(
+  Schema.makeFilter((range) =>
+    range.minRevision <= range.maxRevision
+      ? []
+      : [{ path: ["minRevision"], issue: "must not exceed maxRevision" }],
+  ),
+)
+export type ProtocolRange = Schema.Schema.Type<typeof ProtocolRangeSchema>
+
+export const LegacyProtocolSchema = Schema.Struct({
+  major: Schema.Literal(LEGACY_PROTOCOL.major),
+  minor: Schema.Literal(LEGACY_PROTOCOL.minor),
+})
+export type LegacyProtocol = Schema.Schema.Type<typeof LegacyProtocolSchema>
+
+export const NegotiatedProtocolSchema = Schema.Struct({
+  ...ProtocolRangeSchema.fields,
+  selectedRevision: SafeInt,
+}).check(
+  Schema.makeFilter((protocol) =>
+    protocol.selectedRevision >= protocol.minRevision &&
+    protocol.selectedRevision <= protocol.maxRevision
+      ? []
+      : [
+          {
+            path: ["selectedRevision"],
+            issue: "must lie within the negotiated revision range",
+          },
+        ],
+  ),
+)
+export type NegotiatedProtocol = Schema.Schema.Type<
+  typeof NegotiatedProtocolSchema
+>
+
+export const IncompatibilityDetailsSchema = Schema.Struct({
+  client: ProtocolRangeSchema,
+  daemon: ProtocolRangeSchema,
+})
+export type IncompatibilityDetails = Schema.Schema.Type<
+  typeof IncompatibilityDetailsSchema
+>
+
+export const ProtocolErrorSchema = Schema.Struct({
+  code: ProtocolErrorCodeSchema,
+  message: Schema.String,
+  retryable: Schema.Boolean,
+  details: Schema.optionalKey(IncompatibilityDetailsSchema),
+}).check(
+  Schema.makeFilter((error) => {
+    if (error.code === "INCOMPATIBLE_PROTOCOL")
+      return error.details === undefined
+        ? [
+            {
+              path: ["details"],
+              issue: "is required for incompatible protocols",
+            },
+          ]
+        : []
+    return error.details === undefined
+      ? []
+      : [
+          {
+            path: ["details"],
+            issue: "is only valid for incompatible protocols",
+          },
+        ]
+  }),
+)
+export type ProtocolError = Schema.Schema.Type<typeof ProtocolErrorSchema>
+export type ProtocolErrorCode = ProtocolError["code"]
+
+export const CapabilitySchema = Schema.String
+export type Capability = Schema.Schema.Type<typeof CapabilitySchema>
+export const HostKindSchema = Schema.Literals(["opencode", "pi", "test"])
+export type HostKind = Schema.Schema.Type<typeof HostKindSchema>
+export const TransportActionSchema = Schema.Literals([
+  "toggle",
+  "play",
+  "pause",
+  "next",
+  "previous",
+  "seek",
+])
+export type TransportAction = Schema.Schema.Type<typeof TransportActionSchema>
+
 export const ProviderStatusSchema = Schema.Struct({
   kind: Schema.Literals(["ready", "degraded", "unavailable"]),
   provider: Schema.Union([
@@ -78,32 +125,8 @@ export const ProviderStatusSchema = Schema.Struct({
   ]),
   message: Schema.String,
 })
-export const ErrorSchema = Schema.Struct({
-  code: Schema.Literals([
-    "INCOMPATIBLE_PROTOCOL",
-    "INVALID_REQUEST",
-    "DUPLICATE_REQUEST_ID",
-    "UNSUPPORTED_CAPABILITY",
-    "UNSUPPORTED_ACTION",
-    "INVALID_SEEK",
-    "PROVIDER_FAILURE",
-    "SERVER_BUSY",
-    "CONNECTION_LOST",
-    "INDETERMINATE_COMMAND",
-    "DISPOSED",
-  ]),
-  message: Schema.String,
-  retryable: Schema.Boolean,
-})
-export const HelloRequestSchema = Schema.Struct({
-  type: Schema.Literal("hello"),
-  requestId: SafeInt,
-  protocol: ProtocolVersion,
-  packageVersion: Schema.String,
-  clientId: Schema.String,
-  hostKind: Schema.Literals(["opencode", "pi", "test"]),
-  capabilities: Schema.Array(Schema.String),
-})
+export type ProviderStatus = Schema.Schema.Type<typeof ProviderStatusSchema>
+
 export const TrackSchema = Schema.Struct({
   uri: Schema.String,
   id: Schema.String,
@@ -134,23 +157,62 @@ export const RevisionedStateSchema = Schema.Struct({
   revision: SafeInt,
   state: PlayerStateSchema,
 })
+export type RevisionedState = Schema.Schema.Type<typeof RevisionedStateSchema>
+
+export const LegacyHelloRequestSchema = Schema.Struct({
+  type: Schema.Literal("hello"),
+  requestId: SafeInt,
+  protocol: LegacyProtocolSchema,
+  packageVersion: Schema.String,
+  clientId: Schema.String,
+  hostKind: HostKindSchema,
+  capabilities: Schema.Array(CapabilitySchema),
+})
+export const CurrentHelloRequestSchema = Schema.Struct({
+  type: Schema.Literal("hello"),
+  requestId: SafeInt,
+  protocol: ProtocolRangeSchema,
+  packageVersion: Schema.String,
+  clientId: Schema.String,
+  hostKind: HostKindSchema,
+  capabilities: Schema.Array(CapabilitySchema),
+})
+export const HelloRequestSchema = Schema.Union([
+  LegacyHelloRequestSchema,
+  CurrentHelloRequestSchema,
+])
+export type LegacyHelloRequest = Schema.Schema.Type<
+  typeof LegacyHelloRequestSchema
+>
+export type CurrentHelloRequest = Schema.Schema.Type<
+  typeof CurrentHelloRequestSchema
+>
+export type HelloRequest = LegacyHelloRequest | CurrentHelloRequest
+
 export const StateRequestSchema = Schema.Struct({
   type: Schema.Literal("state"),
   requestId: SafeInt,
 })
+export type StateRequest = Schema.Schema.Type<typeof StateRequestSchema>
 export const TransportRequestSchema = Schema.Struct({
   type: Schema.Literal("transport"),
   requestId: SafeInt,
-  action: Schema.Literals([
-    "toggle",
-    "play",
-    "pause",
-    "next",
-    "previous",
-    "seek",
-  ]),
+  action: TransportActionSchema,
   positionMs: Schema.optionalKey(SafeInt),
-})
+}).check(
+  Schema.makeFilter((request) => {
+    if (request.action === "seek")
+      return request.positionMs === undefined
+        ? [{ path: ["positionMs"], issue: "is required for seek" }]
+        : []
+    return request.positionMs === undefined
+      ? []
+      : [{ path: ["positionMs"], issue: "is only valid for seek" }]
+  }),
+)
+export type TransportRequest = Schema.Schema.Type<typeof TransportRequestSchema>
+export type Request = HelloRequest | StateRequest | TransportRequest
+
 export const StatusEventSchema = Schema.Struct({
   type: Schema.Literal("status"),
   status: ProviderStatusSchema,
@@ -159,354 +221,288 @@ export const StateEventSchema = Schema.Struct({
   type: Schema.Literal("state"),
   snapshot: RevisionedStateSchema,
 })
+export type Event =
+  | Schema.Schema.Type<typeof StatusEventSchema>
+  | Schema.Schema.Type<typeof StateEventSchema>
+
+export const LegacyHelloResultSchema = Schema.Struct({
+  daemonInstanceId: Schema.String,
+  packageVersion: Schema.String,
+  protocol: LegacyProtocolSchema,
+  capabilities: Schema.Array(CapabilitySchema),
+})
 export const HelloResultSchema = Schema.Struct({
   daemonInstanceId: Schema.String,
   packageVersion: Schema.String,
-  protocol: ProtocolVersion,
-  capabilities: Schema.Array(Schema.String),
+  protocol: NegotiatedProtocolSchema,
+  capabilities: Schema.Array(CapabilitySchema),
 })
-export const ResponseSchema = Schema.Struct({
+export type HelloResult = Schema.Schema.Type<typeof HelloResultSchema>
+
+export const SuccessResponseSchema = Schema.Struct({
   type: Schema.Literal("response"),
   requestId: SafeInt,
-  ok: Schema.Boolean,
-  data: Schema.optionalKey(Schema.Unknown),
-  error: Schema.optionalKey(ErrorSchema),
+  ok: Schema.Literal(true),
+  data: Schema.Unknown,
+  // Known opposite payloads are forbidden while unrelated additive keys remain
+  // tolerated by Struct's normal excess-property behavior.
+  error: Schema.optionalKey(Schema.Never),
 })
+export const FailureResponseSchema = Schema.Struct({
+  type: Schema.Literal("response"),
+  requestId: SafeInt,
+  ok: Schema.Literal(false),
+  error: ProtocolErrorSchema,
+  data: Schema.optionalKey(Schema.Never),
+})
+export const ResponseSchema = Schema.Union([
+  SuccessResponseSchema,
+  FailureResponseSchema,
+])
+export type Response = Schema.Schema.Type<typeof ResponseSchema>
 
-function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
-}
-function id(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-}
-/** Extract only a safely correlatable ID; never fabricate one for bad frames. */
-export function requestIdFromUnknown(value: unknown): number | undefined {
-  const candidate = record(value)?.requestId
-  return id(candidate) ? candidate : undefined
-}
-function player(value: unknown): CorePlayerState | null {
-  const state = record(value)
-  if (
-    !state ||
-    typeof state.is_playing !== "boolean" ||
-    !id(state.progress_ms) ||
-    typeof state.shuffle !== "boolean" ||
-    !(
-      state.repeat === "off" ||
-      state.repeat === "track" ||
-      state.repeat === "context"
-    ) ||
-    !id(state.fetched_at)
-  )
-    return null
-  if (!("track" in state) || !("device" in state)) return null
-  const trackValue = state.track === null ? null : record(state.track)
-  if (
-    state.track !== null &&
-    (!trackValue ||
-      typeof trackValue.uri !== "string" ||
-      typeof trackValue.id !== "string" ||
-      typeof trackValue.name !== "string" ||
-      typeof trackValue.artists !== "string" ||
-      typeof trackValue.album !== "string" ||
-      !id(trackValue.duration_ms))
-  )
-    return null
-  const deviceValue = state.device === null ? null : record(state.device)
-  if (
-    state.device !== null &&
-    (!deviceValue ||
-      typeof deviceValue.id !== "string" ||
-      typeof deviceValue.name !== "string" ||
-      typeof deviceValue.type !== "string" ||
-      typeof deviceValue.is_active !== "boolean" ||
-      !(
-        deviceValue.volume_percent === null ||
-        (typeof deviceValue.volume_percent === "number" &&
-          Number.isFinite(deviceValue.volume_percent))
-      ) ||
-      typeof deviceValue.supports_volume !== "boolean")
-  )
-    return null
-  const track =
-    trackValue === null
-      ? null
-      : (() => {
-          const {
-            uri,
-            id: trackId,
-            name,
-            artists,
-            album,
-            duration_ms,
-          } = trackValue
-          if (
-            typeof uri !== "string" ||
-            typeof trackId !== "string" ||
-            typeof name !== "string" ||
-            typeof artists !== "string" ||
-            typeof album !== "string" ||
-            !id(duration_ms)
-          )
-            return null
-          return { uri, id: trackId, name, artists, album, duration_ms }
-        })()
-  const device =
-    deviceValue === null
-      ? null
-      : (() => {
-          const {
-            id: deviceId,
-            name,
-            type,
-            is_active,
-            volume_percent,
-            supports_volume,
-          } = deviceValue
-          if (
-            typeof deviceId !== "string" ||
-            typeof name !== "string" ||
-            typeof type !== "string" ||
-            typeof is_active !== "boolean" ||
-            !(
-              volume_percent === null ||
-              (typeof volume_percent === "number" &&
-                Number.isFinite(volume_percent))
-            ) ||
-            typeof supports_volume !== "boolean"
-          )
-            return null
-          return {
-            id: deviceId,
-            name,
-            type,
-            is_active,
-            volume_percent,
-            supports_volume,
-          }
-        })()
-  if (
-    (trackValue !== null && track === null) ||
-    (deviceValue !== null && device === null)
-  )
-    return null
-  return {
-    is_playing: state.is_playing,
-    progress_ms: state.progress_ms,
-    shuffle: state.shuffle,
-    repeat: state.repeat,
-    track,
-    device,
-    fetched_at: state.fetched_at,
+const RequestEnvelopeSchema = Schema.Struct({
+  type: Schema.String,
+  requestId: SafeInt,
+})
+const TransportEnvelopeSchema = Schema.Struct({
+  type: Schema.Literal("transport"),
+  requestId: SafeInt,
+  action: Schema.String,
+  // The envelope preserves an invalid seek position long enough to map it to
+  // the stable INVALID_SEEK error; the final request schema owns acceptance.
+  positionMs: Schema.optionalKey(Schema.Unknown),
+})
+export const ServerFrameSchema = Schema.Union([
+  StatusEventSchema,
+  StateEventSchema,
+  ResponseSchema,
+])
+
+const isSafeNonNegativeInteger = (value: number) =>
+  Number.isSafeInteger(value) && value >= 0
+const decode = <A>(
+  schema: Schema.Codec<A, unknown, never>,
+  value: unknown,
+  message: string,
+) => {
+  try {
+    return Schema.decodeUnknownSync(schema)(value)
+  } catch {
+    throw protocolError("INVALID_REQUEST", message)
   }
 }
-function error(
-  code: ProtocolErrorCode,
+const validRange = (range: ProtocolRange) =>
+  isSafeNonNegativeInteger(range.major) &&
+  isSafeNonNegativeInteger(range.minRevision) &&
+  isSafeNonNegativeInteger(range.maxRevision) &&
+  range.minRevision <= range.maxRevision
+
+export function protocolError(
+  code: Exclude<ProtocolErrorCode, "INCOMPATIBLE_PROTOCOL">,
   message: string,
   retryable = false,
 ): ProtocolError {
   return { code, message, retryable }
 }
-export { error as protocolError }
+export function protocolErrorFromUnknown(
+  value: unknown,
+): ProtocolError | undefined {
+  try {
+    return Schema.decodeUnknownSync(ProtocolErrorSchema)(value)
+  } catch {
+    return undefined
+  }
+}
+export function incompatibility(
+  client: ProtocolRange,
+  daemon: ProtocolRange = PROTOCOL,
+): ProtocolError {
+  return {
+    code: "INCOMPATIBLE_PROTOCOL",
+    message: `protocol range ${client.major}.${client.minRevision}-${client.maxRevision} is incompatible with daemon range ${daemon.major}.${daemon.minRevision}-${daemon.maxRevision}`,
+    retryable: false,
+    details: { client, daemon },
+  }
+}
+
+/** Extract only a schema-valid correlatable ID; never fabricate one. */
+export function requestIdFromUnknown(value: unknown): number | undefined {
+  try {
+    const decoded = Schema.decodeUnknownSync(RequestEnvelopeSchema)(value)
+    return isSafeNonNegativeInteger(decoded.requestId)
+      ? decoded.requestId
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export type NegotiatedSession = {
+  readonly protocol: NegotiatedProtocol
+  readonly capabilities: string[]
+  readonly legacy: boolean
+}
+const legacyRange = (): ProtocolRange => ({
+  major: LEGACY_PROTOCOL.major,
+  minRevision: LEGACY_PROTOCOL.minor,
+  maxRevision: LEGACY_PROTOCOL.minor,
+})
+export function negotiateHello(
+  hello: HelloRequest,
+  daemon: ProtocolRange = PROTOCOL,
+  daemonCapabilities: readonly string[] = baselineCapabilities,
+): NegotiatedSession | ProtocolError {
+  const offered = "minor" in hello.protocol ? legacyRange() : hello.protocol
+  if (!validRange(offered) || !validRange(daemon))
+    return protocolError("INVALID_REQUEST", "invalid protocol revision range")
+  if (offered.major !== daemon.major) return incompatibility(offered, daemon)
+  const minimum = Math.max(offered.minRevision, daemon.minRevision)
+  const maximum = Math.min(offered.maxRevision, daemon.maxRevision)
+  if (minimum > maximum) return incompatibility(offered, daemon)
+  const capabilities = daemonCapabilities.filter((capability) =>
+    hello.capabilities.includes(capability),
+  )
+  if (!capabilities.includes("state-replay"))
+    return protocolError(
+      "UNSUPPORTED_CAPABILITY",
+      "state-replay capability is required",
+    )
+  return {
+    protocol: {
+      major: daemon.major,
+      minRevision: daemon.minRevision,
+      maxRevision: daemon.maxRevision,
+      selectedRevision: maximum,
+    },
+    capabilities,
+    legacy: "minor" in hello.protocol,
+  }
+}
+
 export function decodeRequest(value: unknown): Request {
-  const v = record(value)
-  if (!v || typeof v.type !== "string" || !id(v.requestId))
-    throw error(
+  const envelope = decode(
+    RequestEnvelopeSchema,
+    value,
+    "request must have a non-negative safe requestId",
+  )
+  if (!isSafeNonNegativeInteger(envelope.requestId))
+    throw protocolError(
       "INVALID_REQUEST",
       "request must have a non-negative safe requestId",
     )
-  if (v.type === "hello") {
-    let decoded: Omit<HelloRequest, "capabilities"> & {
-      capabilities: readonly string[]
-    }
-    try {
-      decoded = Schema.decodeUnknownSync(HelloRequestSchema)(v)
-    } catch {
-      throw error("INVALID_REQUEST", "invalid hello request")
-    }
-    if (decoded.requestId < 0)
-      throw error("INVALID_REQUEST", "invalid hello request")
-    return {
-      type: "hello",
-      requestId: decoded.requestId,
-      protocol: {
-        major: decoded.protocol.major,
-        minor: decoded.protocol.minor,
-      },
-      packageVersion: decoded.packageVersion,
-      clientId: decoded.clientId,
-      hostKind: decoded.hostKind,
-      capabilities: [...decoded.capabilities],
-    }
-  }
-  if (v.type === "state") {
-    let decoded: StateRequest
-    try {
-      decoded = Schema.decodeUnknownSync(StateRequestSchema)(v)
-    } catch {
-      throw error("INVALID_REQUEST", "invalid state request")
-    }
-    return { type: "state", requestId: decoded.requestId }
-  }
-  if (v.type === "transport") {
+  if (envelope.type === "hello") {
+    const hello = decode(HelloRequestSchema, value, "invalid hello request")
     if (
-      !["toggle", "play", "pause", "next", "previous", "seek"].includes(
-        String(v.action),
-      )
+      ("minor" in hello.protocol &&
+        (!isSafeNonNegativeInteger(hello.protocol.major) ||
+          !isSafeNonNegativeInteger(hello.protocol.minor))) ||
+      (!("minor" in hello.protocol) && !validRange(hello.protocol))
     )
-      throw error("UNSUPPORTED_ACTION", "unknown transport action")
-    if (v.action === "seek" && !id(v.positionMs))
-      throw error(
-        "INVALID_SEEK",
-        "seek position must be a non-negative safe integer",
+      throw protocolError("INVALID_REQUEST", "invalid hello request")
+    return hello
+  }
+  if (envelope.type === "state")
+    return decode(StateRequestSchema, value, "invalid state request")
+  if (envelope.type === "transport") {
+    const raw = decode(
+      TransportEnvelopeSchema,
+      value,
+      "invalid transport request",
+    )
+    if (
+      !(
+        [
+          "toggle",
+          "play",
+          "pause",
+          "next",
+          "previous",
+          "seek",
+        ] as readonly string[]
+      ).includes(raw.action)
+    )
+      throw protocolError("UNSUPPORTED_ACTION", "unknown transport action")
+    if (raw.action === "seek") {
+      if (
+        typeof raw.positionMs !== "number" ||
+        !isSafeNonNegativeInteger(raw.positionMs)
       )
-    if (v.action !== "seek" && "positionMs" in v)
-      throw error("INVALID_REQUEST", "only seek accepts positionMs")
-    let decoded: TransportRequest
-    try {
-      decoded = Schema.decodeUnknownSync(TransportRequestSchema)(v)
-    } catch {
-      throw error("INVALID_REQUEST", "invalid transport request")
-    }
-    if (decoded.action === "seek") {
-      if (!id(decoded.positionMs))
-        throw error(
+        throw protocolError(
           "INVALID_SEEK",
           "seek position must be a non-negative safe integer",
         )
-      return {
-        type: "transport",
-        requestId: decoded.requestId,
-        action: decoded.action,
-        positionMs: decoded.positionMs,
-      }
-    }
-    return {
-      type: "transport",
-      requestId: decoded.requestId,
-      action: decoded.action,
-    }
+    } else if ("positionMs" in raw)
+      throw protocolError("INVALID_REQUEST", "only seek accepts positionMs")
+    return decode(TransportRequestSchema, raw, "invalid transport request")
   }
-  throw error("INVALID_REQUEST", "unknown request type")
+  throw protocolError("INVALID_REQUEST", "unknown request type")
 }
+
+/** Shared Effect decoder for the server's Effect request boundary. */
+export const decodeRequestEffect = (value: unknown) =>
+  Effect.try({
+    try: () => decodeRequest(value),
+    catch: (cause) =>
+      protocolErrorFromUnknown(cause) ??
+      protocolError("INVALID_REQUEST", "invalid request"),
+  })
+
 export function decodeServerFrame(value: unknown): Event | Response {
-  const v = record(value)
-  if (!v || typeof v.type !== "string")
-    throw error("INVALID_REQUEST", "invalid server frame")
-  if (v.type === "status") {
-    try {
-      Schema.decodeUnknownSync(StatusEventSchema)(v)
-    } catch {
-      throw error("INVALID_REQUEST", "invalid status event")
-    }
-    const s = record(v.status)
+  const frame = decode(ServerFrameSchema, value, "invalid server frame")
+  if (frame.type === "response" && !isSafeNonNegativeInteger(frame.requestId))
+    throw protocolError("INVALID_REQUEST", "invalid response")
+  if (frame.type === "state") {
     if (
-      !s ||
-      !["ready", "degraded", "unavailable"].includes(String(s.kind)) ||
-      !(
-        s.provider === null ||
-        s.provider === "media-control" ||
-        s.provider === "nowplaying-cli"
-      ) ||
-      typeof s.message !== "string"
+      !isSafeNonNegativeInteger(frame.snapshot.revision) ||
+      !isSafeNonNegativeInteger(frame.snapshot.state.progress_ms) ||
+      !isSafeNonNegativeInteger(frame.snapshot.state.fetched_at) ||
+      (frame.snapshot.state.track !== null &&
+        !isSafeNonNegativeInteger(frame.snapshot.state.track.duration_ms))
     )
-      throw error("INVALID_REQUEST", "invalid status event")
-    // Decode with the declared Effect schema before the typed boundary.
-    const status = Schema.decodeUnknownSync(ProviderStatusSchema)(s)
-    return { type: "status", status }
+      throw protocolError("INVALID_REQUEST", "invalid state event")
   }
-  if (v.type === "state") {
-    try {
-      Schema.decodeUnknownSync(StateEventSchema)(v)
-    } catch {
-      throw error("INVALID_REQUEST", "invalid state event")
-    }
-    const s = record(v.snapshot)
-    const normalized = s ? player(s.state) : null
-    if (
-      !s ||
-      typeof s.daemonInstanceId !== "string" ||
-      !id(s.revision) ||
-      !normalized
-    )
-      throw error("INVALID_REQUEST", "invalid state event")
-    return {
-      type: "state",
-      snapshot: {
-        daemonInstanceId: s.daemonInstanceId,
-        revision: s.revision,
-        state: normalized,
-      },
-    }
-  }
-  if (v.type === "response") {
-    try {
-      Schema.decodeUnknownSync(ResponseSchema)(v)
-    } catch {
-      throw error("INVALID_REQUEST", "invalid response")
-    }
-    if (!id(v.requestId) || typeof v.ok !== "boolean")
-      throw error("INVALID_REQUEST", "invalid response")
-    if (v.ok)
-      return {
-        type: "response",
-        requestId: v.requestId,
-        ok: true,
-        data: v.data,
-      }
-    const e = record(v.error)
-    if (
-      !e ||
-      ![
-        "INCOMPATIBLE_PROTOCOL",
-        "INVALID_REQUEST",
-        "DUPLICATE_REQUEST_ID",
-        "UNSUPPORTED_CAPABILITY",
-        "UNSUPPORTED_ACTION",
-        "INVALID_SEEK",
-        "PROVIDER_FAILURE",
-        "SERVER_BUSY",
-        "CONNECTION_LOST",
-        "INDETERMINATE_COMMAND",
-        "DISPOSED",
-      ].includes(String(e.code)) ||
-      typeof e.message !== "string" ||
-      typeof e.retryable !== "boolean"
-    )
-      throw error("INVALID_REQUEST", "invalid error response")
-    return {
-      type: "response",
-      requestId: v.requestId,
-      ok: false,
-      error: Schema.decodeUnknownSync(ErrorSchema)(e),
-    }
-  }
-  throw error("INVALID_REQUEST", "unknown server frame")
+  return frame
 }
+
 export function decodeHelloResult(value: unknown): HelloResult {
-  try {
-    const decoded = Schema.decodeUnknownSync(HelloResultSchema)(value)
-    return {
-      daemonInstanceId: decoded.daemonInstanceId,
-      packageVersion: decoded.packageVersion,
-      protocol: {
-        major: decoded.protocol.major,
-        minor: decoded.protocol.minor,
-      },
-      capabilities: [...decoded.capabilities],
-    }
-  } catch {
-    throw error("INVALID_REQUEST", "invalid hello result")
-  }
+  const result = decode(HelloResultSchema, value, "invalid hello result")
+  const { protocol } = result
+  if (
+    !validRange(protocol) ||
+    !isSafeNonNegativeInteger(protocol.selectedRevision) ||
+    protocol.selectedRevision < protocol.minRevision ||
+    protocol.selectedRevision > protocol.maxRevision
+  )
+    throw protocolError("INVALID_REQUEST", "invalid hello result")
+  return result
 }
+
 export function response(requestId: number, data: unknown): Response {
   return { type: "response", requestId, ok: true, data }
 }
-export function failure(requestId: number, e: ProtocolError): Response {
-  return { type: "response", requestId, ok: false, error: e }
+export function failure(requestId: number, error: ProtocolError): Response {
+  return { type: "response", requestId, ok: false, error }
 }
+export function helloResult(
+  daemonInstanceId: string,
+  negotiated: NegotiatedSession,
+): HelloResult | Schema.Schema.Type<typeof LegacyHelloResultSchema> {
+  if (negotiated.legacy)
+    return {
+      daemonInstanceId,
+      packageVersion: PACKAGE_VERSION,
+      protocol: LEGACY_PROTOCOL,
+      capabilities: negotiated.capabilities,
+    }
+  return {
+    daemonInstanceId,
+    packageVersion: PACKAGE_VERSION,
+    protocol: negotiated.protocol,
+    capabilities: negotiated.capabilities,
+  }
+}
+
 type _PlayerStateCompatibility =
   RevisionedState["state"] extends CorePlayerState ? true : never
 export const playerStateCompatibility: _PlayerStateCompatibility = true

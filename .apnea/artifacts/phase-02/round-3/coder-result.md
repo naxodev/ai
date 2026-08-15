@@ -4,39 +4,44 @@ status: done
 
 ## Changed
 
-- Removed coordinator dependency on the test fixture and restored a production-only sampling API.
-- Split sampling claim from provider execution so invalidation claims/coalesces synchronously before provider work is forked.
-- Reworked poll installation to reserve its revision before creating/attaching a sleeper; stale candidates self-cancel and cannot replace a newer deadline.
-- Replaced yield-based command saturation/close sequencing with concurrent, result-observing submissions.
-- Added focused current-authority poll-deadline coverage.
+- Completed schema-level cross-field validation for protocol ranges, selected revisions, capability error details, seek/non-seek transport payloads, and contradictory response payloads.
+- Added the shared Effect request decoder and used it in the server’s Effect connection path; stable protocol-error mapping remains at that boundary.
+- Added focused schema tests for semantic constraints, additive evolution, and required replay capability.
+- Added real Unix-socket coverage for legacy/current shared replay and live updates, incompatible-peer isolation, state-only transport rejection before admission, and client teardown after an impossible hello result.
 
 Files touched:
-- `packages/music-core/session/coordinator.ts`
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/tests/session-coordinator.test.ts`
+
+- `packages/music-core/session/protocol.ts`
+- `packages/music-core/session/server.ts`
+- `packages/music-core/tests/session-protocol.test.ts`
+- `packages/music-core/tests/session-server.test.ts`
+- `packages/music-core/tests/session-client.test.ts`
 
 ## Verify transcript
 
 ```text
-$ bun test packages/music-core/tests/session-coordinator.test.ts
-exit 0 — 20 pass, 0 fail
-
-$ bun test packages/music-core/tests/system-media.test.ts
-exit 0 — 42 pass, 0 fail
-
-$ bunx nx run-many -t typecheck test format:check package:check --projects=music-core
-exit 0 — typecheck, test, format:check, and package:check passed
-
-$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(|Date\.now\(" packages/music-core/session/coordinator.ts
+$ bun test packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
 exit 0
+37 pass, 0 fail
 
-$ ! rg -n "createFakeProvider|layerFromLegacy|Effect\.repeat\(Effect\.yieldNow|new Promise" packages/music-core/tests/session-coordinator.test.ts
+$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 exit 0
+159 pass, 0 fail
+Verified npm package contents (21 files)
+NX   Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
 $ jj diff --summary
-exit 0 — Phase 2 product/test changes are confined to approved paths; pre-existing `.apnea/state.json` remains untouched.
+exit 0
+M packages/music-core/session/client.ts
+M packages/music-core/session/protocol.ts
+M packages/music-core/session/server.ts
+M packages/music-core/tests/session-client.test.ts
+M packages/music-core/tests/session-protocol.test.ts
+M packages/music-core/tests/session-server.test.ts
+(existing phase artifact/state/task changes remain preserved)
 ```
 
 ## Residual risks
 
-- Poll replacement is covered through newer-authority behavior; no production test hook was added solely to force an internal pre-install interleaving.
+- The full server suite intentionally logs the existing injected unlink failure during multiple-cleanup-failure coverage.
+- No commit, squash, push, or `.apnea/state.json` edit was performed.

@@ -5,12 +5,25 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The package remains aligned with the approved Phase 2 plan and changes remain within its coordinator seam. The new atomic sampling-transition and reserve-to-attach tests resolve the prior trigger and stale-deadline evidence gaps. The focused checks are reproducible (23 coordinator tests and 42 provider tests pass), but one mandatory concurrency gate remains.
+The Phase 2 package remains aligned with the approved plan, and the cumulative source diff remains within its allowed protocol/client/server paths. The terminal-safe frame reader, same-major incompatibility, malformed/missing-capability hello cases, negotiated request classifications, and nested schema tests address the prior findings substantially.
 
 ## Findings
 
-### High — Command tests still do not establish admission before release or closure
+### High — Several explicit negotiated-boundary acceptance cases are still absent
 
-The saturation test forks both competing submissions and immediately releases the active transport (`session-coordinator.test.ts:535-543`); the queued-close test likewise forks both and immediately closes the coordinator scope (`:583-591`). Since neither waits for either submission to cross the lifecycle/queue admission boundary, the observed `SERVER_BUSY` result can occur only after the active job has been released, and the two `DISPOSED` results can come from submissions that first inspect lifecycle after closure. The tests therefore still do not reproduce the package-required queue-capacity boundary or close-versus-enrollment/offer race.
+The package requires compact real-socket evidence for the complete shared boundary. The new combined server test now covers malformed range, missing replay, second hello, duplicate ID, invalid action, and invalid seek, but it still does not cover:
 
-Keep the transport blocked and await the first completed competing result, which must be `SERVER_BUSY` and thereby proves the other caller is enrolled, before releasing transport or closing the scope. Then assert the enrolled caller's FIFO execution or `DISPOSED` settlement. This can be done with test-side Effect queues/deferred results and does not require a production test hook.
+- a valid state/transport request before hello, proving hello-first ordering after schema decoding;
+- an oversized real-socket frame and isolation of that connection;
+- incomplete EOF after a negotiated session (the existing pre-hello partial-frame baseline does not exercise the negotiated boundary);
+- exactly one incompatibility response before the incompatible socket closes.
+
+The package also requires pure major-mismatch negotiation evidence. The same-major disjoint-range test replaced the only real major mismatch, while the protocol tests currently cover only same-major disjoint ranges. Add these focused assertions; they belong to the stated Phase 2 contract and do not reopen lifecycle behavior.
+
+### Medium — Client negotiation validation evidence remains incomplete
+
+The explicit client validates returned capabilities in production code, but tests cover only an out-of-range selected revision, a server failure envelope, malformed JSON, and the normal default result. There is still no focused daemon fixture returning either a capability the client did not request or a result missing required `state-replay`. The package specifically requires the client to reject those impossible negotiated results and destroy the socket; add compact cases alongside the existing malformed-result table.
+
+## Verification
+
+The coder reports 39 focused tests and all 161 music-core/package checks passing. The frame-reader close/EOF behavior and newly added classifications are supported, but the acceptance evidence above remains missing.

@@ -29,6 +29,8 @@ import {
 } from "../session/server.ts"
 import { createMusicSessionClient } from "../session/client.ts"
 import { waitForSignal } from "../session/music-sessiond.ts"
+import { NdjsonFramer } from "../session/framing.ts"
+import { LEGACY_PROTOCOL, PROTOCOL } from "../session/protocol.ts"
 
 const socketPath = (name: string) =>
   `/tmp/music-session-${name}-${process.pid}-${randomUUID()}.sock`
@@ -69,6 +71,359 @@ const connected = (path: string) => {
     socket.once("error", onError)
   })
 }
+
+const frameReader = (socket: net.Socket) => {
+  const framer = new NdjsonFramer()
+  const frames: Array<Record<string, unknown>> = []
+  const received: Array<Record<string, unknown>> = []
+  const waiters: Array<{
+    predicate: (frame: Record<string, unknown>) => boolean
+    resolve: (frame: Record<string, unknown>) => void
+    reject: (cause: unknown) => void
+  }> = []
+  let terminal: unknown
+  const remove = () => {
+    socket.off("data", onData)
+    socket.off("error", finish)
+    socket.off("end", onEnd)
+    socket.off("close", onClose)
+  }
+  const finish = (cause: unknown) => {
+    if (terminal !== undefined) return
+    terminal = cause
+    remove()
+    for (const waiter of waiters.splice(0)) waiter.reject(cause)
+  }
+  const onData = (chunk: Buffer) => {
+    try {
+      for (const frame of framer.push(chunk) as Array<
+        Record<string, unknown>
+      >) {
+        received.push(frame)
+        const index = waiters.findIndex((waiter) => waiter.predicate(frame))
+        if (index < 0) frames.push(frame)
+        else waiters.splice(index, 1)[0]!.resolve(frame)
+      }
+    } catch (cause) {
+      finish(cause)
+    }
+  }
+  const onEnd = () => {
+    try {
+      framer.end()
+      finish(new Error("socket ended before expected frame"))
+    } catch (cause) {
+      finish(cause)
+    }
+  }
+  const onClose = () => finish(new Error("socket closed before expected frame"))
+  socket.on("data", onData)
+  socket.on("error", finish)
+  socket.on("end", onEnd)
+  socket.on("close", onClose)
+  return {
+    next: (predicate: (frame: Record<string, unknown>) => boolean) => {
+      const index = frames.findIndex(predicate)
+      if (index >= 0) return Promise.resolve(frames.splice(index, 1)[0]!)
+      if (terminal !== undefined) return Promise.reject(terminal)
+      return new Promise<Record<string, unknown>>((resolve, reject) =>
+        waiters.push({ predicate, resolve, reject }),
+      )
+    },
+    dispose: () => finish(new Error("reader disposed")),
+    received,
+  }
+}
+
+test("legacy and current peers share replay and live updates", async () => {
+  const path = socketPath("negotiation")
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let current: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let legacy: net.Socket | undefined
+  let legacyFrames: ReturnType<typeof frameReader> | undefined
+  try {
+    server = await startMusicSessionServer({ socketPath: path }, provider)
+    current = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "current",
+      hostKind: "test",
+    })
+    legacy = await connected(path)
+    legacyFrames = frameReader(legacy)
+    legacy.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: LEGACY_PROTOCOL,
+        packageVersion: "old",
+        clientId: "legacy",
+        hostKind: "test",
+        capabilities: ["state-replay"],
+      })}\n`,
+    )
+    const hello = await legacyFrames.next(
+      (frame) => frame.type === "response" && frame.requestId === 0,
+    )
+    expect(hello).toMatchObject({
+      ok: true,
+      data: { protocol: LEGACY_PROTOCOL },
+    })
+    expect(current.daemonInstanceId).toBe(
+      (hello?.data as { daemonInstanceId: string }).daemonInstanceId,
+    )
+    expect(provider.counts.subscriptions).toBe(1)
+    expect(
+      await legacyFrames.next((frame) => frame.type === "state"),
+    ).toMatchObject({
+      snapshot: { daemonInstanceId: current.daemonInstanceId },
+    })
+    expect(current.state?.daemonInstanceId).toBe(current.daemonInstanceId)
+    const currentUpdate = new Promise<void>((resolve) => {
+      const unsubscribe = current!.subscribeState((snapshot) => {
+        if (snapshot.revision > 0) {
+          unsubscribe()
+          resolve()
+        }
+      })
+    })
+    provider.emit({
+      type: "snapshot",
+      state: { ...provider.state, fetched_at: 1 },
+    })
+    expect(
+      await legacyFrames.next((frame) => frame.type === "state"),
+    ).toMatchObject({
+      snapshot: { daemonInstanceId: current.daemonInstanceId },
+    })
+    await currentUpdate
+  } finally {
+    legacyFrames?.dispose()
+    legacy?.destroy()
+    current?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
+test("incompatible and state-only peers do not disturb a healthy session", async () => {
+  const path = socketPath("capabilities")
+  let admissions = 0
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let current: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let incompatible: net.Socket | undefined
+  let incompatibleFrames: ReturnType<typeof frameReader> | undefined
+  let stateOnly: net.Socket | undefined
+  let stateOnlyFrames: ReturnType<typeof frameReader> | undefined
+  let beforeHello: net.Socket | undefined
+  let beforeHelloFrames: ReturnType<typeof frameReader> | undefined
+  let invalidHello: net.Socket | undefined
+  let invalidHelloFrames: ReturnType<typeof frameReader> | undefined
+  let missingReplay: net.Socket | undefined
+  let missingReplayFrames: ReturnType<typeof frameReader> | undefined
+  let oversized: net.Socket | undefined
+  try {
+    server = await startMusicSessionServer(
+      { socketPath: path, maxFrameBytes: 4096 },
+      undefined,
+      {
+        onCommandAdmission: () => admissions++,
+      },
+    )
+    current = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "healthy",
+      hostKind: "test",
+    })
+    incompatible = await connected(path)
+    incompatibleFrames = frameReader(incompatible)
+    const incompatibleClosed = new Promise<void>((resolve) =>
+      incompatible!.once("close", resolve),
+    )
+    incompatible.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: { major: PROTOCOL.major, minRevision: 2, maxRevision: 3 },
+        packageVersion: "future",
+        clientId: "future",
+        hostKind: "test",
+        capabilities: ["state-replay"],
+      })}\n`,
+    )
+    const incompatibility = await incompatibleFrames.next(
+      (frame) => frame.type === "response" && frame.requestId === 0,
+    )
+    expect(incompatibility).toMatchObject({
+      ok: false,
+      error: {
+        code: "INCOMPATIBLE_PROTOCOL",
+        details: {
+          client: { major: PROTOCOL.major, minRevision: 2, maxRevision: 3 },
+          daemon: PROTOCOL,
+        },
+      },
+    })
+    expect((incompatibility.error as { message: string }).message).toContain(
+      "protocol range",
+    )
+    await incompatibleClosed
+    expect(
+      incompatibleFrames.received.filter(
+        (frame) => frame.type === "response" && frame.requestId === 0,
+      ),
+    ).toHaveLength(1)
+    await current.play()
+    expect(admissions).toBe(1)
+
+    beforeHello = await connected(path)
+    beforeHelloFrames = frameReader(beforeHello)
+    const beforeHelloClosed = new Promise<void>((resolve) =>
+      beforeHello!.once("close", resolve),
+    )
+    beforeHello.write(`${JSON.stringify({ type: "state", requestId: 0 })}\n`)
+    expect(
+      await beforeHelloFrames.next(
+        (frame) => frame.type === "response" && frame.requestId === 0,
+      ),
+    ).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } })
+    await beforeHelloClosed
+
+    invalidHello = await connected(path)
+    invalidHelloFrames = frameReader(invalidHello)
+    invalidHello.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: { major: PROTOCOL.major, minRevision: 2, maxRevision: 1 },
+        packageVersion: "bad",
+        clientId: "bad-range",
+        hostKind: "test",
+        capabilities: ["state-replay"],
+      })}\n`,
+    )
+    expect(
+      await invalidHelloFrames.next(
+        (frame) => frame.type === "response" && frame.requestId === 0,
+      ),
+    ).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } })
+
+    missingReplay = await connected(path)
+    missingReplayFrames = frameReader(missingReplay)
+    missingReplay.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: PROTOCOL,
+        packageVersion: "current",
+        clientId: "missing-replay",
+        hostKind: "test",
+        capabilities: ["transport"],
+      })}\n`,
+    )
+    expect(
+      await missingReplayFrames.next(
+        (frame) => frame.type === "response" && frame.requestId === 0,
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "UNSUPPORTED_CAPABILITY" },
+    })
+
+    stateOnly = await connected(path)
+    stateOnlyFrames = frameReader(stateOnly)
+    stateOnly.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: PROTOCOL,
+        packageVersion: "current",
+        clientId: "state-only",
+        hostKind: "test",
+        capabilities: ["state-replay"],
+      })}\n`,
+    )
+    expect(
+      await stateOnlyFrames.next(
+        (frame) => frame.type === "response" && frame.requestId === 0,
+      ),
+    ).toMatchObject({ ok: true, data: { capabilities: ["state-replay"] } })
+    const rejectedTransport = stateOnlyFrames.next(
+      (frame) => frame.type === "response" && frame.requestId === 1,
+    )
+    stateOnly.write(
+      `${JSON.stringify({ type: "transport", requestId: 1, action: "play" })}\n`,
+    )
+    expect(await rejectedTransport).toMatchObject({
+      ok: false,
+      error: { code: "UNSUPPORTED_CAPABILITY" },
+    })
+    const secondHello = stateOnlyFrames.next(
+      (frame) => frame.type === "response" && frame.requestId === 2,
+    )
+    stateOnly.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 2,
+        protocol: PROTOCOL,
+        packageVersion: "current",
+        clientId: "state-only",
+        hostKind: "test",
+        capabilities: ["state-replay"],
+      })}\n`,
+    )
+    expect(await secondHello).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_REQUEST" },
+    })
+    for (const [requestId, request, code] of [
+      [2, { type: "state" }, "DUPLICATE_REQUEST_ID"],
+      [3, { type: "transport", action: "invalid" }, "UNSUPPORTED_ACTION"],
+      [
+        4,
+        { type: "transport", action: "seek", positionMs: -1 },
+        "INVALID_SEEK",
+      ],
+    ] as const) {
+      const result = stateOnlyFrames.next(
+        (frame) => frame.type === "response" && frame.requestId === requestId,
+      )
+      stateOnly.write(`${JSON.stringify({ ...request, requestId })}\n`)
+      expect(await result).toMatchObject({ ok: false, error: { code } })
+    }
+    expect(admissions).toBe(1)
+    const negotiatedEof = new Promise<void>((resolve) =>
+      stateOnly!.once("close", resolve),
+    )
+    stateOnly.write('{"type":"state"')
+    stateOnly.end()
+    await negotiatedEof
+    await current.play()
+    expect(admissions).toBe(2)
+
+    oversized = await connected(path)
+    const oversizedClosed = new Promise<void>((resolve) =>
+      oversized!.once("close", resolve),
+    )
+    oversized.write(Buffer.alloc(4097, 0x78))
+    await oversizedClosed
+    await current.play()
+    expect(admissions).toBe(3)
+  } finally {
+    incompatibleFrames?.dispose()
+    stateOnlyFrames?.dispose()
+    beforeHelloFrames?.dispose()
+    invalidHelloFrames?.dispose()
+    missingReplayFrames?.dispose()
+    incompatible?.destroy()
+    stateOnly?.destroy()
+    beforeHello?.destroy()
+    invalidHello?.destroy()
+    missingReplay?.destroy()
+    oversized?.destroy()
+    current?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
 
 test("scoped signal wait removes both handlers after a signal", async () => {
   const signals = new EventEmitter()

@@ -5,9 +5,11 @@ import {
   baselineCapabilities,
   decodeHelloResult,
   decodeServerFrame,
+  PROTOCOL,
   type HostKind,
   type ProtocolError,
   type ProviderStatus,
+  type ProtocolRange,
   type RevisionedState,
   type TransportAction,
 } from "./protocol.ts"
@@ -18,6 +20,8 @@ export type MusicSessionClientOptions = {
   hostKind: HostKind
   packageVersion?: string
   maxFrameBytes?: number
+  protocolRange?: ProtocolRange
+  capabilities?: string[]
 }
 export class MusicSessionClientError extends Error {
   readonly code: ProtocolError["code"]
@@ -37,6 +41,7 @@ type Listener<T> = (value: T) => void
 export type MusicSessionClient = {
   readonly daemonInstanceId: string
   readonly negotiatedCapabilities: string[]
+  readonly selectedRevision: number
   readonly status: ProviderStatus | undefined
   readonly state: RevisionedState | undefined
   subscribeStatus(listener: Listener<ProviderStatus>): () => void
@@ -62,16 +67,19 @@ class Client implements MusicSessionClient {
   #stateListeners = new Set<Listener<RevisionedState>>()
   readonly daemonInstanceId: string
   readonly negotiatedCapabilities: string[]
+  readonly selectedRevision: number
   constructor(
     socket: net.Socket,
     framer: NdjsonFramer,
     daemonInstanceId: string,
     capabilities: string[],
+    selectedRevision: number,
   ) {
     this.#socket = socket
     this.#framer = framer
     this.daemonInstanceId = daemonInstanceId
     this.negotiatedCapabilities = capabilities
+    this.selectedRevision = selectedRevision
   }
   get status() {
     return this.#status
@@ -255,6 +263,30 @@ export async function createMusicSessionClient(
       message: "socketPath is required",
       retryable: false,
     })
+  const offered = options.protocolRange ?? PROTOCOL
+  const capabilities = options.capabilities ?? [...baselineCapabilities]
+  if (
+    !Array.isArray(capabilities) ||
+    !capabilities.every((capability) => typeof capability === "string")
+  )
+    throw new MusicSessionClientError({
+      code: "INVALID_REQUEST",
+      message: "capabilities must be strings",
+      retryable: false,
+    })
+  if (
+    !Number.isSafeInteger(offered.major) ||
+    !Number.isSafeInteger(offered.minRevision) ||
+    !Number.isSafeInteger(offered.maxRevision) ||
+    offered.major < 0 ||
+    offered.minRevision < 0 ||
+    offered.maxRevision < offered.minRevision
+  )
+    throw new MusicSessionClientError({
+      code: "INVALID_REQUEST",
+      message: "invalid protocol revision range",
+      retryable: false,
+    })
   const socket = net.createConnection(options.socketPath)
   await new Promise<void>((resolve, reject) => {
     socket.once("connect", resolve)
@@ -275,6 +307,7 @@ export async function createMusicSessionClient(
         if (!done) {
           done = true
           cleanup()
+          socket.destroy()
           reject(
             new MusicSessionClientError({
               code: "CONNECTION_LOST",
@@ -294,6 +327,7 @@ export async function createMusicSessionClient(
               done = true
               if (!frame.ok) {
                 cleanup()
+                socket.destroy()
                 reject(new MusicSessionClientError(frame.error))
                 return
               }
@@ -320,11 +354,11 @@ export async function createMusicSessionClient(
         encodeFrame({
           type: "hello",
           requestId: 0,
-          protocol: { major: 1, minor: 0 },
+          protocol: offered,
           packageVersion: options.packageVersion ?? PACKAGE_VERSION,
           clientId: options.clientId,
           hostKind: options.hostKind,
-          capabilities: baselineCapabilities,
+          capabilities,
         }),
       )
     },
@@ -340,11 +374,26 @@ export async function createMusicSessionClient(
       retryable: false,
     })
   }
+  if (
+    result.protocol.major !== offered.major ||
+    result.protocol.selectedRevision < offered.minRevision ||
+    result.protocol.selectedRevision > offered.maxRevision ||
+    !result.capabilities.includes("state-replay") ||
+    result.capabilities.some((capability) => !capabilities.includes(capability))
+  ) {
+    socket.destroy()
+    throw new MusicSessionClientError({
+      code: "INVALID_REQUEST",
+      message: "impossible negotiated hello result",
+      retryable: false,
+    })
+  }
   const client = new Client(
     socket,
     framer,
     result.daemonInstanceId,
-    result.capabilities,
+    [...result.capabilities],
+    result.protocol.selectedRevision,
   )
   client.attach()
   for (const frame of handshake.queued) client.receive(frame)

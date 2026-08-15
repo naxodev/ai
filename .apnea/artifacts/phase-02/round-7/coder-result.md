@@ -4,16 +4,11 @@ status: done
 
 ## Changed
 
-- Made every client handshake rejection path destroy its socket, including server failure responses and malformed daemon frames; validated capability overrides before connecting.
-- Restricted the generic protocol-error constructor so incompatible-protocol errors must use the range-details-bearing constructor.
-- Replaced raw test chunk parsing with a persistent shared `NdjsonFramer` reader.
-- Strengthened real-socket coverage to assert replay for legacy/current peers, structured actionable incompatibility with both ranges and isolated closure, and client cleanup for failure/malformed/impossible hello results.
+- Added a real Unix-socket oversized-frame test against a server configured with a 4096-byte frame limit.
+- The test waits for the oversized peer to close, then issues another healthy-client command to prove connection-local isolation.
 
 Files touched:
 
-- `packages/music-core/session/client.ts`
-- `packages/music-core/session/protocol.ts`
-- `packages/music-core/tests/session-client.test.ts`
 - `packages/music-core/tests/session-server.test.ts`
 
 ## Verify transcript
@@ -21,11 +16,11 @@ Files touched:
 ```text
 $ bun test packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
 exit 0
-38 pass, 0 fail
+40 pass, 0 fail
 
 $ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 exit 0
-160 pass, 0 fail
+162 pass, 0 fail
 Verified npm package contents (21 files)
 NX   Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
@@ -42,5 +37,5 @@ M packages/music-core/tests/session-server.test.ts
 
 ## Residual risks
 
-- The full server suite intentionally logs the existing injected unlink failure during cleanup-failure coverage.
+- The complete server suite intentionally logs its injected unlink failure during cleanup-failure coverage.
 - No commit, squash, push, or `.apnea/state.json` edit was performed.
