@@ -5,22 +5,27 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; previously resolved per-connection late-forwarder and blocked-sampling lifecycle findings remain covered, but outstanding package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains confined to the four allowed files. Round 12 correctly adds public-boundary evidence that structured protocol details survive a request-local failure while the connection remains usable.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — Terminal and disposal acceptance remains incomplete
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+Round 12 does not address the remaining section 8 gaps. The suite still needs deterministic proof that multiple in-flight commands settle exactly once across transport error/end/close ordering, followed by `CONNECTION_LOST` for future calls. It must await daemon closure and inspect captured connection/frame counts so the daemon observes no replay and no second connection.
 
-### Medium — Actual production closing-state refusal remains unobserved
+The disposal-first case still does not await closure or verify listener/cache suppression after late data. Complete it by observing the one close/destruction transition and proving late response/data/error/end/close cannot change pending/future `DISPOSED` outcomes or publish status/state.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. One side of the acceptance-vs-shutdown ownership decision remains unproved.
+### High — Handshake handoff and invalid active streams remain unverified
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+The existing split/multiple-frame case runs only after client creation. There is still no evidence that status/state frames in the hello chunk or immediately after hello survive the handshake-to-active transition. There is also no active malformed nested status/state, malformed NDJSON, or partial-EOF scenario asserting:
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's explicit requirement that every focused test clean up on failure.
+- pending work becomes `INDETERMINATE_COMMAND`;
+- future work sees the non-retryable invalid-daemon `CONNECTION_LOST`;
+- listeners are cleared and malformed/late data is never published;
+- subsequent close/error callbacks do not replace the first terminal result.
+
+Add compact real-socket cases using the scripted daemon's raw-write/end/error/closed controls. Include late status replay, since only late state replay is currently covered.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 13 client tests, 48 focused tests, 170 music-core tests, all requested build/typecheck/format/package targets, and the timing-pattern scan passing. These checks support the details change but do not complete the remaining Phase 3 acceptance boundaries.

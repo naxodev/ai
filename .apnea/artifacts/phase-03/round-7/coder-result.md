@@ -4,37 +4,44 @@ status: done
 
 ## Changed
 
-No additional product edits were required for this re-dispatched Round 7 review: its per-connection late-forwarder and blocked-sampling lifecycle-counter findings are already addressed by the accumulated current worktree. This round re-ran the required package verification and worktree inspection.
+- Added an in-file real Unix-socket scripted-daemon seam with NDJSON client-frame capture and arbitrary daemon frame delivery.
+- Added deterministic client coverage for unsolicited/duplicate response isolation, request-local typed failures followed by success, repeated disposal semantics, ordered correct-instance state authority, and listener-exception isolation.
+- Preserved failure-safe server/socket/client/path cleanup in each new test.
 
-## Files touched
+Files touched:
 
-- `.apnea/artifacts/phase-03/round-7/coder-result.md`
+- `packages/music-core/tests/session-client.test.ts`
 
 ## Verify transcript
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts
-exit 0 — 23 pass, 0 fail
+$ bun test packages/music-core/tests/session-client.test.ts
+exit 0
+9 pass, 0 fail
 
-$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
-exit 0 — 65 pass, 0 fail
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+44 pass, 0 fail
 
 $ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0 — all targets passed (5/5 cached)
-
-$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
 exit 0
+166 pass, 0 fail
+Verified npm package contents (21 files)
+NX   Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
-$ ! rg -n "startMusicSessionServer" packages/music-core/session/music-sessiond.ts
-exit 0
-
-$ ! rg -n "Effect\.repeat\(Effect\.yieldNow|setTimeout\(|new Promise\(.*setTimeout|Date\.now\(" packages/music-core/tests/session-server.test.ts
+$ ! rg -n "setTimeout\\(|Bun\\.sleep|Date\\.now\\(|Effect\\.yieldNow" packages/music-core/tests/session-client.test.ts
 exit 0
 
 $ jj diff --summary
-exit 0 — Phase 3 server/test files and dispatched artifacts are modified; pre-existing `.apnea/state.json` remains untouched.
+exit 0
+M packages/music-core/session/client.ts
+M packages/music-core/session/protocol.ts
+M packages/music-core/tests/session-client.test.ts
+M packages/music-core/tests/session-server.test.ts
+(existing phase artifact/state/task changes remain preserved)
 ```
 
 ## Residual risks
 
-Executable process-boundary injected cleanup-failure evidence, deterministic observation of the actual production `closing` refusal branch, and failure-safe cleanup in some older socket tests remain. `.apnea/state.json` was not edited.
+- Existing cleanup-failure coverage logs its intentional injected unlink warning.
+- No commit, squash, push, or `.apnea/state.json` edit was performed.

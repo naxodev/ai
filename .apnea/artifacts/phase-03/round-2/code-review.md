@@ -1,26 +1,21 @@
 ---
 status: done
-verdict: CHANGES_REQUIRED
+verdict: APPROVED
 ---
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; blocked-sampling exact lifecycle counters and per-connection late-forwarder evidence are resolved, but outstanding package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan. The cumulative diff is confined to the four allowed files and does not enter server production, discovery, startup, reconnect, host, packaging, or documentation scope.
 
-## Findings
+## Review
 
-### High — Executable cleanup failure remains unverified at the process boundary
+The prior blocking test-seam issues are resolved:
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that an injected close/unlink failure produces nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required executable boundary.
+- `frames()` exposes the complete captured client-frame snapshot, and the terminal loss test checks it after observed socket closure, so replayed commands can no longer escape the assertion.
+- `write(...chunks)` performs separate ordered, awaitable socket writes. The stream test now covers a frame split across writes and multiple complete frames in one write.
 
-### Medium — Actual production closing-state refusal remains unobserved
-
-The callback-entry shutdown test proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime marks `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener-close completion. One side of the acceptance-vs-shutdown ownership decision remains unproved.
-
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
-
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release clients, sockets, servers, or paths only on success paths. An intermediate assertion can therefore leak resources despite the package's explicit requirement that every focused test clean up when assertions fail.
+Together with the cumulative client/protocol changes and focused tests, the package now has evidence for request correlation, malformed results and streams, typed request-local failures with details, state authority, listener isolation/unsubscription/replay, handshake handoff, truthful loss/disposal outcomes, late-callback suppression, no replay, and one explicit connection generation. The affected server integration assertion remains narrow.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 50 focused protocol/client/server tests and 172 music-core tests passing, along with build, typecheck, format, package checks, the prohibited-timing scan, and `git diff --check`. The reported diff summary matches the phase's allowed paths.

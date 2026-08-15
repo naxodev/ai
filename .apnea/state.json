@@ -2,12 +2,13 @@
   "version": 1,
   "slug": "music-session-finish-incrementally",
   "step": "committing",
-  "phase_index": 2,
+  "phase_index": 3,
   "phase_count_hint": null,
   "rounds": {
     "plan_review": 1,
     "phase-01/code_review": 4,
-    "phase-02/code_review": 7
+    "phase-02/code_review": 7,
+    "phase-03/code_review": 2
   },
   "vcs": "jj",
   "allow_dirty": true,
@@ -33,12 +34,12 @@
       "label": "apnea:reviewer:mstvf2vg-phrn"
     },
     "coder": {
-      "pane_id": "w2:pBV",
-      "label": "apnea:coder:mstvle00-b9vd"
+      "pane_id": "w2:pBW",
+      "label": "apnea:coder:mstz790k-jjjw"
     }
   },
   "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
   "reviewer_tree_fingerprint": null,
-  "current_phase_package": ".apnea/artifacts/phase-02/round-1/phase-package.md",
-  "current_code_review": ".apnea/artifacts/phase-02/round-7/code-review.md"
+  "current_phase_package": ".apnea/artifacts/phase-03/round-1/phase-package.md",
+  "current_code_review": ".apnea/artifacts/phase-03/round-2/code-review.md"
 }

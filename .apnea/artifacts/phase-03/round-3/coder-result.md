@@ -4,42 +4,42 @@ status: done
 
 ## Changed
 
-- Added a shutdown-only server test seam that exercises the production acceptance callback after `closing` is set; the socket is synchronously destroyed rather than enrolled.
-- Added an executable subprocess test: `SIGTERM` closes the real listener, an injected filesystem permission failure makes unlink fail, and the daemon exits nonzero with the tagged socket operation in diagnostics.
-- Retained tagged daemon diagnostics at the process boundary and made the older focused socket tests failure-safe with `try`/`finally` cleanup.
+- Kept the handshake frame reader installed until active client attachment, preserving frames during the readiness handoff.
+- Added handshake EOF framing validation and removed the successful-connect error listener.
+- Switched client test request parsing to the shared `NdjsonFramer`.
+- Made listener publication a true stable snapshot: callbacks removed during an in-progress delivery still receive that delivery, while later deliveries honor removal.
 
-## Files touched
+Files touched:
 
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
-- `packages/music-core/tests/session-server.test.ts`
-- `.apnea/artifacts/phase-03/round-3/coder-result.md`
+- `packages/music-core/session/client.ts`
+- `packages/music-core/tests/session-client.test.ts`
 
 ## Verify transcript
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts
-exit 0 — 25 pass, 0 fail
-
-$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
-exit 0 — 65 pass, 0 fail
+$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+41 pass, 0 fail
 
 $ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0 — all 5 music-core targets passed; test target: 152 pass, 0 fail
-
-$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
 exit 0
+163 pass, 0 fail
+Verified npm package contents (21 files)
+NX   Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
-$ ! rg -n "startMusicSessionServer" packages/music-core/session/music-sessiond.ts
-exit 0
-
-$ ! rg -n "Effect\.repeat\(Effect\.yieldNow|setTimeout\(|new Promise\(.*setTimeout|Date\.now\(" packages/music-core/tests/session-server.test.ts
+$ ! rg -n "setTimeout\\(|Bun\\.sleep|Date\\.now\\(|Effect\\.yieldNow" packages/music-core/tests/session-client.test.ts
 exit 0
 
 $ jj diff --summary
-exit 0 — product changes remain confined to the Phase 3 server, executable, and server-test files; pre-existing .apnea worktree artifacts and .apnea/state.json remain untouched.
+exit 0
+M packages/music-core/session/client.ts
+M packages/music-core/session/protocol.ts
+M packages/music-core/tests/session-client.test.ts
+M packages/music-core/tests/session-server.test.ts
+(existing phase artifact/state/task changes remain preserved)
 ```
 
 ## Residual risks
 
-The executable cleanup-failure test uses POSIX directory permissions and is therefore intentionally machine-local, matching this macOS Unix-socket phase. No commits were made and `.apnea/state.json` was not edited.
+- Existing cleanup-failure coverage logs its intentional injected unlink warning.
+- No commit, squash, push, or `.apnea/state.json` edit was performed.

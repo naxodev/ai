@@ -5,22 +5,22 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; per-connection late-forwarder evidence and blocked-sampling exact counts are resolved, but remaining package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains within allowed client/protocol/test paths. Invalid seek is now exercised through the real request fixture, but the core lifetime and evidence requirements remain incomplete.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — Overlapping two reader sets is not the required lifetime state machine
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+Attaching the active reader before `handshake.detach()` avoids a normal detach-first window, but it still leaves two independent `data` callbacks rather than one callback routed by handshaking/active state. During the overlap, a re-entrant data event can be fed twice into the same `NdjsonFramer` and processed/queued twice. More importantly, handshake still removes `error`, `end`, and `close` immediately at hello success, leaving lifecycle events unowned throughout result validation until active attachment.
 
-### Medium — Actual production closing-state refusal remains unobserved
+There is also a cleanup leak on invalid/impossible hello results: `cleanup(true)` retained handshake `onData`, but the later validation catch/branch destroys the socket and throws before calling `handshake.detach()`. The retained callback is never removed. Implement the package's single exact callback set and state transition instead of transferring between closures; every handshake failure, terminal path, and disposal must detach that same set once.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. This leaves one side of the package's acceptance-vs-shutdown ownership decision unproved.
+### High — The required acceptance tests remain missing
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+The only new assertion is local invalid-seek rejection within the reverse-order test. The suite still has no deterministic coverage for unsolicited/duplicate responses, malformed or wrong-action success, request-local typed failure, loss races/no replay, repeated disposal/late callbacks, state authority, listener isolation and subscription behavior, malformed nested active frames, split/multiple daemon frames, partial EOF, or gap-free handoff.
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's requirement that every focused test clean up on failure.
+The test file still lacks the package-required reusable scripted-daemon seam capable of sending those events and exposing deterministic receive/close signals. Add the focused request-settlement and stream/listener tests from package sections 7–9 with failure-safe ownership.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports all 41 focused tests, 163 music-core tests, package/build/typecheck/format targets, and the static scan passing. The unchanged test count confirms the broad Phase 3 acceptance matrix is still unsupported.

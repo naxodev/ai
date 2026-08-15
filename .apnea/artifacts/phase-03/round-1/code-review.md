@@ -5,26 +5,42 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package is aligned with the approved plan and correctly confines this gate to foreground server/connection ownership without expanding the protocol or client. The implementation changes stay in allowed paths, but the required ownership and failure matrix is substantially incomplete.
+The Phase 3 package is aligned with the approved plan: it is limited to truthful explicit-client request/stream semantics, one transport-result schema addition, focused client tests, and the affected server assertion. The diff remains within its allowed paths.
 
 ## Findings
 
-### High — The focused suite does not establish Phase 3 ownership or failure semantics
+### High — The handshake-to-active listener gap remains unchanged
 
-`session-server.test.ts` still has only the four pre-existing facade-level integration tests. It has no deterministic lifecycle hooks or direct Layer graph evidence, and does not cover mid-frame/natural disconnects, blocked command or sample shutdown, acceptance-vs-close, healthy-peer isolation, occupied-path safety, post-bind errors, injected close/unlink failures, `ENOENT`, cleanup-failure idempotency, signal-handler cleanup, or exact forwarding/connection finalization. Assertions such as `socket.destroyed` and legacy-provider aggregate disposal counts cannot prove child connection scopes and forwarding fibers were awaited. The package explicitly requires these cases before acceptance, and the coder result acknowledges they remain for later rounds.
+The required lifetime reader refactor was not implemented. Handshake still calls `cleanup()` before resolving, `createMusicSessionClient()` awaits that Promise, constructs `Client`, and only then calls `attach()`. Frames arriving in that interval have no `data` listener and can be lost. `attach()` also installs anonymous `data`/`error`/`close` callbacks, has no `end` handler or `NdjsonFramer.end()` call, and neither terminal transition nor disposal can remove those exact listeners. Clean EOF with a buffered partial frame therefore cannot be classified as invalid daemon data as required.
 
-### High — Post-bind server errors are silently swallowed
+Use one set of owned callback references and one handshaking/active/terminal state machine from connection through teardown; transition to active before exposing readiness and detach every listener exactly once.
 
-The persistent `onServerError` callback in `server.ts:338-341` is a no-op. It prevents Node's unhandled-error crash but never routes the failure into the server Effect lifetime as a tagged `MusicSessionSocketError`, so the Layer, Promise facade, and executable cannot observe a listener failure after bind. This directly violates the required socket boundary.
+### High — Terminal state is not truthful for clean close and does not suppress late frames
 
-### High — Failed listener acquisition leaks its partial server ownership
+The active `close` callback calls `terminate()` with `INDETERMINATE_COMMAND`. `terminate()` stores that same error in `#failure`, so future calls after a clean close incorrectly reject as `INDETERMINATE_COMMAND` rather than `CONNECTION_LOST`. Only pending calls should receive the indeterminate error.
 
-The persistent error listener is installed before `listen` inside the acquisition effect (`server.ts:342-345`), but `acquireRelease` registers its finalizer only after acquisition succeeds. If `listen` fails, no release runs to remove `onServerError` or close the unbound/partially bound `net.Server`. The package requires cleanup of temporary and persistent listeners and partial listener state on startup failure while preserving the tagged listen error.
+Additionally, `receive()` has no terminal/disposed guard. Because socket listeners are left attached, a late data callback after termination/disposal can still mutate cached status/state. `subscribeStatus()` and `subscribeState()` also accept new listeners after terminal/disposed state and may immediately invoke them from that cache, violating the no-listener-after-terminal contract.
 
-### High — Shutdown neither explicitly awaits connection supervision nor reuses failed outcomes
+### High — Most Phase 3 acceptance evidence is absent
 
-The server finalizer destroys sockets and immediately proceeds to remove the server listener, close the listener, and unlink (`server.ts:346-363`). The `FiberSet` is scoped outside that acquisition and is not explicitly interrupted/awaited before listener/path teardown; its scope finalizer runs separately, so the stated dependency order is not established. In the Promise facade, `closed` is set before awaiting `Scope.close` (`server.ts:392-397`), meaning a failed first `close()` rejects once but every later call returns success instead of reusing the same typed failure. Both behaviors contradict the package's ordered, idempotent cleanup contract.
+Only reverse-order settlement of two valid transport responses was added. There is no deterministic coverage for:
+
+- unsolicited and duplicate responses followed by newer requests;
+- malformed or mismatched transport success data;
+- request-local typed failure followed by a successful command;
+- error/end/close races, future `CONNECTION_LOST`, and no replay/second connection;
+- repeated disposal, pending/future `DISPOSED`, and late callbacks;
+- invalid seek sending no frame;
+- wrong-instance, duplicate, stale, and out-of-order state authority;
+- throwing/self-unsubscribing/idempotently unsubscribed listeners and late subscription;
+- malformed nested frames, split/multiple frames, partial EOF, and no handshake reader gap.
+
+The reported 41 focused tests therefore do not establish the package's request, terminal, stream-authority, and listener acceptance checks.
+
+### Medium — Listener delivery still iterates the live set
+
+Status/state publication uses `for (const listener of this.#...Listeners)` directly. A listener that removes another listener during delivery can alter which callbacks receive the current accepted frame. Iterate a stable snapshot and retain per-callback exception isolation as the package requires.
 
 ## Verification
 
-The reported green baseline is reproducible: 4 server tests, 65 coordinator/provider tests, and all static scans pass. Those checks do not cover the findings above.
+The coder reports all focused tests, 163 music-core tests, package contents, build, typecheck, format, and static scans passing. Those are valid regressions, but they do not cover the missing product semantics above.

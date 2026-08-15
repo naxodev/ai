@@ -5,22 +5,28 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; previously resolved per-connection late-forwarder and blocked-sampling lifecycle findings remain covered, but outstanding package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan, and the cumulative product/test diff remains confined to the four allowed files. Round 9 improves the scripted daemon, malformed-result evidence, unsubscribe evidence, and connection counting without broadening scope.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — Disposal can overwrite an earlier terminal outcome and destroy the socket again
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+`Client.dispose()` guards only `#disposed`, not an already completed `#terminal` transition. After connection loss or invalid daemon data, calling `dispose()` changes future calls from the first recorded `CONNECTION_LOST` outcome to `DISPOSED` because `request()` checks `#disposed` first. It also calls `socket.destroy()` after `terminate()` may already have destroyed the socket. This violates package section 5's first-terminal-state rule and section 8's race/exactly-once destruction requirement.
 
-### Medium — Actual production closing-state refusal remains unobserved
+Make disposal a no-op once another terminal transition has won, while retaining `DISPOSED` when disposal wins first. Add focused ordering evidence for loss/error/response versus repeated disposal, pending/future outcomes, and one destruction.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. One side of the acceptance-vs-shutdown ownership decision remains unproved.
+### High — Required terminal and stream/listener acceptance evidence is still missing
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+Round 9 adds only a clean `end()` case and does not use the helper's new `error()`, `destroy()`, raw `write()`, or `closed()` controls. The package still requires focused proof of:
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's explicit requirement that every focused test clean up on failure.
+- multiple in-flight commands settling once across error/end/close ordering, with no replayed frame or second connection;
+- repeated disposal followed by late response/error/end/close, no cache/listener mutation, and exactly-once destruction;
+- split and multiple frames across handshake/active handoff, malformed NDJSON, partial EOF, and malformed nested status/state;
+- status listener behavior, self-unsubscription, listener isolation with subsequent command/reader activity, and no callbacks after termination/disposal;
+- structured `ProtocolError.details` preservation at the public client boundary.
+
+The state test now proves ordinary repeated unsubscribe and late state replay, but those additions do not cover the remaining package sections 8–9 scenarios.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 11 client tests, 46 focused tests, 168 music-core tests, all requested build/typecheck/format/package targets, and the static timing scan passing. The evidence is green but does not exercise the unresolved acceptance requirements above.

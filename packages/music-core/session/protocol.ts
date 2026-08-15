@@ -116,6 +116,10 @@ export const TransportActionSchema = Schema.Literals([
   "seek",
 ])
 export type TransportAction = Schema.Schema.Type<typeof TransportActionSchema>
+export const TransportResultSchema = Schema.Struct({
+  action: TransportActionSchema,
+})
+export type TransportResult = Schema.Schema.Type<typeof TransportResultSchema>
 
 export const ProviderStatusSchema = Schema.Struct({
   kind: Schema.Literals(["ready", "degraded", "unavailable"]),
@@ -447,6 +451,10 @@ export const decodeRequestEffect = (value: unknown) =>
       protocolErrorFromUnknown(cause) ??
       protocolError("INVALID_REQUEST", "invalid request"),
   })
+
+export function decodeTransportResult(value: unknown): TransportResult {
+  return decode(TransportResultSchema, value, "invalid transport result")
+}
 
 export function decodeServerFrame(value: unknown): Event | Response {
   const frame = decode(ServerFrameSchema, value, "invalid server frame")

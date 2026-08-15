@@ -1,22 +1,26 @@
 ---
 status: done
-verdict: APPROVED
+verdict: CHANGES_REQUIRED
 ---
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan: it is confined to foreground socket-server and connection ownership, preserves the current protocol, and does not require later protocol, lifecycle-discovery, load, or host evidence.
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains confined to allowed client/protocol/test paths. Stable listener snapshots, connect-listener cleanup, handshake EOF handling, and use of the shared framer in the one new request test address parts of the prior review.
 
-## Review
+## Findings
 
-The remaining gates are resolved:
+### High — The required single lifetime reader/state machine is still absent
 
-- The shutdown-only hook invokes the production acceptance callback after the real server state is marked closing and before listener close. The focused test proves that exact socket is synchronously destroyed without acceptance, enrollment, or connection finalization.
-- The executable subprocess test starts the real Layer graph, delivers `SIGTERM`, induces a real non-`ENOENT` unlink failure, and proves nonzero exit status plus tagged `MusicSession.SocketError`/`unlink` diagnostics. It also confirms the listener has closed despite the retained socket artifact. Existing direct-Layer and blocked-sampling tests provide the corresponding dependency-order and exact-finalization evidence.
-- The older focused socket/error tests now use failure-safe cleanup, including clients, raw sockets, server facades, Effect scopes, subprocesses, permissions, and temporary paths.
+The implementation still has separate handshake and active listener sets. On hello success, `cleanup(true)` immediately removes handshake `error`, `end`, and `close` handlers while retaining only `data`. Later, after the handshake Promise resumes and validates the result, it calls `handshake.detach()` **before** constructing/attaching the active client callbacks. Thus the code still performs the exact detach-then-attach handoff the package prohibits, rather than transitioning one owned reader from `handshaking` to `active` before readiness.
 
-The accumulated implementation continues to provide one scoped graph, supervised connection/input/forwarding work, deterministic acceptance-shutdown behavior, local connection-failure isolation, ordered and observable cleanup, typed failure propagation, and memoized repeated close.
+This also leaves post-hello pre-attach `end`/`error`/`close` without an owner, and the retained handshake data callback has `done === true`, so its `fail()` path ignores framing/schema failures during that interval. Replace both sets with one socket-lifetime callback set and explicit handshaking/active/terminal state; the same callbacks must validate hello, route queued frames, finalize EOF, and later detach on terminal/dispose.
+
+### High — Phase 3 acceptance evidence is still almost entirely missing
+
+No tests were added this round. The suite still lacks the package-required deterministic evidence for unsolicited/duplicate responses, malformed or wrong-action results, request-local typed failures, loss races and no replay, repeated disposal and late callbacks, invalid-seek no-write behavior, state instance/revision authority, listener isolation/unsubscription/late subscription, malformed nested frames, split/multiple daemon frames, partial EOF, and gap-free handshake delivery.
+
+Switching the reverse-order test's request parser to `NdjsonFramer` does not provide the required reusable scripted-daemon seam or any of those scenarios. Add the focused tests from package sections 7–9 with failure-safe socket/server ownership.
 
 ## Verification
 
-The coder reports 25 server tests, 65 coordinator/provider tests, all five `music-core` targets, required static scans, and `jj diff --summary` passing. I independently ran the focused server suite (25 pass, 0 fail) and all required static scans successfully. Worktree inspection confines product changes to the allowed Phase 3 server, executable, and test files; `.apnea/state.json` remains an unrelated pre-existing modification.
+The coder reports all 41 focused tests, 163 music-core tests, package/build/typecheck/format targets, and the static scan passing. These are valid regressions, but the unchanged test count and remaining two-listener handoff do not satisfy the Phase 3 acceptance gate.

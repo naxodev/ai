@@ -12,6 +12,8 @@ import {
   type ProtocolRange,
   type RevisionedState,
   type TransportAction,
+  type TransportResult,
+  decodeTransportResult,
 } from "./protocol.ts"
 
 export type MusicSessionClientOptions = {
@@ -26,16 +28,20 @@ export type MusicSessionClientOptions = {
 export class MusicSessionClientError extends Error {
   readonly code: ProtocolError["code"]
   readonly retryable: boolean
+  readonly details: ProtocolError["details"]
   constructor(error: ProtocolError) {
     super(error.message)
     this.name = "MusicSessionClientError"
     this.code = error.code
     this.retryable = error.retryable
+    this.details = error.details
   }
 }
 type Pending = {
-  resolve: (value: unknown) => void
-  reject: (error: MusicSessionClientError) => void
+  readonly id: number
+  readonly action: TransportAction
+  readonly resolve: (value: TransportResult) => void
+  readonly reject: (error: MusicSessionClientError) => void
 }
 type Listener<T> = (value: T) => void
 export type MusicSessionClient = {
@@ -46,12 +52,12 @@ export type MusicSessionClient = {
   readonly state: RevisionedState | undefined
   subscribeStatus(listener: Listener<ProviderStatus>): () => void
   subscribeState(listener: Listener<RevisionedState>): () => void
-  toggle(): Promise<unknown>
-  play(): Promise<unknown>
-  pause(): Promise<unknown>
-  next(): Promise<unknown>
-  previous(): Promise<unknown>
-  seek(positionMs: number): Promise<unknown>
+  toggle(): Promise<TransportResult>
+  play(): Promise<TransportResult>
+  pause(): Promise<TransportResult>
+  next(): Promise<TransportResult>
+  previous(): Promise<TransportResult>
+  seek(positionMs: number): Promise<TransportResult>
   dispose(): void
 }
 class Client implements MusicSessionClient {
@@ -61,25 +67,27 @@ class Client implements MusicSessionClient {
   #pending = new Map<number, Pending>()
   #disposed = false
   #failure: ProtocolError | undefined
+  #terminal = false
   #status: ProviderStatus | undefined
   #state: RevisionedState | undefined
   #statusListeners = new Set<Listener<ProviderStatus>>()
   #stateListeners = new Set<Listener<RevisionedState>>()
-  readonly daemonInstanceId: string
-  readonly negotiatedCapabilities: string[]
-  readonly selectedRevision: number
-  constructor(
-    socket: net.Socket,
-    framer: NdjsonFramer,
-    daemonInstanceId: string,
-    capabilities: string[],
-    selectedRevision: number,
-  ) {
+  daemonInstanceId = ""
+  negotiatedCapabilities: string[] = []
+  selectedRevision = 0
+  #phase: "handshaking" | "active" | "terminal" | "disposed" = "handshaking"
+  #preHello: unknown[] = []
+  #handshake:
+    | {
+        readonly offered: ProtocolRange
+        readonly capabilities: string[]
+        readonly resolve: () => void
+        readonly reject: (error: MusicSessionClientError) => void
+      }
+    | undefined
+  constructor(socket: net.Socket, framer: NdjsonFramer) {
     this.#socket = socket
     this.#framer = framer
-    this.daemonInstanceId = daemonInstanceId
-    this.negotiatedCapabilities = capabilities
-    this.selectedRevision = selectedRevision
   }
   get status() {
     return this.#status
@@ -87,34 +95,59 @@ class Client implements MusicSessionClient {
   get state() {
     return this.#state
   }
-  attach() {
-    this.#socket.on("data", (chunk: Buffer) => {
-      try {
-        for (const frame of this.#framer.push(chunk)) this.receive(frame)
-      } catch {
-        this.terminate({
-          code: "CONNECTION_LOST",
-          message: "invalid daemon frame",
-          retryable: false,
-        })
-      }
-    })
-    this.#socket.on("error", () =>
+  #onData = (chunk: Buffer) => {
+    try {
+      for (const frame of this.#framer.push(chunk)) this.receive(frame)
+    } catch {
       this.terminate({
         code: "CONNECTION_LOST",
-        message: "connection lost",
-        retryable: true,
-      }),
-    )
-    this.#socket.on("close", () =>
+        message: "invalid daemon frame",
+        retryable: false,
+      })
+    }
+  }
+  #onError = () =>
+    this.terminate({
+      code: "CONNECTION_LOST",
+      message: "connection lost",
+      retryable: true,
+    })
+  #onEnd = () => {
+    try {
+      this.#framer.end()
       this.terminate({
-        code: "INDETERMINATE_COMMAND",
-        message: "connection closed before command result",
+        code: "CONNECTION_LOST",
+        message: "connection ended",
         retryable: true,
-      }),
-    )
+      })
+    } catch {
+      this.terminate({
+        code: "CONNECTION_LOST",
+        message: "invalid daemon frame",
+        retryable: false,
+      })
+    }
+  }
+  #onClose = () =>
+    this.terminate({
+      code: "CONNECTION_LOST",
+      message: "connection closed",
+      retryable: true,
+    })
+  attach() {
+    this.#socket.on("data", this.#onData)
+    this.#socket.on("error", this.#onError)
+    this.#socket.on("end", this.#onEnd)
+    this.#socket.on("close", this.#onClose)
+  }
+  private detach() {
+    this.#socket.off("data", this.#onData)
+    this.#socket.off("error", this.#onError)
+    this.#socket.off("end", this.#onEnd)
+    this.#socket.off("close", this.#onClose)
   }
   receive(raw: unknown) {
+    if (this.#terminal || this.#disposed) return
     let frame: ReturnType<typeof decodeServerFrame>
     try {
       frame = decodeServerFrame(raw)
@@ -126,18 +159,68 @@ class Client implements MusicSessionClient {
       })
       return
     }
+    if (this.#phase === "handshaking") {
+      if (frame.type !== "response" || frame.requestId !== 0) {
+        this.#preHello.push(raw)
+        return
+      }
+      if (!frame.ok) {
+        this.terminate(frame.error)
+        return
+      }
+      const handshake = this.#handshake!
+      try {
+        const result = decodeHelloResult(frame.data)
+        if (
+          result.protocol.major !== handshake.offered.major ||
+          result.protocol.selectedRevision < handshake.offered.minRevision ||
+          result.protocol.selectedRevision > handshake.offered.maxRevision ||
+          !result.capabilities.includes("state-replay") ||
+          result.capabilities.some(
+            (capability) => !handshake.capabilities.includes(capability),
+          )
+        )
+          throw new Error("impossible negotiated hello result")
+        this.daemonInstanceId = result.daemonInstanceId
+        this.negotiatedCapabilities = [...result.capabilities]
+        this.selectedRevision = result.protocol.selectedRevision
+        this.#phase = "active"
+        this.#handshake = undefined
+        for (const queued of this.#preHello.splice(0)) this.receive(queued)
+        handshake.resolve()
+      } catch {
+        this.terminate({
+          code: "INVALID_REQUEST",
+          message: "invalid hello result",
+          retryable: false,
+        })
+      }
+      return
+    }
     if (frame.type === "response") {
       const pending = this.#pending.get(frame.requestId)
       if (!pending) return
-      this.#pending.delete(frame.requestId)
-      frame.ok
-        ? pending.resolve(frame.data)
-        : pending.reject(new MusicSessionClientError(frame.error))
+      if (!frame.ok) {
+        this.settleFailure(pending, frame.error)
+        return
+      }
+      try {
+        const result = decodeTransportResult(frame.data)
+        if (result.action !== pending.action)
+          throw new Error("transport result action does not match request")
+        this.settleSuccess(pending, result)
+      } catch {
+        this.terminate({
+          code: "CONNECTION_LOST",
+          message: "invalid daemon transport result",
+          retryable: false,
+        })
+      }
       return
     }
     if (frame.type === "status") {
       this.#status = frame.status
-      for (const listener of this.#statusListeners)
+      for (const listener of [...this.#statusListeners])
         try {
           listener(frame.status)
         } catch {}
@@ -149,12 +232,25 @@ class Client implements MusicSessionClient {
     )
       return
     this.#state = frame.snapshot
-    for (const listener of this.#stateListeners)
+    for (const listener of [...this.#stateListeners])
       try {
         listener(frame.snapshot)
       } catch {}
   }
-  private request(value: Record<string, unknown>): Promise<unknown> {
+  private settleSuccess(pending: Pending, result: TransportResult) {
+    if (this.#pending.get(pending.id) !== pending) return
+    this.#pending.delete(pending.id)
+    pending.resolve(result)
+  }
+  private settleFailure(pending: Pending, error: ProtocolError) {
+    if (this.#pending.get(pending.id) !== pending) return
+    this.#pending.delete(pending.id)
+    pending.reject(new MusicSessionClientError(error))
+  }
+  private request(
+    action: TransportAction,
+    positionMs?: number,
+  ): Promise<TransportResult> {
     if (this.#disposed)
       return Promise.reject(
         new MusicSessionClientError({
@@ -165,26 +261,48 @@ class Client implements MusicSessionClient {
       )
     if (this.#failure)
       return Promise.reject(new MusicSessionClientError(this.#failure))
+    if (this.#nextId > Number.MAX_SAFE_INTEGER)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "INVALID_REQUEST",
+          message: "request ID space exhausted",
+          retryable: false,
+        }),
+      )
     const requestId = this.#nextId++
-    return new Promise((resolve, reject) => {
-      this.#pending.set(requestId, { resolve, reject })
-      this.#socket.write(encodeFrame({ ...value, requestId }), (error) => {
-        if (error) {
-          this.terminate({
-            code: "CONNECTION_LOST",
-            message: error.message,
-            retryable: true,
-          })
-        }
-      })
+    return new Promise<TransportResult>((resolve, reject) => {
+      const pending: Pending = { id: requestId, action, resolve, reject }
+      this.#pending.set(requestId, pending)
+      try {
+        this.#socket.write(
+          encodeFrame({
+            type: "transport",
+            action,
+            ...(positionMs === undefined ? {} : { positionMs }),
+            requestId,
+          }),
+          (error) => {
+            if (error) {
+              this.terminate({
+                code: "CONNECTION_LOST",
+                message: error.message,
+                retryable: true,
+              })
+            }
+          },
+        )
+      } catch (cause) {
+        this.terminate({
+          code: "CONNECTION_LOST",
+          message:
+            cause instanceof Error ? cause.message : "connection write failed",
+          retryable: true,
+        })
+      }
     })
   }
   private transport(action: TransportAction, positionMs?: number) {
-    return this.request({
-      type: "transport",
-      action,
-      ...(positionMs === undefined ? {} : { positionMs }),
-    })
+    return this.request(action, positionMs)
   }
   toggle() {
     return this.transport("toggle")
@@ -213,6 +331,7 @@ class Client implements MusicSessionClient {
     return this.transport("seek", positionMs)
   }
   subscribeStatus(listener: Listener<ProviderStatus>) {
+    if (this.#terminal || this.#disposed) return () => {}
     this.#statusListeners.add(listener)
     if (this.#status)
       try {
@@ -221,6 +340,7 @@ class Client implements MusicSessionClient {
     return () => this.#statusListeners.delete(listener)
   }
   subscribeState(listener: Listener<RevisionedState>) {
+    if (this.#terminal || this.#disposed) return () => {}
     this.#stateListeners.add(listener)
     if (this.#state)
       try {
@@ -228,22 +348,70 @@ class Client implements MusicSessionClient {
       } catch {}
     return () => this.#stateListeners.delete(listener)
   }
+  beginHandshake(
+    frame: string,
+    offered: ProtocolRange,
+    capabilities: string[],
+  ): Promise<void> {
+    this.attach()
+    return new Promise<void>((resolve, reject) => {
+      this.#handshake = { offered, capabilities, resolve, reject }
+      try {
+        this.#socket.write(frame, (error) => {
+          if (error)
+            this.terminate({
+              code: "CONNECTION_LOST",
+              message: error.message,
+              retryable: true,
+            })
+        })
+      } catch (cause) {
+        this.terminate({
+          code: "CONNECTION_LOST",
+          message:
+            cause instanceof Error ? cause.message : "connection write failed",
+          retryable: true,
+        })
+      }
+    })
+  }
   private failAll(error: ProtocolError) {
-    for (const pending of this.#pending.values())
-      pending.reject(new MusicSessionClientError(error))
-    this.#pending.clear()
+    for (const pending of [...this.#pending.values()])
+      this.settleFailure(pending, error)
   }
   private terminate(error: ProtocolError) {
-    if (this.#failure || this.#disposed) return
+    if (this.#terminal || this.#disposed) return
+    this.#terminal = true
+    this.#phase = "terminal"
     this.#failure = error
+    const handshake = this.#handshake
+    this.#handshake = undefined
+    this.detach()
+    handshake?.reject(new MusicSessionClientError(error))
     this.#statusListeners.clear()
     this.#stateListeners.clear()
-    this.failAll(error)
+    this.failAll({
+      code: "INDETERMINATE_COMMAND",
+      message: "connection ended before command result",
+      retryable: true,
+    })
     if (!this.#socket.destroyed) this.#socket.destroy()
   }
   dispose() {
-    if (this.#disposed) return
+    if (this.#disposed || this.#terminal) return
     this.#disposed = true
+    this.#terminal = true
+    this.#phase = "disposed"
+    const handshake = this.#handshake
+    this.#handshake = undefined
+    this.detach()
+    handshake?.reject(
+      new MusicSessionClientError({
+        code: "DISPOSED",
+        message: "client is disposed",
+        retryable: false,
+      }),
+    )
     this.#statusListeners.clear()
     this.#stateListeners.clear()
     this.failAll({
@@ -289,8 +457,16 @@ export async function createMusicSessionClient(
     })
   const socket = net.createConnection(options.socketPath)
   await new Promise<void>((resolve, reject) => {
-    socket.once("connect", resolve)
-    socket.once("error", reject)
+    const onConnect = () => {
+      socket.off("error", onError)
+      resolve()
+    }
+    const onError = (cause: Error) => {
+      socket.off("connect", onConnect)
+      reject(cause)
+    }
+    socket.once("connect", onConnect)
+    socket.once("error", onError)
   }).catch((cause: unknown) => {
     throw new MusicSessionClientError({
       code: "CONNECTION_LOST",
@@ -298,104 +474,19 @@ export async function createMusicSessionClient(
       retryable: true,
     })
   })
-  const framer = new NdjsonFramer(options.maxFrameBytes)
-  const handshake = await new Promise<{ hello: unknown; queued: unknown[] }>(
-    (resolve, reject) => {
-      const queued: unknown[] = []
-      let done = false
-      const fail = (message: string) => {
-        if (!done) {
-          done = true
-          cleanup()
-          socket.destroy()
-          reject(
-            new MusicSessionClientError({
-              code: "CONNECTION_LOST",
-              message,
-              retryable: true,
-            }),
-          )
-        }
-      }
-      const onError = () => fail("connection lost during hello")
-      const onClose = () => fail("connection closed during hello")
-      const onData = (chunk: Buffer) => {
-        try {
-          for (const raw of framer.push(chunk)) {
-            const frame = decodeServerFrame(raw)
-            if (!done && frame.type === "response" && frame.requestId === 0) {
-              done = true
-              if (!frame.ok) {
-                cleanup()
-                socket.destroy()
-                reject(new MusicSessionClientError(frame.error))
-                return
-              }
-              queued.push(...framer.push(""))
-              cleanup()
-              resolve({ hello: frame.data, queued })
-              continue
-            }
-            if (done) queued.push(raw)
-          }
-        } catch {
-          fail("invalid hello response")
-        }
-      }
-      const cleanup = () => {
-        socket.off("error", onError)
-        socket.off("close", onClose)
-        socket.off("data", onData)
-      }
-      socket.on("error", onError)
-      socket.on("close", onClose)
-      socket.on("data", onData)
-      socket.write(
-        encodeFrame({
-          type: "hello",
-          requestId: 0,
-          protocol: offered,
-          packageVersion: options.packageVersion ?? PACKAGE_VERSION,
-          clientId: options.clientId,
-          hostKind: options.hostKind,
-          capabilities,
-        }),
-      )
-    },
+  const client = new Client(socket, new NdjsonFramer(options.maxFrameBytes))
+  await client.beginHandshake(
+    encodeFrame({
+      type: "hello",
+      requestId: 0,
+      protocol: offered,
+      packageVersion: options.packageVersion ?? PACKAGE_VERSION,
+      clientId: options.clientId,
+      hostKind: options.hostKind,
+      capabilities,
+    }),
+    offered,
+    capabilities,
   )
-  let result: ReturnType<typeof decodeHelloResult>
-  try {
-    result = decodeHelloResult(handshake.hello)
-  } catch {
-    socket.destroy()
-    throw new MusicSessionClientError({
-      code: "INVALID_REQUEST",
-      message: "invalid hello result",
-      retryable: false,
-    })
-  }
-  if (
-    result.protocol.major !== offered.major ||
-    result.protocol.selectedRevision < offered.minRevision ||
-    result.protocol.selectedRevision > offered.maxRevision ||
-    !result.capabilities.includes("state-replay") ||
-    result.capabilities.some((capability) => !capabilities.includes(capability))
-  ) {
-    socket.destroy()
-    throw new MusicSessionClientError({
-      code: "INVALID_REQUEST",
-      message: "impossible negotiated hello result",
-      retryable: false,
-    })
-  }
-  const client = new Client(
-    socket,
-    framer,
-    result.daemonInstanceId,
-    [...result.capabilities],
-    result.protocol.selectedRevision,
-  )
-  client.attach()
-  for (const frame of handshake.queued) client.receive(frame)
   return client
 }

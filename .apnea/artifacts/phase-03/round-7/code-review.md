@@ -5,22 +5,29 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; per-connection late-forwarder and blocked-sampling lifecycle findings are resolved, but remaining package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains confined to allowed paths. The new tests add useful evidence for unsolicited/duplicate response isolation, request-local failure, basic disposal, state filtering, and listener exception isolation.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — The scripted daemon does not provide the required deterministic controls
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+`startScriptedDaemon()` exposes only `send()`, `end()`, and `close()`. It does not expose accepted/received/closed signals, split/multiple raw writes, socket error/destroy controls, or a way to await a particular captured client frame. `send()` silently does nothing when no socket exists. As a result, tests send responses immediately after calling client methods without synchronizing on daemon receipt, and the helper cannot drive the required loss, framing, handoff, or late-callback races.
 
-### Medium — Actual production closing-state refusal remains unobserved
+Extend the in-file seam as specified: retain the accepted socket, provide deterministic frame-received waits/queues and close observation, support complete/split/multiple raw daemon writes plus end/error/destroy, and make startup/cleanup failure-safe.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. One side of the acceptance-vs-shutdown ownership decision remains unproved.
+### High — Several Phase 3 acceptance checks remain unproved
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+The suite now has nine client tests, but still lacks focused evidence for:
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's requirement that every focused test clean up on failure.
+- malformed transport success data (wrong action alone is covered);
+- network error/end/close races, once-only indeterminate settlement, future connection loss, and no replay/second connection;
+- disposal followed by late response/error/end/close callbacks and exactly-once socket destruction;
+- a higher accepted state followed by an out-of-order middle revision;
+- actual post-unsubscribe delivery suppression, self-unsubscription, late subscriber immediate replay, and listener processing remaining live for later commands/status;
+- malformed nested active status/state, malformed NDJSON, partial EOF, split/multiple daemon frames, and explicit gap-free handoff behavior.
+
+The disposal test unsubscribes twice but sends no later frame, so its unchanged-array assertion does not prove unsubscription. Add the remaining package section 8–9 scenarios using the strengthened deterministic seam.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 9 client tests, 44 focused protocol/client/server tests, 166 music-core tests, all package/build/typecheck/format targets, and the static scan passing. These support the scenarios added this round but do not complete the Phase 3 gate.

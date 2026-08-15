@@ -5,22 +5,26 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; previously resolved per-connection late-forwarder and blocked-sampling lifecycle findings remain covered, but outstanding package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan. The cumulative diff is still limited to the four allowed files, and Round 10 correctly prevents disposal from replacing an earlier terminal outcome.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — The package's terminal/disposal acceptance matrix remains unverified
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+The clean-EOF test now calls `dispose()` after loss and preserves `CONNECTION_LOST`, but it still covers only one pending command and one ordering. The scripted daemon's `error()`, `destroy()`, and `closed()` controls remain unused. There is still no focused proof that:
 
-### Medium — Actual production closing-state refusal remains unobserved
+- multiple in-flight commands settle once across error/end/close ordering;
+- the daemon receives no replayed frame as well as no second connection;
+- disposal wins when invoked first, remains idempotent, closes/destroys once, and ignores late response/error/end/close without changing pending/future results or listener/cache state.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. One side of the acceptance-vs-shutdown ownership decision remains unproved.
+These are explicit package sections 5 and 8 acceptance requirements, not optional expansion.
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+### High — Framing/handoff and remaining listener contract evidence is still absent
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's explicit requirement that every focused test clean up on failure.
+The suite still does not exercise the helper's raw `write()` seam. Add focused coverage for split and multiple frames around hello-to-active handoff, malformed NDJSON, partial EOF, and malformed nested status/state, asserting one terminal transition and no malformed/late publication. It also still lacks status listener behavior, self-unsubscription, callbacks suppressed after termination/disposal, and public preservation of structured `ProtocolError.details`.
+
+The existing state test proves thrown-listener isolation, ordinary repeated unsubscribe, ordered state authority, and late state replay, but it does not satisfy these remaining package section 9 checks.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 11 client tests, 46 focused tests, 168 music-core tests, all requested build/typecheck/format/package targets, and the timing-pattern scan passing. The implementation fix is supported, but the reported suite still does not cover the unresolved acceptance requirements above.

@@ -5,22 +5,26 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; previously resolved per-connection late-forwarder and blocked-sampling lifecycle findings remain covered, but outstanding package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains confined to the four allowed files. Round 11 adds useful disposal-first, split/multiple active-frame, status-listener, self-unsubscribe, and post-listener command evidence.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — Terminal/disposal evidence still does not cover the required races and observations
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+The new disposal test checks pending/future codes, but it does not await the daemon's close signal, observe one destruction, or attach state/status listeners and prove late data cannot mutate caches or invoke them. Its response and error are issued only after synchronous disposal, rather than covering response/error/end/close orderings.
 
-### Medium — Actual production closing-state refusal remains unobserved
+The loss suite also still has only one pending command and clean EOF. Add a compact deterministic scenario with multiple in-flight commands and error/end/close ordering, assert each settles once, await closure, and inspect captured frame/connection counts to prove neither replay nor a second connection occurred. Complete the disposal scenario with closure and late listener/cache assertions.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. One side of the acceptance-vs-shutdown ownership decision remains unproved.
+### High — Handshake and invalid-stream acceptance remains missing
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+The raw-write test exercises split/multiple frames only after `createMusicSessionClient()` has completed. It does not prove status/state preservation in the hello-to-active handoff. There is still no active malformed nested status/state, malformed NDJSON, or partial-EOF test proving one invalid-daemon terminal transition, indeterminate pending work, cleared listeners, and no malformed/late publication.
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's explicit requirement that every focused test clean up on failure.
+Add focused real-socket cases for the package's handoff and invalid-stream boundaries. Also verify late status subscription receives the accepted cached value and that no status/state callback runs after termination/disposal.
+
+### Medium — Structured protocol details remain unverified
+
+`MusicSessionClientError.details` is implemented but no public-boundary test sends a valid request-local failure containing structured details and asserts they are preserved while the connection remains usable. Add this assertion to the existing typed-failure test.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 13 client tests, 48 focused tests, 170 music-core tests, all requested build/typecheck/format/package targets, and the timing-pattern scan passing. These checks are green but do not cover the remaining package acceptance boundaries above.

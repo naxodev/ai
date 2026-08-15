@@ -5,22 +5,27 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; previously resolved per-connection late-forwarder and blocked-sampling lifecycle findings remain covered, but outstanding package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains limited to the four allowed files. Round 13 adds focused evidence that an event appended to the negotiated hello write is retained as active status and replayed to a late subscriber.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — Invalid active-stream behavior remains unverified
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+The new hello-tail test addresses the handoff gap, but there is still no active malformed nested status/state, malformed NDJSON, or partial-EOF scenario. The package requires deterministic evidence that invalid framing/schema:
 
-### Medium — Actual production closing-state refusal remains unobserved
+- rejects pending commands once as `INDETERMINATE_COMMAND`;
+- records non-retryable invalid-daemon `CONNECTION_LOST` for future calls;
+- clears listeners without publishing malformed or late status/state;
+- preserves that first terminal outcome through later error/close callbacks.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. One side of the acceptance-vs-shutdown ownership decision remains unproved.
+Add compact cases using the scripted daemon's raw `write()`, `end()`, and `closed()` controls.
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+### High — Network-loss and disposal race acceptance remains incomplete
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's explicit requirement that every focused test clean up on failure.
+The loss test still covers only one pending command and clean EOF, does not await daemon closure, and does not inspect captured frames to prove no command replay. Add multiple in-flight commands and an error/end/close ordering, assert each Promise settles exactly once, then assert future `CONNECTION_LOST`, one connection, and no extra client frame.
+
+The disposal-first case still does not await the close transition or attach listeners before delivering late data. Complete it by proving repeated disposal produces one observed close/destruction and that late response/data/error/end/close cannot alter pending/future `DISPOSED`, mutate the caches, or invoke status/state listeners.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 14 client tests, 49 focused tests, 171 music-core tests, all requested build/typecheck/format/package targets, and the timing-pattern scan passing. These checks support the handoff addition but do not complete the remaining Phase 3 acceptance requirements above.

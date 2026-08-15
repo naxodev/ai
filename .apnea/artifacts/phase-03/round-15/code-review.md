@@ -5,22 +5,22 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan. This re-dispatched round makes no product or test changes; previously resolved per-connection late-forwarder and blocked-sampling lifecycle findings remain covered, but outstanding package gates prevent approval.
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains confined to the four allowed files. Round 15 substantially completes the invalid-stream, multi-command loss, closure, and post-disposal listener/cache evidence.
 
 ## Findings
 
-### High — Executable cleanup failure remains unverified at the process boundary
+### High — The no-replay assertion cannot detect replayed frames
 
-Signal-handler removal and direct Layer composition are covered, but no runtime executable-path test proves signal-driven dependency-order cleanup or that close/unlink failure sets nonzero process status while retaining tagged operation/message diagnostics. Promise-facade and direct-Layer failure tests do not establish the required Node process boundary.
+In `connection loss races leave every admitted command indeterminate without replay`, the final assertion calls `daemon.received(3)`. That helper always returns `received.slice(0, 3)`, so it equals the earlier three-frame snapshot even if a fourth or later replay frame was received. The test therefore proves one connection but not the package's required daemon-observed no-replay behavior.
 
-### Medium — Actual production closing-state refusal remains unobserved
+Expose a terminal-safe total frame count or full snapshot and, after `await daemon.closed()`, assert that exactly the hello and two original transport frames were received.
 
-Callback-entry shutdown proves the enrolled-and-finalized branch because the callback continues synchronously before the Effect runtime sets `closing`. Synthetic `canEnroll` refusal proves generic destruction, but no callback is deterministically delivered after production marks the server closing and before listener close completes. One side of the acceptance-vs-shutdown ownership decision remains unproved.
+### Medium — The scripted daemon's “split” API joins chunks into one write
 
-### Medium — Failure-safe cleanup remains incomplete across older focused tests
+`write(...chunks)` currently executes `socket.write(chunks.join(""))`. Consequently, the test named `split and multiple status frames...` does not send split writes; it sends one combined write containing two complete frames. This leaves the package's real-socket split-frame seam/evidence unfulfilled.
 
-Recent comprehensive, blocked-work, and lifecycle tests use `try/finally`, but several earlier socket/error tests still release resources only on success paths. An intermediate assertion can leak clients, sockets, listeners, or paths despite the package's explicit requirement that every focused test clean up on failure.
+Have the helper issue the supplied chunks as separate ordered writes with awaitable completion, then use that API in the focused split-frame test. Keep the multiple-frame-in-one-write assertion as separate evidence.
 
 ## Verification
 
-The coder reports 23 server tests, 65 coordinator/provider tests, all package targets, static scans, and `jj diff --summary` passing. Independent worktree inspection confirms product changes remain confined to allowed Phase 3 files; `.apnea/state.json` remains a pre-existing unrelated modification. No new evidence addresses the findings above.
+The coder reports 50 focused tests, 172 music-core tests, all requested build/typecheck/format/package targets, the timing-pattern scan, and `git diff --check` passing. This supports the new cases, but the two assertions above do not yet prove the claimed no-replay and split-write boundaries.

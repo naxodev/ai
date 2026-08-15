@@ -1465,7 +1465,7 @@ test("server scope interrupts a blocked socket command without a late response",
     await Effect.runPromise(Scope.close(scope, Exit.void))
     await expect(pending).rejects.toMatchObject({
       name: "MusicSessionClientError",
-      message: "connection closed before command result",
+      code: "INDETERMINATE_COMMAND",
     })
     expect(finalized).toBe(1)
     expect(await Effect.runPromise(Ref.get(fixture.activeTransports))).toBe(0)

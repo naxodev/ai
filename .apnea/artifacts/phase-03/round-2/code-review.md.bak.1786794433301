@@ -1,0 +1,40 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package comparison
+
+The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains within its allowed client/protocol/test paths. Active-client terminal errors, owned active listeners, EOF finalization, late-frame guards, and future `CONNECTION_LOST` semantics improve the implementation, but the package is not complete.
+
+## Findings
+
+### High — The claimed handshake-to-active reader ownership is still not implemented
+
+The handshake still installs temporary `data`/`error`/`close` listeners, calls `cleanup()` before resolving, awaits that Promise, constructs `Client`, and only then calls `client.attach()`. This is the same detached-listener handoff called out in Round 1; the new owned callbacks cover only the active `Client`, not the socket lifetime. A frame delivered after handshake cleanup and before `attach()` has no reader.
+
+Handshake also still has no `end` callback and never calls `framer.end()`, so partial EOF during hello is reported only later as generic close/loss rather than invalid daemon framing. The initial connect Promise leaves its `error` listener installed after successful connect as well. Replace these separate listener sets with the package's single handshaking/active/terminal state machine and exact lifetime callbacks; transition active before resolving readiness.
+
+### High — Most required deterministic client evidence remains absent
+
+No client tests were added in this round, so the Round 1 acceptance gap remains. The suite still has only the Phase 2 handshake cases plus one reverse-order response test. It does not prove:
+
+- unsolicited and duplicate responses cannot settle pending or later requests;
+- malformed/mismatched success makes pending work indeterminate and future work connection-lost;
+- typed request-local failure leaves the connection usable;
+- network error/end/close races settle once without replay or another connection;
+- repeated disposal yields pending/future `DISPOSED` and ignores late callbacks;
+- invalid seek emits no frame;
+- state instance/revision authority and ordered notifications;
+- throwing, self-unsubscribing, idempotently unsubscribed, and late subscribers;
+- split/multiple frames, malformed nested frames, partial EOF, or gap-free handshake delivery.
+
+The package requires an in-file scripted real-socket daemon seam using `NdjsonFramer`; the added ad hoc reverse-order server still uses a manual string parser and cannot drive the remaining scenarios.
+
+### Medium — Listener snapshot delivery remains conditional on the live set
+
+Publication snapshots the listener set but checks `set.has(listener)` before each callback. One listener can therefore remove another during the current delivery and suppress that callback, so current-frame delivery is not a stable iteration. Iterate the captured snapshot directly; idempotent unsubscribe should prevent future events, not mutate an already-started delivery.
+
+## Verification
+
+The coder reports all 41 focused tests, 163 music-core tests, package/build/typecheck/format targets, and the static scan passing. Those regressions support the active-terminal changes but do not cover the missing lifetime handoff and acceptance scenarios above.
