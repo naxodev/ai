@@ -2,51 +2,52 @@
 status: done
 ---
 
-## Changed
+## What changed
 
-Addressed the Phase 2 review findings in `packages/music-core/tests/session-server.test.ts`.
-
-- Added a bounded Effect timeout around each expected contender exit and stderr collection. A hung loser or a winner that fails to stop now throws into the test body, allowing `finally` to kill and await both retained children before removing the temporary directory.
-- After the loser exits, the original winner client now completes a real `play` command before the second client connects, proving that its existing connection remains live rather than merely retaining cached replay state.
-
-No production files were changed.
+Addressed the Phase 2 cleanup review finding in `package-smoke.ts`. Cleanup now always inspects and terminates the exact unique tmux socket before removing the smoke root, including after a failed `new-session`. It distinguishes a confirmed absent server from an unconfirmed tmux inspection error; the latter fails cleanup and retains/reports the root rather than deleting under a potentially live host.
 
 ## Files touched
 
-- `packages/music-core/tests/session-server.test.ts`
+- `packages/opencode-music-player/scripts/package-smoke.ts`
 - `.apnea/artifacts/phase-02/round-2/coder-result.md`
 
-## Verify transcript
+## Verification transcript
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts -t 'process.*daemon.*contender|daemon.*winner.*loser'
-exit 0
-1 pass, 0 fail
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit: 0
+> nx run opencode-music-player:smoke
+> bun run smoke:package
+$ bun run scripts/package-smoke.ts
+installed OpenCode 0.0.0-next-17386: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-w0p0US/node_modules/@opencode-ai/cli/bin/opencode2.exe
+isolated packed resolutions: plugin=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-w0p0US/node_modules/@naxodev/opencode-music-player/index.tsx; core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-w0p0US/node_modules/@naxodev/music-core/index.ts
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+NX Successfully ran target smoke for project opencode-music-player
 
-$ bun test packages/music-core/tests/session-server.test.ts
-exit 0
-36 pass, 0 fail
-
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-204 pass, 0 fail
-Verified npm package contents (21 files)
-NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+$ ! find packages/opencode-music-player -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
+exit: 0
+(no output; no prohibited package-directory artifacts found)
 
 $ jj diff --summary
-exit 0
-M packages/music-core/tests/session-server.test.ts
-(existing unrelated phase metadata/state/task changes remain outside this implementation)
+exit: 0
+tail:
+A .apnea/tasks/code-p2-r2-1786919000830.md
+A .apnea/tasks/code_review-p2-r1-1786918847843.md
+A .apnea/tasks/phase_package-p2-r1-1786918545319.md
+M packages/opencode-music-player/scripts/package-smoke.ts
 
-$ jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
-exit 0
-Only packages/music-core/tests/session-server.test.ts changed among inspected Phase 2 product paths.
-
-$ git diff --check
-exit 0
+$ jj status
+exit: 0
+tail:
+A .apnea/tasks/code-p2-r2-1786919000830.md
+A .apnea/tasks/code_review-p2-r1-1786918847843.md
+A .apnea/tasks/phase_package-p2-r1-1786918545319.md
+M packages/opencode-music-player/scripts/package-smoke.ts
+Working copy  (@) : ornnkvpk cf4112ef (no description set)
+Parent commit (@-): kyzluvzy 863c6e7b test(music): verify packed daemon under Node
 ```
 
 ## Residual risks
 
-- The existing intentional multi-cleanup test continues to emit its expected tagged unlink warning during the server suite.
-- No commit, push, or `.apnea/state.json` edit was performed.
+The machine-local smoke still depends on Bun, npm, tmux, and availability of the exact pinned OpenCode package. A tmux connection/inspection failure is intentionally treated as unconfirmed termination: the smoke fails and retains/reports its unique root rather than risking deletion beneath a live host. Existing unrelated `.apnea` changes, including `.apnea/state.json`, were preserved and not edited.

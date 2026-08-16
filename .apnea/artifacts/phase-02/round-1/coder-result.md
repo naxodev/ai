@@ -2,54 +2,52 @@
 status: done
 ---
 
-## Changed
+## What changed
 
-Added a test-only separate-process daemon contention proof in `packages/music-core/tests/session-server.test.ts`.
-
-- Starts two `runMusicSessionDaemon` children behind a parent-controlled stdin barrier for the same explicit Unix socket.
-- Uses the real selected provider graph and records bounded stderr lifecycle observations.
-- Proves a single healthy listener/coordinator/provider winner, real hello/replay from two clients, socket identity/mode preservation after loser exit, and clean winner shutdown.
-- Proves the tagged nonzero loser has no coordinator, subscription, provider-finalization, sample, or command ownership.
-- Ensures clients, child processes, stderr collectors, and temporary socket/reservation artifacts are released unconditionally.
-
-No production source files were changed.
+Updated the OpenCode packed-package smoke to create its unique temporary root before packing both archives, install the exact source-manifest OpenCode CLI pin with temporary-project-only CLI trust, and launch only its realpathed isolated binary. The smoke now verifies installed CLI/plugin versions, isolated packed plugin/core package-name resolution, keeps the existing deterministic UI scenarios, and confirms exact tmux termination before removing the root.
 
 ## Files touched
 
-- `packages/music-core/tests/session-server.test.ts`
+- `packages/opencode-music-player/scripts/package-smoke.ts`
 - `.apnea/artifacts/phase-02/round-1/coder-result.md`
 
-## Verify transcript
+## Verification transcript
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts -t 'process.*daemon.*contender|daemon.*winner.*loser'
-exit 0
-1 pass, 0 fail
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit: 0
+> nx run opencode-music-player:smoke
+> bun run smoke:package
+$ bun run scripts/package-smoke.ts
+installed OpenCode 0.0.0-next-17386: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-reAwJp/node_modules/@opencode-ai/cli/bin/opencode2.exe
+isolated packed resolutions: plugin=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-reAwJp/node_modules/@naxodev/opencode-music-player/index.tsx; core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-reAwJp/node_modules/@naxodev/music-core/index.ts
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+NX Successfully ran target smoke for project opencode-music-player
 
-$ bun test packages/music-core/tests/session-server.test.ts
-exit 0
-36 pass, 0 fail
-
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-204 pass, 0 fail
-Verified npm package contents (21 files)
-NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
+$ ! find packages/opencode-music-player -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
+exit: 0
+(no output; no prohibited package-directory artifacts found)
 
 $ jj diff --summary
-exit 0
-M packages/music-core/tests/session-server.test.ts
-(existing unrelated phase metadata/state/task changes remain outside this implementation)
+exit: 0
+tail:
+M .apnea/state.json
+A .apnea/tasks/code-p2-r1-1786918649558.md
+A .apnea/tasks/phase_package-p2-r1-1786918545319.md
+M packages/opencode-music-player/scripts/package-smoke.ts
 
-$ jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
-exit 0
-Only packages/music-core/tests/session-server.test.ts changed among inspected Phase 2 product paths.
-
-$ git diff --check
-exit 0
+$ jj status
+exit: 0
+tail:
+M .apnea/state.json
+A .apnea/tasks/code-p2-r1-1786918649558.md
+A .apnea/tasks/phase_package-p2-r1-1786918545319.md
+M packages/opencode-music-player/scripts/package-smoke.ts
+Working copy  (@) : ornnkvpk 9126ce88 (no description set)
+Parent commit (@-): kyzluvzy 863c6e7b test(music): verify packed daemon under Node
 ```
 
 ## Residual risks
 
-- The existing intentional multi-cleanup test continues to emit its expected tagged unlink warning during the server suite.
-- No commit, push, or `.apnea/state.json` edit was performed.
+The machine-local smoke requires Bun, npm, tmux, and availability of the exact pinned OpenCode package. All generated content is scoped to the smoke root and its unique tmux socket; successful verification reported cleanup. Existing unrelated `.apnea` changes, including `.apnea/state.json`, were preserved and not edited.
