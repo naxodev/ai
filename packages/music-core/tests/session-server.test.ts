@@ -2308,6 +2308,70 @@ test("two socket admissions retain FIFO order while the first transport blocks",
   }
 })
 
+test("mixed-host Pi and OpenCode clients share FIFO and survive Pi reload", async () => {
+  const path = socketPath("mixed-host")
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let opencode: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let pi: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let replacement:
+    Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let releaseFirst: () => void = () => {}
+  const firstStarted = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+  const transport = provider.transport.bind(provider)
+  provider.transport = async (action, positionMs) => {
+    if (action === "play") releaseFirst()
+    await transport(action, positionMs)
+  }
+  try {
+    provider.blockTransport()
+    server = await startMusicSessionServer({ socketPath: path }, provider)
+    opencode = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "mixed-opencode",
+      hostKind: "opencode",
+    })
+    pi = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "mixed-pi",
+      hostKind: "pi",
+    })
+    const first = opencode.play()
+    await firstStarted
+    const second = pi.next()
+    const third = opencode.pause()
+    provider.releaseTransport()
+    await Promise.all([first, second, third])
+    expect(provider.calls).toEqual(["play", "next", "pause"])
+    expect(provider.counts.subscriptions).toBe(1)
+
+    await pi.dispose()
+    replacement = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "mixed-pi-replacement",
+      hostKind: "pi",
+    })
+    const observed = new Promise<void>((resolve) => {
+      opencode!.subscribeState((snapshot) => {
+        if (snapshot.state.progress_ms === 4321) resolve()
+      })
+    })
+    provider.state = { ...provider.state, progress_ms: 4321 }
+    provider.emit({ type: "snapshot", state: provider.state })
+    await observed
+    await opencode.next()
+    expect(provider.calls).toEqual(["play", "next", "pause", "next"])
+    expect(provider.counts.subscriptions).toBe(1)
+  } finally {
+    opencode?.dispose()
+    pi?.dispose()
+    replacement?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
 test("idle grace tracks negotiated clients, cancels, restarts, and expires once", async () => {
   const path = socketPath("idle-grace")
   const provider = createFakeProvider()
