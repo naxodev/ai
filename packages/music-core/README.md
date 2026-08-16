@@ -1,26 +1,19 @@
 # `@naxodev/music-core`
 
-Host-neutral contracts and logic shared by the Pi and OpenCode music plugins.
+Host-neutral music-session contracts, a same-user machine-local client boundary, and compatibility APIs for Pi and OpenCode.
 
-## Purpose
+## Session architecture
 
-Shared Now Playing behavior so both hosts consume one implementation:
+Many host clients connect to one owner-only Unix socket daemon. The daemon selects and owns one provider, its event source, playback clock, recovery polling, state and status authority, global transport queue, and native artwork reads. Clients receive hello, status, and state replay on connection, followed by revisioned updates. Host presentation remains outside this package.
 
-- player/track types and helpers
-- `formatMs` progress formatting
-- backend-owned playback clocks (`createPlaybackClock`, `liveFromClock`, `trackKey`)
-- track reconciliation (`mergePlayer`)
-- frame-driven playback visualization (`createEngine`, `stepEngine`, `displayLevel`, `isFlat`); it generates levels and does not analyse audio
-- portable CLI runner (`run`) and system-media provider (`createSystemMedia`, bundle labels, backend detection)
-- optional provider-change subscriptions (`MusicBackend.subscribe`) with authoritative snapshots and stream-termination invalidations
+The implementation uses Effect v4 ownership rather than host timers and provider processes: `Config` validates runtime limits and timing, `Schema` validates untrusted protocol and provider data, and Layers/scopes own the provider, coordinator, listener, connections, and finalizers. `Schedule` paces startup and reconnect, `SubscriptionRef` provides replayable status and state, and bounded queues, semaphores, and streams isolate command, sampling, fan-out, and artwork work.
 
-Pi and OpenCode keep presentation, registration, lifecycle, and notifications in their host packages. Pi keeps ANSI waveform rendering. OpenCode keeps Solid presentation, artwork, and Kitty graphics.
+Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the complete ownership and failure model.
 
 ## Public surface
 
 ```ts
 import {
-  // types
   type Track,
   type Device,
   type PlayerState,
@@ -33,89 +26,105 @@ import {
   type MusicChangeInvalidationEvent,
   emptyPlayer,
   isMac,
-  // format
   formatMs,
-  // clock
   type Clock,
   type PlaybackClock,
   type SampleSyncInput,
   type SampleSyncResult,
   createPlaybackClock,
   liveFromClock,
+  resetClock,
+  seekClock,
+  setClockPlaying,
+  syncFromSample,
   trackKey,
-  // reconcile
   mergePlayer,
-  // waveform engine
+  sameTrackIdentity,
   type WaveEngine,
   type WaveFrame,
   createEngine,
-  stepEngine,
-  livePlaybackPosition,
   displayLevel,
   isFlat,
-  // runner + system media
+  livePlaybackPosition,
+  stepEngine,
+  waveformSeedKey,
   type CommandResult,
   type LineStreamCallbacks,
   type LineStreamDisposer,
   type LineStreamStarter,
-  type SystemMediaDependencies,
   run,
   startLineStream,
+  whichOk,
+  type SystemMediaDependencies,
   createSystemMedia,
   bundleLabel,
   effectiveBundle,
   hasMediaControl,
   hasNowPlayingCli,
   resetMediaBackend,
+  type MusicSessionClient,
+  type MusicSessionClientOptions,
+  type MusicSessionConnectionLifecycle,
+  type ReconnectingMusicSessionClient,
+  type ReconnectingMusicSessionClientOptions,
+  createMusicSessionClient,
+  createReconnectingMusicSessionClient,
+  MusicSessionClientError,
+  type ArtworkIdentity,
+  type ArtworkResult,
+  type Capability,
+  type HostKind,
+  type ProtocolError,
+  type ProtocolErrorCode,
+  type ProviderStatus,
+  type RevisionedState,
+  type TransportAction,
+  PROTOCOL,
+  baselineCapabilities,
 } from "@naxodev/music-core"
 ```
 
-## Playback clocks
+The package also exports the track, device, player, formatting, clock, reconciliation, waveform, runner, and system-media compatibility symbols from `index.ts`. `createSystemMedia()` remains an intentional low-level provider API for compatibility and custom integrations. Production Pi and OpenCode hosts use the session client instead.
 
-Each `createSystemMedia()` backend owns one `PlaybackClock`. Sampling, idle transitions, and successful play, pause, seek, next, and previous commands mutate only that instance.
-
-For tests or custom providers, create an explicit clock:
+### Reconnecting client
 
 ```ts
-const clock = createPlaybackClock()
-clock.syncFromSample({
-  key: trackKey("Song", "Artist", "id"),
-  reported_ms: 10_000,
-  duration_ms: 180_000,
-  playing: true,
-  rate: 1,
-  now: Date.now(),
+import {
+  baselineCapabilities,
+  createReconnectingMusicSessionClient,
+} from "@naxodev/music-core"
+
+const client = await createReconnectingMusicSessionClient({
+  clientId: "my-host-session",
+  hostKind: "test",
+  capabilities: [...baselineCapabilities],
 })
-clock.setPlaying(false)
-clock.seek(20_000)
-clock.reset()
+
+const stopState = client.subscribeState((snapshot) => {
+  render(snapshot.state)
+})
+const stopStatus = client.subscribeStatus((status) => {
+  renderStatus(status)
+})
+
+await client.play()
+stopState()
+stopStatus()
+await client.dispose()
 ```
 
-`liveFromClock` and `trackKey` stay stateless helpers. New backends own independent clocks. The deprecated clock functions use an isolated module-global compatibility clock and do not affect backend instances.
+Use a unique client ID and a valid host kind. Subscribe before rendering so replayed state and status can establish presentation, use the transport methods for commands, and await `dispose()` when the host lifecycle ends.
 
-## Provider changes
+## Lifecycle and compatibility
 
-`media-control` backends provide `subscribe` for immediate playback updates. Complete stream payloads are already normalized into authoritative `PlayerState` snapshots. Hosts project those snapshots directly. Stream termination emits one invalidation so a host can recover by calling `player()` if needed.
+Concurrent callers that find no endpoint converge through owner-only startup-marker coordination; socket binding remains the final singleton authority. Hello negotiates a supported revision and capability intersection, so supported legacy and current package versions can share a live daemon. An incompatible client receives terminal range details and cannot unlink, replace, or otherwise disturb the healthy generation.
 
-```ts
-const stop = backend.subscribe?.((event) => {
-  if (!event) return
-  if (event.type === "snapshot") {
-    applyPlayer(event.state)
-    return
-  }
-  if (event.type === "invalidation" && event.reason === "stream-terminated") {
-    void refreshFromPlayer()
-  }
-})
-```
+A reconnecting client retains its last accepted state for presentation. It adopts a replacement only after hello and replay succeed, fences old daemon instance IDs and revisions, and never replays commands. Commands unresolved at connection loss are indeterminate. When the last negotiated client leaves, the daemon starts a bounded idle grace; final cleanup removes only artifacts whose ownership it has proven.
 
-Existing `() => void` listeners remain valid and may ignore the event argument.
+## Bounds and cost
 
-`nowplaying-cli` remains polling-only and omits `subscribe`.
+Frames, queues, and pending requests are finite. A slow or abusive connection can be disconnected locally without blocking other clients; state fan-out coalesces while required responses and status remain preserved. Provider observation is O(1), client fan-out is O(N), and the native-artwork path is bounded and deduplicated. The verified 24-client alternating scenario is capacity evidence, not a configured maximum.
 
-The disposer returned by `subscribe` owns the active `media-control stream` process and any pending restart timer. Call it during host teardown. Disposal is idempotent: it invalidates the active generation, clears the retry timer once, disposes the stream once, and suppresses every late line, terminal callback, snapshot, invalidation, and restart.
+## Low-level provider compatibility
 
-## Status
-
-Pi and OpenCode consume this package for provider discovery and commands, normalized state, playback clocks, reconciliation, formatting, and waveform engine behavior.
+`createSystemMedia()` exposes normalized media discovery and transport for low-level consumers. It supports provider event subscriptions when available and polling-only fallback behavior, but it does not describe the production host topology. Use the session client for shared daemon ownership.

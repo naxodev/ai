@@ -6,13 +6,15 @@ It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed throug
 
 ## Architecture
 
-`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns OpenCode registration, lifecycle, sidebar presentation, notifications, controls, artwork, and Kitty graphics.
+One reconnecting music-session client supplies replayed and live state, provider status, transport, and daemon-owned native artwork bytes. The shared same-user daemon owns provider discovery, provider events and polling, the playback clock, and global transport ordering.
 
-With `media-control`, authoritative provider snapshots project to the sidebar immediately. Transport execution stays independent from bounded recovery sampling and artwork work. Bounded 3/5/8-second polling remains active for stream recovery and `nowplaying-cli` compatibility. Plugin teardown releases both the provider subscription and poll timer.
+OpenCode keeps plugin/controller lifecycle, the Solid compact and sidebar UI, optimistic transport presentation, seek coalescing, notifications, waveform projection, iTunes catalog fallback and downloads, conversion, bounded presentation cache/jobs, and Kitty or half-block rendering. Plugin disposal removes local listeners and presentation work, then disposes only its session client. Other clients keep the shared daemon alive.
+
+Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the daemon protocol, replay, reconnect, and cleanup model.
 
 ## Artwork
 
-The player reads embedded artwork from `media-control` when the active app publishes it. When artwork is missing, it sends the track title, artist, and album to the public iTunes Search API and downloads an exact match from Apple's image CDN.
+The daemon performs the bounded native `media-control get --now` read and validates the complete recording identity before and after the read. OpenCode uses those bytes when available, then keeps iTunes Search fallback, image downloads, conversion, cache/job ownership, and terminal rendering locally. Artwork failure never blocks playback state.
 
 Ghostty and other terminals with Kitty graphics support display the cover as a native image. Other terminals receive a true-color half-block rendering of the same cover.
 
@@ -107,7 +109,7 @@ bun install --frozen-lockfile
 bun run check
 ```
 
-The workspace check verifies formatting, types, tests, and npm package contents for both packages. See the workspace [contribution guide](../../CONTRIBUTING.md) for the contribution and release process.
+The workspace smoke packs OpenCode and music-core, installs them into an isolated project, and launches the exact manifest-selected OpenCode CLI. It verifies the packed plugin's deterministic playing, paused, collapsed, narrow, and smallest layouts. See the workspace [contribution guide](../../CONTRIBUTING.md) for the contribution and release process.
 
 ## Community
 

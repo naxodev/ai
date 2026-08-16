@@ -2,9 +2,11 @@
 
 This Nx workspace hosts a shared music core and two macOS integrations for AI coding tools. The npm packages publish TypeScript source because their hosts load source packages directly.
 
+OpenCode and Pi use lightweight clients connected to one same-user, machine-local music-session daemon. The daemon owns one provider and fans its state out to every connected client. Read the [music session architecture field guide](docs/music-session-architecture.html) for the ownership and failure model.
+
 ## Music Core
 
-`@naxodev/music-core` provides the host-neutral media behavior used by both integrations.
+`@naxodev/music-core` provides the host-neutral music-session client and compatibility APIs used by both integrations.
 
 [Read the package documentation](packages/music-core/README.md)
 

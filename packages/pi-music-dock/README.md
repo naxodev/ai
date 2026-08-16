@@ -6,7 +6,11 @@ The extension only calls `ctx.ui.setStatus`. It does not replace Pi's footer, so
 
 ## Architecture
 
-`@naxodev/music-core` provides host-neutral media discovery, commands, state, clocks, reconciliation, formatting, and waveform levels. This package owns Pi registration, lifecycle, notifications, status composition, controls, and ANSI waveform rendering. With `media-control`, authoritative provider snapshots update the status immediately. Repeated controls run in order. Bounded 3/5/8-second polling remains active for stream recovery and `nowplaying-cli` compatibility. Reload and shutdown release the provider subscription, polling, waveform, and pending control work.
+Each live Pi TUI session owns one reconnecting music-session client and its local status, waveform, and notification lifecycle. The same-user machine-local daemon owns provider discovery, provider stream and polling, the playback clock, global transport ordering, and native media reads.
+
+Reload and shutdown mark the old Pi session inactive, remove client listeners, stop the waveform interval, clear the status, and await client disposal. Reloading or exiting Pi does not stop a daemon that still serves OpenCode or another client.
+
+Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the shared daemon's ownership, replay, reconnect, and idle-exit behavior.
 
 ## Requirements
 
@@ -68,16 +72,14 @@ Shortcut constants are at the top of `extensions/music-dock/index.ts`. Edit them
 
 ## Manual verification
 
-Automated tests cannot confirm the live macOS media state or terminal rendering. Verify a release in a real Pi TUI:
+Automated tests cannot confirm live macOS media state or terminal rendering. Verify a release in a real Pi TUI:
 
-1. Start playback and confirm the status shows the pause icon, an animated waveform, and the current title and artist.
-2. Run `/music`; confirm playback pauses, the icon changes to play, and the waveform decays to a still baseline.
-3. Run `/music` again; confirm playback and waveform animation resume.
-4. Run `/music-next` and `/music-prev`; confirm each command changes the track and status.
-5. Try `ctrl+alt+p`, `ctrl+alt+n`, and `ctrl+alt+b`; use the slash commands if the terminal intercepts a chord.
-6. Run `/reload`; confirm only one status line remains and controls still work.
-7. Change tracks, play, pause, or stop media outside Pi; confirm the status changes promptly.
-8. Exit Pi; confirm it shuts down promptly without a lingering provider process or timer.
+1. Start playback and confirm the shared state shows the pause icon, an animated waveform, and the current title and artist.
+2. Run `/music`, `/music-next`, and `/music-prev`; confirm controls and status reflect the shared daemon state.
+3. Try `ctrl+alt+p`, `ctrl+alt+n`, and `ctrl+alt+b`; use the slash commands if the terminal intercepts a chord.
+4. Run `/reload`; confirm one Pi client/status remains and daemon/provider ownership is not duplicated.
+5. Keep another host connected, close Pi, and confirm the other host remains healthy.
+6. Exit the final client; confirm the daemon can complete idle shutdown and remove its owned socket artifacts.
 
 ## Development
 
@@ -87,7 +89,7 @@ bun run check
 bun packages/pi-music-dock/scripts/waveform-demo.ts
 ```
 
-The workspace check includes a package smoke test that creates an npm tarball, loads that packed package through Pi's RPC mode, and verifies all three slash commands are registered. Run it on macOS because the package is macOS-only.
+The package smoke packs Pi and music-core, installs exact `@earendil-works/pi-coding-agent@0.84.0` and `@earendil-works/pi-tui@0.84.0`, loads the packed extension through RPC, checks all three commands, and proves prompt process exit. Pi 0.83.x and 0.84.x remain the supported peer range. Run it on macOS because the package is macOS-only.
 
 See the workspace [contribution guide](../../CONTRIBUTING.md) for contribution and release instructions.
 

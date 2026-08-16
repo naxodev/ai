@@ -768,299 +768,238 @@
         <p class="eyebrow">Field guide 01 / macOS Now Playing</p>
         <h1>Music session architecture</h1>
         <p class="lede">
-          How OpenCode and Pi plugin instances observe one machine-local media
-          session, isolate their work, reject stale results, and scale toward a
-          broker only when coordination is required.
+          How 20+ OpenCode and Pi clients use one same-user Unix socket daemon,
+          one provider authority, and local presentation without duplicating
+          machine-media work.
         </p>
       </div>
     </header>
 
-    <nav aria-label="Page sections">
+    <nav aria-label="Music session architecture sections">
       <ul>
-        <li><a href="#model">Mental model</a></li>
+        <li><a href="#model">Topology</a></li>
         <li><a href="#ownership">Ownership</a></li>
-        <li><a href="#events">Events</a></li>
-        <li><a href="#lanes">Work lanes</a></li>
+        <li><a href="#protocol">Protocol and replay</a></li>
+        <li><a href="#lanes">Bounded work</a></li>
         <li><a href="#lifecycle">Lifecycle</a></li>
-        <li><a href="#hosts">Hosts</a></li>
-        <li><a href="#instances">Instances</a></li>
-        <li><a href="#scale">Scale path</a></li>
-        <li><a href="#invariants">Invariants</a></li>
+        <li><a href="#hosts">Host boundaries</a></li>
+        <li><a href="#capacity">Capacity</a></li>
+        <li><a href="#invariants">Failure behavior</a></li>
       </ul>
     </nav>
 
     <main id="content">
       <section id="model" aria-labelledby="model-title">
-        <p class="section-index">01 / Mental model</p>
-        <h2 id="model-title">Follow state from provider to pixels</h2>
+        <p class="section-index">01 / Topology</p>
+        <h2 id="model-title">One provider authority serves many clients</h2>
         <p class="intro">
-          The macOS provider is the authority. The shared core normalizes its
-          output and maintains a backend-local playback clock. Each host
-          controller schedules work and protects its lifecycle. The host UI
-          performs the final presentation.
+          OpenCode and Pi keep their user interfaces local. Their session
+          clients communicate with one daemon for the current user, and that
+          daemon owns the selected macOS media provider.
         </p>
-
         <div
           class="flow"
           role="img"
-          aria-label="macOS media provider flows through music-core, a host controller, and then a host user interface"
+          aria-label="Twenty or more OpenCode and Pi clients connect through one same-user Unix socket daemon to one macOS media provider"
         >
           <div class="flow-node">
-            <strong>macOS media provider</strong>
-            <span
-              ><code>media-control</code> or polling-only
-              <code>nowplaying-cli</code></span
-            >
+            <strong>OpenCode and Pi clients</strong
+            ><span>host UI · subscriptions · local presentation</span>
           </div>
           <div class="flow-arrow" aria-hidden="true">→</div>
           <div class="flow-node core">
-            <strong>@naxodev/music-core</strong>
-            <span>decode · normalize · clock · commands · waveform levels</span>
+            <strong>music-session daemon</strong
+            ><span>Effect graph · Unix socket · replay · command order</span>
           </div>
           <div class="flow-arrow" aria-hidden="true">→</div>
           <div class="flow-node">
-            <strong>host controller</strong>
-            <span>project · queue · sample · recover · dispose</span>
-          </div>
-          <div class="flow-arrow" aria-hidden="true">→</div>
-          <div class="flow-node">
-            <strong>UI</strong>
-            <span>OpenCode Solid + Kitty or Pi status + ANSI</span>
+            <strong>macOS provider</strong
+            ><span>one event source · clock · poll · native artwork</span>
           </div>
         </div>
-
         <div class="margin-note">
-          <strong>Boundary</strong>
-          <span>
-            The core generates waveform levels; it does not analyze audio.
-            Registration, lifecycle, notifications, controls, and rendering
-            remain host responsibilities.
-          </span>
+          <strong>Machine scope</strong
+          ><span
+            >The daemon is a same-user, machine-local boundary. It is the
+            current topology, not a proposed deployment mode.</span
+          >
         </div>
       </section>
 
       <section id="ownership" aria-labelledby="ownership-title">
         <p class="section-index">02 / Ownership</p>
-        <h2 id="ownership-title">
-          Every host instance owns a complete runtime
-        </h2>
+        <h2 id="ownership-title">Scopes make shutdown ownership explicit</h2>
         <p class="intro">
-          Treat an OpenCode controller or a live Pi session as the ownership
-          boundary. Nothing in the current architecture coordinates those owners
-          across processes.
+          Effect v4 Layers and scopes acquire the provider, coordinator,
+          listener, connections, and finalizers as one daemon graph. Clients own
+          only their connection and presentation lifecycle.
         </p>
-
         <div class="table-wrap">
           <table>
+            <caption
+              class="signal-label"
+              style="padding: 0.9rem; text-align: left"
+            >
+              Ownership boundary
+            </caption>
             <thead>
               <tr>
-                <th scope="col">Owned resource</th>
-                <th scope="col">Every host instance</th>
-                <th scope="col">OpenCode addition</th>
-                <th scope="col">Disposal boundary</th>
+                <th scope="col">Resource</th>
+                <th scope="col">Client</th>
+                <th scope="col">Daemon</th>
+                <th scope="col">Shutdown owner</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>Backend and playback clock</td>
-                <td>
-                  <span class="yes">OWNED</span> by each
-                  <code>createSystemMedia()</code>
-                </td>
+                <td>Session connection and presentation</td>
+                <td>One client, subscriptions, UI, waveform, notifications</td>
+                <td>Accept and fan out frames</td>
+                <td>Host disposal and connection scope</td>
+              </tr>
+              <tr>
+                <td>Provider authority</td>
                 <td><span class="no">NONE</span></td>
-                <td>Backend subscription disposer</td>
+                <td>
+                  Provider Layer, event source, playback clock, poll scheduler
+                </td>
+                <td>Daemon scope</td>
               </tr>
               <tr>
-                <td>Provider stream subscription</td>
-                <td>
-                  <span class="yes">OWNED</span> when
-                  <code>media-control</code> is selected
-                </td>
-                <td><span class="no">NONE</span></td>
-                <td>Stream process and pending restart timer</td>
+                <td>Transport and replay</td>
+                <td>Submit commands and consume replay</td>
+                <td>Global FIFO, status/state refs, revisions</td>
+                <td>Coordinator scope</td>
               </tr>
               <tr>
-                <td>Recovery poll</td>
-                <td><span class="yes">OWNED</span> at 3 / 5 / 8 seconds</td>
-                <td><span class="no">NONE</span></td>
-                <td>Controller or live-session teardown</td>
-              </tr>
-              <tr>
-                <td>Sampling lane</td>
+                <td>Artwork</td>
                 <td>
-                  <span class="yes">OWNED</span> single-flight with one
-                  coalesced follow-up
+                  OpenCode catalog, download, conversion, cache, rendering; Pi
+                  has none
                 </td>
-                <td><span class="no">NONE</span></td>
-                <td>Late results become ineligible</td>
-              </tr>
-              <tr>
-                <td>FIFO transport lane</td>
-                <td>
-                  <span class="yes">OWNED</span> and ordered only inside the
-                  instance
-                </td>
-                <td>Adjacent pending seeks may coalesce</td>
-                <td>Pending promises settle; late effects cannot project</td>
-              </tr>
-              <tr>
-                <td>Waveform and host lifecycle</td>
-                <td>
-                  <span class="yes">OWNED</span> with host-specific rendering
-                </td>
-                <td>Solid UI and Kitty or half-block graphics</td>
-                <td>Plugin teardown, Pi reload, or Pi shutdown</td>
-              </tr>
-              <tr>
-                <td>Presentation projection</td>
-                <td>Pi projects normalized state to one ANSI status line</td>
-                <td>
-                  <span class="yes">OWNED</span> merge rules for player and
-                  artwork state
-                </td>
-                <td>Controller lifecycle</td>
-              </tr>
-              <tr>
-                <td>Artwork jobs and cache</td>
-                <td><span class="no">PI: NONE</span></td>
-                <td>
-                  <span class="yes">OWNED</span> keyed jobs plus a 32-entry
-                  module cache
-                </td>
-                <td>
-                  Listeners detach; jobs and module cache remain process-local
-                </td>
+                <td>Bounded native read and recording-identity validation</td>
+                <td>Respective scoped owner</td>
               </tr>
             </tbody>
           </table>
         </div>
+        <p class="intro" style="margin-top: 2rem">
+          Shutdown stops or refuses new acceptance, interrupts coordinator work,
+          drains dependent connection children, finalizes provider and event
+          ownership, then closes the listener and removes only its exact proven
+          socket path. Signal, defect, and idle paths converge at that
+          idempotent cleanup boundary.
+        </p>
       </section>
 
-      <section id="events" aria-labelledby="events-title">
-        <p class="section-index">03 / Provider events</p>
-        <h2 id="events-title">A snapshot is data; invalidation is a prompt</h2>
+      <section id="protocol" aria-labelledby="protocol-title">
+        <p class="section-index">03 / Protocol and replay</p>
+        <h2 id="protocol-title">
+          Hello establishes a generation before state becomes authoritative
+        </h2>
         <p class="intro">
-          <code>media-control stream --no-diff --no-artwork</code> emits
-          complete payloads. The core validates and normalizes complete payloads
-          before exposing them. Partial or malformed stream lines do not become
-          snapshots.
+          Owner-only runtime discovery uses startup-marker leases for concurrent
+          first clients, while the hardened socket bind remains the final
+          singleton authority. Twenty concurrent first clients converge on one
+          generation.
         </p>
-
         <div class="event-pair">
           <article class="event snapshot">
-            <span class="tag">event.type = snapshot</span>
-            <strong>Project immediately</strong>
+            <span class="tag">hello and replay</span
+            ><strong>Negotiate, then project</strong>
             <p>
-              The state is authoritative. OpenCode replaces player state. Pi
-              projects with its authoritative path. Both invalidate older sample
-              requests so a slower provider read cannot restore stale state.
+              Hello intersects revision ranges and capabilities. Supported
+              legacy and current clients share a daemon; an incompatible client
+              receives terminal range details and cannot unlink, kill, or
+              replace the healthy generation. Status and state replay
+              immediately after hello.
             </p>
           </article>
-          <div class="versus" aria-hidden="true">NOT THE SAME</div>
           <article class="event invalidation">
-            <span class="tag">reason = stream-terminated</span>
-            <strong>Request recovery</strong>
+            <span class="tag">generation fence</span
+            ><strong>Reject stale work</strong>
             <p>
-              The event carries no replacement player state. The host requests
-              <code>player()</code>. The core disposes the ended stream and
-              independently schedules its restart.
+              State revisions are monotonic and daemon instance IDs identify
+              generations. A reconnecting client retains its last accepted
+              presentation, adopts only a new hello/replay generation, ignores
+              late old work, and never replays commands.
             </p>
           </article>
         </div>
-
         <div class="margin-note">
-          <strong>Fallback</strong>
-          <span>
-            <code>nowplaying-cli</code> has no subscription. The same bounded
-            host poll is therefore its only provider-update path.
-          </span>
+          <strong>Command loss</strong
+          ><span
+            >An admitted command without a result at connection loss is
+            indeterminate. Reconnect is for a fresh generation, not a command
+            retry mechanism.</span
+          >
         </div>
       </section>
 
       <section id="lanes" aria-labelledby="lanes-title">
-        <p class="section-index">04 / Concurrency</p>
-        <h2 id="lanes-title">Keep four work lanes independent</h2>
+        <p class="section-index">04 / Bounded work</p>
+        <h2 id="lanes-title">Separate authority lanes protect healthy peers</h2>
         <p class="intro">
-          A slow provider read must not block a transport command. Artwork must
-          not delay state projection. The implementations enforce those
-          properties with separate lanes rather than one shared promise chain.
+          The daemon contains provider observation, command execution,
+          connection input, state fan-out, and artwork work so one stalled
+          reader or expensive request does not become a global pause.
         </p>
-
         <div class="lanes">
           <article class="lane">
             <div class="lane-number" aria-hidden="true">1</div>
             <div class="lane-title">
-              <h3>Synchronous UI projection</h3>
-              <p>Latest accepted state reaches the host immediately.</p>
+              <h3>Provider authority</h3>
+              <p>One event stream and one sampling/poll authority.</p>
             </div>
             <div class="lane-track">
-              <div class="signal" aria-hidden="true">
-                <span>snapshot</span><i>→</i><span>state</span><i>→</i
-                ><span>render</span>
-              </div>
               <p>
-                Authoritative snapshots do not wait behind sampling, transport,
-                or artwork. Optimistic transport state also projects after a
-                successful command while a short reconciliation is scheduled.
+                Provider observation remains O(1). Sampling is serialized and
+                coalesced; recovery polling belongs to the coordinator, not a
+                host.
               </p>
             </div>
           </article>
-
           <article class="lane">
             <div class="lane-number" aria-hidden="true">2</div>
             <div class="lane-title">
-              <h3>Coalesced sampling</h3>
-              <p>At most one provider read runs per host instance.</p>
+              <h3>Global transport FIFO</h3>
+              <p>Commands from OpenCode and Pi share one order.</p>
             </div>
             <div class="lane-track">
-              <div class="signal" aria-hidden="true">
-                <span>request A</span><i>→</i><span>in flight</span><i>+</i
-                ><span>B/C = pending</span><i>→</i><span>one follow-up</span>
-              </div>
               <p>
-                Requests during an active sample set one pending flag. The drain
-                performs one follow-up using the newest request sequence,
-                instead of starting parallel reads or preserving every trigger.
+                The bounded command queue serializes provider transport. Clients
+                receive correlated required responses rather than inferring an
+                outcome from later state.
               </p>
             </div>
           </article>
-
           <article class="lane">
             <div class="lane-number" aria-hidden="true">3</div>
             <div class="lane-title">
-              <h3>FIFO transport</h3>
-              <p>One command runs at a time inside one instance.</p>
+              <h3>Per-connection fan-out</h3>
+              <p>Finite inbound and pending work per peer.</p>
             </div>
             <div class="lane-track">
-              <div class="signal" aria-hidden="true">
-                <span>play</span><i>→</i><span>next</span><i>→</i
-                ><span>pause</span><i>→</i><span>reconcile</span>
-              </div>
               <p>
-                Pi preserves every play, pause, next, and previous intent.
-                OpenCode does the same and also supports seek. Adjacent pending
-                OpenCode seeks collapse to the newest target while all callers
-                still settle.
+                State updates coalesce for a slow reader while mandatory
+                responses and status are preserved. A paused or abusive
+                connection can be disconnected locally without blocking 23
+                healthy peers or terminating the daemon.
               </p>
             </div>
           </article>
-
           <article class="lane">
             <div class="lane-number" aria-hidden="true">4</div>
             <div class="lane-title">
-              <h3>Keyed artwork enrichment</h3>
-              <p>OpenCode-only work keyed by recording metadata.</p>
+              <h3>Native artwork</h3>
+              <p>Bounded and deduplicated by identity.</p>
             </div>
             <div class="lane-track">
-              <div class="signal" aria-hidden="true">
-                <span>track key</span><i>→</i><span>native / search</span
-                ><i>→</i><span>completion event</span>
-              </div>
               <p>
-                Concurrent interest in one key shares a job. Completion
-                publishes the identity with the result, so presentation merges
-                it only into the matching track. Failed resolution uses bounded
-                attempts and delayed retries without blocking playback state.
+                The daemon validates complete recording identity before and
+                after the read, bounds payload/cache work, and shares concurrent
+                identical requests. Artwork failure does not block playback
+                state.
               </p>
             </div>
           </article>
@@ -1068,429 +1007,187 @@
       </section>
 
       <section id="lifecycle" aria-labelledby="lifecycle-title">
-        <p class="section-index">05 / Stale work</p>
-        <h2 id="lifecycle-title">Prove a result is still eligible</h2>
+        <p class="section-index">05 / Lifecycle</p>
+        <h2 id="lifecycle-title">
+          The last client starts an idle grace, not an immediate teardown
+        </h2>
         <p class="intro">
-          Async completion alone does not authorize a state update. Each lane
-          checks the current owner and the revisions that can make its result
-          obsolete.
+          A completed new connection cancels the zero-client grace. If grace
+          expires, the daemon follows the same scoped shutdown path; a later
+          client can start or adopt a new generation.
         </p>
-
         <div class="guard-grid">
           <article class="guard">
-            <h3>Lifecycle guard</h3>
+            <h3>Startup</h3>
             <p>
-              OpenCode captures a lifecycle generation around sampling and
-              transport work. Pi checks that the live-session object is still
-              active and still equals the extension's current session.
+              An exact-owner marker lease coordinates launch attempts. The
+              daemon starts detached, and socket binding decides the one winner.
             </p>
           </article>
           <article class="guard">
-            <h3>Sample sequence guard</h3>
+            <h3>Reconnect</h3>
             <p>
-              Every refresh request advances a sequence. An authoritative
-              snapshot advances it again. A read projects only if its captured
-              sequence remains current.
+              Schedule-paced attempts retain accepted presentation state until a
+              handshaken replacement replays.
             </p>
           </article>
           <article class="guard">
-            <h3>Transport revision guard</h3>
+            <h3>Idle</h3>
             <p>
-              Successful commands advance a revision. A sample started before
-              that command cannot overwrite the command's optimistic state or a
-              later reconciliation.
+              Only negotiated client departure starts the bounded grace. Joining
+              cancels it.
             </p>
           </article>
           <article class="guard">
-            <h3>Stream generation guard</h3>
+            <h3>Cleanup</h3>
             <p>
-              The core assigns each stream attempt a generation. Termination or
-              disposal invalidates the generation, suppressing late lines,
-              duplicate terminal callbacks, invalidations, and restarts.
+              Finalizers remove only artifacts whose identity and ownership were
+              proven; they do not delete a replacement path.
             </p>
           </article>
-        </div>
-
-        <h3 style="margin-top: 2.2rem">Bounded recovery timing</h3>
-        <p class="intro">
-          Host polling remains active even with a stream. It recovers missed
-          state and supports the polling-only fallback. Stream restart backoff
-          resets to one second after a valid snapshot.
-        </p>
-        <div
-          class="timing-strip"
-          aria-label="Host polls after 3 seconds while playing, 5 seconds while paused, and 8 seconds while idle. Stream restart retries after 1, 2, 4, and at most 8 seconds."
-        >
-          <span class="poll">PLAYING<br />3 s</span>
-          <span class="poll">PAUSED<br />5 s</span>
-          <span class="poll">IDLE<br />8 s</span>
-          <span class="retry">RETRY<br />1 s</span>
-          <span class="retry">RETRY<br />2 s</span>
-          <span class="retry">RETRY<br />4 s</span>
-          <span class="retry">RETRY CAP<br />8 s</span>
-        </div>
-
-        <div class="margin-note">
-          <strong>Teardown</strong>
-          <span>
-            OpenCode plugin teardown releases UI slots, provider and artwork
-            presentation subscriptions, polling, pending sampling, and pending
-            transport waiters. Pi reload or shutdown releases its stream,
-            polling, waveform interval, status, samples, and controls. The core
-            stream disposer is idempotent and clears both its process and retry
-            timer.
-          </span>
         </div>
       </section>
 
       <section id="hosts" aria-labelledby="hosts-title">
-        <p class="section-index">06 / Host comparison</p>
-        <h2 id="hosts-title">Share mechanics; preserve host presentation</h2>
-        <p class="intro">
-          Both hosts consume the same normalized provider contract, playback
-          clock, commands, reconciliation, formatting, and waveform engine.
-          Their user-interface responsibilities intentionally differ.
-        </p>
-
+        <p class="section-index">06 / Host boundaries</p>
+        <h2 id="hosts-title">Presentation remains host-local</h2>
         <div class="host-grid">
           <article class="host">
             <h3>OpenCode music player</h3>
             <p>
-              Registers global commands and app/sidebar slots. Projects state
-              into a Solid compact bar and sidebar. Supports seek, optimistic
-              progress, notifications, artwork enrichment, Kitty graphics, and
-              half-block fallback rendering. It preserves artwork presentation
-              across ordinary sampled-state merges.
+              One reconnecting client feeds compact and sidebar Solid UI.
+              OpenCode owns optimistic presentation, seek coalescing,
+              notifications, waveform projection, iTunes lookup and image
+              conversion, bounded cache/jobs, Kitty graphics, and half-block
+              fallback rendering.
             </p>
           </article>
           <article class="host">
             <h3>Pi music dock</h3>
             <p>
-              Registers slash commands and shortcuts. Publishes one composable
-              status through <code>ctx.ui.setStatus</code>. Renders an ANSI
-              waveform and clipped metadata. It does not own Pi's footer and
-              does not fetch or cache artwork. Its controls omit seek.
+              One live TUI session owns one reconnecting client, a composable
+              status line, waveform, notifications, commands, and shortcuts. Pi
+              does not request or render artwork.
             </p>
           </article>
         </div>
+        <p class="intro" style="margin-top: 2rem">
+          Neither host owns provider discovery, provider polling, the playback
+          clock, native media reads, or cross-host transport ordering. Disposing
+          one client leaves the daemon available to every other client.
+        </p>
       </section>
 
-      <section id="instances" aria-labelledby="instances-title">
-        <p class="section-index">07 / Multi-instance reality</p>
-        <h2 id="instances-title">Isolation is local; convergence is global</h2>
-        <p class="intro">
-          Separate OpenCode and Pi processes do not share JavaScript memory,
-          queues, clocks, timers, stream processes, or caches. They do share the
-          same macOS Now Playing authority through independent provider calls.
-        </p>
-
-        <div class="failure-grid">
-          <article class="failure">
-            <h3>What scales with instances</h3>
-            <p>
-              With <code>media-control</code>, each of the <em>N</em> host
-              instances owns a stream process and recovery poll. Each of the
-              <em>O</em> OpenCode instances also has process-local artwork work
-              and a cache of at most 32 settled entries.
-            </p>
-          </article>
-          <article class="failure">
-            <h3>What does not coordinate</h3>
-            <p>
-              FIFO ordering stops at a process boundary. There is no global
-              command queue, lock, or winner. Two instances can issue commands
-              concurrently, and the provider decides the observed outcome.
-            </p>
-          </article>
-          <article class="failure">
-            <h3>How instances converge</h3>
-            <p>
-              A command affects machine-local media state. Later authoritative
-              stream snapshots or bounded polls carry that resulting state back
-              to every healthy instance. Convergence is eventual, not a global
-              transaction.
-            </p>
-          </article>
-          <article class="failure">
-            <h3>Fallback behavior</h3>
-            <p>
-              <code>nowplaying-cli</code> remains polling-only. Under that
-              backend there are no provider stream processes, but each instance
-              still owns its 3/5/8-second polling cycle and backend clock.
-            </p>
-          </article>
-        </div>
-
+      <section id="capacity" aria-labelledby="capacity-title">
+        <p class="section-index">07 / Capacity</p>
+        <h2 id="capacity-title">
+          Provider cost stays constant while delivery scales with clients
+        </h2>
         <div class="table-wrap">
           <table>
             <caption
               class="signal-label"
               style="padding: 0.9rem; text-align: left"
             >
-              Capacity and cost model: N = total live host instances; O =
-              OpenCode instances, where 0 ≤ O ≤ N
+              Current cost model
             </caption>
             <thead>
               <tr>
-                <th scope="col">Resource or event</th>
-                <th scope="col">Current direct topology</th>
-                <th scope="col">Broker topology</th>
-                <th scope="col">Operational meaning</th>
+                <th scope="col">Work</th>
+                <th scope="col">Cost</th>
+                <th scope="col">Meaning</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>Provider stream processes</td>
-                <td>
-                  <code>N</code> with <code>media-control</code>;
-                  <code>0</code> with <code>nowplaying-cli</code>
-                </td>
-                <td><code>1</code> per Mac with <code>media-control</code></td>
-                <td>Direct subscription cost is O(N)</td>
+                <td>Provider observation, event subscription, polling</td>
+                <td>O(1)</td>
+                <td>One daemon-owned provider authority per machine</td>
               </tr>
               <tr>
-                <td>Host recovery poll schedulers</td>
-                <td><code>N</code></td>
+                <td>State fan-out and client presentation</td>
+                <td>O(N)</td>
                 <td>
-                  <code>1</code> provider recovery scheduler in broker; client
-                  heartbeat/lifecycle work remains <code>N</code>
+                  Each connected client receives replay/live updates and renders
+                  locally
                 </td>
-                <td>Polling calls move out of clients</td>
               </tr>
               <tr>
-                <td>Provider reads per poll boundary</td>
+                <td>OpenCode catalog and rendering work</td>
+                <td>O(OpenCode clients)</td>
                 <td>
-                  Up to <code>N</code>, according to each instance's state and
-                  timer phase
+                  Catalog, cache, and terminal presentation remain
+                  OpenCode-local
                 </td>
-                <td>Up to <code>1</code> broker read</td>
-                <td>Direct read pressure is O(N)</td>
               </tr>
               <tr>
-                <td>Transport queues</td>
-                <td><code>N</code> local FIFO queues; no global order</td>
-                <td><code>1</code> global queue if ordering is required</td>
-                <td>Choose the broker queue for cross-client serialization</td>
-              </tr>
-              <tr>
-                <td>OpenCode artwork caches</td>
-                <td>
-                  <code>O</code> process-local caches, each bounded to 32
-                  settled entries
-                </td>
-                <td>
-                  <code>O</code> client caches, or <code>1</code> optional
-                  shared cache plus client presentation state
-                </td>
-                <td>Maximum direct settled entries are <code>32O</code></td>
-              </tr>
-              <tr>
-                <td>Client UI and waveform lifecycles</td>
-                <td><code>N</code></td>
-                <td><code>N</code></td>
-                <td>Presentation remains client-side in both designs</td>
-              </tr>
-              <tr>
-                <td>Authoritative update fan-out</td>
-                <td><code>N</code> independent provider observations</td>
-                <td>
-                  <code>1</code> observation replayed to <code>N</code> clients
-                </td>
-                <td>Broker fan-out is O(N), provider observation is O(1)</td>
+                <td>Alternating client evidence</td>
+                <td>24 clients verified</td>
+                <td>Evidence of behavior, not a configured maximum</td>
               </tr>
             </tbody>
           </table>
         </div>
       </section>
 
-      <section id="scale" aria-labelledby="scale-title">
-        <p class="section-index">08 / Scale path</p>
-        <h2 id="scale-title">Add one broker per Mac, not per fleet</h2>
-        <p class="intro">
-          Keep the direct topology for small local counts because it has no
-          daemon deployment or IPC failure mode. Introduce a broker when
-          measured provider duplication or a requirement for global command
-          order outweighs that simplicity. No numeric threshold is implied.
-        </p>
-
-        <div
-          class="topology"
-          role="img"
-          aria-label="Direct per-instance provider connections can evolve into one machine-local broker between all clients and one provider subscription"
-        >
-          <div class="machine">
-            <strong>Direct / current</strong>
-            <div class="instances">
-              <div class="instance">client 1</div>
-              <div class="instance">client 2</div>
-              <div class="instance">client N</div>
-            </div>
-            <div class="provider">N independent provider paths</div>
-          </div>
-          <div class="scale-arrow">WHEN<br />NEEDED<br />→</div>
-          <div class="machine">
-            <strong>Broker / scale path</strong>
-            <div class="instances">
-              <div class="instance">client 1</div>
-              <div class="instance">client 2</div>
-              <div class="instance">client N</div>
-            </div>
-            <div class="broker">
-              Unix-domain socket · replay · heartbeats · queue
-            </div>
-            <div class="provider">1 provider subscription per Mac</div>
-          </div>
-        </div>
-
-        <div class="broker-contract">
-          <div>
-            <strong>Observe once</strong>Own one provider subscription, clock,
-            restart loop, and recovery poll.
-          </div>
-          <div>
-            <strong>Replay latest</strong>Send the latest authoritative snapshot
-            immediately when a client connects or reconnects.
-          </div>
-          <div>
-            <strong>Order if required</strong>Route commands through one global
-            transport FIFO instead of pretending local queues compose.
-          </div>
-          <div>
-            <strong>Track clients</strong>Use connection lifecycle and
-            heartbeats to remove dead subscribers and abandoned command callers.
-          </div>
-          <div>
-            <strong>Share optionally</strong>Centralize artwork lookup and cache
-            only if duplicate OpenCode work warrants the added contract.
-          </div>
-          <div>
-            <strong>Keep presentation local</strong>Clients still own
-            projection, host lifecycle, waveform rendering, UI slots, and
-            disposal.
-          </div>
-        </div>
-
-        <div class="margin-note">
-          <strong>Machine scope</strong>
-          <span>
-            macOS Now Playing state is machine-local. Run one broker on each Mac
-            and connect over a Unix-domain socket. A cloud broker cannot
-            automatically observe another Mac's Now Playing session; a local
-            agent would still have to observe and forward that state.
-          </span>
-        </div>
-      </section>
-
       <section id="invariants" aria-labelledby="invariants-title">
-        <p class="section-index">09 / Operations</p>
-        <h2 id="invariants-title">Design and operate against invariants</h2>
-        <p class="intro">
-          Failures should reduce freshness or presentation quality without
-          allowing stale work to regain authority or leaving background work
-          alive after its host disappears.
-        </p>
-
+        <p class="section-index">08 / Failure behavior</p>
+        <h2 id="invariants-title">
+          Contain local failure without replacing healthy authority
+        </h2>
         <div class="failure-grid">
           <article class="failure">
-            <h3>Provider stream exits</h3>
+            <h3>Incompatible client</h3>
             <p>
-              Emit one invalidation, request a recovery sample, dispose the old
-              stream, and retry after 1/2/4/8 seconds. Continue bounded host
-              polling while recovery proceeds.
+              Return actionable revision-range details and leave the healthy
+              daemon untouched.
             </p>
           </article>
           <article class="failure">
-            <h3>Provider read fails</h3>
+            <h3>Slow reader</h3>
             <p>
-              Pi keeps its accepted state and waits for a later poll. OpenCode
-              may expose the error unless a transport error has priority. The
-              next bounded poll remains scheduled.
+              Apply bounded per-connection work and disconnect locally when
+              required.
             </p>
           </article>
           <article class="failure">
-            <h3>Transport fails</h3>
+            <h3>Provider failure</h3>
             <p>
-              Notify in the host and keep advancing the local FIFO so one
-              rejected command does not strand following intents. OpenCode
-              requests immediate reconciliation; Pi recovers on its next bounded
-              poll.
+              Publish status and recover through the daemon-owned event and
+              polling paths.
             </p>
           </article>
           <article class="failure">
-            <h3>Artwork fails</h3>
+            <h3>Artwork failure</h3>
             <p>
-              Playback state stays usable. OpenCode publishes a null completion,
-              retries the keyed entry with delay for at most three attempts, and
-              preserves identity checks at merge time.
+              Return an artwork outcome while preserving playback-state
+              delivery.
             </p>
           </article>
           <article class="failure">
-            <h3>Host reloads or exits</h3>
+            <h3>Host reload</h3>
             <p>
-              Mark the owner dead first. Then release subscriptions, timers,
-              waveform work, UI registrations, and pending waiters. Late async
-              results must observe the dead lifecycle and become no-ops.
+              Dispose one client and local presentation; remaining clients keep
+              the daemon generation alive.
             </p>
           </article>
           <article class="failure">
-            <h3>Clients disagree temporarily</h3>
+            <h3>Final disconnect</h3>
             <p>
-              Do not infer a distributed lock. Accept temporary divergence and
-              converge from later authoritative provider snapshots. Add a local
-              broker only when cross-client ordering is a real requirement.
+              Allow bounded idle expiry to close the graph and clean exact owned
+              runtime artifacts.
             </p>
           </article>
         </div>
-
-        <ul class="checklist" aria-label="Architecture invariant checklist">
-          <li>
-            One backend owns one playback clock; no instance mutates another
-            instance's clock.
-          </li>
-          <li>
-            A complete stream snapshot projects directly and invalidates older
-            reads.
-          </li>
-          <li>
-            A stream invalidation requests data; it never masquerades as player
-            state.
-          </li>
-          <li>
-            Sampling remains single-flight and coalesces repeated triggers into
-            one follow-up.
-          </li>
-          <li>
-            Transport remains FIFO per owner; adjacent pending seeks coalesce
-            only in OpenCode.
-          </li>
-          <li>
-            Provider reads, transport commands, and artwork jobs never share a
-            blocking lane.
-          </li>
-          <li>
-            Every async projection checks lifecycle plus the relevant sequence
-            or revision.
-          </li>
-          <li>
-            Disposal is idempotent and suppresses late lines, callbacks,
-            updates, and restarts.
-          </li>
-          <li>
-            Poll delays stay bounded at 3/5/8 seconds; stream restart stays
-            capped at 8 seconds.
-          </li>
-          <li>
-            A future broker keeps client presentation and lifecycle local to
-            each host.
-          </li>
-          <li>
-            Cross-process command order does not exist until a machine-local
-            global queue owns it.
-          </li>
-          <li>
-            One Mac needs one broker because another machine cannot observe its
-            media session automatically.
-          </li>
+        <ul class="checklist" aria-label="Current architecture invariants">
+          <li>One same-user daemon owns one provider authority.</li>
+          <li>Hello and replay establish compatible generations.</li>
+          <li>Revisions and instance IDs fence stale state.</li>
+          <li>Commands never replay after connection loss.</li>
+          <li>Global FIFO ordering spans OpenCode and Pi clients.</li>
+          <li>Bounded local failures do not block healthy peers.</li>
+          <li>Native artwork reads validate identity and remain bounded.</li>
+          <li>Presentation and OpenCode catalog work stay host-local.</li>
         </ul>
       </section>
     </main>

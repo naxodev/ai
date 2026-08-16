@@ -2,250 +2,248 @@
 status: done
 ---
 
-# Phase 4 package: supervise reconnect across daemon generations
+# Phase 4 package — document the completed architecture as current
 
 ## Intent
 
-Add one lightweight managed/reconnecting client on top of the verified explicit client and Phase 3 `connectOrStart` workflow.
+Update the workspace overview, three music package READMEs, and the preserved architecture field guide so they describe the delivered machine-local session daemon as the current design. Remove the stale story in which every host owns a provider/poll/transport runtime and a broker is only a future scale path.
 
-After a genuine retryable socket loss, the managed client must retain the last accepted provider status/state for presentation, settle every in-flight command once as indeterminate, and supervise bounded startup of a replacement daemon generation. It must adopt only a completed replacement hello/replay, ignore every late callback from the old generation, and never replay a command. Healthy protocol incompatibility is terminal and must not cause replacement loops.
+Treat `docs/music-session-architecture.html` as the explanation page and preserve its visual/accessibility system. Keep each README focused on its package: the root README is an overview, `music-core` is public-surface/reference material, and each host README explains installation, host-local responsibilities, controls, and verification. Link to the field guide instead of duplicating its full architecture in every README.
 
-Keep the explicit client and `connectOrStart` single-generation semantics intact. Zero-client daemon exit belongs to Phase 5; fan-out, artwork, and host migration remain later phases.
+This is a documentation-only phase. Do not change behavior, tests, package metadata, pins, smokes, or generated artifacts.
 
-Use repository-pinned Effect v4 scopes, supervised fibers, `Deferred`/`Ref`, and the already bounded Phase 3 startup schedule. Do not create raw timer loops, detached Promise supervisors, or a second discovery/startup algorithm.
+## Exact steps
+
+### 1. Preserve the approved implementation and verify every claim from source
+
+1. Run `jj status` before editing.
+2. Preserve approved Phase 3 commit `dee247d7`, exact-pinned OpenCode Phase 2, packed-core Phase 1, every earlier verified commit, unrelated changes, and `.apnea/state.json`.
+3. Work through the configured Pi role profile in a regular pane. Do not commit or squash; the orchestrator performs the approved-phase `jj squash`.
+4. Before writing, use these existing source files as the factual boundary:
+   - `packages/music-core/index.ts` for the public package surface;
+   - `packages/music-core/session/config.ts` for managed runtime, bounds, startup, poll, and idle defaults;
+   - `packages/music-core/session/protocol.ts` for revisions, capabilities, replay frames, errors, and artwork outcomes;
+   - `packages/music-core/session/client.ts` for explicit and reconnecting client behavior;
+   - `packages/music-core/session/coordinator.ts`, `provider.ts`, and `server.ts` for daemon ownership, global serialization, fan-out, artwork, and shutdown;
+   - `packages/opencode-music-player/system-media.ts` and `index.tsx` for the OpenCode boundary;
+   - `packages/pi-music-dock/extensions/music-dock/index.ts` for the Pi boundary;
+   - existing `packages/music-core/tests/session-*.test.ts` for claims about 20/24 clients, singleton startup, compatibility, reconnect, bounds, idle exit, and mixed hosts.
+5. Do not document internal-only symbols as public. In particular, do not add `resolveMusicSessionRuntimePaths` to the public API or tell package consumers to import it.
+6. Use only behavior present in the approved code/tests. If a sentence cannot be tied to those files, omit it instead of inventing an option, error, timing guarantee, or deployment mode.
+
+### 2. Update the workspace overview
+
+In `README.md`:
+
+1. Keep the existing short workspace overview and package links.
+2. State that OpenCode and Pi use lightweight clients connected to one same-user, machine-local music-session daemon, which owns one provider and fans state out to all clients.
+3. Add a relative link to `docs/music-session-architecture.html` as the detailed architecture explanation.
+4. Keep the existing development command and contribution link unchanged unless wording must be adjusted for accuracy.
+
+Do not turn the root README into a copy of the field guide or add installation instructions already owned by package READMEs.
+
+### 3. Rewrite the music-core README around the public session boundary
+
+In `packages/music-core/README.md`:
+
+1. Replace the stale purpose/status claims that Pi and OpenCode directly consume provider discovery, backend clocks, subscriptions, and polls.
+2. Explain the current topology:
+   - many host clients connect over one owner-only same-user Unix socket;
+   - one daemon owns the selected provider, event subscription, playback clock, recovery polling, state/status authority, global transport queue, and native artwork reads;
+   - clients receive immediate hello/status/state replay and later revisioned updates;
+   - host presentation stays outside core.
+3. Explain Effect v4 ownership at an architectural level without presenting internals as public API:
+   - `Config` validates runtime limits/timing;
+   - `Schema` validates untrusted protocol/provider data;
+   - Layers/scopes own provider, coordinator, listener, connections, and finalizers;
+   - `Schedule` paces startup/reconnect;
+   - `SubscriptionRef` owns replayable state/status;
+   - bounded queues/semaphores/streams isolate command, sampling, fan-out, and artwork work.
+4. Update the **Public surface** block to match exports from `packages/music-core/index.ts`, including the currently exported explicit/reconnecting session client types/functions, `MusicSessionClientError`, protocol/capability/status/state/artwork types, `PROTOCOL`, and `baselineCapabilities`.
+5. Retain the low-level `createSystemMedia()` API in the public-surface reference and describe it as an intentional compatibility/low-level provider API. Do not imply that either production host still calls it directly.
+6. Add a concise public reconnecting-client example only if every import and method is exported from `index.ts`. Use `createReconnectingMusicSessionClient`, a unique client ID, a valid `hostKind`, `baselineCapabilities`, subscriptions, transport calls, and awaited `dispose()`; do not use internal runtime or daemon-server imports.
+7. Explain lifecycle/compatibility behavior concisely:
+   - concurrent missing-endpoint callers converge through startup-marker coordination, while socket bind remains final singleton authority;
+   - hello negotiates a supported revision/capability intersection;
+   - supported mixed package versions share the live daemon;
+   - incompatibility is terminal for that healthy generation and does not authorize unlink/replacement;
+   - reconnect retains the last accepted state for presentation, adopts only a new handshaken generation, and never replays commands;
+   - commands unresolved at connection loss are indeterminate;
+   - last-client departure starts the bounded idle grace and final cleanup removes only owned artifacts.
+8. Explain bounds without publishing unstable implementation trivia: finite frames/queues/pending requests, local slow/abusive-client disconnection, coalescible state fan-out, mandatory response preservation, O(1) provider observation, and O(N) client fan-out. Cite the verified 24-client scenario as capacity evidence, not a hard maximum.
+9. Replace the stale provider-change section with a short low-level compatibility note or remove it if its detail now distracts from the session boundary. Do not describe host-owned 3/5/8-second polling as current.
+10. Link to `../../docs/music-session-architecture.html` for the full mental model.
+
+### 4. Correct the OpenCode package documentation
+
+In `packages/opencode-music-player/README.md`:
+
+1. Replace the stale Architecture section. State that one reconnecting session client supplies replay/live state, provider status, transport, and daemon-owned native artwork bytes.
+2. State what OpenCode still owns locally: plugin/controller lifecycle, Solid compact/sidebar UI, optimistic transport presentation, seek coalescing, notifications, waveform projection, iTunes catalog fallback/download, conversion, the bounded presentation cache/jobs, and Kitty/half-block rendering.
+3. Remove claims that the plugin owns a provider subscription, backend sampling lane, playback clock, 3/5/8-second provider poll, or provider-stream retry timer.
+4. Explain teardown accurately: plugin disposal unsubscribes local listeners, stops local presentation work, and awaits/disposes only its session client. Other clients keep the shared daemon alive.
+5. Correct both stale OpenCode version references from `0.0.0-next-17041` to the exact current manifest/smoke pin `0.0.0-next-17386`.
+6. Keep requirements, installation, controls, artwork rendering setup, community, security, and license sections useful and intact.
+7. Clarify Artwork ownership:
+   - the daemon performs the bounded native `media-control get --now` read and validates recording identity;
+   - OpenCode keeps iTunes Search fallback, downloads, conversion, cache/job ownership, and terminal rendering;
+   - artwork failure never blocks playback state.
+8. Update Development wording so the workspace smoke is described as packing OpenCode/core and launching the exact manifest-selected OpenCode CLI from an isolated install.
+9. Link the Architecture section to `../../docs/music-session-architecture.html` instead of duplicating every protocol detail.
+
+### 5. Correct the Pi package documentation
+
+In `packages/pi-music-dock/README.md`:
+
+1. Replace the stale Architecture section. State that each live Pi TUI session owns one reconnecting client plus its local status/waveform/notification lifecycle.
+2. State that the daemon—not Pi—owns provider discovery, provider stream/polling, playback clock, global transport ordering, and native media reads.
+3. Explain reload/shutdown accurately: mark the old Pi session inactive, remove client listeners, stop the waveform interval, clear status, and await client disposal. Reloading or exiting Pi does not stop a daemon still serving OpenCode or another client.
+4. Keep the documented supported peer range as Pi 0.83.x/0.84.x, and add that the packed smoke selects exactly Pi `0.84.0` from the package's tested development pin. Do not narrow the peer range to the smoke pin.
+5. Keep install/remove commands and the command/shortcut table unchanged unless source verification shows a mismatch.
+6. Update manual verification so it checks shared behavior rather than per-host ownership:
+   - status and controls reflect the shared daemon state;
+   - `/reload` leaves one Pi client/status and does not duplicate daemon/provider ownership;
+   - closing Pi leaves another host healthy;
+   - final-client exit permits daemon idle shutdown and owned socket cleanup.
+7. Remove claims that Pi teardown releases its own provider subscription, provider poll, backend clock, samples, or provider process.
+8. Update Development wording so the package smoke is described as packing Pi/core, installing exact `@earendil-works/pi-coding-agent@0.84.0` and `@earendil-works/pi-tui@0.84.0`, loading via RPC, checking all three commands, and proving prompt process exit.
+9. Link the Architecture section to `../../docs/music-session-architecture.html`.
+
+### 6. Convert the preserved HTML field guide from future broker to current daemon
+
+Edit the body/content of `docs/music-session-architecture.html` while preserving its established visual system. The page is an explanation, so organize it around why ownership and failure behavior work rather than copying TypeScript definitions.
+
+#### Present the current topology
+
+1. Update the description, masthead lede, navigation labels, headings, prose, diagrams, tables, captions, and ARIA labels so the page consistently presents:
+
+   ```text
+   20+ OpenCode/Pi clients → one same-user Unix socket daemon → one provider
+   ```
+
+2. Replace the opening flow's host-controller provider ownership with a current flow in which host-local presentation communicates through the session client/Unix socket to the daemon Effect graph and its single provider authority.
+3. Remove every statement that the direct per-host provider topology is current, that no cross-process coordination exists, or that a broker should be added later.
+4. Remove the `Direct / current` versus `Broker / scale path` recommendation. Reuse the existing visual components for the current daemon topology/capacity explanation rather than redesigning the page.
+
+#### Explain ownership and shutdown
+
+5. Rewrite the ownership table around separate client and daemon responsibilities:
+   - each host owns one client, subscriptions, host UI/waveform/notifications, and OpenCode-only catalog/render work;
+   - the daemon owns listener, coordinator, provider Layer, provider event source, poll scheduler, global command lane, replay refs, and native artwork reads.
+6. Explain scoped Effect v4 ownership and the selected shutdown order accurately: stop/refuse new acceptance, interrupt coordinator work, drain dependent connection children, finalize provider/event ownership, then close the listener and remove its exact owned socket path.
+7. Explain that signal, defect, and idle paths converge on the same idempotent cleanup boundary and remove only artifacts whose identity/ownership is proven.
+
+#### Explain startup, protocol, replay, and generations
+
+8. Describe owner-only runtime discovery, exact-owner startup-marker leases, detached daemon launch, socket bind as final singleton authority, and 20 concurrent first clients converging on one generation.
+9. Explain hello negotiation with revision ranges and capabilities. Supported legacy/current clients can share one daemon; an incompatible client receives actionable terminal range details and cannot unlink, kill, or replace the healthy generation.
+10. Explain immediate status/state replay, monotonic state revisions, and daemon instance IDs as generation fences.
+11. Explain reconnect without command replay: retain last accepted presentation state, settle admitted in-flight commands as connection-lost/indeterminate exactly once, ignore late old-generation work, and adopt a replacement only after its hello/replay succeeds.
+
+#### Explain bounded concurrency and cost
+
+12. Replace per-host sampling/transport lanes with current daemon/client lanes:
+   - one provider sampling/event authority;
+   - one global FIFO command queue across OpenCode and Pi;
+   - bounded per-connection inbound work and pending requests;
+   - bounded/coalescing state fan-out with mandatory response/status handling;
+   - bounded deduplicated native artwork work.
+13. Explain local failure containment: one abusive or paused reader can be disconnected/backpressured without blocking 23 healthy peers or terminating the daemon.
+14. Update the capacity/cost table to current values: provider observation/subscription/poll ownership is O(1), fan-out and client presentation are O(N), and OpenCode catalog/render work remains proportional to OpenCode clients. State that 24 alternating clients are verified evidence and not a configured maximum.
+15. Explain last-client idle behavior: a completed new connection cancels the grace; grace expiry follows the common shutdown path; the next client can start/adopt a new generation.
+
+#### Explain artwork and host boundaries
+
+16. State that the daemon validates complete recording identity before and after native artwork reads, deduplicates concurrent identical work, and bounds payload/cache work.
+17. State that iTunes lookup, image download, conversion, colors/cells, Kitty graphics, half-block rendering, and UI completion events remain OpenCode-local. Pi does not request/render artwork.
+18. Preserve the host comparison's current controls/presentation differences while replacing any claim that hosts directly own provider/poll/sample/transport authority.
+
+#### Preserve accessibility and visual behavior
+
+19. Keep the skip link targeting `#content`, labeled sticky navigation, logical heading order, table headers/captions, `role="img"` descriptions, source links, visible focus states, responsive rules, print rules, and `prefers-reduced-motion` behavior.
+20. Update every diagram/capacity ARIA label to describe the new content; do not leave stale accessible text hidden behind a visually updated diagram.
+21. Preserve the dark field-guide visual language, type/color tokens, mobile stacking, and print legibility. Change CSS only when required to support revised content; do not perform an unrelated redesign.
+22. Keep all relative source links valid and retain links to the three package READMEs.
+
+### 7. Perform a documentation consistency pass
+
+Before verification:
+
+1. Search all five edited files for old per-host ownership claims, future-broker wording, stale OpenCode `next-17041`, and claims that OpenCode/Pi own provider polls/subscriptions.
+2. Check version statements against current manifests: OpenCode exact `0.0.0-next-17386`; Pi supported 0.83.x/0.84.x and exact tested `0.84.0`.
+3. Re-read every public symbol/example against `packages/music-core/index.ts`. Remove internal imports and invented methods/options.
+4. Check that the HTML and READMEs agree on provider ownership, command ordering, artwork boundaries, reconnect behavior, and idle exit.
+5. Avoid sycophantic preamble, “simply/just/easy,” a conclusion section, phantom advanced sections, and repeated prose that should be a relative link.
+6. Do not claim that docs verification replaces the later full repository or mixed-host phase.
 
 ## Files to touch
 
-Only as required:
-
-- `packages/music-core/session/config.ts`
-- `packages/music-core/session/client.ts`
-- `packages/music-core/session/protocol.ts`
-- `packages/music-core/index.ts`
-- `packages/music-core/tests/session-client.test.ts`
-- `packages/music-core/tests/session-server.test.ts`
-
-Prefer keeping connection-lifecycle types in `client.ts`; touch `protocol.ts` only if a stable shared schema/type is genuinely required. Keep focused reconnect evidence primarily in `session-client.test.ts`.
+- `README.md`
+- `packages/music-core/README.md`
+- `packages/opencode-music-player/README.md`
+- `packages/pi-music-dock/README.md`
+- `docs/music-session-architecture.html`
 
 ## Files not to touch
 
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/session/coordinator.ts`
-- `packages/music-core/session/framing.ts`
-- `packages/music-core/system-media.ts`
+- `packages/music-core/index.ts`
+- `packages/music-core/session/**`
+- `packages/music-core/tests/**`
 - `packages/music-core/package.json`
 - `packages/music-core/project.json`
-- `packages/music-core/tests/session-protocol.test.ts` unless `protocol.ts` must change
-- `packages/music-core/tests/session-coordinator.test.ts`
-- `packages/music-core/tests/system-media.test.ts`
-- Anything under `packages/opencode-music-player/` or `packages/pi-music-dock/`
-- `README.md`, package READMEs, and `docs/music-session-architecture.html`
-- `.apnea/state.json` and unrelated `.apnea` tasks/artifacts
-
-Do not create a new source or test module. Keep explicit, startup, and reconnect ownership together in the existing client module.
-
-## Exact implementation steps
-
-### 1. Preserve the approved baseline
-
-1. Inspect the current tree and retain approved Phase 1 (`08acaab5`), Phase 2 (`73a988d6`), and Phase 3 (`788473b7`) behavior unchanged.
-2. Preserve the explicit client's verified handshake/frame/request semantics, Phase 3 marker finalization, startup pacing, 20-client convergence, incompatibility policy, and single-generation `connectOrStart` API.
-3. Do not move server lifetime, provider ownership, polling, or command serialization into the reconnect client.
-
-### 2. Expose one exact terminal observation from the explicit client
-
-In `packages/music-core/session/client.ts`:
-
-1. Add a narrow internal or public terminal-observation mechanism that reports the explicit client's terminal `MusicSessionClientError` exactly once.
-2. It must distinguish:
-   - retryable transport loss (`CONNECTION_LOST`) that may authorize managed reconnect;
-   - non-retryable malformed/incompatible/protocol terminal errors;
-   - caller disposal, which never authorizes reconnect.
-3. A subscriber attached after terminal transition must observe the retained terminal outcome immediately, so the managed wrapper cannot miss a close between hello completion and listener registration.
-4. Terminal observers must be isolated from one another; an observer exception cannot alter settlement or socket ownership.
-5. `dispose()` remains idempotent and cannot overwrite an earlier terminal outcome, redestroy a socket, or emit a reconnectable loss.
-6. Preserve existing request behavior: every admitted pending command on transport loss rejects once as `INDETERMINATE_COMMAND`; commands are never retained for retry by the explicit client.
-
-Do not add reconnect logic to the explicit `Client` class itself. It remains one socket/one generation.
-
-### 3. Define a separate managed client contract
-
-In `packages/music-core/session/client.ts`, add a distinct reconnecting client type rather than silently changing `MusicSessionClient` semantics.
-
-The contract must provide:
-
-1. Current generation metadata as getters: daemon instance ID, negotiated capabilities, and selected revision when connected.
-2. Last accepted `ProviderStatus` and `RevisionedState`. These remain available while reconnecting.
-3. Existing transport methods (`toggle`, `play`, `pause`, `next`, `previous`, `seek`) with no command queue in the wrapper.
-4. State/status subscriptions that replay the current retained value, isolate listener exceptions, and stop after disposal.
-5. A connection-lifecycle subscription/getter with bounded client-local states equivalent to:
-   - connecting;
-   - connected with current daemon instance ID;
-   - reconnecting after retryable loss;
-   - terminal with the actionable error;
-   - disposed.
-6. Idempotent asynchronous disposal (or an equivalent completion handle) that proves the active socket and supervised scope are closed before completion.
-
-Keep connection lifecycle local to `client.ts`; it is not a wire message. Do not add protocol capabilities or server messages for reconnect.
-
-### 4. Implement the scoped reconnect supervisor
-
-Add one Effect-native constructor and one thin Promise-facing owner, named consistently with the existing APIs (for example, `createReconnectingMusicSessionClientEffect` and `createReconnectingMusicSessionClient`).
-
-1. The Effect constructor must require/use `Scope.Scope`, register cleanup immediately, and run its supervisor with `Effect.forkScoped` or equivalent supervised ownership.
-2. Initial connection and every replacement attempt must call the existing Phase 3 `connectOrStartMusicSessionEffect`. Reuse its secure discovery, marker, launcher, hello, incompatibility, and bounded scheduling policy; do not duplicate those transitions.
-3. The Promise adapter may create one Effect scope at the module boundary, but that scope must be owned by the returned managed client and closed by its disposal. Do not use `Effect.scoped` in a way that closes the supervisor before returning.
-4. Keep all mutable lifecycle in Effect synchronization (`Ref`, `Deferred`, latches/semaphore as needed). Do not run an unowned async loop.
-5. Initial construction resolves only after the first compatible hello is adopted. Initial incompatibility/startup failure rejects actionably and closes all partial ownership.
-6. On retryable terminal loss:
-   - atomically mark the generation inactive;
-   - retain last status/state and publish `reconnecting` once;
-   - let the old explicit client settle its own commands;
-   - invoke one bounded `connectOrStart` replacement workflow.
-7. On non-retryable terminal error, schedule exhaustion, occupied/unsafe runtime, or incompatibility, publish one terminal state and stop. Incompatibility must preserve its structured range details and trigger no further attempt.
-8. Do not treat caller disposal as loss. Disposal interrupts an in-progress startup/reconnect, disposes any active/newly completed explicit client, clears listeners, and prevents future launch/adoption.
-9. If a connect completes concurrently with disposal or a newer generation, dispose that explicit client immediately rather than leaking or adopting it.
-
-### 5. Fence every generation
-
-1. Allocate a monotonically increasing local generation token before each connect attempt.
-2. Attach explicit status, state, and terminal listeners with that token.
-3. Before every callback mutates wrapper state, settles lifecycle, or notifies listeners, atomically verify that the token is still current and the wrapper is live.
-4. When adopting a replacement:
-   - require completed hello first;
-   - unsubscribe/dispose prior generation handles;
-   - replace daemon metadata atomically;
-   - accept the replacement's replay even when its revision is numerically lower than the prior daemon's revision, because daemon instance ID changed;
-   - then publish connected lifecycle.
-5. Ignore old-generation state/status frames, terminal callbacks, command completions, and connect completions after token replacement or disposal.
-6. For the same daemon instance, retain the explicit client's existing duplicate/stale/out-of-order revision filtering.
-
-### 6. Keep commands truthful and never replay them
-
-1. A transport call snapshots the current active generation and delegates once to that explicit client.
-2. If no generation is active (connecting/reconnecting/terminal/disposed), reject immediately with the corresponding stable `MusicSessionClientError`; do not queue the command for later.
-3. If loss occurs after admission but before response, preserve the explicit client's one `INDETERMINATE_COMMAND` rejection.
-4. Never invoke the same transport operation on a replacement client, even if the old response was absent or the replacement replay suggests it might be safe.
-5. A late old-generation response must not settle a later command with the same wrapper call order or alter replacement state.
-
-### 7. Add deterministic reconnect timing and ownership tests
-
-In `packages/music-core/tests/session-client.test.ts`:
-
-1. Add a narrow controllable connector/explicit-client seam only if needed for deterministic generation races. Production defaults must still use the real `connectOrStartMusicSessionEffect` and real explicit client.
-2. Under `TestClock`, prove a retryable terminal event starts one bounded replacement workflow, does not busy-loop, and stops after terminal schedule exhaustion/interruption.
-3. Prove disposal while sleeping or connecting interrupts the supervisor, prevents all later attempts after advancing virtual time, and disposes a client that completes too late.
-4. Prove incompatibility during replacement publishes terminal once, retains exact range details, and performs no later probe/launch after advancing beyond the schedule.
-5. Make fake generation callbacks independently controllable so tests can emit old state/status/terminal/response after replacement and verify every one is ignored.
-6. Ensure all test fibers/scopes/gates settle in `finally`; do not rely on Bun's outer timeout to clean a suspended supervisor.
-
-### 8. Prove replacement through real selected servers
-
-Use real secure runtime paths, real selected `startMusicSessionServer` instances, and real Unix clients for the integration slice.
-
-1. Start/adopt generation A through the managed constructor and record its daemon instance ID, replay, provider status, and a later state revision.
-2. Block one real transport command on generation A, then close/lose A before its response.
-3. Assert the command rejects exactly once as `INDETERMINATE_COMMAND` and attach a rejection observer before triggering loss.
-4. Let the reconnect workflow start generation B through the existing injected launcher boundary. Generation B must have a different daemon instance ID and provider fixture.
-5. While reconnecting, assert generation A's last state remains readable and commands reject immediately rather than queueing.
-6. Require generation B hello and replay, including a lower numeric revision, to replace A atomically and notify subscribers in order.
-7. Assert generation B's provider transport calls contain no replay of A's blocked command. A new post-connect command may be sent once to prove B is live.
-8. Release any old provider gate and deliver any controllable old callback after B adoption; assert no late write, state rollback, lifecycle regression, or duplicate listener notification.
-9. Dispose the managed client and prove both server/client scopes, listeners, sockets, markers, and temporary runtime artifacts are released failure-safely.
-
-### 9. Cover listener and lifecycle behavior
-
-Add focused assertions that:
-
-1. State/status listeners receive retained A data immediately when added during reconnect.
-2. Replacement B replay is delivered once even with a lower revision and carries B's daemon instance ID.
-3. Listener exceptions are isolated and do not block other listeners or reconnect.
-4. Unsubscription is idempotent; unsubscribed listeners receive neither replacement nor late old-generation values.
-5. Lifecycle order is connecting → connected(A) → reconnecting → connected(B), with no duplicate transitions.
-6. Disposal publishes/retains disposed semantics as defined, clears listeners, and is idempotent.
-
-Do not add 24-client fan-out or host presentation assertions here.
-
-### 10. Export only the supported host-neutral surface
-
-In `packages/music-core/index.ts`:
-
-1. Export the managed/reconnecting client type, connection-lifecycle type, options, and Promise constructor needed by future OpenCode/Pi adapters.
-2. Keep low-level explicit `createMusicSessionClient` and its existing types exported for compatibility.
-3. Do not export test dependency seams, internal generation tokens, fibers/scopes, marker leases, server/provider services, or cleanup guards.
-4. Preserve Node-compatible ESM imports and package typecheck.
-
-### 11. Keep this phase isolated
-
-1. Do not implement zero-client idle shutdown, daemon client counting, or signal changes.
-2. Do not add queue/backpressure limits or 24-client load evidence.
-3. Do not add artwork requests/caches or modify hosts.
-4. Format only touched files and inspect the exact diff.
-5. Keep work in the current reviewed Jujutsu phase child. Do not run `git commit`, `jj commit`, `jj squash`, push, or open a PR. After approval, the orchestrator may squash only this reviewed phase through the prescribed workflow.
+- `packages/opencode-music-player/index.tsx`
+- `packages/opencode-music-player/system-media.ts`
+- `packages/opencode-music-player/types.ts`
+- `packages/opencode-music-player/tests/**`
+- `packages/opencode-music-player/package.json`
+- `packages/opencode-music-player/scripts/**`
+- `packages/pi-music-dock/extensions/**`
+- `packages/pi-music-dock/test/**`
+- `packages/pi-music-dock/package.json`
+- `packages/pi-music-dock/scripts/**`
+- `package.json`
+- `bun.lock`
+- `.apnea/state.json`
+- Any unrelated dirty file or generated documentation/build artifact
 
 ## Acceptance checks
 
-Phase 4 is complete only when:
-
-- A separately typed managed client owns one scoped, supervised reconnect loop while the explicit client remains single-generation.
-- Genuine retryable loss retains the last accepted state/status, publishes reconnecting, and invokes the bounded existing startup workflow.
-- Every in-flight old-generation command settles exactly once as indeterminate and no command is replayed to the replacement.
-- Replacement hello/replay with a new instance ID is adopted atomically even at a lower revision; late old-generation frames/callbacks/completions are ignored.
-- Commands during reconnect are rejected immediately rather than queued.
-- Incompatibility and other non-retryable terminal outcomes stop supervision with actionable structured errors and no replacement loop.
-- Disposal interrupts connect/sleep work, closes the active client/scope, ignores late completions, clears listeners, and is idempotent.
-- Listener replay, ordering, exception isolation, and unsubscription are deterministic across A → reconnecting → B.
-- The public core index exports only the host-neutral managed client contract and constructor required by later adapters.
-- Phase 1–3 suites remain green as baseline only; no idle, fan-out, artwork, host, package, or docs acceptance enters this phase.
-- Unrelated dirty content, verified commits, `.apnea/state.json`, and `docs/music-session-architecture.html` remain untouched.
+- All five documentation files describe one same-user machine-local daemon/provider as the current architecture, not a future option.
+- The docs accurately cover Effect v4 Layer/scope ownership, singleton startup, negotiated revision/capability compatibility, immediate replay/revisions, one global FIFO, bounded client/fan-out/artwork work, slow-reader isolation, reconnect generations without command replay, indeterminate commands, idle exit, and exact-owned cleanup.
+- The cost model is O(1) provider observation and O(N) fan-out/presentation, with verified 20+ client evidence rather than an invented maximum.
+- The public API reference matches `packages/music-core/index.ts` and does not expose/import internal runtime resolver or server/provider symbols.
+- Native artwork reads are daemon-owned and bounded; OpenCode-local catalog/download/conversion/cache/rendering and Pi's no-artwork boundary remain clear.
+- OpenCode requirements/docs use exact `0.0.0-next-17386`. Pi docs retain supported 0.83.x/0.84.x and identify exact `0.84.0` as the packed-smoke pin.
+- Host docs describe only their client and presentation ownership; stale host provider subscription/poll/playback-clock/sample-lane claims are removed.
+- The HTML retains its skip link, labeled navigation/diagrams, logical structure, source links, responsive/print behavior, reduced-motion support, focus treatment, and established visual language.
+- No behavior, source, tests, manifests, pins, smokes, lockfiles, or unrelated worktree content changes.
 
 ## Verify commands
 
 Run from the repository root:
 
 ```sh
-bun test packages/music-core/tests/session-client.test.ts -t 'reconnect|replacement generation|indeterminate'
-bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
-# Baseline regression only; it does not enlarge Phase 4 acceptance.
-bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/client.ts
+bunx prettier --check README.md packages/music-core/README.md packages/opencode-music-player/README.md packages/pi-music-dock/README.md docs/music-session-architecture.html
+! rg -n 'Direct / current|Broker / scale path|future broker|when coordination is required' docs/music-session-architecture.html packages/music-core/README.md packages/opencode-music-player/README.md packages/pi-music-dock/README.md
+! rg -n '0\.0\.0-next-17041' README.md packages/opencode-music-player/README.md docs/music-session-architecture.html
 jj diff --summary
+jj status
 ```
 
-Inspect the exact phase diff:
-
-```sh
-jj diff --git packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/protocol.ts packages/music-core/index.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
-git diff --check
-```
-
-Confirm manually:
-
-- the explicit client remains one socket/one generation;
-- only retryable terminal loss authorizes reconnect;
-- reconnect calls the existing bounded `connectOrStartMusicSessionEffect` rather than duplicating startup;
-- every callback and connect completion is generation-fenced;
-- no command queue/replay exists in the wrapper;
-- retained state survives reconnect and lower-revision replacement replay is accepted by instance ID;
-- disposal owns and closes the supervisor scope;
-- public exports omit test seams and internal ownership;
-- no idle, fan-out, artwork, host, packaging, or docs work entered the phase;
-- `.apnea/state.json` and unrelated dirty paths were not altered.
+The diff summary must contain only the five documentation paths above, apart from dispatcher-owned `.apnea` artifacts/state that were already present. Do not run `bun run check`, package smokes, or mixed-host verification in this phase; those are later gates.
 
 ## Dependencies
 
-- Approved full plan at `.apnea/artifacts/plan.md`.
-- Approved Phase 1 (`08acaab5`), Phase 2 (`73a988d6`), and Phase 3 (`788473b7`) changes.
-- Existing truthful explicit `Client`, terminal request settlement, generation-aware revision filtering, `connectOrStartMusicSessionEffect`, secure discovery, and bounded startup schedule.
-- Existing real selected server/fake provider fixtures, scripted daemon controls, and real Unix-socket helpers.
-- Repository-pinned Effect v4 scopes, supervised fibers, `Deferred`, `Ref`, `Schedule`, `TestClock`, `Exit`, and synchronization APIs.
+- Approved exact Pi Phase 3 at `dee247d7`, exact OpenCode Phase 2 at `6613d6d1`, and packed-core Phase 1 at `863c6e7b`.
+- The complete verified migration through those phases.
+- Current source/tests as the factual architecture boundary.
+- The existing `docs/music-session-architecture.html` visual/accessibility implementation as the preserved baseline.
 
 ## Non-goals
 
-- Zero-client idle grace/daemon exit, daemon client counts, or signal-lifetime changes.
-- 24-client fan-out, queue/backpressure policy, slow-reader handling, or global-load hardening.
-- Artwork protocol/cache, OpenCode or Pi migration, manifests, packed smokes, READMEs, or architecture HTML.
-- Changing protocol negotiation/skew policy, replaying commands, durable command history, remote sockets, process killing/replacement, launchd/service installation, or multi-user sharing.
-- New source/test modules, unrelated cleanup, commits or squashing during coding, pushing, publishing, opening a PR, or editing `.apnea/state.json`.
+- Product, protocol, runtime, test, package, smoke, pin, lockfile, changelog, or release changes.
+- Exporting internal session configuration/server/provider APIs or adding a new docs site/build system.
+- Redesigning the field guide, replacing its visual language, generating diagrams, or moving it to another format/path.
+- New installation workflows, remote/cloud brokers, launchd/service management, durable history, fleet coordination, or feature proposals.
+- Full repository checks, live mixed-host verification, PR-description work, publishing, pushing, or opening a PR.
+- Committing, squashing, editing `.apnea/state.json`, or cleaning unrelated worktree changes.
