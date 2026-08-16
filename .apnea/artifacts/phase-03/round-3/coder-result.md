@@ -2,66 +2,52 @@
 status: done
 ---
 
-## Changed
+## What changed
 
-Fixed the round-2 detached-daemon leak in `packages/music-core/tests/session-client.test.ts`.
-
-- The primary-timeout-plus-marker-release-failure test now injects a bounded no-op launcher and asserts exactly one launch attempt. It still exercises the authoritative workflow's owned-marker acquisition, pending retry, typed timeout, and secondary release diagnostic without invoking the production detached launcher.
-- Accounted for the prior leaked process before verification: verified PID `25627` was the leaked packaged `music-sessiond.js`, terminated that exact process, and confirmed its default managed socket was removed.
-- Added an end-of-verification assertion that the default managed socket is absent, confirming this test run left no daemon/runtime artifact behind.
+Added a non-destructive ownership observation for processes whose command line references the unique installed packed music-core root. The smoke records that no such process exists before Pi starts, requires none after the exact Pi process group exits, and repeats that check immediately before root removal. A detected daemon/provider-related process or failed process inspection fails cleanup and retains/reports the root; no broad process cleanup was added.
 
 ## Files touched
 
-- `packages/music-core/tests/session-client.test.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
 - `.apnea/artifacts/phase-03/round-3/coder-result.md`
 
-## Verify transcript
+## Verification transcript
 
 ```text
-$ bun test packages/music-core/tests/session-client.test.ts -t 'primary startup failure'
-exit 0
-1 pass, 0 fail
-5 expect() calls
-$ test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"
-exit 0
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit: 0
+> nx run pi-music-dock:smoke
+> bun run smoke:package
+$ bun scripts/package-smoke.ts
+installed Pi 0.84.0: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-Yf1jeG/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+isolated packed roots: music-dock=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-Yf1jeG/node_modules/@naxodev/pi-music-dock; music-core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-Yf1jeG/node_modules/@naxodev/music-core
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+NX Successfully ran target smoke for project pi-music-dock
 
-$ bun test packages/music-core/tests/session-client.test.ts -t 'TestClock|20 concurrent|marker.*release|launcher rejection|primary startup|incompatib|does not relaunch'
-exit 0
-12 pass, 0 fail
-
-$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
-exit 0
-85 pass, 0 fail
-
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-215 pass, 0 fail
-877 expect() calls
-Verified npm package contents (21 files)
-NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
-
-$ ! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/client.ts
-exit 0
-
-$ test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"
-exit 0
+$ ! find packages/pi-music-dock -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
+exit: 0
+(no output; no prohibited package-directory artifacts found)
 
 $ jj diff --summary
-exit 0
-M packages/music-core/session/client.ts
-M packages/music-core/session/config.ts
-M packages/music-core/tests/session-client.test.ts
-(unrelated pre-existing phase artifacts/tasks and .apnea/state.json remain dirty and untouched)
+exit: 0
+tail:
+A .apnea/tasks/code_review-p3-r1-1786919592976.md
+A .apnea/tasks/code_review-p3-r2-1786919768483.md
+A .apnea/tasks/phase_package-p3-r1-1786919213963.md
+M packages/pi-music-dock/scripts/package-smoke.ts
 
-$ jj diff --git packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
-exit 0
-Only the existing Phase 3 config/client work and session-client tests appear in the inspected package paths.
-
-$ git diff --check
-exit 0
+$ jj status
+exit: 0
+tail:
+A .apnea/tasks/code_review-p3-r1-1786919592976.md
+A .apnea/tasks/code_review-p3-r2-1786919768483.md
+A .apnea/tasks/phase_package-p3-r1-1786919213963.md
+M packages/pi-music-dock/scripts/package-smoke.ts
+Working copy  (@) : vxrnmlov d216c99e (no description set)
+Parent commit (@-): ornnkvpk 6613d6d1 test(opencode): verify packed pinned plugin
 ```
 
 ## Residual risks
 
-- Focused/full runs emit intentional bounded warnings for injected marker-release failures and the existing injected server-unlink failure; all commands exit successfully.
-- No commit, push, or `.apnea/state.json` edit was performed.
+The smoke depends on macOS `/bin/ps`, Bun, npm, Node, and registry availability for the exact Pi pins. It only observes processes tied to its unique installed core path and never performs broad process cleanup; an unconfirmed owned process causes root retention rather than unsafe deletion. Existing unrelated `.apnea` changes, including `.apnea/state.json`, were preserved and not edited.

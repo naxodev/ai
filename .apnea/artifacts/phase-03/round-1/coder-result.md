@@ -2,58 +2,52 @@
 status: done
 ---
 
-## Changed
+## What changed
 
-Implemented the Phase 3 managed-startup acceptance work.
-
-- Added a narrow dependency/observation seam to `connectOrStartMusicSessionEffect`; production adapters retain production discovery, lease acquisition, and launcher behavior.
-- Kept all pending startup transitions under the bounded Effect retry schedule, and made exact owned-marker release uninterruptible and one-shot. Release failures are synchronously observable, logged without sensitive marker data, preserve a primary failure, and turn an otherwise successful startup into a failure after disposing its client.
-- Treated a temporary pre-hardening socket as pending only when a valid live startup marker authorizes it, allowing concurrent managed callers to converge without weakening unsafe-artifact rejection.
-- Added TestClock pacing/interruption coverage, real 20-client managed convergence, marker timeout/interruption/release-failure coverage, and incompatibility coverage before acquisition, after acquisition, and while waiting on a foreign marker. Healthy supported clients perform live commands after each incompatibility case.
+Reworked the Pi packed-package smoke to derive and validate the exact Pi development pins and peer ranges from the music-dock manifest, then install the packed dock/core plus exact Pi packages into one temporary root with lifecycle scripts disabled. The smoke now resolves the manifest-selected isolated `pi` binary, verifies its exact version, runs the existing RPC registration scenario with isolated Pi state/offline mode, and confirms exact process-group termination before cleanup.
 
 ## Files touched
 
-- `packages/music-core/session/config.ts`
-- `packages/music-core/session/client.ts`
-- `packages/music-core/tests/session-client.test.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
 - `.apnea/artifacts/phase-03/round-1/coder-result.md`
 
-## Verify transcript
+## Verification transcript
 
 ```text
-$ bun test packages/music-core/tests/session-client.test.ts -t 'TestClock|20 concurrent|marker.*release|incompatib'
-exit 0
-8 pass, 0 fail
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit: 0
+> nx run pi-music-dock:smoke
+> bun run smoke:package
+$ bun scripts/package-smoke.ts
+installed Pi 0.84.0: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-OTw5Ue/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+isolated packed roots: music-dock=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-OTw5Ue/node_modules/@naxodev/pi-music-dock; music-core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-OTw5Ue/node_modules/@naxodev/music-core
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+NX Successfully ran target smoke for project pi-music-dock
 
-$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
-exit 0
-81 pass, 0 fail
-
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-211 pass, 0 fail
-Verified npm package contents (21 files)
-NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
-
-$ ! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/client.ts
-exit 0
+$ ! find packages/pi-music-dock -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
+exit: 0
+(no output; no prohibited package-directory artifacts found)
 
 $ jj diff --summary
-exit 0
-M packages/music-core/session/config.ts
-M packages/music-core/session/client.ts
-M packages/music-core/tests/session-client.test.ts
-(existing unrelated phase metadata/state/task changes remain outside this implementation)
+exit: 0
+tail:
+M .apnea/state.json
+A .apnea/tasks/code-p3-r1-1786919360944.md
+A .apnea/tasks/phase_package-p3-r1-1786919213963.md
+M packages/pi-music-dock/scripts/package-smoke.ts
 
-$ jj diff --git packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
-exit 0
-Only config.ts, client.ts, and session-client.test.ts changed among inspected Phase 3 paths.
-
-$ git diff --check
-exit 0
+$ jj status
+exit: 0
+tail:
+M .apnea/state.json
+A .apnea/tasks/code-p3-r1-1786919360944.md
+A .apnea/tasks/phase_package-p3-r1-1786919213963.md
+M packages/pi-music-dock/scripts/package-smoke.ts
+Working copy  (@) : vxrnmlov c87ba437 (no description set)
+Parent commit (@-): ornnkvpk 6613d6d1 test(opencode): verify packed pinned plugin
 ```
 
 ## Residual risks
 
-- The release-failure test intentionally emits the bounded marker-release warning; the pre-existing server cleanup test also emits its expected tagged unlink warning.
-- No commit, push, or `.apnea/state.json` edit was performed.
+The machine-local smoke depends on Bun, npm, Node, and registry availability for the exact Pi pins. If exact process-group termination cannot be confirmed, cleanup fails and reports the retained unique smoke root rather than removing files beneath a potentially live Pi process. Existing unrelated `.apnea` changes, including `.apnea/state.json`, were preserved and not edited.
