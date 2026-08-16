@@ -2,270 +2,249 @@
 status: done
 ---
 
-# Phase 3 package: truthful explicit-client requests and stream semantics
+# Phase 3 package: deterministic startup pacing, convergence, marker release, and skew races
 
 ## Intent
 
-Finish the reliability contract of the manually connected, explicit-socket music-session client before any discovery, auto-start, or reconnect work begins.
+Finish only the managed startup acceptance matrix on top of the approved selected graph and separate-process singleton proof.
 
-The client must correlate each command response exactly once, reject malformed daemon data without mis-settling requests, accept only ordered state from its negotiated daemon instance, isolate subscriber exceptions, dispose idempotently, and report a lost in-flight command as indeterminate without replaying it.
+This phase covers four boundaries:
 
-Preserve the approved schema/revision negotiation from Phase 2 and all provider, coordinator, server-lifecycle, and process-boundary behavior. Keep unrelated worktree changes and `docs/music-session-architecture.html` untouched. Use only the repository-pinned Effect v4 APIs.
+1. the real startup retry workflow is paced and capped by Effect `Schedule` under `TestClock`;
+2. twenty simultaneous `connectOrStart` callers converge through real discovery, leases, listener, and hello on one daemon/provider owner;
+3. the exact owned startup marker is released on every workflow exit, with primary and release failures reported truthfully;
+4. incompatibility before acquisition, after acquisition, and while waiting is terminal for the observed healthy generation and never causes replacement behavior.
+
+Returned clients remain single-generation clients. Live-loss reconnect belongs to Phase 4. Treat Phase 1 graph shutdown/readiness and Phase 2 process contention as baseline regressions only.
+
+Use repository-pinned Effect v4 `Effect`, `Schedule`, `TestClock`, fibers, scopes/finalization, `Ref`, and deterministic test services. Do not use raw timers, `Bun.sleep`, polling loops, or detached Promise retry work.
 
 ## Files to touch
 
 Only as required:
 
+- `packages/music-core/session/config.ts`
 - `packages/music-core/session/client.ts`
-- `packages/music-core/session/protocol.ts`
 - `packages/music-core/tests/session-client.test.ts`
-- `packages/music-core/tests/session-server.test.ts`
+- `packages/music-core/tests/session-server.test.ts` only if a shared existing server observation must be adjusted for the 20-client integration proof
 
-`packages/music-core/session/server.ts` is not part of this phase. Update server tests only where the explicit client's newly truthful error/result semantics change an assertion.
+Prefer keeping all new Phase 3 evidence in `session-client.test.ts`.
 
 ## Files not to touch
 
 - `packages/music-core/session/server.ts`
+- `packages/music-core/session/music-sessiond.ts`
+- `packages/music-core/session/protocol.ts`
 - `packages/music-core/session/framing.ts`
-- `packages/music-core/session/config.ts`
 - `packages/music-core/session/provider.ts`
 - `packages/music-core/session/coordinator.ts`
-- `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/system-media.ts`
 - `packages/music-core/index.ts`
 - `packages/music-core/package.json`
 - `packages/music-core/project.json`
-- `packages/music-core/scripts/verify-pack.ts`
-- `packages/music-core/tests/system-media.test.ts`
+- `packages/music-core/tests/session-protocol.test.ts`
 - `packages/music-core/tests/session-coordinator.test.ts`
-- Anything under `packages/opencode-music-player/`
-- Anything under `packages/pi-music-dock/`
+- `packages/music-core/tests/system-media.test.ts`
+- Anything under `packages/opencode-music-player/` or `packages/pi-music-dock/`
 - `README.md`, package READMEs, and `docs/music-session-architecture.html`
 - `.apnea/state.json` and unrelated `.apnea` tasks/artifacts
 
-If a proposed fix requires server lifecycle, protocol negotiation, process startup, or host changes, stop rather than broadening the phase.
-
-## Required client semantics
-
-Use these decisions consistently in implementation and tests:
-
-1. **One connection generation:** this phase's client owns exactly the socket it explicitly connected. It never reconnects, spawns, discovers, or replays a command.
-2. **Terminal connection error vs pending command outcome:** after transport loss, future calls fail as `CONNECTION_LOST`; every command already handed to that connection but lacking a valid response fails as `INDETERMINATE_COMMAND` because execution cannot be known.
-3. **Caller disposal:** disposal is intentional local cancellation, so pending and future calls fail as `DISPOSED`, not indeterminate.
-4. **Malformed daemon data:** malformed framing, malformed schema data, or a malformed result makes the connection unusable. Pending commands are still indeterminate; future calls see the terminal invalid-daemon/connection failure.
-5. **Typed server failure:** a valid failure response for the matching request rejects only that request with the server's stable code/message/retryability/details; it does not poison the connection.
-6. **Valid unsolicited/duplicate response:** ignore it. It cannot settle a current or future request and does not by itself terminate the connection.
-7. **Invalid unsolicited frame:** schema-invalid daemon data terminates the connection even if its request ID is unknown; untrusted frames must not bypass validation just because they are unsolicited.
-8. **State authority:** accept the first schema-valid state only when `daemonInstanceId` matches the negotiated daemon. Thereafter accept only strictly greater revisions. Ignore wrong-instance, duplicate, stale, and out-of-order snapshots without notifying subscribers.
-9. **Status/state listeners:** invoke listeners independently; one throw must not stop another listener or the socket data loop. Unsubscribe and dispose are idempotent, and no listener runs after it is removed or after client termination/disposal.
+Do not create a new source or test module. Do not change protocol ranges/capabilities to manufacture skew; use the existing `protocolRange` option and negotiated incompatibility response.
 
 ## Exact implementation steps
 
-### 1. Add a typed transport-result contract
+### 1. Preserve the approved singleton baseline
 
-In `packages/music-core/session/protocol.ts`:
+1. Inspect the current tree and retain approved Phase 1 change `08acaab5` and Phase 2 change `73a988d6` unchanged.
+2. Retain secure runtime inspection, opaque lease-backed discovery authority, exact inode/token marker release, detached launch options, listener-first bind gating, crash-safe bind reservation, and same/separate-process tests.
+3. Do not reset, clean, or recreate accumulated startup code. Refactor only where required to make its current behavior deterministic, observable, and correct under this phase's acceptance.
 
-1. Add an Effect schema for successful transport response data containing the accepted transport `action` and derive its TypeScript type from the schema.
-2. Add one shared decoder/helper for that result. Keep all shape validation schema-owned; do not add record casts or a parallel manual validator.
-3. Preserve the Phase 2 request/event/response schemas, protocol ranges, legacy mapping, capability negotiation, and incompatibility details unchanged.
-4. Keep the generic response envelope additive, but require the client to decode a matched transport success through the transport-result schema before settlement.
-5. Do not add request types, reconnect/generation wire messages, artwork, lifecycle events, or new protocol revisions in this phase.
-
-### 2. Replace loose pending callbacks with an explicit request registry
+### 2. Give the Effect startup workflow a narrow deterministic test seam
 
 In `packages/music-core/session/client.ts`:
 
-1. Replace `Map<number, { resolve, reject }>` with entries that retain at least:
-   - request ID;
-   - request kind (`transport` for the current public methods);
-   - requested action;
-   - resolve/reject callbacks;
-   - enough identity to ensure an old completion cannot remove a newer entry.
-2. Centralize settlement in helpers that:
-   - verify the map still contains the same entry;
-   - delete it before invoking user Promise callbacks;
-   - settle it at most once;
-   - do nothing for an already settled/removed entry.
-3. Keep request IDs strictly increasing and non-negative. Refuse to allocate beyond the safe-integer range rather than wrapping or reusing an ID.
-4. Register the pending entry before initiating `socket.write` so immediate socket callbacks cannot race an untracked command.
-5. If synchronous encoding/write initiation fails or the write callback reports failure after admission to this connection, terminate through the same truthful connection-loss path. Never retry the command.
-6. Change transport methods from `Promise<unknown>` to the schema-derived transport result type if that can be done without touching package exports. Preserve all existing method names and seek validation.
+1. Keep `connectOrStartMusicSessionEffect` as the authoritative workflow and `connectOrStartMusicSession`/`connectOrStart` as thin Promise adapters. Do not create a second test-only startup algorithm.
+2. If needed, add a narrow second-argument dependency object to the Effect function for boundary substitution in deterministic tests. Production defaults must remain the existing functions:
+   - one-attempt `discoverMusicSession`;
+   - `acquireStartupMarkerLease`;
+   - the selected launcher;
+   - release-failure reporting/observation.
+3. Keep the Promise adapters on production dependencies and the existing launcher option. Do not expose filesystem cleanup, socket unlink, process kill, or arbitrary marker authority through this seam.
+4. Permit tests to observe attempt start and release failure without changing control flow. Observation callbacks must be synchronous/bounded and ignored if they throw, like existing lifecycle hooks.
+5. Keep `StartupPending` internal. Only it may continue the schedule. Incompatibility, occupied/unsafe artifacts, config defects, spawn failures, and release-only failures are terminal.
 
-### 3. Validate matched responses before settlement
+### 3. Make one bounded schedule own every pending transition
 
 In `packages/music-core/session/client.ts`:
 
-1. Decode every received frame through the Phase 2 `decodeServerFrame` boundary before looking up a pending request.
-2. For a response:
-   - find the exact pending entry by request ID;
-   - ignore the response if no entry exists (unsolicited or duplicate);
-   - for a valid failure response, reject that exact entry with `MusicSessionClientError` preserving the full stable protocol error;
-   - for a success response, decode its `data` according to the pending request kind;
-   - for transport, require the returned action to equal the action requested, including `toggle` remaining `toggle`.
-3. A malformed or mismatched success payload is invalid daemon data. Do not resolve the request, do not leave it pending, and do not allow a later frame to settle it. Terminate the connection and fail all in-flight commands once as indeterminate.
-4. Out-of-order valid responses for different IDs must settle the corresponding Promises, not request insertion order.
-5. A duplicate response after the first settlement must be ignored and must not affect another request, even after subsequent requests are allocated.
-6. Preserve valid typed provider/queue errors as request-local failures; a later command on the same healthy connection must still work.
+1. Retain validated `attempts`, `initialDelayMs`, and `maxDelayMs` from `resolveMusicSessionStartup`; do not read environment variables in workflow logic.
+2. Use one Effect `Schedule` for the complete retry loop. Every `StartupPending` transition—live foreign marker, lease contention, stale cleanup followed by reprobe, newly acquired lease before post-acquisition probe, and successful spawn before hello—must pass through that schedule.
+3. Preserve production jitter and cap the final jittered delay at `maxDelayMs`. Attempts must be finite; `attempts` means the total number of discovery attempts, including the initial immediate attempt.
+4. A healthy hello returns immediately. Terminal errors must not consume another delay or probe.
+5. Schedule exhaustion must fail once with tagged `MusicSessionStartupError` operation `timeout` and must then finalize any owned marker.
+6. Interruption must cancel the scheduled sleep and prevent all later discovery/launch attempts while still running marker finalization uninterruptibly.
+7. Do not use `Date.now`, `setTimeout`, `setInterval`, `Bun.sleep`, Promise polling, or recursive detached tasks for startup timing.
 
-### 4. Use one listener set from handshake through active operation
+In `packages/music-core/tests/session-client.test.ts`, test the real schedule with `TestClock` and deterministic Effect random/test services:
 
-The current handshake removes temporary socket listeners and later installs anonymous active listeners. Refactor this handoff so data cannot be lost between hello and active attachment:
+1. Script discovery outcomes only at the discovery boundary; run the production retry loop and schedule.
+2. Fork the workflow and assert the first attempt is immediate.
+3. Advance virtual time to just before the next delay and prove no attempt occurs; advance through it and prove exactly one next attempt.
+4. Record virtual attempt times and prove positive pacing, exponential progression subject to jitter, and a final delay no greater than `maxDelayMs`.
+5. Prove success before exhaustion returns the scripted client/outcome with no extra attempt.
+6. Prove perpetual pending stops at exactly the configured attempt count and returns the typed timeout.
+7. Interrupt a sleeping workflow, advance `TestClock` far beyond the full schedule, and prove no additional attempt or launch occurs.
 
-1. Own exact `data`, `end`, `error`, and `close` callback references for the lifetime of the socket.
-2. Route frames through an explicit internal connection state such as `handshaking`, `active`, and `terminal/disposed` rather than detaching one reader and attaching another.
-3. During handshaking:
-   - only response ID `0` can complete hello;
-   - validate the negotiated hello exactly as Phase 2 requires;
-   - preserve status/state frames that arrive in the same chunk or immediately after hello;
-   - transition to active before exposing readiness so no data-event gap exists.
-4. A valid but unrelated response cannot complete hello. A malformed frame, socket error, EOF, or close rejects handshake once and destroys the socket.
-5. During active operation, route every complete frame through the response/status/state logic exactly once.
-6. On `end`, finalize the `NdjsonFramer`. A buffered partial frame is malformed daemon data; a clean EOF is ordinary connection loss. Ensure subsequent `close`/`error` events reuse the first terminal transition.
-7. Remove all exact socket listeners during the one terminal/dispose transition. Do not leave anonymous callbacks attached to a destroyed socket.
-8. Keep the public `createMusicSessionClient(options)` Promise boundary. Do not add a second runtime, detached loop, or Effect service in this phase.
+### 4. Make marker finalization truthful on every exit
 
-### 5. Separate terminal state from in-flight command settlement
+Refactor finalization around `connectOrStartMusicSessionEffect` as needed:
 
-In `packages/music-core/session/client.ts`:
+1. Record a lease immediately and uninterruptibly once exclusive acquisition succeeds. Interruption cannot occur between acquisition and ownership registration.
+2. Release at most the exact recorded lease. Never call path-based cleanup as a substitute and never remove a replacement marker.
+3. Run release once, uninterruptibly, after:
+   - successful compatible hello;
+   - timeout;
+   - workflow interruption;
+   - synchronous or initial launcher failure propagated through the whole workflow;
+   - occupied/unsafe/config/terminal protocol failure after acquisition;
+   - defects in post-acquisition discovery.
+4. Preserve primary outcome semantics:
+   - primary failure + release failure returns the original primary failure and separately reports the typed release failure;
+   - interruption + release failure remains interruption and reports release failure;
+   - success + release failure disposes the newly returned client and surfaces the release failure rather than claiming clean startup.
+5. Production reporting may use Effect structured logging, but tests must have a narrow observer proving the secondary release diagnostic is retained. Do not log playback data, marker tokens, or complete environment values.
+6. Keep `StartupMarkerLease.release()` idempotent and exact-owner guarded. Existing replacement-marker evidence remains green.
 
-1. Model terminal state once. The first terminal transition records the future-call error, detaches listeners, clears subscribers, settles handshake if needed, settles all current pending entries with the appropriate pending error, and destroys the socket if necessary.
-2. On network `error`, clean EOF, or `close` while active:
-   - record `CONNECTION_LOST` for future calls;
-   - reject every pending command as `INDETERMINATE_COMMAND`;
-   - use a message that states the connection ended before the command result.
-3. On malformed daemon framing/schema/result:
-   - record non-retryable `CONNECTION_LOST` with an invalid-daemon message for future calls;
-   - reject pending commands as `INDETERMINATE_COMMAND`, because their outcomes are unknown.
-4. On `dispose()`:
-   - transition once to disposed;
-   - reject pending commands as `DISPOSED`;
-   - make future calls reject as `DISPOSED`;
-   - detach listeners, clear subscribers, and destroy the socket once.
-5. A response, write callback, error, end, close, and dispose racing in any order must still settle every Promise once and preserve the first truthful terminal state.
-6. Preserve `ProtocolError.details` on `MusicSessionClientError` so structured Phase 2 incompatibility information is not discarded at the public client boundary.
-7. Do not retain a command for possible replay. Once removed or terminally failed, it is gone.
+Add focused workflow tests using real secure temporary runtime directories:
 
-### 6. Make state and listener delivery explicit and isolated
+1. Successful startup removes the one owned marker.
+2. TestClock timeout removes it.
+3. Fiber interruption after acquisition removes it and schedules no more work.
+4. A launcher rejection through the complete `connectOrStart` workflow removes it and spawns only once.
+5. Inject release failure: assert a primary spawn/timeout error remains primary, the release error is observed separately, and the marker is left for failure-safe test cleanup.
+6. Replace the marker inode/token before release and prove it remains untouched; retain the existing lease-level replacement test as baseline.
+7. Put all clients, leases, server facades, fibers, gates, and temporary directories in unconditional `finally`/scoped cleanup.
 
-In `packages/music-core/session/client.ts`:
-
-1. Keep current status and state as presentation cache only.
-2. Before publishing a state frame, verify negotiated daemon instance and strict revision increase. Do not mutate cached state for rejected snapshots.
-3. Notify a stable iteration of current listeners so one listener throwing or unsubscribing cannot corrupt delivery to the remaining listeners.
-4. Catch listener exceptions per callback; do not turn a UI callback defect into socket failure.
-5. A late subscriber receives the latest accepted status/state once, and its immediate callback is isolated like live callbacks.
-6. An unsubscribe function is idempotent. After unsubscribe, terminal transition, or dispose, that listener receives no later event.
-7. Ignore all late socket callbacks and frames after terminal/disposed state.
-8. Do not add reconnect status, retained-generation switching, or host-specific notifications; those belong to later phases.
-
-### 7. Add a deterministic scripted-daemon test seam in the existing client test file
+### 5. Prove 20 concurrent callers converge through real topology
 
 In `packages/music-core/tests/session-client.test.ts`:
 
-1. Build small in-file helpers around a real `net.Server`, real Unix path, `NdjsonFramer`, and Node event Promises. Do not create a new fixture module.
-2. The helper must:
-   - capture frames received from the client;
-   - send a valid negotiated hello result;
-   - send arbitrary complete/split/multiple daemon frames;
-   - end, error, or destroy the accepted socket on demand;
-   - expose deterministic accepted/received/closed signals.
-3. Every test must use failure-safe ownership:
-   - declare server/socket/client handles before `try`;
-   - assign immediately after acquisition;
-   - dispose client, destroy sockets, close listener, and remove path in `finally`;
-   - release any queue/latch/deferred gates even when assertions fail.
-4. Use `randomUUID()` for unique paths and Node events or Effect `Deferred`/`Queue`/`Latch` for synchronization. Do not use `setTimeout`, `Bun.sleep`, `Date.now`, repeated `Effect.yieldNow`, or polling loops.
+1. Create one real secure temporary managed runtime and one instrumented `createFakeProvider`.
+2. Inject only the process-launch boundary. Its first invocation starts `startMusicSessionServer({ runtime }, provider, hooks)` using the approved selected graph and real Unix listener. Discovery, marker acquisition, bind, hello, and client sockets must remain real.
+3. Start twenty `connectOrStartMusicSessionEffect` calls concurrently before the endpoint exists. Use alternating `hostKind: "opencode"` and `hostKind: "pi"` plus unique client IDs.
+4. Retain each returned client immediately; if one call fails, dispose every client already returned and close the server in `finally`.
+5. Assert:
+   - exactly one launcher invocation;
+   - one successful listener and one coordinator/provider ownership;
+   - one provider event subscription and one initial polling/sample owner, not twenty;
+   - all twenty calls complete negotiated hello with the same nonempty daemon instance ID and selected revision;
+   - the owned marker is absent after convergence;
+   - no second socket/provider generation appears.
+6. Dispose one client, then complete a real operation or observe live traffic through another client and confirm the other nineteen remain usable.
+7. Dispose the remaining clients and close the server. Assert one event-source disposal, one provider disposal, socket removal, marker removal, and no bind-reservation debris.
+8. This is in-process launcher injection only; do not duplicate Phase 2's child-process race.
 
-### 8. Add focused request-settlement tests
+### 6. Prove incompatibility at all startup race positions
 
-In `packages/music-core/tests/session-client.test.ts`:
+Use a healthy real selected server and existing disjoint range `{ major: 1, minRevision: 9, maxRevision: 10 }`. In every case retain a supported client to prove the daemon generation stays healthy.
 
-1. Send two concurrent commands and return valid responses in reverse order. Assert each Promise receives only its matching action/result.
-2. Send a valid unsolicited response, then a valid response for a pending request. Assert the unsolicited frame settles nothing and the real response settles once.
-3. Send the same valid response twice, then issue/settle another request. Assert the duplicate cannot affect either the completed request or the newer one.
-4. Send a success response with malformed data or the wrong action for a pending transport. Assert the command rejects once as `INDETERMINATE_COMMAND`, the client becomes terminal, and a future command rejects as `CONNECTION_LOST`.
-5. Send a valid typed failure for one command, then a valid success for another. Assert only the first fails and the connection remains usable.
-6. Start one or more commands, then trigger socket error/end/close races. Assert every in-flight command rejects exactly once as `INDETERMINATE_COMMAND`; future calls reject as `CONNECTION_LOST`; the daemon observes no replay or second connection.
-7. Start a command, call `dispose()` repeatedly, then deliver late response/error/close callbacks. Assert the command rejects once as `DISPOSED`, future calls are `DISPOSED`, and no late callback changes the outcome.
-8. Preserve the existing invalid-seek local rejection and prove it sends no frame.
+#### Before marker acquisition
 
-### 9. Add focused stream-authority and listener tests
+1. Start the server first, capture the socket identity, then call `connectOrStart` with the disjoint range.
+2. Assert exact `INCOMPATIBLE_PROTOCOL` details include client and daemon ranges.
+3. Assert one probe, zero marker acquisition/unlink, zero launcher call, zero cleanup, and no scheduled continuation.
 
-In `packages/music-core/tests/session-client.test.ts`:
+#### After marker acquisition
 
-1. After hello, send a valid initial state, then:
-   - duplicate revision;
-   - lower revision;
-   - higher revision followed by an out-of-order middle revision;
-   - higher revision from a wrong daemon instance;
-   - a final valid higher revision from the negotiated instance.
-2. Assert only strictly increasing, correct-instance states update `client.state` and notify subscribers, in wire order.
-3. Subscribe multiple listeners where one throws and another records values. Assert the healthy listener receives all accepted updates and command/reader processing remains live.
-4. Unsubscribe one listener twice and prove it receives no later state/status.
-5. Subscribe after an accepted replay and prove immediate delivery of the latest accepted value exactly once.
-6. Send malformed nested status/state or malformed NDJSON/partial EOF. Assert the client terminates once, clears listeners, and never publishes malformed/late data.
-7. Prove dispose removes active listener effects: late frames after disposal cause no state/status callbacks.
+1. Begin with a missing endpoint. Let this caller acquire its real marker.
+2. Use its one authorized launcher invocation to start a normal current server; the caller's next completed hello is incompatible because its offered range is disjoint.
+3. Assert terminal incompatibility, exactly one launch, owned-marker release, no second launch/replacement/cleanup, and unchanged healthy socket identity.
 
-### 10. Update only the affected server integration assertion
+#### While waiting on another launcher
 
-In `packages/music-core/tests/session-server.test.ts`:
+1. Install a valid live marker owned by the test/another attempt so discovery returns `starting` and grants no cleanup.
+2. Fork the disjoint-range workflow under `TestClock`; prove it waits without acquiring or spawning.
+3. Start a healthy current server while the caller is sleeping, advance only the next virtual delay, and require the next hello to fail incompatibly.
+4. Advance virtual time beyond the full schedule and prove probe/launcher counts no longer change.
+5. Assert the foreign marker remains untouched, the socket identity remains unchanged, and a supported client completes a live request.
 
-1. Retain all Phase 1 failure-safe cleanup and Phase 2 compatibility tests unchanged.
-2. In the existing blocked socket-command scenario, assert the explicit client reports code `INDETERMINATE_COMMAND` when server scope closes before a response.
-3. Retain the existing proof that releasing the blocked provider afterward causes no late response/write. This is regression evidence for the client outcome, not a new server lifecycle matrix.
-4. Do not add new server acceptance, lifecycle hooks, or production server changes.
+Across all three cases:
 
-### 11. Keep the phase diff and Jujutsu workflow narrow
+- never signal, kill, unlink, replace, or retry against the healthy incompatible generation;
+- dispose any client created during a probe that later fails cleanup;
+- assert an existing supported client remains live through a real post-race request, not merely cached state;
+- clean server/client/marker/temp resources in `finally` without weakening ownership assertions.
 
-1. Format only touched files.
-2. Run client tests first, then protocol/server regressions and all `music-core` targets.
-3. Inspect `jj diff --summary` and the exact diff. Preserve `.apnea/state.json`, `docs/music-session-architecture.html`, and unrelated paths.
-4. Keep work in the current phase child for review. Do not run `git commit`, push, or `jj squash` during the coding round. After approval, use the run's prescribed `jj squash` step for only this reviewed phase.
+### 7. Preserve single-generation semantics
+
+1. After one successful `connectOrStart`, close its live server/socket.
+2. Assert the returned client settles according to the verified explicit-client terminal behavior and does not invoke its launcher or start another generation.
+3. Do not add a reconnect fiber, retained-state supervisor, replacement-generation filtering, or command replay. Those are Phase 4.
+
+### 8. Keep the phase isolated and green
+
+1. Update `config.ts` only if startup timing validation or narrow marker finalization support requires it. Preserve runtime path, owner/mode/type, token/inode, and stale cleanup policy.
+2. Do not alter Phase 1 selected ownership or Phase 2 process-contender behavior.
+3. Format only touched files and inspect the exact diff.
+4. Keep work in the current reviewed Jujutsu phase child. Do not run `git commit`, `jj commit`, `jj squash`, push, or open a PR. After approval, the orchestrator may squash only this reviewed phase through the prescribed workflow.
 
 ## Acceptance checks
 
-Phase 3 is done only when:
+Phase 3 is complete only when:
 
-- Concurrent and out-of-order valid responses settle only the matching request once; valid unsolicited and duplicate responses settle nothing else.
-- A matched transport success is schema-valid and matches the requested action before resolving. Malformed/mismatched daemon results terminate the connection and leave in-flight command outcomes indeterminate.
-- Wrong-instance, duplicate, stale, and out-of-order snapshots are ignored; correct-instance strictly increasing replay/live states are cached and delivered in order.
-- Listener exceptions and self/unsubscription are isolated; late subscribers receive current accepted values; no listener runs after unsubscribe, termination, or disposal.
-- Handshake-to-active reading has no listener gap, and malformed framing/schema/partial EOF transitions the client once to an invalid connection.
-- Valid typed command failure remains request-local and does not prevent a later command.
-- Network loss before a command response rejects that command once as `INDETERMINATE_COMMAND`; future calls reject as `CONNECTION_LOST`; no command is replayed and no second connection is opened.
-- Repeated disposal rejects pending/future calls as `DISPOSED`, detaches listeners, destroys the socket once, and ignores late response/error/end/close callbacks.
-- Existing Phase 2 schema/legacy/current negotiation and approved server/provider/coordinator suites remain green without becoming new Phase 3 acceptance work.
+- The real Effect startup workflow is proven with `TestClock`: immediate first attempt, no early retry, positive/capped pacing, success before exhaustion, exact attempt cap, typed timeout, and interruption with no later attempts.
+- Twenty concurrent real managed callers converge on one lease winner, launch, listener, coordinator, provider/event/poll owner, and daemon instance; disposing one does not affect the others.
+- Exact-owner marker release runs once on success, timeout, interruption, complete-workflow spawn failure, and terminal post-acquisition errors; replacements remain untouched.
+- A release-only failure prevents false success; a primary failure remains primary while the release failure is retained through a deterministic observer/diagnostic.
+- Incompatibility before acquisition, after acquisition, and while waiting is terminal with correct range details and no unauthorized acquisition, cleanup, spawn repetition, signal, kill, unlink, replacement, or retry continuation.
+- Healthy supported clients remain live through real post-race requests and the healthy socket identity is unchanged.
+- A returned startup client does not reconnect after live loss.
+- Phase 1 and Phase 2 suites remain green as baseline only; no reconnect, idle, fan-out, artwork, host, package, or docs work enters this phase.
+- Unrelated dirty content, verified commits, `.apnea/state.json`, and `docs/music-session-architecture.html` remain untouched.
 
 ## Verify commands
 
 Run from the repository root:
 
 ```sh
-bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-server.test.ts
+bun test packages/music-core/tests/session-client.test.ts -t 'TestClock|20 concurrent|marker.*release|incompatib'
+bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+# Baseline regression only; it does not enlarge Phase 3 acceptance.
 bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-! rg -n "setTimeout\(|Bun\.sleep|Date\.now\(|Effect\.yieldNow" packages/music-core/tests/session-client.test.ts
+! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/client.ts
 jj diff --summary
 ```
 
-Inspect the diff after the commands:
+Inspect the exact phase diff:
 
-- product changes are confined to `client.ts` and the narrow transport-result schema addition in `protocol.ts`;
-- `session-server.test.ts` changes only the affected explicit-client assertion unless a focused regression proves another test expectation must change;
-- no server production, framing, config, provider, coordinator, executable, discovery, spawning, reconnect, idle, load, artwork, host, manifest, or documentation work entered the phase;
-- `.apnea/state.json` and unrelated dirty paths remain untouched.
+```sh
+jj diff --git packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+git diff --check
+```
+
+Confirm manually:
+
+- only internal `StartupPending` continues the single bounded schedule;
+- TestClock tests exercise the production schedule rather than a duplicate loop;
+- marker registration/finalization is interruption-safe and exact-owner only;
+- release-only and primary-plus-release failures have truthful outcomes;
+- the 20-client test fakes only process launch and uses real filesystem/listener/hello topology;
+- all three incompatibility positions preserve the healthy generation and stop retrying;
+- no reconnect, process-contender expansion, idle, fan-out, artwork, host, packaging, or docs changes entered the phase;
+- `.apnea/state.json` and unrelated dirty paths were not altered.
 
 ## Dependencies
 
-- Approved Phase 2 commit `f059efc8`, including schema-owned request/event/response decoding, legacy/current revision negotiation, capability intersection, and explicit negotiated hello validation.
-- Approved Phase 1 process/server boundary commit `e70641bc`, scoped server commit `66bc1f91`, coordinator commit `859fc01d`, and provider commit `e7103663`.
-- Existing real Unix-socket test helpers, fake provider, NDJSON framer, and failure-safe server test ownership.
-- Repository-pinned Effect v4 schema APIs and Bun/Node Unix-domain socket support.
+- Approved full plan at `.apnea/artifacts/plan.md`.
+- Approved Phase 1 change `08acaab5` and Phase 2 change `73a988d6`.
+- Existing `resolveMusicSessionStartup`, `connectOrStartMusicSessionEffect`, `discoverMusicSession`, `acquireStartupMarkerLease`, launcher seam, `MusicSessionStartupError`, and opaque lease authority.
+- Existing real selected `startMusicSessionServer`, `createFakeProvider`, runtime resolver, real client hello, and disjoint protocol-range behavior.
+- Repository-pinned Effect v4 `Schedule`, `TestClock`, deterministic random/test services, fibers, `Exit`, `Ref`, scopes, and finalizers.
 
 ## Non-goals
 
-- Runtime-path discovery/security, stale endpoint classification, startup marker, daemon spawn, singleton race, or healthy-generation skew replacement policy.
-- Reconnect supervision, replacement generation adoption, retaining state while reconnecting, retry/backoff, or idle shutdown.
-- Server lifecycle/resource changes, new server hooks, provider/coordinator behavior, replay production changes, polling, reconciliation, command queue semantics, or another server cleanup audit.
-- Per-client/global bounds, socket write backpressure, slow-reader coalescing, 24-client evidence, artwork, or caching.
-- OpenCode/Pi migration, host UI/status/toast behavior, package exports/manifests, packing, smokes, READMEs, or architecture HTML.
-- New source/test modules, publishing, committing, squashing before approval, pushing, opening a PR, editing `.apnea/state.json`, or resetting/cleaning unrelated worktree content.
+- Reconnect supervision, replacement-generation adoption, retained state across loss, or command replay.
+- Idle grace/daemon exit, 24-client load/backpressure, artwork/cache, OpenCode, Pi, manifests, packed smokes, READMEs, or architecture HTML.
+- Reopening selected graph shutdown/readiness or separate-process singleton acceptance except to fix a direct regression exposed by this phase.
+- Protocol/schema/capability changes, process killing/replacement, launchd/service installation, remote sockets, multi-user sharing, or durable history.
+- New source/test modules, unrelated cleanup, commits or squashing during coding, pushing, publishing, opening a PR, or editing `.apnea/state.json`.

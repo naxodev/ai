@@ -5,22 +5,16 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains confined to allowed client/protocol/test paths. Stable listener snapshots, connect-listener cleanup, handshake EOF handling, and use of the shared framer in the one new request test address parts of the prior review.
+The Phase 3 package remains aligned with the approved plan. The round-3 change is confined to the allowed client test file and correctly removes the real-launcher leak identified previously.
 
 ## Findings
 
-### High — The required single lifetime reader/state machine is still absent
+### High — A live marker now masks socket type and ownership violations, not only the pre-hardening mode window
 
-The implementation still has separate handshake and active listener sets. On hello success, `cleanup(true)` immediately removes handshake `error`, `end`, and `close` handlers while retaining only `data`. Later, after the handshake Promise resumes and validates the result, it calls `handshake.detach()` **before** constructing/attaching the active client callbacks. Thus the code still performs the exact detach-then-attach handoff the package prohibits, rather than transitioning one owned reader from `handshaking` to `active` before readiness.
+The Phase 3 production change in `packages/music-core/session/config.ts:547-562` treats every invalid socket artifact as pending whenever any valid live marker exists. That branch covers `!isSocket()`, foreign ownership, and wrong mode alike. A legitimate listener startup can temporarily explain only a same-owner Unix socket that has not yet been hardened to `0600`; it cannot explain a regular file, symlink, directory, or foreign-owned socket.
 
-This also leaves post-hello pre-attach `end`/`error`/`close` without an owner, and the retained handshake data callback has `done === true`, so its `fail()` path ignores framing/schema failures during that interval. Replace both sets with one socket-lifetime callback set and explicit handshaking/active/terminal state; the same callbacks must validate hello, route queued frames, finalize EOF, and later detach on terminal/dispose.
-
-### High — Phase 3 acceptance evidence is still almost entirely missing
-
-No tests were added this round. The suite still lacks the package-required deterministic evidence for unsolicited/duplicate responses, malformed or wrong-action results, request-local typed failures, loss races and no replay, repeated disposal and late callbacks, invalid-seek no-write behavior, state instance/revision authority, listener isolation/unsubscription/late subscription, malformed nested frames, split/multiple daemon frames, partial EOF, and gap-free handshake delivery.
-
-Switching the reverse-order test's request parser to `NdjsonFramer` does not provide the required reusable scripted-daemon seam or any of those scenarios. Add the focused tests from package sections 7–9 with failure-safe socket/server ownership.
+Because `ManagedRuntimeProbe.inspect` retries through this branch (`config.ts:690-705`), adding a valid live marker changes those unsafe artifacts from immediate `MusicSessionRuntimeError` failures into scheduled `starting`/`missing` outcomes and eventual timeout. This weakens the secure type/owner checks that the package requires Phase 3 to preserve. Restrict the marker-authorized exception to the exact same-owner Unix-socket pre-hardening state, and add combined live-marker coverage showing files, symlinks, unexpected types, and foreign ownership still fail closed and remain untouched.
 
 ## Verification
 
-The coder reports all 41 focused tests, 163 music-core tests, package/build/typecheck/format targets, and the static scan passing. These are valid regressions, but the unchanged test count and remaining two-listener handoff do not satisfy the Phase 3 acceptance gate.
+The prior detached-daemon issue is fixed: the primary/release-failure test now injects a no-op launcher, asserts one launch attempt, and the default managed socket/process are absent. The coder also supplied passing focused, combined, full-target, timer-scan, and diff evidence. Those suites do not exercise unsafe socket artifacts while a live marker is present, so they do not catch the remaining regression above.

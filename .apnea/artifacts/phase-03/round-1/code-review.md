@@ -5,42 +5,26 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 3 package is aligned with the approved plan: it is limited to truthful explicit-client request/stream semantics, one transport-result schema addition, focused client tests, and the affected server assertion. The diff remains within its allowed paths.
+The Phase 3 package matches the approved plan. Changes are confined to the allowed config/client/client-test paths and do not add reconnect, idle, fan-out, host, packaging, or documentation work.
 
 ## Findings
 
-### High — The handshake-to-active listener gap remains unchanged
+### High — The required TestClock schedule matrix is incomplete
 
-The required lifetime reader refactor was not implemented. Handshake still calls `cleanup()` before resolving, `createMusicSessionClient()` awaits that Promise, constructs `Client`, and only then calls `attach()`. Frames arriving in that interval have no `data` listener and can be lost. `attach()` also installs anonymous `data`/`error`/`close` callbacks, has no `end` handler or `NdjsonFramer.end()` call, and neither terminal transition nor disposal can remove those exact listeners. Clean EOF with a buffered partial frame therefore cannot be classified as invalid daemon data as required.
+`packages/music-core/tests/session-client.test.ts:60-146` proves an immediate attempt, a coarse no-early-attempt bound, one capped interval, and an interruption, but it never scripts success before exhaustion or proves that success causes no extra attempt. The TestClock exhaustion path only checks `Exit.isFailure`, not the typed `MusicSessionStartupError { operation: "timeout" }`, and the recorded timings do not establish the required exponential progression. The interruption case also does not synchronize that its own first attempt occurred and entered scheduled sleep before interruption. Add deterministic production-schedule evidence for success, exact typed exhaustion, progression/cap, and interruption while sleeping.
 
-Use one set of owned callback references and one handshaking/active/terminal state machine from connection through teardown; transition to active before exposing readiness and detach every listener exactly once.
+### High — Marker finalization coverage omits required workflow exits and truthful dual failures
 
-### High — Terminal state is not truthful for clean close and does not suppress late frames
+The new tests cover success, timeout, interruption, and a release-only failure, but there is no complete `connectOrStart` launcher rejection test proving one spawn and marker release. There is also no primary-failure-plus-release-failure case proving the spawn/timeout error remains primary while the release error is observed separately, nor a workflow-level replacement-marker case. The release-only test at `session-client.test.ts:641-672` does not establish that the successfully handshaken client was disposed when release failed. These are explicit Phase 3 acceptance checks, not lease-level baseline coverage.
 
-The active `close` callback calls `terminate()` with `INDETERMINATE_COMMAND`. `terminate()` stores that same error in `#failure`, so future calls after a clean close incorrectly reject as `INDETERMINATE_COMMAND` rather than `CONNECTION_LOST`. Only pending calls should receive the indeterminate error.
+### High — Skew and single-generation evidence remains materially incomplete
 
-Additionally, `receive()` has no terminal/disposed guard. Because socket listeners are left attached, a late data callback after termination/disposal can still mutate cached status/state. `subscribeStatus()` and `subscribeState()` also accept new listeners after terminal/disposed state and may immediately invoke them from that cache, violating the no-listener-after-terminal contract.
+The incompatibility tests create their supported client only after the incompatible workflow has already failed, so they do not prove an already-supported client remains live through the race. The after-acquisition and waiting cases also capture socket identity only after the terminal outcome, and the waiting case does not count probes before/after advancing beyond the schedule; therefore they cannot prove no retry/replacement occurred during the race. Range details are asserted only in the before-acquisition case. Finally, no test closes a server returned by `connectOrStart` and proves that this returned client performs no relaunch/reconnect. Complete the three race-position assertions and the required one-generation live-loss check.
 
-### High — Most Phase 3 acceptance evidence is absent
+### Medium — The 20-caller failure path can leak late clients and does not inspect bind debris
 
-Only reverse-order settlement of two valid transport responses was added. There is no deterministic coverage for:
-
-- unsolicited and duplicate responses followed by newer requests;
-- malformed or mismatched transport success data;
-- request-local typed failure followed by a successful command;
-- error/end/close races, future `CONNECTION_LOST`, and no replay/second connection;
-- repeated disposal, pending/future `DISPOSED`, and late callbacks;
-- invalid seek sending no frame;
-- wrong-instance, duplicate, stale, and out-of-order state authority;
-- throwing/self-unsubscribing/idempotently unsubscribed listeners and late subscription;
-- malformed nested frames, split/multiple frames, partial EOF, and no handshake reader gap.
-
-The reported 41 focused tests therefore do not establish the package's request, terminal, stream-authority, and listener acceptance checks.
-
-### Medium — Listener delivery still iterates the live set
-
-Status/state publication uses `for (const listener of this.#...Listeners)` directly. A listener that removes another listener during delivery can alter which callbacks receive the current accepted frame. Iterate a stable snapshot and retain per-callback exception isolation as the package requires.
+The convergence test uses fail-fast `Promise.all` (`session-client.test.ts:582-608`). If one caller rejects, other startup calls continue after `finally` begins and can return clients after the current `clients` array has been disposed and the server/runtime removed. Await all callers to settlement before cleanup. The success path also checks socket and marker removal but not the bind lock or temporary bind-reservation names required by the package.
 
 ## Verification
 
-The coder reports all focused tests, 163 music-core tests, package contents, build, typecheck, format, and static scans passing. Those are valid regressions, but they do not cover the missing product semantics above.
+The coder supplied passing focused, combined, and full `music-core` verification (8 focused tests, 81 client/server tests, and 211 full tests), plus the timer scan and diff checks. Those green runs do not cover the acceptance gaps above.

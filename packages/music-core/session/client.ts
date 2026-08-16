@@ -11,6 +11,7 @@ import {
   type MusicSessionStartupOptions,
   type MusicSessionRuntimePaths,
   type StartupMarkerLease,
+  type StartupMarkerLeaseResult,
 } from "./config.ts"
 import { NdjsonFramer, encodeFrame } from "./framing.ts"
 import {
@@ -713,11 +714,38 @@ class StartupPending extends Error {
  * Managed startup coordinator. Pending discovery alone is retried; every
  * terminal endpoint, launch, and protocol error remains visible immediately.
  */
+export type ConnectOrStartMusicSessionDependencies = {
+  /** Test seam for one managed endpoint probe; production uses discovery. */
+  readonly discover?: (
+    options: MusicSessionDiscoveryOptions,
+  ) => Promise<MusicSessionDiscovery>
+  /** Test seam for exclusive marker acquisition. */
+  readonly acquireLease?: (
+    runtime: MusicSessionRuntimePaths,
+  ) => Promise<StartupMarkerLeaseResult>
+  /** Synchronous, bounded lifecycle observations; thrown observer errors ignored. */
+  readonly onAttempt?: () => void
+  readonly onReleaseFailure?: (error: unknown) => void
+}
+
 export const connectOrStartMusicSessionEffect = (
   options: ConnectOrStartMusicSessionOptions,
+  dependencies: ConnectOrStartMusicSessionDependencies = {},
 ) => {
   const runtime = options.runtime ?? resolveMusicSessionRuntimePaths()
   const launcher = options.launcher ?? launchManagedMusicSessionDaemon
+  const discover = dependencies.discover ?? discoverMusicSession
+  const acquireLease = dependencies.acquireLease ?? acquireStartupMarkerLease
+  const observe = (callback: (() => void) | undefined) => {
+    try {
+      callback?.()
+    } catch {}
+  }
+  const observeReleaseFailure = (error: unknown) => {
+    try {
+      dependencies.onReleaseFailure?.(error)
+    } catch {}
+  }
   // Preserve errors from the secure discovery/lease/launcher boundaries. Only
   // schedule exhaustion below is translated to the startup timeout operation.
   const promise = <A>(run: () => Promise<A>) =>
@@ -737,10 +765,30 @@ export const connectOrStartMusicSessionEffect = (
       yield* resolveMusicSessionStartup(options.startup)
     const lease = yield* Ref.make<StartupMarkerLease | undefined>(undefined)
     const spawned = yield* Ref.make(false)
+    const releaseOwned = Effect.uninterruptible(
+      Ref.getAndSet(lease, undefined).pipe(
+        Effect.flatMap((ownedLease) =>
+          ownedLease
+            ? promise(() => ownedLease.release()).pipe(
+                Effect.tapError((error) =>
+                  Effect.sync(() => observeReleaseFailure(error)).pipe(
+                    Effect.andThen(
+                      Effect.logWarning(
+                        "music session startup marker release failed",
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            : Effect.void,
+        ),
+      ),
+    )
     const attempt = Effect.gen(function* () {
+      yield* Effect.sync(() => observe(dependencies.onAttempt))
       const ownedLease = yield* Ref.get(lease)
       const discovery = yield* promise(() =>
-        discoverMusicSession({
+        discover({
           ...options,
           runtime,
           ...(ownedLease ? { ownedLease } : {}),
@@ -756,7 +804,16 @@ export const connectOrStartMusicSessionEffect = (
               throw cause
             }
           })
-        return discovery.client
+        if (!ownedLease) return discovery.client
+        return yield* releaseOwned.pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              Effect.sync(() => discovery.client.dispose()).pipe(
+                Effect.andThen(Effect.fail(error)),
+              ),
+            onSuccess: () => Effect.succeed(discovery.client),
+          }),
+        )
       }
       if (discovery.type === "incompatible")
         return yield* Effect.fail(discovery.error)
@@ -776,7 +833,7 @@ export const connectOrStartMusicSessionEffect = (
         // Once exclusive acquisition returns a lease, recording it for the
         // finalizer is uninterruptible; cancellation cannot strand a marker.
         yield* Effect.uninterruptible(
-          promise(() => acquireStartupMarkerLease(runtime)).pipe(
+          promise(() => acquireLease(runtime)).pipe(
             Effect.tap((next) =>
               next.type === "acquired"
                 ? Ref.set(lease, next.lease)
@@ -810,25 +867,7 @@ export const connectOrStartMusicSessionEffect = (
             }),
           ),
       ),
-      Effect.ensuring(
-        Ref.get(lease).pipe(
-          Effect.flatMap((ownedLease) =>
-            ownedLease
-              ? Effect.matchEffect(
-                  promise(() => ownedLease.release()),
-                  {
-                    onSuccess: () => Effect.void,
-                    onFailure: (error) =>
-                      Effect.logWarning(
-                        "music session startup marker release failed",
-                        error,
-                      ),
-                  },
-                )
-              : Effect.void,
-          ),
-        ),
-      ),
+      Effect.ensuring(releaseOwned.pipe(Effect.catch(() => Effect.void))),
     )
   })
 }

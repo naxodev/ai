@@ -8,6 +8,7 @@ import {
   mkdtemp,
   rename,
   readFile,
+  readdir,
   rm,
   symlink,
   writeFile,
@@ -17,6 +18,7 @@ import { NdjsonFramer } from "../session/framing.ts"
 import {
   MusicSessionClientError,
   connectOrStartMusicSession,
+  connectOrStartMusicSessionEffect,
   createMusicSessionClient,
   launchManagedMusicSessionDaemon,
   discoverMusicSession,
@@ -28,7 +30,8 @@ import {
   resolveMusicSessionRuntimePaths,
   resolveMusicSessionStartup,
 } from "../session/config.ts"
-import { Effect } from "effect"
+import { Clock, Effect, Fiber, Latch, Random } from "effect"
+import { TestClock } from "effect/testing"
 import {
   createFakeProvider,
   startMusicSessionServer,
@@ -56,6 +59,151 @@ test("startup timing resolves through the tagged config boundary", async () => {
       setting,
     })
   }
+})
+
+test("TestClock startup retries are immediate, paced, bounded, and interruptible", async () => {
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const firstAttempt = Latch.makeUnsafe()
+  let attempts = 0
+  let launches = 0
+  let releases = 0
+  const attemptTimes: number[] = []
+  const lease = {
+    paths: runtime,
+    attemptToken: "test-lease",
+    release: async () => {
+      releases++
+    },
+  }
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make()
+        const pending = connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "test-clock-pending",
+            hostKind: "test",
+            startup: { attempts: 4, initialDelayMs: 10, maxDelayMs: 25 },
+            launcher: async () => {
+              launches++
+            },
+          },
+          {
+            discover: async () => ({ type: "missing" }),
+            acquireLease: async () => ({ type: "acquired", lease }),
+            onAttempt: () => {
+              attempts++
+              attemptTimes.push(clock.currentTimeMillisUnsafe())
+              Latch.openUnsafe(firstAttempt)
+            },
+          },
+        )
+        const fiber = yield* pending.pipe(
+          Effect.provideService(Clock.Clock, clock),
+          Random.withSeed("startup-pacing"),
+          Effect.forkScoped,
+        )
+        yield* Latch.await(firstAttempt)
+        expect(attempts).toBe(1)
+        yield* clock.adjust("7 millis")
+        expect(attempts).toBe(1)
+        yield* clock.adjust("1 hour")
+        yield* Fiber.join(fiber).pipe(
+          Effect.match({
+            onFailure: (error) =>
+              Effect.sync(() =>
+                expect(error).toMatchObject({
+                  _tag: "MusicSession.StartupError",
+                  operation: "timeout",
+                }),
+              ),
+            onSuccess: () => Effect.die("expected startup timeout"),
+          }),
+        )
+        expect(attempts).toBe(4)
+        expect(launches).toBe(1)
+        expect(releases).toBe(1)
+        const delays = attemptTimes
+          .slice(1)
+          .map((time, index) => time - attemptTimes[index]!)
+        // Jitter is deterministic here and each exponential interval stays in
+        // its 0.8-1.2 range; the final jittered delay is capped at 25 ms.
+        expect(delays[0]).toBeGreaterThanOrEqual(8)
+        expect(delays[0]).toBeLessThanOrEqual(12)
+        expect(delays[1]).toBeGreaterThanOrEqual(16)
+        expect(delays[1]).toBeLessThanOrEqual(24)
+        expect(delays[2]).toBe(25)
+
+        const successReady = Latch.makeUnsafe()
+        const client = { dispose: () => {} } as Awaited<
+          ReturnType<typeof connectOrStartMusicSession>
+        >
+        let successAttempts = 0
+        const success = connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "test-clock-success",
+            hostKind: "test",
+            startup: { attempts: 4, initialDelayMs: 10, maxDelayMs: 25 },
+          },
+          {
+            discover: async () => {
+              successAttempts++
+              Latch.openUnsafe(successReady)
+              return successAttempts === 1
+                ? { type: "starting" }
+                : { type: "healthy", client }
+            },
+          },
+        )
+        const successful = yield* success.pipe(
+          Effect.provideService(Clock.Clock, clock),
+          Random.withSeed("startup-success"),
+          Effect.forkScoped,
+        )
+        yield* Latch.await(successReady)
+        yield* clock.adjust("20 millis")
+        expect(yield* Fiber.join(successful)).toBe(client)
+        expect(successAttempts).toBe(2)
+        yield* clock.adjust("1 hour")
+        expect(successAttempts).toBe(2)
+
+        const sleeping = Latch.makeUnsafe()
+        let interruptedAttempts = 0
+        const interrupted = yield* connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "test-clock-interrupt",
+            hostKind: "test",
+            startup: { attempts: 4, initialDelayMs: 10, maxDelayMs: 25 },
+          },
+          {
+            discover: async () => {
+              interruptedAttempts++
+              Latch.openUnsafe(sleeping)
+              return { type: "starting" }
+            },
+          },
+        ).pipe(
+          Effect.provideService(Clock.Clock, clock),
+          Random.withSeed("startup-interrupt"),
+          Effect.forkScoped,
+        )
+        yield* Latch.await(sleeping)
+        // Advancing less than the earliest jittered delay lets the workflow
+        // install and remain in its production schedule sleep.
+        yield* clock.adjust("1 millis")
+        expect(interruptedAttempts).toBe(1)
+        yield* Fiber.interrupt(interrupted)
+        yield* clock.adjust("1 hour")
+        expect(interruptedAttempts).toBe(1)
+      }),
+    ),
+  )
 })
 
 type ScriptedFrame = { type: string; requestId: number; action?: string }
@@ -473,6 +621,607 @@ test("connect-or-start acquires one marker, launches once, and returns a hello c
     expect(existsSync(runtime.markerPath)).toBe(false)
   } finally {
     client?.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("returned managed client does not relaunch after live server loss", async () => {
+  const root = await mkdtemp("/tmp/music-session-no-reconnect-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let client: Awaited<ReturnType<typeof connectOrStartMusicSession>> | undefined
+  let launches = 0
+  try {
+    client = await connectOrStartMusicSession({
+      runtime,
+      clientId: "no-reconnect",
+      hostKind: "test",
+      launcher: async () => {
+        launches++
+        server = await startMusicSessionServer(
+          { runtime },
+          createFakeProvider(),
+        )
+      },
+    })
+    await server!.close()
+    server = undefined
+    await expect(client.play()).rejects.toBeInstanceOf(MusicSessionClientError)
+    expect(launches).toBe(1)
+    expect(existsSync(runtime.socketPath)).toBe(false)
+  } finally {
+    client?.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("20 concurrent managed callers converge on one selected graph", async () => {
+  const root = await mkdtemp("/tmp/music-session-convergence-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const provider = createFakeProvider()
+  const clients: Awaited<ReturnType<typeof connectOrStartMusicSession>>[] = []
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let launches = 0
+  let listeners = 0
+  let coordinators = 0
+  try {
+    const settled = await Promise.allSettled(
+      Array.from({ length: 20 }, async (_, index) => {
+        const client = await connectOrStartMusicSession({
+          runtime,
+          clientId: `concurrent-${index}`,
+          hostKind: index % 2 === 0 ? "opencode" : "pi",
+          startup: { attempts: 8, initialDelayMs: 10, maxDelayMs: 40 },
+          launcher: async () => {
+            launches++
+            server = await startMusicSessionServer({ runtime }, provider, {
+              onListener: () => listeners++,
+              onCoordinator: () => coordinators++,
+            })
+          },
+        })
+        clients.push(client)
+        return client
+      }),
+    )
+    const rejected = settled.find((result) => result.status === "rejected")
+    if (rejected?.status === "rejected") throw rejected.reason
+    const started = settled.map((result) => {
+      if (result.status !== "fulfilled") throw new Error("unreachable")
+      return result.value
+    })
+    expect(launches).toBe(1)
+    expect(listeners).toBe(1)
+    expect(coordinators).toBe(1)
+    expect(provider.counts.subscriptions).toBe(1)
+    expect(provider.counts.samples).toBe(1)
+    expect(existsSync(runtime.markerPath)).toBe(false)
+    expect(new Set(started.map((client) => client.daemonInstanceId)).size).toBe(
+      1,
+    )
+    expect(started[0]?.daemonInstanceId).not.toBe("")
+    expect(new Set(started.map((client) => client.selectedRevision)).size).toBe(
+      1,
+    )
+
+    clients.shift()?.dispose()
+    expect(await clients[0]!.play()).toEqual({ action: "play" })
+    expect(provider.calls).toEqual(["play"])
+    for (const client of clients.splice(0)) client.dispose()
+    await server?.close()
+    server = undefined
+    expect(provider.counts.disposals).toBe(1)
+    expect(provider.counts.providerDisposals).toBe(1)
+    expect(existsSync(runtime.socketPath)).toBe(false)
+    expect(existsSync(runtime.markerPath)).toBe(false)
+    const entries = await readdir(runtime.directory)
+    const bindReservation = `${runtime.socketPath.split("/").at(-1)}.bind-lock`
+    expect(entries.filter((name) => name.startsWith(bindReservation))).toEqual(
+      [],
+    )
+    const markerTemporary = `${runtime.markerPath.split("/").at(-1)}.`
+    expect(
+      entries.filter(
+        (name) => name.startsWith(markerTemporary) && name.endsWith(".tmp"),
+      ),
+    ).toEqual([])
+  } finally {
+    for (const client of clients) client.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("marker release failure disposes a successful client and remains observable", async () => {
+  const root = await mkdtemp("/tmp/music-session-release-failure-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+    dependencies: {
+      unlink: async () => {
+        throw new Error("release failure")
+      },
+    },
+  })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  const releaseFailures: unknown[] = []
+  let disposed = 0
+  try {
+    await expect(
+      Effect.runPromise(
+        connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "release-failure",
+            hostKind: "test",
+            startup: { attempts: 4, initialDelayMs: 10, maxDelayMs: 20 },
+            launcher: async () => {
+              server = await startMusicSessionServer(
+                { runtime },
+                createFakeProvider(),
+              )
+            },
+          },
+          {
+            discover: async (options) => {
+              const found = await discoverMusicSession(options)
+              if (found.type !== "healthy") return found
+              return {
+                ...found,
+                client: new Proxy(found.client, {
+                  get(target, property, receiver) {
+                    if (property === "dispose")
+                      return () => {
+                        disposed++
+                        target.dispose()
+                      }
+                    return Reflect.get(target, property, receiver)
+                  },
+                }),
+              }
+            },
+            onReleaseFailure: (error) => releaseFailures.push(error),
+          },
+        ),
+      ),
+    ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+    expect(releaseFailures).toHaveLength(1)
+    expect(disposed).toBe(1)
+    expect(existsSync(runtime.markerPath)).toBe(true)
+  } finally {
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("marker is released after startup timeout and interruption", async () => {
+  const root = await mkdtemp("/tmp/music-session-marker-finalization-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  try {
+    await expect(
+      Effect.runPromise(
+        connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "timeout-release",
+            hostKind: "test",
+            startup: { attempts: 2, initialDelayMs: 5, maxDelayMs: 5 },
+            launcher: async () => {},
+          },
+          { discover: async () => ({ type: "missing" }) },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "MusicSession.StartupError",
+      operation: "timeout",
+    })
+    expect(existsSync(runtime.markerPath)).toBe(false)
+
+    const acquired = Latch.makeUnsafe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fiber = yield* connectOrStartMusicSessionEffect(
+            {
+              runtime,
+              clientId: "interrupt-release",
+              hostKind: "test",
+              startup: { attempts: 3, initialDelayMs: 100, maxDelayMs: 100 },
+            },
+            {
+              discover: async () => ({ type: "missing" }),
+              acquireLease: async (paths) => {
+                const next = await acquireStartupMarkerLease(paths)
+                Latch.openUnsafe(acquired)
+                return next
+              },
+            },
+          ).pipe(Effect.forkScoped)
+          yield* Latch.await(acquired)
+          yield* Fiber.interrupt(fiber)
+        }),
+      ),
+    )
+    expect(existsSync(runtime.markerPath)).toBe(false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("launcher rejection releases its owned marker", async () => {
+  const root = await mkdtemp("/tmp/music-session-launcher-finalization-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let launches = 0
+  try {
+    await expect(
+      connectOrStartMusicSession({
+        runtime,
+        clientId: "launcher-rejection",
+        hostKind: "test",
+        startup: { attempts: 3, initialDelayMs: 1, maxDelayMs: 1 },
+        launcher: async () => {
+          launches++
+          throw new Error("launcher rejected")
+        },
+      }),
+    ).rejects.toThrow("launcher rejected")
+    expect(launches).toBe(1)
+    expect(existsSync(runtime.markerPath)).toBe(false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("primary startup failure remains primary when marker release fails", async () => {
+  const root = await mkdtemp("/tmp/music-session-primary-release-failure-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+    dependencies: {
+      unlink: async () => {
+        throw new Error("release failure")
+      },
+    },
+  })
+  const releaseFailures: unknown[] = []
+  let launches = 0
+  try {
+    await expect(
+      Effect.runPromise(
+        connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "primary-release-failure",
+            hostKind: "test",
+            startup: { attempts: 2, initialDelayMs: 1, maxDelayMs: 1 },
+            launcher: async () => {
+              launches++
+            },
+          },
+          {
+            discover: async () => ({ type: "missing" }),
+            onReleaseFailure: (error) => releaseFailures.push(error),
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "MusicSession.StartupError",
+      operation: "timeout",
+    })
+    expect(launches).toBe(1)
+    expect(releaseFailures).toHaveLength(1)
+    expect(releaseFailures[0]).toBeInstanceOf(MusicSessionRuntimeError)
+    expect(existsSync(runtime.markerPath)).toBe(true)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("workflow marker release does not remove a replacement marker", async () => {
+  const root = await mkdtemp("/tmp/music-session-marker-replacement-workflow-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const releaseFailures: unknown[] = []
+  let replacement: { readonly dev: number; readonly ino: number } | undefined
+  try {
+    await expect(
+      Effect.runPromise(
+        connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "replacement-release",
+            hostKind: "test",
+            startup: { attempts: 3, initialDelayMs: 1, maxDelayMs: 1 },
+            launcher: async () => {
+              throw new Error("launcher rejected after replacement")
+            },
+          },
+          {
+            discover: async () => ({ type: "missing" }),
+            acquireLease: async (paths) => {
+              const acquired = await acquireStartupMarkerLease(paths)
+              if (acquired.type !== "acquired") return acquired
+              await rename(paths.markerPath, `${root}/original-marker`)
+              await writeFile(
+                paths.markerPath,
+                JSON.stringify({
+                  version: 1,
+                  uid: paths.uid,
+                  pid: process.pid,
+                  attemptToken: "replacement",
+                }),
+                { mode: 0o600 },
+              )
+              replacement = await lstat(paths.markerPath)
+              return acquired
+            },
+            onReleaseFailure: (error) => releaseFailures.push(error),
+          },
+        ),
+      ),
+    ).rejects.toThrow("launcher rejected after replacement")
+    if (!replacement) throw new Error("replacement marker was not installed")
+    const current = await lstat(runtime.markerPath)
+    expect([current.dev, current.ino]).toEqual([
+      replacement.dev,
+      replacement.ino,
+    ])
+    expect(
+      JSON.parse(await readFile(runtime.markerPath, "utf8")),
+    ).toMatchObject({
+      attemptToken: "replacement",
+    })
+    expect(releaseFailures).toHaveLength(1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("incompatible managed startup is terminal after marker acquisition", async () => {
+  const root = await mkdtemp("/tmp/music-session-startup-incompatible-owned-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let supported:
+    Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let identity:
+    | { readonly dev: number; readonly ino: number; readonly mode: number }
+    | undefined
+  let launches = 0
+  let attempts = 0
+  try {
+    await expect(
+      Effect.runPromise(
+        connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "incompatible-owned",
+            hostKind: "test",
+            protocolRange: { major: 1, minRevision: 9, maxRevision: 10 },
+            startup: { attempts: 5, initialDelayMs: 5, maxDelayMs: 10 },
+            launcher: async () => {
+              launches++
+              server = await startMusicSessionServer({ runtime }, provider)
+              supported = await createMusicSessionClient({
+                socketPath: runtime.socketPath,
+                clientId: "supported-during-owned-incompatible",
+                hostKind: "test",
+              })
+              identity = await lstat(runtime.socketPath)
+            },
+          },
+          { onAttempt: () => attempts++ },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "INCOMPATIBLE_PROTOCOL",
+      details: {
+        client: { minRevision: 9, maxRevision: 10 },
+        daemon: { minRevision: 0, maxRevision: 1 },
+      },
+    })
+    expect(launches).toBe(1)
+    expect(attempts).toBe(3)
+    expect(existsSync(runtime.markerPath)).toBe(false)
+    expect(await supported!.play()).toEqual({ action: "play" })
+    const after = await lstat(runtime.socketPath)
+    expect([after.dev, after.ino, after.mode]).toEqual([
+      identity!.dev,
+      identity!.ino,
+      identity!.mode,
+    ])
+  } finally {
+    supported?.dispose()
+    await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("TestClock waiting startup stops at an incompatible healthy generation", async () => {
+  const root = await mkdtemp("/tmp/music-session-startup-waiting-incompatible-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const foreign = await acquireStartupMarkerLease(runtime)
+  if (foreign.type !== "acquired") throw new Error("foreign marker contention")
+  const firstWait = Latch.makeUnsafe()
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let supported:
+    Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let identity:
+    | { readonly dev: number; readonly ino: number; readonly mode: number }
+    | undefined
+  let launches = 0
+  let probes = 0
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const clock = yield* TestClock.make()
+          const workflow = connectOrStartMusicSessionEffect(
+            {
+              runtime,
+              clientId: "incompatible-waiting",
+              hostKind: "test",
+              protocolRange: { major: 1, minRevision: 9, maxRevision: 10 },
+              startup: { attempts: 4, initialDelayMs: 10, maxDelayMs: 20 },
+              launcher: async () => {
+                launches++
+              },
+            },
+            {
+              discover: async (options) => {
+                probes++
+                const found = await discoverMusicSession(options)
+                if (found.type === "starting") Latch.openUnsafe(firstWait)
+                return found
+              },
+            },
+          )
+          const fiber = yield* workflow.pipe(
+            Effect.provideService(Clock.Clock, clock),
+            Random.withSeed("waiting-incompatible"),
+            Effect.forkScoped,
+          )
+          yield* Latch.await(firstWait)
+          server = yield* Effect.promise(() =>
+            startMusicSessionServer({ runtime }, provider),
+          )
+          supported = yield* Effect.promise(() =>
+            createMusicSessionClient({
+              socketPath: runtime.socketPath,
+              clientId: "supported-during-waiting-incompatible",
+              hostKind: "test",
+            }),
+          )
+          identity = yield* Effect.promise(() => lstat(runtime.socketPath))
+          // The initial jittered 10 ms delay is at most 12 ms, so this wakes
+          // precisely one retry and its incompatible hello.
+          yield* clock.adjust("20 millis")
+          yield* Fiber.join(fiber).pipe(
+            Effect.match({
+              onFailure: (error) =>
+                Effect.sync(() =>
+                  expect(error).toMatchObject({
+                    code: "INCOMPATIBLE_PROTOCOL",
+                    details: {
+                      client: { minRevision: 9, maxRevision: 10 },
+                      daemon: { minRevision: 0, maxRevision: 1 },
+                    },
+                  }),
+                ),
+              onSuccess: () => Effect.die("expected incompatibility"),
+            }),
+          )
+          expect(probes).toBe(2)
+          yield* clock.adjust("1 hour")
+          expect(probes).toBe(2)
+        }),
+      ),
+    )
+    expect(launches).toBe(0)
+    expect((await lstat(runtime.markerPath)).isFile()).toBe(true)
+    expect(await supported!.play()).toEqual({ action: "play" })
+    const after = await lstat(runtime.socketPath)
+    expect([after.dev, after.ino, after.mode]).toEqual([
+      identity!.dev,
+      identity!.ino,
+      identity!.mode,
+    ])
+  } finally {
+    supported?.dispose()
+    await server?.close().catch(() => {})
+    await foreign.lease.release().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("incompatible managed startup is terminal before marker acquisition", async () => {
+  const root = await mkdtemp("/tmp/music-session-startup-incompatible-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let supported:
+    Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let acquisitions = 0
+  let launches = 0
+  let attempts = 0
+  try {
+    server = await startMusicSessionServer({ runtime }, provider)
+    supported = await createMusicSessionClient({
+      socketPath: runtime.socketPath,
+      clientId: "supported-during-incompatible",
+      hostKind: "test",
+    })
+    const before = await lstat(runtime.socketPath)
+    await expect(
+      Effect.runPromise(
+        connectOrStartMusicSessionEffect(
+          {
+            runtime,
+            clientId: "incompatible",
+            hostKind: "test",
+            protocolRange: { major: 1, minRevision: 9, maxRevision: 10 },
+            launcher: async () => {
+              launches++
+            },
+          },
+          {
+            acquireLease: async (paths) => {
+              acquisitions++
+              return acquireStartupMarkerLease(paths)
+            },
+            onAttempt: () => attempts++,
+            onReleaseFailure: () => {
+              throw new Error("observer must not alter startup")
+            },
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "INCOMPATIBLE_PROTOCOL",
+      details: {
+        client: { minRevision: 9, maxRevision: 10 },
+        daemon: { minRevision: 0, maxRevision: 1 },
+      },
+    })
+    expect(attempts).toBe(1)
+    expect(acquisitions).toBe(0)
+    expect(launches).toBe(0)
+    expect(existsSync(runtime.markerPath)).toBe(false)
+    const after = await lstat(runtime.socketPath)
+    expect([after.dev, after.ino, after.mode]).toEqual([
+      before.dev,
+      before.ino,
+      before.mode,
+    ])
+    expect(await supported.play()).toEqual({ action: "play" })
+  } finally {
+    supported?.dispose()
     await server?.close().catch(() => {})
     await rm(root, { recursive: true, force: true })
   }
@@ -1008,6 +1757,81 @@ test("a valid live startup marker is starting and grants no cleanup", async () =
     ).resolves.toEqual({ type: "starting" })
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("a live marker cannot mask unsafe socket type or ownership", async () => {
+  for (const kind of [
+    "file",
+    "symlink",
+    "directory",
+    "foreign-socket",
+  ] as const) {
+    const root = await mkdtemp(`/tmp/music-session-live-marker-${kind}-`)
+    let acquired:
+      Awaited<ReturnType<typeof acquireStartupMarkerLease>> | undefined
+    try {
+      const uid = process.getuid?.() ?? -1
+      const base = resolveMusicSessionRuntimePaths({ root, uid })
+      let unlinks = 0
+      const runtime = resolveMusicSessionRuntimePaths({
+        root,
+        uid,
+        dependencies: {
+          lstat: (async (path) => {
+            const stat = await lstat(path)
+            return kind === "foreign-socket" && path === base.socketPath
+              ? new Proxy(stat, {
+                  get(target, property, receiver) {
+                    return property === "uid"
+                      ? uid + 1
+                      : Reflect.get(target, property, receiver)
+                  },
+                })
+              : stat
+          }) as typeof lstat,
+          unlink: async (path) => {
+            unlinks++
+            await rm(path)
+          },
+        },
+      })
+      acquired = await acquireStartupMarkerLease(runtime)
+      if (acquired.type !== "acquired")
+        throw new Error("live-marker setup lost lease contention")
+      if (kind === "file")
+        await writeFile(base.socketPath, "unexpected file", { mode: 0o600 })
+      else if (kind === "symlink") {
+        const target = `${root}/socket-target`
+        await writeFile(target, "unexpected target", { mode: 0o600 })
+        await symlink(target, base.socketPath)
+      } else if (kind === "directory")
+        await mkdir(base.socketPath, { mode: 0o700 })
+      else await leaveStaleSocket(base)
+
+      const socket = await lstat(base.socketPath)
+      const marker = await lstat(base.markerPath)
+      await expect(
+        discoverMusicSession({ runtime, clientId: kind, hostKind: "test" }),
+      ).rejects.toBeInstanceOf(MusicSessionRuntimeError)
+      const afterSocket = await lstat(base.socketPath)
+      const afterMarker = await lstat(base.markerPath)
+      expect([afterSocket.dev, afterSocket.ino, afterSocket.mode]).toEqual([
+        socket.dev,
+        socket.ino,
+        socket.mode,
+      ])
+      expect([afterMarker.dev, afterMarker.ino, afterMarker.mode]).toEqual([
+        marker.dev,
+        marker.ino,
+        marker.mode,
+      ])
+      expect(unlinks).toBe(0)
+    } finally {
+      if (acquired?.type === "acquired")
+        await acquired.lease.release().catch(() => {})
+      await rm(root, { recursive: true, force: true })
+    }
   }
 })
 

@@ -1,26 +1,18 @@
 ---
 status: done
-verdict: CHANGES_REQUIRED
+verdict: APPROVED
 ---
 
 ## Package comparison
 
-The Phase 3 package remains aligned with the approved plan, and the cumulative diff remains within allowed client/protocol/test paths. Invalid seek is now exercised through the real request fixture, but the core lifetime and evidence requirements remain incomplete.
+The Phase 3 package remains aligned with the approved plan. The round-4 changes stay within the allowed config and client-test paths and address startup convergence/security without introducing later-phase behavior.
 
 ## Findings
 
-### High — Overlapping two reader sets is not the required lifetime state machine
+No blocking findings. Live-marker authorization is now limited to a same-owner Unix socket in the pre-`0600` hardening window; unexpected types and foreign ownership remain terminal and identity-preserving. The new combined tests cover files, symlinks, directories, and simulated foreign sockets with a live marker. Marker publication now uses a fully written, synced same-directory temporary file and atomic hard-link publication, preventing concurrent readers from observing partial JSON while retaining exact inode/token lease authority and cleaning normal-path temporary files.
 
-Attaching the active reader before `handshake.detach()` avoids a normal detach-first window, but it still leaves two independent `data` callbacks rather than one callback routed by handshaking/active state. During the overlap, a re-entrant data event can be fed twice into the same `NdjsonFramer` and processed/queued twice. More importantly, handshake still removes `error`, `end`, and `close` immediately at hello success, leaving lifecycle events unowned throughout result validation until active attachment.
-
-There is also a cleanup leak on invalid/impossible hello results: `cleanup(true)` retained handshake `onData`, but the later validation catch/branch destroys the socket and throws before calling `handshake.detach()`. The retained callback is never removed. Implement the package's single exact callback set and state transition instead of transferring between closures; every handshake failure, terminal path, and disposal must detach that same set once.
-
-### High — The required acceptance tests remain missing
-
-The only new assertion is local invalid-seek rejection within the reverse-order test. The suite still has no deterministic coverage for unsolicited/duplicate responses, malformed or wrong-action success, request-local typed failure, loss races/no replay, repeated disposal/late callbacks, state authority, listener isolation and subscription behavior, malformed nested active frames, split/multiple daemon frames, partial EOF, or gap-free handoff.
-
-The test file still lacks the package-required reusable scripted-daemon seam capable of sending those events and exposing deterministic receive/close signals. Add the focused request-settlement and stream/listener tests from package sections 7–9 with failure-safe ownership.
+The previously leaked production daemon remains absent, and the cumulative Phase 3 evidence now covers deterministic scheduling, truthful marker finalization, 20-client convergence, all incompatibility positions, and single-generation behavior.
 
 ## Verification
 
-The coder reports all 41 focused tests, 163 music-core tests, package/build/typecheck/format targets, and the static scan passing. The unchanged test count confirms the broad Phase 3 acceptance matrix is still unsupported.
+The coder supplied complete passing evidence: the focused security test, five consecutive 20-client convergence runs, 13 focused Phase 3 tests, 86 combined client/server tests, all `music-core` targets with 216 tests, the prohibited-timer scan, runtime-socket absence check, and diff validation.

@@ -2,7 +2,7 @@ import { Config, Context, Effect, Layer, Schema } from "effect"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
 import { randomUUID } from "node:crypto"
-import { lstat, mkdir, open, readFile, unlink } from "node:fs/promises"
+import { link, lstat, mkdir, open, readFile, unlink } from "node:fs/promises"
 import type { Stats } from "node:fs"
 
 const manifest = createRequire(import.meta.url)("../package.json") as {
@@ -484,17 +484,6 @@ const inspectManagedRuntime = async (
 ): Promise<ManagedRuntimeInspection> => {
   await Effect.runPromise(prepareManagedRuntimeDirectory(paths))
   const socketStat = await missing(paths, paths.socketPath)
-  if (
-    socketStat &&
-    (!socketStat.isSocket() ||
-      !sameOwner(socketStat, paths.uid) ||
-      !hasExactMode(socketStat, 0o600))
-  )
-    throw runtimeError(
-      "inspect",
-      paths.socketPath,
-      "runtime socket must be a 0600 same-user Unix socket",
-    )
   const markerStat = await missing(paths, paths.markerPath)
   if (
     markerStat &&
@@ -508,6 +497,7 @@ const inspectManagedRuntime = async (
       "startup marker must be a 0600 regular file owned by this user",
     )
   let deadMarker = false
+  let ownsMarker = false
   if (markerStat) {
     if (markerStat.size > 4096)
       throw runtimeError(
@@ -534,20 +524,12 @@ const inspectManagedRuntime = async (
         paths.markerPath,
         "startup marker UID does not match runtime owner",
       )
-    if (
+    ownsMarker =
       marker.attemptToken === ownedMarker?.attemptToken &&
       markerStat.dev === ownedMarker.marker.dev &&
       markerStat.ino === ownedMarker.marker.ino &&
       markerStat.uid === ownedMarker.marker.uid &&
       markerStat.mode === ownedMarker.marker.mode
-    )
-      return {
-        socket: socketStat
-          ? { ...identity(paths.socketPath, socketStat), kind: "socket" }
-          : undefined,
-        marker: undefined,
-        deadMarker: false,
-      }
     try {
       ;(runtimeIo(paths).processExists ?? ((pid) => process.kill(pid, 0)))(
         marker.pid,
@@ -562,13 +544,42 @@ const inspectManagedRuntime = async (
         deadMarker = true
     }
   }
+  if (
+    socketStat &&
+    (!socketStat.isSocket() ||
+      !sameOwner(socketStat, paths.uid) ||
+      !hasExactMode(socketStat, 0o600))
+  ) {
+    // A live, valid startup lease can authorize only the listener's narrow
+    // same-owner Unix-socket pre-hardening window. It cannot excuse an
+    // unexpected type or foreign ownership.
+    if (
+      socketStat.isSocket() &&
+      sameOwner(socketStat, paths.uid) &&
+      markerStat &&
+      !deadMarker
+    )
+      return {
+        socket: undefined,
+        marker: ownsMarker
+          ? undefined
+          : { ...identity(paths.markerPath, markerStat), kind: "marker" },
+        deadMarker: false,
+      }
+    throw runtimeError(
+      "inspect",
+      paths.socketPath,
+      "runtime socket must be a 0600 same-user Unix socket",
+    )
+  }
   return {
     socket: socketStat
       ? { ...identity(paths.socketPath, socketStat), kind: "socket" }
       : undefined,
-    marker: markerStat
-      ? { ...identity(paths.markerPath, markerStat), kind: "marker" }
-      : undefined,
+    marker:
+      markerStat && !ownsMarker
+        ? { ...identity(paths.markerPath, markerStat), kind: "marker" }
+        : undefined,
     deadMarker,
   }
 }
@@ -588,6 +599,28 @@ const unchanged = async (
     stat.uid === proof.uid &&
     stat.mode === proof.mode
   )
+}
+
+const inspectEndpoint = async (paths: MusicSessionRuntimePaths) => {
+  await Effect.runPromise(prepareManagedRuntimeDirectory(paths))
+  const stat = await missing(paths, paths.socketPath)
+  if (
+    stat &&
+    (!stat.isSocket() ||
+      !sameOwner(stat, paths.uid) ||
+      !hasExactMode(stat, 0o600))
+  )
+    throw runtimeError(
+      "inspect",
+      paths.socketPath,
+      "runtime socket must be a 0600 same-user Unix socket",
+    )
+  return stat
+    ? ({
+        ...identity(paths.socketPath, stat),
+        kind: "socket",
+      } satisfies ArtifactProof)
+    : undefined
 }
 
 /** Only inspection/probe code can create this guarded cleanup closure. */
@@ -623,28 +656,6 @@ const staleCleanup = (
     }
     done = true
   }
-}
-
-const inspectEndpoint = async (paths: MusicSessionRuntimePaths) => {
-  await Effect.runPromise(prepareManagedRuntimeDirectory(paths))
-  const stat = await missing(paths, paths.socketPath)
-  if (
-    stat &&
-    (!stat.isSocket() ||
-      !sameOwner(stat, paths.uid) ||
-      !hasExactMode(stat, 0o600))
-  )
-    throw runtimeError(
-      "inspect",
-      paths.socketPath,
-      "runtime socket must be a 0600 same-user Unix socket",
-    )
-  return stat
-    ? ({
-        ...identity(paths.socketPath, stat),
-        kind: "socket",
-      } satisfies ArtifactProof)
-    : undefined
 }
 
 export type ManagedRuntimeProbeResult<T> =
@@ -686,11 +697,19 @@ export class ManagedRuntimeProbe {
     paths: MusicSessionRuntimePaths,
     lease?: StartupMarkerLease,
   ) {
-    return new ManagedRuntimeProbe(
-      paths,
-      await inspectEndpoint(paths),
-      lease && lease.paths === paths ? leaseAuthorities.get(lease) : undefined,
-    )
+    const ownedAuthority =
+      lease && lease.paths === paths ? leaseAuthorities.get(lease) : undefined
+    try {
+      return new ManagedRuntimeProbe(
+        paths,
+        await inspectEndpoint(paths),
+        ownedAuthority,
+      )
+    } catch (cause) {
+      if (!(cause instanceof MusicSessionRuntimeError)) throw cause
+      const inspected = await inspectManagedRuntime(paths, ownedAuthority)
+      return new ManagedRuntimeProbe(paths, inspected.socket, ownedAuthority)
+    }
   }
   async healthy<T>(value: T): Promise<ManagedRuntimeProbeResult<T>> {
     // A completed hello already proved the socket endpoint. An unrelated bad
@@ -779,21 +798,14 @@ export const acquireStartupMarkerLease = async (
       paths.markerPath,
       "invalid startup attempt token",
     )
-  let handle: Awaited<ReturnType<typeof open>>
-  try {
-    handle = await open(paths.markerPath, "wx", 0o600)
-  } catch (cause: unknown) {
-    if (
-      typeof cause === "object" &&
-      cause !== null &&
-      "code" in cause &&
-      cause.code === "EEXIST"
-    )
-      return { type: "contended" }
-    throw runtimeError("acquire", paths.markerPath, cause)
-  }
+  // Link publishes a fully-written same-directory marker atomically. Readers
+  // must never observe the empty file between exclusive creation and payload
+  // write, or concurrent managed callers could reject a valid live lease.
+  const temporaryPath = `${paths.markerPath}.${randomUUID()}.tmp`
+  let handle: Awaited<ReturnType<typeof open>> | undefined
   let openedMarker: ArtifactProof | undefined
   try {
+    handle = await open(temporaryPath, "wx", 0o600)
     const stat = await handle.stat()
     if (
       !stat.isFile() ||
@@ -814,37 +826,45 @@ export const acquireStartupMarkerLease = async (
       "utf8",
     )
     await handle.sync()
-  } catch (cause) {
-    await handle.close().catch(() => {})
-    // The proof came from our file descriptor, never a later path occupant.
-    if (
-      openedMarker &&
-      (await unchanged(paths, openedMarker).catch(() => false))
-    )
-      await (runtimeIo(paths).unlink ?? unlink)(paths.markerPath).catch(
-        () => {},
+    try {
+      await link(temporaryPath, paths.markerPath)
+    } catch (cause: unknown) {
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        cause.code === "EEXIST"
       )
+        return { type: "contended" }
+      throw cause
+    }
+  } catch (cause) {
     throw runtimeError("acquire", paths.markerPath, cause)
+  } finally {
+    await handle?.close().catch(() => {})
+    await unlink(temporaryPath).catch(() => {})
   }
   let stat: Awaited<ReturnType<typeof missing>>
   try {
-    await handle.close()
     stat = await missing(paths, paths.markerPath)
     if (
       !stat ||
       !stat.isFile() ||
       !sameOwner(stat, paths.uid) ||
       !hasExactMode(stat, 0o600) ||
-      stat.dev !== openedMarker.dev ||
-      stat.ino !== openedMarker.ino ||
-      stat.uid !== openedMarker.uid ||
-      stat.mode !== openedMarker.mode
+      stat.dev !== openedMarker!.dev ||
+      stat.ino !== openedMarker!.ino ||
+      stat.uid !== openedMarker!.uid ||
+      stat.mode !== openedMarker!.mode
     )
       throw new Error(
         "exclusive startup marker changed before acquisition completed",
       )
   } catch (cause) {
-    if (await unchanged(paths, openedMarker).catch(() => false))
+    if (
+      openedMarker &&
+      (await unchanged(paths, openedMarker).catch(() => false))
+    )
       await (runtimeIo(paths).unlink ?? unlink)(paths.markerPath).catch(
         () => {},
       )
