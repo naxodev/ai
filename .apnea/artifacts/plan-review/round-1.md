@@ -1,10 +1,12 @@
 ---
 status: done
-verdict: APPROVED
+verdict: CHANGES_REQUIRED
 ---
 
-# Findings
+## Findings
 
-No blocking findings.
+### High — Phase 2 verification is not self-contained or suitable for `apnea commit`
 
-The four phases are coherent vertical slices with explicit acceptance criteria and sane verification commands. Phase 1 contains all required fresh-shell, self-contained checks for the exact `.prettierignore` policy edit. Phase 2 preserves the narrow package-smoke corrections while requiring the unchanged full repository gate. Phase 3 separates real mixed-host evidence and cleanup from product changes, and Phase 4 limits work to the dispatcher-supplied PR-description artifact. Scope boundaries, dirty-work preservation, Effect v4 constraints, external macOS/provider risks, Jujutsu workflow, and prohibited operations are all called out.
+The Phase 2 command list depends on transient interactive state that the commands neither create nor preserve. In one sequence it requires exactly one live `music-sessiond` and socket, then requires that daemon and its artifacts to be absent, but launching the two pinned hosts, loading the checkout integrations, performing the bidirectional controls/reload/exit flow, waiting for idle cleanup, and transitioning between the live and closed states are only prose. A fresh-shell verifier cannot run the listed commands successfully as a coherent gate after the coder has finished and closed the hosts.
+
+Revise Phase 2 so the verification contract is executable and unambiguous: separate prerequisite, live-session, and post-close checks into explicitly staged self-contained commands or provide a phase-local verification harness/evidence artifact that `apnea commit` can validate after the interactive run. The retained evidence must bind the observations to the exact host versions and checkout paths and cover daemon PID/generation, socket ownership/mode, provider ownership, Pi reload, client exits, and final idle cleanup. Do not leave mutually exclusive live and post-cleanup assertions as an unstaged flat command list.

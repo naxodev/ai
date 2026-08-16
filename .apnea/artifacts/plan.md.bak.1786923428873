@@ -1,0 +1,174 @@
+---
+status: done
+---
+
+# Plan: finish the shared Effect v4 music-session migration
+
+## Goal restatement
+
+Finish the migration from the current dirty Jujutsu worktree while preserving the approved policy-only parent `b30f9987`, every verified ancestor, `docs/music-session-architecture.html`, unrelated dirty work, and all existing Apnea records. First review and verify only the two current package-smoke script corrections, then prove one real OpenCode/Pi session shares one daemon, and finally create the dispatched `pr-description.md` artifact.
+
+The two script corrections are working-copy changes and must remain separate from `b30f9987`. Agents use their configured Pi profiles in regular panes. Coders and reviewers do not commit; after approval, the orchestrator isolates the reviewed product slice with the prescribed `jj squash` workflow. No phase may reset or clean the worktree, rewrite verified commits or Apnea records, manually edit `.apnea/state.json`, push, publish, release, or open a PR. Any Effect work would use only the repository-pinned Effect v4, although no Effect source change is expected.
+
+## Phases
+
+### Phase 1 — Review the two package-smoke corrections and pass the complete gate
+
+**Intent**
+
+Review the current child diff against policy-only parent `b30f9987`, limited to the OpenCode and Pi package-smoke scripts. Retain the evidence-backed handling for absent synchronous diagnostic output and Pi's exact RPC-process cleanup, run both focused package smokes uncached, and then run the literal unchanged root `bun run check`.
+
+No new product edit is expected. If verification fails, diagnose and report the exact blocker rather than broadening beyond these two files or changing the repository gate.
+
+**Files likely touched**
+
+- `packages/opencode-music-player/scripts/package-smoke.ts` — already changed so synchronous diagnostics safely tolerate absent `stdout` or `stderr`; retain package-required formatting.
+- `packages/pi-music-dock/scripts/package-smoke.ts` — already changed for the same nullable diagnostics and to validate piped RPC streams inside the existing exact process-group termination/cleanup boundary; retain package-required formatting.
+
+No other product, policy, configuration, lock, test, or documentation file may be changed. Dispatcher-owned Apnea records may advance normally but must not be manually edited, restored, normalized, or included in the product slice.
+
+**Acceptance checks**
+
+- The current parent begins with `b30f9987`, and the only non-Apnea child paths are the two named scripts.
+- OpenCode's synchronous diagnostic helper converts absent child output to an empty string without weakening smoke failures or exact tmux cleanup.
+- Pi has the same safe diagnostics and checks that stdin/stdout/stderr are piped before using them. Validation failure remains inside the path that terminates the detached child process group, captures available diagnostics, confirms no owned music-core process remains, and removes the temporary root only after cleanup.
+- Exact host/package assertions remain intact: OpenCode `0.0.0-next-17386`, Pi `0.84.0`, isolated packed resolutions, RPC command registration, status-zero exit, and cleanup.
+- Both focused uncached package smokes pass.
+- The unchanged `bun run check` exits zero, including root format and policy checks plus all Nx `typecheck`, `test`, `parity`, `format:check`, `package:check`, and `smoke` targets. This retains packed Node daemon evidence and all unrelated package smokes.
+- The tree has no whitespace errors or smoke-generated archive, socket, bind-lock, log, or temporary debris under `packages`.
+- After approval, the orchestrator's phase commit contains exactly the two reviewed scripts among product/policy paths and leaves `b30f9987`, verified ancestors, unrelated work, and Apnea records intact.
+
+**Verify commands**
+
+Each command is self-contained for execution by `apnea commit` in a fresh shell:
+
+```sh
+jj log -r @- --no-graph -T 'commit_id' | grep -q '^b30f9987'
+test -z "$(jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// && $2 != "packages/opencode-music-player/scripts/package-smoke.ts" && $2 != "packages/pi-music-dock/scripts/package-smoke.ts" { print; exit }')"
+bunx nx run opencode-music-player:typecheck --skip-nx-cache
+bunx nx run pi-music-dock:typecheck --skip-nx-cache
+bunx nx run opencode-music-player:smoke --skip-nx-cache
+bunx nx run pi-music-dock:smoke --skip-nx-cache
+bun run check
+git diff --check
+test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+```
+
+**Dependencies**
+
+- Approved parent `b30f9987` and its verified ancestors.
+- The two current child script corrections.
+- Installed Bun/npm/Nx/Node/tmux tooling, macOS, and registry access required by the existing smokes.
+- Orchestrator support for a path-isolated `jj squash` after approval.
+
+**Non-goals**
+
+- Product behavior changes, refactoring, protocol/lifecycle redesign, dependency or host-pin updates, test weakening, or changing `bun run check`.
+- Editing `.prettierignore`, `package.json`, Nx configuration, `bun.lock`, architecture documentation, Effect source, unrelated dirty work, or any `.apnea` record.
+- Real mixed-host certification, release work, Git commits, pushes, or PR creation.
+
+### Phase 2 — Verify one real mixed OpenCode/Pi session against one daemon
+
+**Intent**
+
+With Phase 1 green and separately approved, run one real macOS session with active media: the exact OpenCode host loading the current checkout plugin and the exact Pi host loading the current checkout extension in two regular interactive panes. Prove both clients converge on the same state and controls while exactly one shared music-session daemon owns the production socket.
+
+This is an evidence-only phase. Use temporary host configuration outside the repository and remove it afterward. Do not substitute RPC/package smokes, synthetic fixtures, floating panes, or a different global Pi for the real host session.
+
+**Files likely touched**
+
+- No repository product, policy, test, lock, or documentation file.
+- Temporary OpenCode/Pi configuration outside the repository only, removed after the run.
+
+Normal dispatcher-owned evidence records may advance. If the live session reveals a defect, stop and report it for a narrow replan; do not edit product code or `.apnea` during this phase.
+
+**Acceptance checks**
+
+- The focused mixed-host regression passes before the interactive run.
+- `opencode2` reports exactly `opencode2 v0.0.0-next-17386`; the launched Pi reports exactly `0.84.0`; a supported media provider is installed; and real media is active.
+- OpenCode loads the absolute current-checkout `packages/opencode-music-player` path through temporary external configuration. Pi loads the current-checkout `packages/pi-music-dock` path using exact Pi `0.84.0`.
+- Both regular-pane hosts display the same track and playback state.
+- A transport action from OpenCode converges in Pi, and a transport action from Pi converges in OpenCode.
+- While both clients are live, there is exactly one `music-sessiond` process and one owner-only socket at `/tmp/naxodev-music-$(id -u)/s.sock`; process/socket inspection records the shared generation and single provider ownership.
+- Pi `/reload` leaves one Pi client/status lifecycle, preserves the same daemon generation, and does not disrupt OpenCode.
+- Closing Pi leaves OpenCode live and controllable. After closing the final OpenCode client and waiting through the 30-second idle grace, the daemon, socket, startup marker, and bind reservation are gone.
+- Temporary configuration is removed, no product diff is introduced, and existing Apnea records and architecture documentation remain untouched.
+
+**Verify commands**
+
+The live UI/state/control observations and before/after process IDs must also be recorded in the coder result and confirmed by review. These automated prerequisites and cleanup checks are independently runnable:
+
+```sh
+bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
+test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+test "$(pgrep -f '[m]usic-sessiond' | wc -l | tr -d ' ')" -eq 1
+test -S "/tmp/naxodev-music-$(id -u)/s.sock"
+! pgrep -f '[m]usic-sessiond' >/dev/null
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"
+test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+git diff --check
+```
+
+The one-daemon and socket-present checks run while both hosts are live; the absence checks run only after both hosts close and idle cleanup completes.
+
+**Dependencies**
+
+- Approved Phase 1 script slice and complete green repository gate.
+- macOS with active media, a supported provider, exact OpenCode/Pi hosts, installed workspace dependencies, and two regular interactive panes.
+- The local-checkout loading instructions in the OpenCode and Pi package READMEs.
+
+**Non-goals**
+
+- Source fixes, new tests, protocol changes, synthetic scale testing, UI redesign, service installation, or remote sockets.
+- Treating automated/package-smoke evidence as a replacement for the real session.
+- Using an unpinned Pi, changing user-global configuration, floating panes, commits, pushes, releases, or PR operations.
+
+### Phase 3 — Create `pr-description.md` and finish
+
+**Intent**
+
+At terminus, write the `pr-description.md` artifact at the exact path supplied by that dispatch. Summarize the delivered migration, Phase 1 verification, Phase 2 real-host evidence, test plan, and residual risk. This describes a prospective PR only; it does not push, create, or update one.
+
+**Files likely touched**
+
+- Only the exact `pr-description.md` artifact path supplied by the terminus dispatch. Do not guess or create a path before it is provided.
+
+**Acceptance checks**
+
+- Front matter contains `status: done` only.
+- The summary accurately distinguishes verified commit history, the policy-only `b30f9987` parent, the separately reviewed two-script correction, automated checks, and real interactive observations.
+- The test plan lists only commands and manual checks actually completed.
+- Residual risk covers the macOS/provider dependency and exact beta host boundaries.
+- Final Jujutsu history/status preserves verified ancestors, `docs/music-session-architecture.html`, unrelated dirty work, and Apnea records.
+- The description does not claim a push, publication, release, or opened PR, and no product or state file is edited.
+
+**Verify commands**
+
+```sh
+jj log -r 'ancestors(@, 30)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+git diff --check
+jj status
+```
+
+Also inspect the dispatched artifact directly to verify its front matter and every evidence claim.
+
+**Dependencies**
+
+- Approved Phase 2 interactive evidence and confirmed cleanup.
+- The terminus dispatch supplying the exact artifact path.
+
+**Non-goals**
+
+- Product/documentation changes, release notes, new verification work solely for the description, commits, pushes, publication, or creating/updating a PR.
+
+## Whole-run definition of done
+
+- Parent `b30f9987` remains the approved policy-only commit; every verified ancestor, `docs/music-session-architecture.html`, unrelated dirty work, and all Apnea records are preserved.
+- The two package-smoke corrections are reviewed against that parent and isolated as their own approved phase through the orchestrator's prescribed `jj squash` workflow.
+- Both focused uncached package smokes and the literal unchanged `bun run check` pass, covering format, policy, typecheck, test, parity, package, and smoke targets with no generated debris.
+- One real regular-pane OpenCode/Pi session proves shared state and bidirectional controls against exactly one daemon/socket/provider generation, survives Pi reload/exit, and completes final idle cleanup.
+- The dispatched `pr-description.md` truthfully records delivered phases, actual tests, interactive evidence, and residual risk.
+- Configured Pi profiles and regular panes are used. Coders/reviewers do not commit; no one resets/cleans the tree, rewrites verified history or `.apnea`, manually edits `.apnea/state.json`, uses non-v4 Effect, pushes, publishes, releases, or opens a PR.

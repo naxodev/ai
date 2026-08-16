@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "slug": "music-session-final-verification",
+  "slug": "music-session-final-three",
   "step": "committing",
   "phase_index": 1,
   "phase_count_hint": null,
   "rounds": {
-    "plan_review": 1,
+    "plan_review": 4,
     "phase-01/code_review": 1
   },
   "vcs": "jj",
   "allow_dirty": true,
-  "goal": "Finish the shared Effect v4 music-session migration from the current dirty jj worktree. Preserve all verified commits, the approved one-line .prettierignore policy edit, the narrow OpenCode/Pi package-smoke corrections, current Apnea records, docs/music-session-architecture.html, and unrelated changes. Do not push or open a PR. Phase 1 must ONLY review and commit the existing .prettierignore edit that adds exactly one final .apnea/ line. Its verify commands must be self-contained and runnable by apnea commit in a fresh shell: exact static file comparison created inline, grep count, prettier --file-info ignored true, bun run format:check, and git diff --check. Do not use temporary state prepared by the coder, shell functions, environment variables, or hashes of .apnea because Apnea necessarily updates its own records while committing. Do not alter any .apnea file manually. Phase 2 must run and narrowly fix the unchanged full bun run check, retaining the current package-smoke corrections. Then verify one real mixed OpenCode/Pi session and produce pr-description.md in narrow final phases. Use Effect v4 only, jj squash workflow, Pi profiles, regular panes, and preserve unrelated dirty work.",
+  "goal": "Finish the shared Effect v4 music-session migration from the current dirty jj worktree. Preserve all verified commits and unrelated Apnea records. The current parent b30f9987 is the approved policy-only commit. Phase 1 must review the current child changes ONLY in packages/opencode-music-player/scripts/package-smoke.ts and packages/pi-music-dock/scripts/package-smoke.ts, which are narrow evidence-backed fixes for absent synchronous diagnostic output and Pi exact-process cleanup, then run focused package smokes and the unchanged full bun run check including format, policy, typecheck, test, parity, package, and smoke targets. The two script corrections belong in this phase and are not in the parent. Use self-contained verify commands suitable for apnea commit. Phase 2 must verify one real mixed OpenCode/Pi host session against one daemon. Phase 3 must create pr-description.md and finish. Do not push or open a PR. Use Effect v4 only, jj squash workflow, Pi profiles, regular panes, preserve docs/music-session-architecture.html and unrelated dirty work, never rewrite .apnea or edit .apnea/state.json manually.",
   "last_error": null,
   "pending_artifact": null,
   "pending_role": null,
@@ -24,16 +24,16 @@
   "pending_extended": false,
   "role_panes": {
     "planner": {
-      "pane_id": "w2:pDG",
-      "label": "apnea:planner:mswfcqex-8fue"
+      "pane_id": "w2:pDQ",
+      "label": "apnea:planner:mswgcww5-27cr"
     },
     "reviewer": {
-      "pane_id": "w2:pDH",
-      "label": "apnea:reviewer:mswfiy7j-v9wt"
+      "pane_id": "w2:pDM",
+      "label": "apnea:reviewer:mswg1gpc-s4ue"
     },
     "coder": {
-      "pane_id": "w2:pDJ",
-      "label": "apnea:coder:mswfl864-79bv"
+      "pane_id": "w2:pDR",
+      "label": "apnea:coder:mswgeljd-0gqz"
     }
   },
   "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",

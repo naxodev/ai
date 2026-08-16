@@ -4,50 +4,41 @@ status: done
 
 ## What changed
 
-Addressed the Phase 2 cleanup review finding in `package-smoke.ts`. Cleanup now always inspects and terminates the exact unique tmux socket before removing the smoke root, including after a failed `new-session`. It distinguishes a confirmed absent server from an unconfirmed tmux inspection error; the latter fails cleanup and retains/reports the root rather than deleting under a potentially live host.
+No product files were edited. Rework is blocked by the Phase 2 package/history boundary drift identified in the required round-1 code review.
+
+Read-only inspection confirms that parent `9a2aa534 chore(format): exclude Apnea runtime records` includes all three product/policy paths since `ae742b68`:
+
+- `.prettierignore`
+- `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
+
+This conflicts with the approved plan's separate Phase 1 policy-only slice and Phase 2 smoke-correction slice. Restoring that boundary requires the orchestrator's prescribed Jujutsu workflow, which is explicitly outside the coder role and prohibited here. I did not run the package verification gate against the invalid boundary, and did not mutate history.
 
 ## Files touched
 
-- `packages/opencode-music-player/scripts/package-smoke.ts`
-- `.apnea/artifacts/phase-02/round-2/coder-result.md`
+- `.apnea/artifacts/phase-02/round-2/coder-result.md` (required result artifact only)
 
-## Verification transcript
+## Verify transcript
 
-```text
-$ bunx nx run opencode-music-player:smoke --skip-nx-cache
-exit: 0
-> nx run opencode-music-player:smoke
-> bun run smoke:package
-$ bun run scripts/package-smoke.ts
-installed OpenCode 0.0.0-next-17386: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-w0p0US/node_modules/@opencode-ai/cli/bin/opencode2.exe
-isolated packed resolutions: plugin=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-w0p0US/node_modules/@naxodev/opencode-music-player/index.tsx; core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-w0p0US/node_modules/@naxodev/music-core/index.ts
-OpenCode loaded the installed package and rendered its app and sidebar slots.
-OpenCode package smoke cleanup: ok
-NX Successfully ran target smoke for project opencode-music-player
+1. `jj status`
+   - Exit: 0
+   - Output tail: working copy contains dispatcher-managed `.apnea` activity only; parent is `9a2aa534 chore(format): exclude Apnea runtime records`.
+2. `jj diff --summary`
+   - Exit: 0
+   - Output tail: dispatcher-managed `.apnea` activity only.
+3. `jj diff -r 'ae742b68..9a2aa534' --summary`
+   - Exit: 0
+   - Output tail: `.prettierignore`, `packages/opencode-music-player/scripts/package-smoke.ts`, and `packages/pi-music-dock/scripts/package-smoke.ts` are all included in the range.
+4. `jj log -r 'ancestors(@, 5)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'`
+   - Exit: 0
+   - Output tail:
+     ```text
+     9a2aa5347937 chore(format): exclude Apnea runtime records
+     ae742b687d42 docs(music): document shared session architecture
+     ```
 
-$ ! find packages/opencode-music-player -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
-exit: 0
-(no output; no prohibited package-directory artifacts found)
-
-$ jj diff --summary
-exit: 0
-tail:
-A .apnea/tasks/code-p2-r2-1786919000830.md
-A .apnea/tasks/code_review-p2-r1-1786918847843.md
-A .apnea/tasks/phase_package-p2-r1-1786918545319.md
-M packages/opencode-music-player/scripts/package-smoke.ts
-
-$ jj status
-exit: 0
-tail:
-A .apnea/tasks/code-p2-r2-1786919000830.md
-A .apnea/tasks/code_review-p2-r1-1786918847843.md
-A .apnea/tasks/phase_package-p2-r1-1786918545319.md
-M packages/opencode-music-player/scripts/package-smoke.ts
-Working copy  (@) : ornnkvpk cf4112ef (no description set)
-Parent commit (@-): kyzluvzy 863c6e7b test(music): verify packed daemon under Node
-```
+The Phase 2 focused and full verification commands were intentionally not rerun: passing them cannot correct the reviewed commit-boundary defect, and the review requires package regeneration after the orchestrator restores the approved slices.
 
 ## Residual risks
 
-The machine-local smoke still depends on Bun, npm, tmux, and availability of the exact pinned OpenCode package. A tmux connection/inspection failure is intentionally treated as unconfirmed termination: the smoke fails and retains/reports its unique root rather than risking deletion beneath a live host. Existing unrelated `.apnea` changes, including `.apnea/state.json`, were preserved and not edited.
+Blocker: Phase 2 cannot be approved or committed until the orchestrator restores the policy-only Phase 1 slice, places both smoke-script corrections in the separate Phase 2 slice, and regenerates the Phase 2 package/evidence.

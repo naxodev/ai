@@ -2,43 +2,72 @@
 status: done
 ---
 
+# Phase 1 implementation result
+
 ## What changed
 
-No product or policy files were edited. The existing `.prettierignore` diff was reviewed and remains exactly one final added `.apnea/` line. The existing OpenCode and Pi package-smoke corrections remain dirty and unchanged for Phase 2.
+Reviewed and retained the existing narrow child corrections; no additional product edit was necessary.
+
+- `packages/opencode-music-player/scripts/package-smoke.ts`: synchronous diagnostic rendering preserves available output and treats absent `stdout`/`stderr` as empty strings.
+- `packages/pi-music-dock/scripts/package-smoke.ts`: applies the same safe diagnostic fallback and validates all piped RPC streams inside the lifecycle failure boundary, so failure cleanup terminates the exact detached process group before capturing available output.
+
+The OpenCode pin, isolated packed-resolution checks, slot/layout assertions, and exact tmux cleanup remain intact. The Pi `0.84.0` pin, packed/peer isolation, extension registrations, status-zero response validation, process-group lifecycle, installed-core check, and confirmed cleanup remain intact.
 
 ## Files touched
 
-- `.apnea/artifacts/phase-01/round-1/coder-result.md` (required result artifact only)
+No product files were edited during this dispatch. The reviewed product slice relative to `@-` contains exactly:
 
-## Verify transcript
+- `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
 
-1. `printf '%s\n' 'bun.lock' 'node_modules/' '.nx/' '**/dist/' '.apnea/' | cmp - .prettierignore`
-   - Exit: 0
-   - Output tail: *(silent)*
-2. `test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1`
-   - Exit: 0
-   - Output tail: *(silent)*
-3. `bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'`
-   - Exit: 0
-   - Output tail: *(silent)*
-4. `bun run format:check`
-   - Exit: 0
-   - Output tail:
-     ```text
-     $ prettier --check .
-     Checking formatting...
-     All matched files use Prettier code style!
-     ```
-5. `git diff --check`
-   - Exit: 0
-   - Output tail: *(silent)*
+This result artifact is the only file written by this dispatch.
 
-Final `jj diff -- .prettierignore` still shows only:
+## Verification transcript
 
-```diff
-+.apnea/
+```text
+$ jj log -r @- --no-graph -T 'commit_id' | grep -q '^b30f9987'
+exit: 0
+
+$ actual="$(jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print $2 }' | sort)"; expected="$(printf '%s\n' packages/opencode-music-player/scripts/package-smoke.ts packages/pi-music-dock/scripts/package-smoke.ts | sort)"; test "$actual" = "$expected"
+exit: 0
+
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit: 0
+installed OpenCode 0.0.0-next-17386: .../node_modules/@opencode-ai/cli/bin/opencode2.exe
+isolated packed resolutions: plugin=.../node_modules/@naxodev/opencode-music-player/index.tsx; core=.../node_modules/@naxodev/music-core/index.ts
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+NX Successfully ran target smoke for project opencode-music-player
+Cache: Skipped (--skip-nx-cache)
+
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit: 0
+installed Pi 0.84.0: .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+isolated packed roots: music-dock=.../node_modules/@naxodev/pi-music-dock; music-core=.../node_modules/@naxodev/music-core
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+NX Successfully ran target smoke for project pi-music-dock
+Cache: Skipped (--skip-nx-cache)
+
+$ bun run check
+exit: 0
+NX Successfully ran targets typecheck, test, parity, format:check, package:check, smoke for 6 projects
+Nx read the output from the cache instead of running the command for 30 out of 31 tasks.
+Run duration: 914ms
+Cache: 30/31 hit (97%)
+
+$ git diff --check
+exit: 0
+
+$ test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+exit: 0
+
+$ jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print $2 }' | sort
+exit: 0
+packages/opencode-music-player/scripts/package-smoke.ts
+packages/pi-music-dock/scripts/package-smoke.ts
 ```
 
 ## Residual risks
 
-None for this phase. Dispatcher-managed `.apnea` records and unrelated dirty work remain present; the orchestrator must isolate only `.prettierignore` for the Phase 1 commit.
+None identified within the Phase 1 scope. The full check intentionally used the repository's configured Nx cache; the two affected package smokes were run sequentially with `--skip-nx-cache`.

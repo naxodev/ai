@@ -4,50 +4,68 @@ status: done
 
 ## What changed
 
-Updated the OpenCode packed-package smoke to create its unique temporary root before packing both archives, install the exact source-manifest OpenCode CLI pin with temporary-project-only CLI trust, and launch only its realpathed isolated binary. The smoke now verifies installed CLI/plugin versions, isolated packed plugin/core package-name resolution, keeps the existing deterministic UI scenarios, and confirms exact tmux termination before removing the root.
+No product files were edited. Reviewed the retained package-smoke corrections: both synchronous diagnostic helpers render absent `stdout`/`stderr` as empty strings; Pi validates piped stdin/stdout/stderr inside its existing process-group termination, diagnostic capture, owned-core check, and cleanup boundary. The approved parent remains `9a2aa534 chore(format): exclude Apnea runtime records`.
 
 ## Files touched
 
-- `packages/opencode-music-player/scripts/package-smoke.ts`
-- `.apnea/artifacts/phase-02/round-1/coder-result.md`
+- `.apnea/artifacts/phase-02/round-1/coder-result.md` (required result artifact only)
 
-## Verification transcript
+## Verify transcript
 
-```text
-$ bunx nx run opencode-music-player:smoke --skip-nx-cache
-exit: 0
-> nx run opencode-music-player:smoke
-> bun run smoke:package
-$ bun run scripts/package-smoke.ts
-installed OpenCode 0.0.0-next-17386: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-reAwJp/node_modules/@opencode-ai/cli/bin/opencode2.exe
-isolated packed resolutions: plugin=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-reAwJp/node_modules/@naxodev/opencode-music-player/index.tsx; core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-reAwJp/node_modules/@naxodev/music-core/index.ts
-OpenCode loaded the installed package and rendered its app and sidebar slots.
-OpenCode package smoke cleanup: ok
-NX Successfully ran target smoke for project opencode-music-player
+1. `bunx nx run opencode-music-player:typecheck --skip-nx-cache`
+   - Exit: 0
+   - Output tail: `Successfully ran target typecheck for project opencode-music-player`; cache skipped.
+2. `bunx nx run pi-music-dock:typecheck --skip-nx-cache`
+   - Exit: 0
+   - Output tail: `Successfully ran target typecheck for project pi-music-dock`; cache skipped.
+3. `bunx nx run opencode-music-player:smoke --skip-nx-cache`
+   - Exit: 0
+   - Output tail:
+     ```text
+     installed OpenCode 0.0.0-next-17386: .../node_modules/@opencode-ai/cli/bin/opencode2.exe
+     isolated packed resolutions: plugin=.../node_modules/@naxodev/opencode-music-player/index.tsx; core=.../node_modules/@naxodev/music-core/index.ts
+     OpenCode loaded the installed package and rendered its app and sidebar slots.
+     OpenCode package smoke cleanup: ok
+     ```
+4. `bunx nx run pi-music-dock:smoke --skip-nx-cache`
+   - Exit: 0
+   - Output tail:
+     ```text
+     installed Pi 0.84.0: .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+     isolated packed roots: music-dock=.../node_modules/@naxodev/pi-music-dock; music-core=.../node_modules/@naxodev/music-core
+     Pi registered extension commands: /music, /music-next, /music-prev
+     Pi RPC status-zero exit and cleanup: ok
+     ```
+5. `bun run check`
+   - Exit: 0
+   - Output tail:
+     ```text
+     $ bun run format:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke
+     All matched files use Prettier code style!
+     policy:check: 8 pass, 0 fail
+     installed Node v24.8.0
+     installed package root: /private/tmp/music-core-installed-smoke-.../install/node_modules/@naxodev/music-core/index.ts
+     negotiated daemon: music-session-8x91jw0sb76 revision 1
+     status-zero idle exit and cleanup: ok
+     installed Pi 0.84.0: .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+     Pi registered extension commands: /music, /music-next, /music-prev
+     Pi RPC status-zero exit and cleanup: ok
+     installed OpenCode 0.0.0-next-17386: .../node_modules/@opencode-ai/cli/bin/opencode2.exe
+     OpenCode loaded the installed package and rendered its app and sidebar slots.
+     OpenCode package smoke cleanup: ok
+     NX Successfully ran targets typecheck, test, parity, format:check, package:check, smoke for 6 projects
+     Run duration: 57.8s; Cache: 0/31 hit (0%)
+     ```
+     The full gate also completed unrelated package smokes.
+6. `git diff --check`
+   - Exit: 0
+   - Output tail: *(silent)*
+7. `test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"`
+   - Exit: 0
+   - Output tail: *(silent)*
 
-$ ! find packages/opencode-music-player -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
-exit: 0
-(no output; no prohibited package-directory artifacts found)
-
-$ jj diff --summary
-exit: 0
-tail:
-M .apnea/state.json
-A .apnea/tasks/code-p2-r1-1786918649558.md
-A .apnea/tasks/phase_package-p2-r1-1786918545319.md
-M packages/opencode-music-player/scripts/package-smoke.ts
-
-$ jj status
-exit: 0
-tail:
-M .apnea/state.json
-A .apnea/tasks/code-p2-r1-1786918649558.md
-A .apnea/tasks/phase_package-p2-r1-1786918545319.md
-M packages/opencode-music-player/scripts/package-smoke.ts
-Working copy  (@) : ornnkvpk 9126ce88 (no description set)
-Parent commit (@-): kyzluvzy 863c6e7b test(music): verify packed daemon under Node
-```
+Final `jj diff --summary` and `jj status` showed only dispatcher-managed `.apnea` activity; no product diff or package debris was present. No temporary smoke root was retained.
 
 ## Residual risks
 
-The machine-local smoke requires Bun, npm, tmux, and availability of the exact pinned OpenCode package. All generated content is scoped to the smoke root and its unique tmux socket; successful verification reported cleanup. Existing unrelated `.apnea` changes, including `.apnea/state.json`, were preserved and not edited.
+None for Phase 2. This phase does not certify the Phase 3 real mixed-host regular-pane session.

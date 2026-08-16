@@ -1,20 +1,18 @@
 ---
 status: done
-verdict: APPROVED
+verdict: CHANGES_REQUIRED
 ---
 
-## Package comparison
+# Findings
 
-The Phase 2 package remains aligned with approved Plan Phase 2. The cumulative product diff is confined to `packages/opencode-music-player/scripts/package-smoke.ts` and does not change the package pin, product behavior, core, Pi, documentation, or broader gates.
+## Critical — The approved phase boundary remains unrestored
 
-## Findings
+Round 1 required the orchestrator to restore the plan's separate slices before Phase 2 could be reviewed. That has not occurred. The referenced Phase 2 package still treats both package-smoke corrections as part of parent `9a2aa534` alongside the Phase 1 `.prettierignore` result, although the approved plan requires Phase 1 to be policy-only and the smoke-script corrections to form the separate Phase 2 product slice.
 
-No blocking findings.
+Current read-only history inspection again confirms that `ae742b68..9a2aa534` includes all three paths:
 
-The Round 1 cleanup issue is resolved. The outer `finally` now always inspects the exact unique tmux socket before removing the temporary root, including when `new-session` fails. `tmuxServerState()` accepts only explicit no-server/ENOENT diagnostics as absence, treats other inspection failures as unconfirmed cleanup, and causes the root to be retained and reported. Confirmed termination still precedes root deletion, and combined work/cleanup failures preserve both diagnostics.
+- `.prettierignore`
+- `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
 
-The cumulative implementation otherwise satisfies the package: it derives the exact pin from the source manifest, installs and verifies matching CLI/plugin versions, launches the realpathed isolated binary, proves packed plugin/core package-name resolution beneath the temporary install, and retains the existing deterministic layout evidence.
-
-## Verification
-
-The coder supplied successful evidence for all four phase verification commands. The uncached smoke reported OpenCode `0.0.0-next-17386`, isolated binary and package paths, presentation success, and cleanup success. The artifact scan passed, and the product diff remains limited to the expected smoke script over approved parent `863c6e7b`.
+The coder correctly reports that this cannot be repaired within the coder role and did not claim Phase 2 verification. The orchestrator must restore the approved boundary while preserving all work, then regenerate the Phase 2 package and coder evidence. Until then, there is no conforming Phase 2 diff to review and the required focused/full verification evidence is intentionally absent.

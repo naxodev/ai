@@ -8,7 +8,7 @@ status: done
 
 Finish the migration from the current dirty Jujutsu worktree while preserving approved policy-only parent `b30f9987`, every verified ancestor, `docs/music-session-architecture.html`, unrelated dirty work, and all existing Apnea records. First review and verify only the two current package-smoke script corrections, then prove one real OpenCode/Pi session shares one daemon, and finally create the dispatched `pr-description.md` artifact.
 
-The two script corrections are working-copy changes and must remain separate from `b30f9987`. Agents use their configured Pi profiles in regular panes. Coders and reviewers do not commit; after approval, the orchestrator isolates the reviewed product slice with the prescribed `jj squash` workflow. No phase may reset or clean the worktree, rewrite verified commits or Apnea records, manually edit `.apnea/state.json`, push, publish, release, or open a PR. Any Effect work must use only repository-pinned Effect v4, although no Effect source change is expected.
+The two script corrections are working-copy changes and must remain separate from `b30f9987`. Agents use their configured Pi profiles in regular panes. Coders and reviewers do not commit; after approval, the orchestrator isolates the reviewed product slice with the prescribed `jj squash` workflow. No phase may reset or clean the worktree, rewrite verified commits or Apnea records, manually edit `.apnea/state.json`, push, publish, release, or open a PR. Any Effect work would use only repository-pinned Effect v4, although no Effect source change is expected.
 
 ## Phases
 
@@ -73,12 +73,12 @@ test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.
 
 With Phase 1 green and separately approved, run one real macOS session with active media: exact OpenCode loading the current checkout plugin and exact Pi loading the current checkout extension in separate regular interactive panes. Prove both clients converge on the same state and controls while exactly one shared music-session daemon owns the production socket.
 
-This is an evidence-only phase. Use temporary host configuration outside the repository and bounded, ownership-checked cleanup after each host exits. Do not substitute RPC/package smokes, synthetic fixtures, floating panes, or a different global Pi for the real host session.
+This is an evidence-only phase. Use temporary host configuration outside the repository and remove it afterward. Do not substitute RPC/package smokes, synthetic fixtures, floating panes, or a different global Pi for the real host session.
 
 **Files likely touched**
 
 - No repository product, policy, test, lock, or documentation file.
-- Temporary OpenCode/Pi configuration outside the repository only, removed by ownership-checking launch-shell traps after each host exits.
+- Temporary OpenCode/Pi configuration outside the repository only, removed by the launch-shell traps after each host exits.
 - The exact coder-result artifact supplied by the Phase 2 dispatch, used to retain staged transcripts and manual observations. Its path must come from that dispatch rather than being guessed here.
 
 Normal dispatcher-owned evidence records may advance. If the live session reveals a defect, stop and report it for a narrow replan; do not edit product code or existing `.apnea` records during this phase.
@@ -87,7 +87,7 @@ Normal dispatcher-owned evidence records may advance. If the live session reveal
 
 - The focused mixed-host regression passes before the interactive run, and the production daemon/socket are absent at baseline.
 - `opencode2` reports exactly `opencode2 v0.0.0-next-17386`; the launched Pi reports exactly `0.84.0`; a supported provider is installed; and real media is active.
-- The retained preflight transcript records the absolute checkout paths. The regular-pane launch commands consume those paths: OpenCode loads `packages/opencode-music-player` through temporary isolated configuration, and exact Pi `0.84.0` loads `packages/pi-music-dock` through a temporary isolated Pi profile.
+- The retained preflight transcript records the absolute checkout paths. The regular-pane launch commands consume those paths: OpenCode loads `packages/opencode-music-player` through temporary isolated configuration, and exact Pi `0.84.0` loads `packages/pi-music-dock`.
 - Both hosts display the same recorded track and playback state. A recorded transport action from OpenCode converges in Pi, and a recorded transport action from Pi converges in OpenCode.
 - While both clients are live, retained evidence proves exactly one `music-sessiond` PID, one socket at `/tmp/naxodev-music-$(id -u)/s.sock`, socket ownership by the current UID, socket mode `0600`, runtime-directory mode `0700`, and the daemon's open ownership of that socket. Process-tree samples show provider work owned beneath that daemon rather than either host, distinguishing event-stream and polling fallback observations.
 - A self-contained reload checkpoint records daemon PID and protocol generation before prompting for Pi `/reload`, then compares both values afterward. They remain identical, one Pi status/client lifecycle remains, and OpenCode stays healthy.
@@ -117,16 +117,16 @@ test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"
 test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
 ```
 
-Start OpenCode in one regular pane. This shell creates isolated external configuration, binds it to the absolute checkout plugin path, and removes only the exact current-user `mktemp` root when OpenCode exits:
+Start OpenCode in one regular pane. This shell creates isolated external configuration, binds it to the absolute checkout plugin path, and removes it when OpenCode exits:
 
 ```sh
-tmp_base="${TMPDIR:-/tmp}"; tmp_base="${tmp_base%/}"; config="$(mktemp -d "$tmp_base/opencode-mixed.XXXXXX")"; cleanup() { MIXED_CLEANUP_ROOT="$config" MIXED_CLEANUP_BASE="$tmp_base" bun -e 'import { lstat, realpath, rm } from "node:fs/promises"; import { basename, dirname } from "node:path"; const root = process.env.MIXED_CLEANUP_ROOT; const rawBase = process.env.MIXED_CLEANUP_BASE; if (!root || !rawBase) throw new Error("missing cleanup boundary"); const info = await lstat(root); const [target, base] = await Promise.all([realpath(root), realpath(rawBase)]); if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || dirname(target) !== base || !basename(target).startsWith("opencode-mixed.")) throw new Error(`refusing cleanup outside owned OpenCode root: ${target}`); await rm(target, { recursive: true })'; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; printf '{"plugins":["%s"]}\n' "$(realpath packages/opencode-music-player)" > "$config/cli.json"; OPENCODE_CONFIG_DIR="$config" OPENCODE_CONFIG_PROJECT_DISABLE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 opencode2 --standalone --log-level error "$PWD"
+config="$(mktemp -d "${TMPDIR:-/tmp}/opencode-mixed.XXXXXX")"; trap 'rm -rf "$config"' EXIT HUP INT TERM; printf '{"plugins":["%s"]}\n' "$(realpath packages/opencode-music-player)" > "$config/cli.json"; OPENCODE_CONFIG_DIR="$config" OPENCODE_CONFIG_PROJECT_DISABLE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 opencode2 --standalone --log-level error "$PWD"
 ```
 
-Start Pi in the other regular pane. This shell uses exact Pi `0.84.0`, loads only the absolute checkout extension path, and removes only the exact current-user temporary Pi profile when Pi exits:
+Start Pi in the other regular pane. This shell uses exact Pi `0.84.0`, loads only the absolute checkout extension path, and removes its temporary profile directory when Pi exits:
 
 ```sh
-tmp_base="${TMPDIR:-/tmp}"; tmp_base="${tmp_base%/}"; pi_home="$(mktemp -d "$tmp_base/pi-mixed.XXXXXX")"; cleanup() { MIXED_CLEANUP_ROOT="$pi_home" MIXED_CLEANUP_BASE="$tmp_base" bun -e 'import { lstat, realpath, rm } from "node:fs/promises"; import { basename, dirname } from "node:path"; const root = process.env.MIXED_CLEANUP_ROOT; const rawBase = process.env.MIXED_CLEANUP_BASE; if (!root || !rawBase) throw new Error("missing cleanup boundary"); const info = await lstat(root); const [target, base] = await Promise.all([realpath(root), realpath(rawBase)]); if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || dirname(target) !== base || !basename(target).startsWith("pi-mixed.")) throw new Error(`refusing cleanup outside owned Pi root: ${target}`); await rm(target, { recursive: true })'; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; PI_CODING_AGENT_DIR="$pi_home" PI_OFFLINE=1 bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --no-extensions -e "$(realpath packages/pi-music-dock)"
+pi_home="$(mktemp -d "${TMPDIR:-/tmp}/pi-mixed.XXXXXX")"; trap 'rm -rf "$pi_home"' EXIT HUP INT TERM; PI_CODING_AGENT_DIR="$pi_home" PI_OFFLINE=1 bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --no-extensions -e "$(realpath packages/pi-music-dock)"
 ```
 
 #### Stage B — Live-session capture
@@ -165,7 +165,7 @@ sleep 35; ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-musi
 
 #### Stage D — Coherent post-close `apnea commit` gate
 
-Review first confirms that the exact dispatched coder-result artifact contains Stage A–C transcripts, exact host versions and checkout paths, UI/control observations, PID/generation comparisons, socket/provider ownership, exits, bounded temporary-profile cleanup, and final daemon cleanup. `apnea commit` then runs only this stable post-close list:
+Review first confirms that the exact dispatched coder-result artifact contains Stage A–C transcripts, exact host versions and checkout paths, UI/control observations, PID/generation comparisons, socket/provider ownership, exits, and final cleanup. `apnea commit` then runs only this stable post-close list:
 
 ```sh
 bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
@@ -190,7 +190,7 @@ git diff --check
 
 - Source fixes, new tests, protocol changes, synthetic scale testing, UI redesign, service installation, or remote sockets.
 - Treating automated/package-smoke evidence as a replacement for the real session, or final cleanup checks as a replacement for retained live evidence.
-- Using an unpinned Pi, changing user-global configuration, floating panes, broad shell deletion, commits, pushes, releases, or PR operations.
+- Using an unpinned Pi, changing user-global configuration, floating panes, commits, pushes, releases, or PR operations.
 
 ### Phase 3 — Create `pr-description.md` and finish
 

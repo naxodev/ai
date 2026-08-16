@@ -1,11 +1,22 @@
-import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises"
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url))
-const coreDirectory = fileURLToPath(new URL("../../music-core/", import.meta.url))
-const manifest = (await Bun.file(join(packageDirectory, "package.json")).json()) as {
+const coreDirectory = fileURLToPath(
+  new URL("../../music-core/", import.meta.url),
+)
+const manifest = (await Bun.file(
+  join(packageDirectory, "package.json"),
+).json()) as {
   dependencies: { "@opencode-ai/plugin": string }
 }
 const openCodePin = manifest.dependencies["@opencode-ai/plugin"]
@@ -15,10 +26,12 @@ const socket = `opencode-music-player-smoke-${process.pid}-${crypto.randomUUID()
 const session = "smoke"
 
 const output = (result: ReturnType<typeof Bun.spawnSync>) =>
-  `stdout:\n${result.stdout.toString()}\nstderr:\n${result.stderr.toString()}`
+  `stdout:\n${result.stdout?.toString() ?? ""}\nstderr:\n${result.stderr?.toString() ?? ""}`
 const inside = (path: string, parent: string) => {
   const result = relative(parent, path)
-  return result === "" || (!result.startsWith("..") && !result.startsWith("../"))
+  return (
+    result === "" || (!result.startsWith("..") && !result.startsWith("../"))
+  )
 }
 const stripAnsi = (value: string) =>
   value
@@ -41,14 +54,20 @@ const archiveFromPack = async (directory: string, label: string) => {
     ["npm", "pack", "--silent", "--pack-destination", root],
     { cwd: directory, stdout: "pipe", stderr: "pipe" },
   )
-  if (!packed.success) throw new Error(`${label} pack failed: ${output(packed)}`)
+  if (!packed.success)
+    throw new Error(`${label} pack failed: ${output(packed)}`)
   const name = packed.stdout.toString().trim().split("\n").at(-1)
   if (!name) throw new Error(`${label} pack did not produce an archive`)
   const archive = resolve(root, name)
   const resolvedRoot = await realpath(root)
   const resolvedArchive = await realpath(archive)
-  if (!inside(resolvedArchive, resolvedRoot) || !resolvedArchive.endsWith(".tgz"))
-    throw new Error(`${label} pack archive escaped smoke root: ${resolvedArchive}`)
+  if (
+    !inside(resolvedArchive, resolvedRoot) ||
+    !resolvedArchive.endsWith(".tgz")
+  )
+    throw new Error(
+      `${label} pack archive escaped smoke root: ${resolvedArchive}`,
+    )
   return resolvedArchive
 }
 const tmuxServerState = () => {
@@ -82,11 +101,13 @@ const terminateTmux = async () => {
 
 let workFailure: unknown
 let cleanupFailure: unknown
-let summary: {
-  readonly binary: string
-  readonly pluginEntry: string
-  readonly coreEntry: string
-} | undefined
+let summary:
+  | {
+      readonly binary: string
+      readonly pluginEntry: string
+      readonly coreEntry: string
+    }
+  | undefined
 try {
   const archive = await archiveFromPack(packageDirectory, "OpenCode plugin")
   const coreArchive = await archiveFromPack(coreDirectory, "music-core")
@@ -112,7 +133,8 @@ try {
     stdout: "pipe",
     stderr: "pipe",
   })
-  if (!install.success) throw new Error(`package install failed: ${output(install)}`)
+  if (!install.success)
+    throw new Error(`package install failed: ${output(install)}`)
 
   const nodeModules = await realpath(join(root, "node_modules"))
   const installedManifest = async (name: string) =>
@@ -123,14 +145,19 @@ try {
     installedManifest("@opencode-ai/cli"),
     installedManifest("@opencode-ai/plugin"),
   ])
-  if (cliManifest.version !== openCodePin || pluginManifest.version !== openCodePin)
+  if (
+    cliManifest.version !== openCodePin ||
+    pluginManifest.version !== openCodePin
+  )
     throw new Error(
       `installed OpenCode versions do not match ${openCodePin}: cli=${cliManifest.version}, plugin=${pluginManifest.version}`,
     )
 
   const openCodeBinary = await realpath(join(nodeModules, ".bin", "opencode2"))
   if (!inside(openCodeBinary, nodeModules))
-    throw new Error(`installed OpenCode binary escaped temporary install: ${openCodeBinary}`)
+    throw new Error(
+      `installed OpenCode binary escaped temporary install: ${openCodeBinary}`,
+    )
   const version = Bun.spawnSync([openCodeBinary, "--version"], {
     cwd: root,
     stdout: "pipe",
@@ -172,13 +199,11 @@ console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-musi
       !inside(entry, nodeModules) ||
       sourceDirectories.some((source) => inside(entry, source))
     )
-      throw new Error(`isolated ${label} resolved outside packed install: ${entry}`)
+      throw new Error(
+        `isolated ${label} resolved outside packed install: ${entry}`,
+      )
 
-  const packageDir = join(
-    nodeModules,
-    "@naxodev",
-    "opencode-music-player",
-  )
+  const packageDir = join(nodeModules, "@naxodev", "opencode-music-player")
   const tuiEntry = join(packageDir, "index.tsx")
   const originalEntry = join(packageDir, "index.original.tsx")
   await rename(tuiEntry, originalEntry)

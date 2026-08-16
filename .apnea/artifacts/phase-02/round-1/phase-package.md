@@ -2,159 +2,203 @@
 status: done
 ---
 
-# Phase 2 package — certify the packed OpenCode plugin with its exact pin
+# Phase 2 package — retain package-smoke corrections and pass the unchanged full gate
 
 ## Intent
 
-Change only the existing OpenCode package smoke so it installs and launches the exact OpenCode CLI version selected by `packages/opencode-music-player/package.json`. The smoke must not accept the developer's global `opencode2` merely because one happens to be on `PATH`.
+Run the repository's existing complete `bun run check` without changing the root command or omitting any target. Retain the narrow OpenCode and Pi package-smoke corrections already present in the current parent:
 
-Preserve the existing packed-plugin UI evidence: the real pinned OpenCode host loads the installed plugin and renders its deterministic session-backed playing, paused, collapsed, narrow, and smallest layouts. This phase does not change the plugin, UI, music-session behavior, package pin, or packed-core implementation.
+- OpenCode synchronous process diagnostics tolerate absent `stdout`/`stderr`.
+- Pi synchronous process diagnostics tolerate absent `stdout`/`stderr`.
+- Pi validates that the RPC child supplied piped stdin/stdout/stderr before consuming them, while keeping validation failure inside the existing exact process-group termination and cleanup path.
 
-## Exact steps
+At this phase dispatch, those corrections no longer appear as a working-copy diff because they are present in the approved parent together with the Phase 1 policy result. Do not mistake their absence from `jj status` for removal, and do not rewrite the approved parent to move them. This phase verifies the retained behavior. No new product edit is expected.
 
-### 1. Preserve the approved baseline
+If a check fails, diagnose the exact stage and owning file before editing. Make only the smallest evidence-backed correction, rerun the exact focused owner target uncached, and then rerun the literal complete root gate. Any Effect change must use only the repository-pinned Effect v4 (`4.0.0-beta.101`).
 
-1. Run `jj status` before editing.
-2. Preserve approved Phase 1 commit `863c6e7b`, every earlier verified commit, all unrelated dirty changes, `.apnea/state.json`, and `docs/music-session-architecture.html`.
-3. Read the exact OpenCode pin from `packages/opencode-music-player/package.json`: `dependencies["@opencode-ai/plugin"]` is currently `0.0.0-next-17386`.
-4. Do not change that pin, add a range, or make the OpenCode CLI a published dependency of `@naxodev/opencode-music-player`.
-5. Work through the configured Pi role profile in a regular pane. Do not commit or squash; the orchestrator performs the approved-phase `jj squash`.
-
-### 2. Move all smoke-owned content under one temporary root
-
-In `packages/opencode-music-player/scripts/package-smoke.ts`:
-
-1. Create the unique temporary root before producing either archive.
-2. Pack both `@naxodev/opencode-music-player` and `@naxodev/music-core` into that root using `npm pack --pack-destination`; do not create an archive in either package directory.
-3. Keep the generated install manifest, lockfile, config, fixture rewrite, XDG directories, tmux resources, and captured diagnostics under that root or under the smoke's unique tmux socket.
-4. Track the temporary root and exact tmux socket as soon as they are created so cleanup can run after pack, install, host-launch, render, or assertion failure.
-5. Capture actionable stdout/stderr for pack and install failures instead of relying on inherited global state.
-
-Do not add a checked-in fixture, lockfile, archive, config, or second smoke script.
-
-### 3. Install the exact manifest-selected OpenCode CLI
-
-Write the temporary project's `package.json` so its application dependencies include:
-
-- the packed `@naxodev/opencode-music-player` archive;
-- the packed `@naxodev/music-core` archive, with the existing override ensuring the plugin receives that packed core;
-- `@opencode-ai/cli` at exactly the value read from `dependencies["@opencode-ai/plugin"]`.
-
-Then:
-
-1. Install all three into the temporary project with Bun.
-2. Explicitly trust only the OpenCode CLI installation hook through Bun's temporary-project package policy, because that package installs/selects its platform executable. Do not add trust metadata to the repository package manifest.
-3. Read the installed `@opencode-ai/cli` and `@opencode-ai/plugin` manifests and require both installed versions to equal the source manifest's exact pin.
-4. Resolve the temporary project's `node_modules/.bin/opencode2` with `realpath` and require its target to remain beneath the temporary install's `node_modules` tree.
-5. Invoke that absolute executable with `--version` and require the existing exact output contract, `opencode2 v0.0.0-next-17386`.
-6. Remove the current startup check and launch behavior that call bare `opencode2`. Do not use `Bun.which`, `/usr/bin/env`, a shell `PATH` lookup, or a global fallback.
-
-If the exact CLI package cannot install or its absolute binary/version does not match, fail with the pin, resolved path if any, and captured install/version diagnostics. Do not silently fall back to the global CLI.
-
-### 4. Prove package-name resolution stays inside the isolated install
-
-Before launching the TUI:
-
-1. Generate any resolution probe inside the temporary project rather than checking in a test file.
-2. Resolve and import `@naxodev/opencode-music-player` by package name from that project. Retain the existing assertion that the plugin has ID `music-player` and a callable `setup`.
-3. Resolve `@naxodev/music-core` by package name from the same project.
-4. Realpath both resolved entries and require them to be beneath the temporary project's `node_modules` tree and outside the repository's `packages/opencode-music-player` and `packages/music-core` source directories.
-5. Keep the packed core override so the installed plugin cannot select the workspace core.
-
-Do not import either package through a workspace path, source `file://` URL, or Bun workspace resolution fallback.
-
-### 5. Launch the real exact-pinned host and preserve existing UI evidence
-
-1. Keep the installed-entry fixture technique in the temporary install: retain the packed plugin's original entry and replace only the installed copy with the deterministic `createSessionMedia` fixture.
-2. Preserve the existing fixture state, track markers, session creation/sync, and real host navigation. Do not move the fixture into source or add new presentation cases.
-3. Build the tmux command with the absolute temporary `opencode2` path from Step 3. Shell-quote that absolute path and every argument; do not put bare `opencode2` in the command.
-4. Preserve the isolated OpenCode config and XDG environment, disabled project configuration, disabled auto-update, and disabled model fetching.
-5. Launch through the existing unique `tmux -L <socket>` server and retain the current assertions:
-   - expanded playing state renders the real sidebar and compact slots without replacing adjacent host content;
-   - a second launch renders paused state consistently;
-   - sidebar collapse leaves exactly one compact row;
-   - narrow width yields artist/title content correctly;
-   - smallest width reduces to the playback marker.
-6. Keep failures bounded and include a sanitized pane capture. Do not broaden this smoke into live-provider, daemon, playback-command, artwork, or new layout acceptance.
-
-### 6. Make exact-resource cleanup failure-safe
-
-In a top-level `try/finally` that begins after the unique root/socket are known:
-
-1. Before removing the temporary root, terminate only the exact unique tmux server with `tmux -L <socket> kill-server`.
-2. Confirm that exact tmux session/server is gone under a bound. Do not use broad `pkill`, `killall`, or a non-unique tmux server.
-3. Only after host/tmux termination is confirmed, recursively remove the temporary root. This removes both archives, the installed CLI/plugin/core, generated lockfile/config/fixture, and XDG data together.
-4. Run the same cleanup after pack, install, import, launch, render, or assertion failure. Preserve the original failure and append cleanup diagnostics if cleanup also fails.
-5. Leave no package-directory tarball, temporary install, tmux server/socket, OpenCode host, daemon, music-session runtime file, or log.
-
-The deterministic session-media fixture should prevent a daemon/provider launch. Do not add process-name-wide cleanup to compensate for an ownership bug.
-
-### 7. Run only the phase verification
-
-Run the exact commands below. If they pass, report the exact installed CLI version/path, isolated package resolutions, retained UI scenarios, and cleanup success. Do not run Pi, documentation, full-workspace, or mixed-host gates in this phase.
+Use the configured Pi role profile in a regular pane. The coder and reviewer do not commit or mutate Jujutsu history. After approval, the orchestrator handles the prescribed `jj squash` workflow. Do not push or open a PR.
 
 ## Files to touch
 
+No product file is expected to change.
+
+Only if a reproducible failure directly demonstrates a defect in one of these existing owners may the coder make a narrow correction:
+
 - `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
+
+A different existing file may be touched only when output from the unchanged gate and an uncached focused rerun directly prove that file owns a migration regression. Record that evidence before editing.
+
+The coder writes only the exact coder-result artifact supplied by its dispatcher task. That required workflow output is not permission to manually alter existing Apnea records.
 
 ## Files not to touch
 
-- `packages/opencode-music-player/package.json`
-- `packages/opencode-music-player/project.json`
-- `packages/opencode-music-player/index.tsx`
-- `packages/opencode-music-player/system-media.ts`
-- `packages/opencode-music-player/types.ts`
-- `packages/opencode-music-player/ui.tsx`
-- `packages/opencode-music-player/artwork.ts`
-- `packages/opencode-music-player/artwork.tsx`
-- `packages/opencode-music-player/waveform.tsx`
-- `packages/opencode-music-player/tests/**`
-- `packages/music-core/**`
-- `packages/pi-music-dock/**`
-- `README.md`
-- `packages/opencode-music-player/README.md`
-- `packages/music-core/README.md`
-- `packages/pi-music-dock/README.md`
-- `docs/music-session-architecture.html`
-- `package.json`
-- `bun.lock`
-- `.apnea/state.json`
-- Any unrelated dirty file or generated archive/install/config/lockfile
+Do not edit, restore, normalize, delete, or regenerate:
 
-## Acceptance checks
+- `.apnea/**`, especially `.apnea/state.json`, existing tasks, artifacts, backups, and verify logs.
+- `.prettierignore`; the approved final `.apnea/` entry is Phase 1 baseline.
+- `package.json`, `nx.json`, any `project.json`, or scripts to skip/alter gate stages.
+- `bun.lock`, dependency versions, exact OpenCode/Pi pins, Pi peer ranges, exports, package file lists, or publish metadata.
+- `docs/music-session-architecture.html` or any other documentation.
+- Passing tests, fixtures, snapshots, or package assertions merely to weaken acceptance.
+- Verified commits through `ae742b68`, the approved parent, or unrelated dirty work.
 
-- The smoke derives exact OpenCode version `0.0.0-next-17386` from `dependencies["@opencode-ai/plugin"]`; the source pin and package manifest remain unchanged.
-- Matching `@opencode-ai/cli` and `@opencode-ai/plugin` versions are installed inside the temporary project.
-- The launched `opencode2` is the realpathed temporary `node_modules/.bin/opencode2`, remains beneath the isolated install, and reports exactly the manifest-selected version. A global or arbitrary `PATH` binary cannot pass.
-- Packed OpenCode plugin and packed music core resolve by package name beneath the isolated install and not from workspace source.
-- The exact pinned host loads the real packed plugin with the installed-only deterministic session seam and passes the existing expanded, paused, collapsed, narrow, and smallest presentation assertions.
-- Exact host/tmux resources are terminated before deleting their files; both archives, temporary install, generated content, and unique tmux resources are removed on success and failure.
-- No daemon, provider handle, host process, tmux server, tarball, socket, marker, bind reservation, log, or temporary install remains because of the smoke.
+Do not run a workspace-wide formatter in write mode. Do not manually edit any `.apnea` file. Do not use Git mutation commands, reset, clean, restore, abandon, rebase, `jj describe`, `jj commit`, `jj squash`, or `jj split`.
 
-## Verify commands
+## Exact steps
 
-Run from the repository root:
+### 1. Inspect and preserve the current baseline
+
+From the repository root, run read-only inspections:
+
+```sh
+jj status
+jj diff --summary
+jj log -r 'ancestors(@, 5)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+```
+
+Expected baseline:
+
+- The current parent is the approved `chore(format): exclude Apnea runtime records` phase result.
+- The current working copy has no product diff; dispatcher-owned `.apnea` activity is expected.
+- `docs/music-session-architecture.html` and verified migration history remain present.
+
+Do not clean the worktree. If an unexplained product diff is present, identify and report it before running any writer.
+
+### 2. Review the retained package-smoke behavior
+
+Read both scripts and confirm the intended corrections are still present:
+
+1. In `packages/opencode-music-player/scripts/package-smoke.ts`, the synchronous `output` helper safely renders missing `stdout` and `stderr` as empty strings.
+2. In `packages/pi-music-dock/scripts/package-smoke.ts`, the same synchronous diagnostic behavior is retained.
+3. The Pi RPC launch checks stdin/stdout/stderr are real piped streams before capture or writes.
+4. That Pi check remains inside the existing `try` whose failure path terminates the exact detached process group, captures available diagnostics, confirms owned music-core processes are absent, and removes the temporary root only after cleanup succeeds.
+5. OpenCode remains manifest-pinned to `0.0.0-next-17386`; Pi remains manifest-pinned to `0.84.0` with its existing supported peer ranges. Neither smoke falls back to an arbitrary global host.
+
+This is review only. Do not edit either script when the behavior is already correct.
+
+### 3. Run focused uncached typechecks
+
+```sh
+bunx nx run opencode-music-player:typecheck --skip-nx-cache
+bunx nx run pi-music-dock:typecheck --skip-nx-cache
+```
+
+Both must exit zero. A type failure must be traced to its exact diagnostic before any edit. Do not suppress the error with assertions that weaken stream validation or by changing TypeScript configuration.
+
+### 4. Run focused uncached package smokes
 
 ```sh
 bunx nx run opencode-music-player:smoke --skip-nx-cache
-! find packages/opencode-music-player -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
+bunx nx run pi-music-dock:smoke --skip-nx-cache
+```
+
+Require the output to demonstrate:
+
+- OpenCode installed and launched exact `0.0.0-next-17386`, resolved packed OpenCode/music-core paths inside the isolated install, rendered the real host slots, and cleaned its exact tmux server/root.
+- Pi installed and launched exact `0.84.0`, resolved packed dock/music-core paths inside the isolated install, returned all three extension commands over RPC, exited status zero, left no owned core process, and cleaned its temporary root.
+
+If a smoke cannot confirm child/process-group termination, preserve and report its external temporary root until termination is independently confirmed. Do not delete beneath a possibly live process and do not weaken cleanup assertions.
+
+### 5. Run the unchanged complete repository gate
+
+From the repository root, run exactly:
+
+```sh
+bun run check
+```
+
+Do not substitute a reduced project list. As declared in root `package.json`, this must run:
+
+1. root `format:check`;
+2. root `policy:check`;
+3. Nx `run-many` for every defined `typecheck`, `test`, `parity`, `format:check`, `package:check`, and `smoke` target.
+
+A valid Nx cache hit is acceptable under the repository's configured cache policy; the two corrected package targets were already exercised uncached in Steps 3 and 4. Preserve enough output in the coder result to show root format/policy success, the Nx target summary, packed music-core Node lifecycle evidence, exact OpenCode evidence, exact Pi evidence, and unrelated package smoke success.
+
+### 6. Diagnose narrowly if any command fails
+
+Do not edit immediately. First:
+
+1. Identify the first failed root stage or exact `project:target`.
+2. Rerun that existing command or target with diagnostics. For Nx, use the exact `project:target` with `--skip-nx-cache`.
+3. Classify the cause as environment/tooling, formatting/policy, type/test/parity, package/smoke, or generated debris.
+4. For an environment mismatch, repair the external environment when repository code is correct. Do not change a manifest or pin to match an arbitrary local/global executable.
+5. For a repository regression, edit only the minimum existing owner. If formatting alone fails, run Prettier only on the specifically reported owned file; never use root `bun run format` or format `.apnea`.
+6. If Effect code is unavoidably involved, use Effect v4 only and preserve existing Layer/scope, Schema/Config, bounded concurrency, and supervised cleanup ownership.
+7. Rerun the exact failing owner target uncached.
+8. Rerun all final verify commands, including the literal `bun run check`. A focused pass never substitutes for the final complete gate.
+
+If the failure is unrelated/pre-existing and cannot be repaired within this narrow migration scope, report it as a blocker rather than expanding scope.
+
+### 7. Check whitespace and repository hygiene
+
+After the successful full gate, run:
+
+```sh
+git diff --check
+test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
 jj diff --summary
 jj status
 ```
 
-The smoke output must identify the exact installed OpenCode pin/binary, confirm isolated packed plugin/core resolution, report the existing app/sidebar presentation success, and report cleanup success without relying on the currently installed global `opencode2`.
+`git diff --check` and the debris check must exit zero. Inspect Jujutsu output for only expected dispatcher activity and any explicitly evidenced correction. Do not remove declared ignored build output or dispatcher-created records merely to make status shorter.
+
+### 8. Report without claiming later evidence
+
+The coder result must include:
+
+- Each final verify command, exit status, and a concise output tail.
+- Root format/policy and Nx completion summary from `bun run check`.
+- Exact packed-core Node, OpenCode, and Pi smoke evidence.
+- Any failed attempt, diagnosis, edited owner, and focused uncached rerun.
+- Final hygiene/status observations and any retained external temporary root.
+
+Do not claim that automated mixed-host tests or separate package smokes satisfy Phase 3's real regular-pane OpenCode/Pi session.
+
+## Acceptance checks
+
+Phase 2 is complete only when all of the following hold:
+
+- The OpenCode and Pi nullable synchronous-output corrections remain intact.
+- Pi's piped-stream validation remains inside the exact termination/cleanup boundary and does not weaken RPC lifecycle checks.
+- Uncached OpenCode and Pi typechecks pass.
+- Uncached exact OpenCode `0.0.0-next-17386` and exact Pi `0.84.0` package smokes pass with isolated packed resolution and confirmed cleanup.
+- The literal unchanged `bun run check` exits zero after running root format/policy and all selected Nx typecheck, test, parity, format, package, and smoke targets.
+- The complete gate includes successful packed music-core Node daemon/client lifecycle, exact OpenCode, exact Pi, and unrelated package smoke evidence.
+- Any new correction is minimal, directly owned by a demonstrated failure, passes its exact uncached focused target, and is followed by a successful final full gate.
+- Any Effect edit uses only repository-pinned Effect v4.
+- `git diff --check` passes and no owned archive/socket/marker/log/temp debris remains under `packages`.
+- `.prettierignore`, all Apnea records, architecture documentation, package pins/ranges, verified history, the approved parent, and unrelated work remain preserved.
+- No real mixed-host claim, release, publication, push, PR creation, Git commit, coder/reviewer Jujutsu mutation, or manual `.apnea/state.json` edit occurs.
+
+## Verify commands
+
+Run these commands from the repository root. They are independent and runnable by the commit gate:
+
+```sh
+bunx nx run opencode-music-player:typecheck --skip-nx-cache
+bunx nx run pi-music-dock:typecheck --skip-nx-cache
+bunx nx run opencode-music-player:smoke --skip-nx-cache
+bunx nx run pi-music-dock:smoke --skip-nx-cache
+bun run check
+git diff --check
+test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+```
 
 ## Dependencies
 
-- Approved packed-core Phase 1 at `863c6e7b`.
-- Existing `opencode-music-player:smoke` target and `packages/opencode-music-player/scripts/package-smoke.ts` UI fixture/assertions.
-- Exact source manifest pin `@opencode-ai/plugin@0.0.0-next-17386`.
-- Bun package installation and `tmux` on macOS.
+- Approved full plan at `.apnea/artifacts/plan.md`.
+- Approved Phase 1 parent with root `.apnea/` Prettier exclusion.
+- Retained OpenCode/Pi package-smoke corrections in the current parent.
+- Verified music-session migration commits through `ae742b68`.
+- Existing Bun, Node, npm, Nx, tmux, macOS, and registry access required by repository targets.
 
 ## Non-goals
 
-- Changing the OpenCode version, accepting a semver range, modifying dependencies in the published package, or updating `bun.lock`.
-- Changing plugin/controller/session behavior, Effect v4 code, UI, controls, shortcuts, artwork, waveform, layout, or host integration.
-- Starting a real music-session daemon/provider, testing live media, or adding presentation scenarios.
-- Core package changes, Pi package/smoke changes, documentation, full repository checks, mixed-host verification, or PR-description work.
-- Committing, squashing, pushing, publishing, opening a PR, editing `.apnea/state.json`, or cleaning unrelated worktree changes.
+- Reworking Phase 1 history or moving retained corrections between verified commits.
+- New product behavior, protocol/lifecycle redesign, acceptance expansion, broad refactoring, or workspace-wide formatting.
+- Dependency/lockfile updates, host pin or peer-range changes, manifest/export/package-list changes, test weakening, or cache-policy changes.
+- Editing/normalizing `.apnea`, architecture documentation, unrelated files, verified commits, or root gate definitions.
+- Real mixed OpenCode/Pi interactive certification; that is Phase 3.
+- Commits or Jujutsu mutations by coder/reviewer, Git mutation commands, reset/clean/abandon, push, publication, release, or creating/updating a PR.
