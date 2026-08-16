@@ -5,7 +5,7 @@ import type {
   MusicChangeEvent,
   PlayerState,
 } from "../types.ts"
-import { createSystemMedia } from "../system-media.ts"
+import { createSessionSystemMedia, createSystemMedia } from "../system-media.ts"
 import {
   createController,
   optimisticPlayerState,
@@ -900,6 +900,356 @@ const paused: PlayerState = {
   },
   fetched_at: 1_000,
 }
+
+test("controller accepts adapter replay/replacement and retains lifecycle feedback across cached polls", async () => {
+  const stateListeners = new Set<(state: any) => void>()
+  const statusListeners = new Set<(status: any) => void>()
+  const connectionListeners = new Set<(connection: any) => void>()
+  const state = (name: string, revision: number, daemonInstanceId: string) => ({
+    revision,
+    daemonInstanceId,
+    state: {
+      ...player(false),
+      track: {
+        id: name,
+        uri: `system:${name}`,
+        name,
+        artists: "Artist",
+        album: "Album",
+        duration_ms: 180_000,
+      },
+    },
+  })
+  let failPlay = false
+  const client: any = {
+    daemonInstanceId: "daemon-a",
+    selectedRevision: 1,
+    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
+    state: state("A", 4, "daemon-a"),
+    status: { kind: "ready", provider: "media-control", message: "ready" },
+    connection: { type: "connected", daemonInstanceId: "daemon-a" },
+    subscribeState(listener: (value: any) => void) {
+      stateListeners.add(listener)
+      listener(this.state)
+      return () => stateListeners.delete(listener)
+    },
+    subscribeStatus(listener: (value: any) => void) {
+      statusListeners.add(listener)
+      listener(this.status)
+      return () => statusListeners.delete(listener)
+    },
+    subscribeConnection(listener: (value: any) => void) {
+      connectionListeners.add(listener)
+      listener(this.connection)
+      return () => connectionListeners.delete(listener)
+    },
+    async toggle() {
+      return { action: "toggle" as const }
+    },
+    async play() {
+      if (failPlay) throw new Error("command failed")
+      return { action: "play" as const }
+    },
+    async pause() {
+      return { action: "pause" as const }
+    },
+    async next() {
+      return { action: "next" as const }
+    },
+    async previous() {
+      return { action: "previous" as const }
+    },
+    async seek() {
+      return { action: "seek" as const }
+    },
+    async artwork() {
+      return { type: "unavailable" as const }
+    },
+    async dispose() {},
+  }
+  const harness = createHarness({
+    backend: createSessionSystemMedia({
+      createClient: async () => client as any,
+    }),
+  })
+  await flush()
+  expect(harness.controller.session.player?.track?.name).toBe("A")
+  client.connection = {
+    type: "reconnecting",
+    error: { message: "lost", retryable: true },
+  }
+  for (const listener of connectionListeners) listener(client.connection)
+  await harness.controller.refreshAll()
+  expect(harness.controller.session.error).toBe("lost")
+  failPlay = true
+  await harness.controller.playPause()
+  expect(harness.controller.session.error).toBe("command failed")
+  client.connection = { type: "connected", daemonInstanceId: "daemon-b" }
+  for (const listener of connectionListeners) listener(client.connection)
+  // Connected clears only connection-owned feedback, not the newer command
+  // failure. A subsequent authoritative snapshot remains free to reconcile it.
+  expect(harness.controller.session.error).toBe("command failed")
+  failPlay = false
+  client.state = state("B", 1, "daemon-b")
+  for (const listener of stateListeners) listener(client.state)
+  expect(harness.controller.session.player?.track?.name).toBe("B")
+  expect(harness.controller.session.error).toBeNull()
+  harness.controller.dispose()
+})
+
+test("session adapter preserves controller transport, lifecycle, and replacement semantics", async () => {
+  const stateListeners = new Set<(state: any) => void>()
+  const statusListeners = new Set<(status: any) => void>()
+  const connectionListeners = new Set<(connection: any) => void>()
+  const playGate = deferred<void>()
+  const seekGate = deferred<void>()
+  const reconcile = deferred<void>()
+  const calls: string[] = []
+  const state = (
+    id: string,
+    revision: number,
+    daemonInstanceId: string,
+    playing = false,
+  ) => ({
+    revision,
+    daemonInstanceId,
+    state: {
+      ...player(playing, id !== "idle"),
+      progress_ms: 12_345,
+      fetched_at: 678,
+      track:
+        id === "idle"
+          ? null
+          : {
+              id,
+              uri: `system:${id}`,
+              name: id,
+              artists: "Artist",
+              album: "Album",
+              duration_ms: 180_000,
+            },
+    },
+  })
+  const client: any = {
+    daemonInstanceId: "daemon-a",
+    selectedRevision: 4,
+    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
+    state: state("A", 4, "daemon-a"),
+    status: { kind: "ready", provider: "media-control", message: "ready" },
+    connection: { type: "connected", daemonInstanceId: "daemon-a" },
+    subscribeState(listener: (value: any) => void) {
+      stateListeners.add(listener)
+      listener(this.state)
+      return () => stateListeners.delete(listener)
+    },
+    subscribeStatus(listener: (value: any) => void) {
+      statusListeners.add(listener)
+      listener(this.status)
+      return () => statusListeners.delete(listener)
+    },
+    subscribeConnection(listener: (value: any) => void) {
+      connectionListeners.add(listener)
+      listener(this.connection)
+      return () => connectionListeners.delete(listener)
+    },
+    async toggle() {
+      return { action: "toggle" as const }
+    },
+    play() {
+      calls.push("play")
+      return playGate.promise
+    },
+    async pause() {
+      calls.push("pause")
+      return { action: "pause" as const }
+    },
+    async next() {
+      calls.push("next")
+      throw new Error("next failed")
+    },
+    async previous() {
+      return { action: "previous" as const }
+    },
+    seek(position: number) {
+      calls.push(`seek:${position}`)
+      return seekGate.promise
+    },
+    async artwork() {
+      return { type: "unavailable" as const }
+    },
+    async dispose() {},
+  }
+  const harness = createHarness({
+    backend: createSessionSystemMedia({ createClient: async () => client }),
+    delay: () => reconcile.promise,
+  })
+
+  try {
+    await flush()
+    expect(harness.controller.session.player).toMatchObject({
+      is_playing: false,
+      progress_ms: 12_345,
+      fetched_at: 678,
+      track: { id: "A", duration_ms: 180_000 },
+    })
+
+    client.status = {
+      kind: "degraded",
+      provider: "fallback",
+      message: "fallback",
+    }
+    for (const listener of statusListeners) listener(client.status)
+    expect(harness.controller.session.error).toBe("fallback")
+    client.connection = {
+      type: "reconnecting",
+      error: { message: "lost", retryable: true },
+    }
+    for (const listener of connectionListeners) listener(client.connection)
+    expect(harness.controller.session.error).toBe("lost")
+    client.connection = { type: "connected", daemonInstanceId: "daemon-b" }
+    for (const listener of connectionListeners) listener(client.connection)
+    client.state = state("B", 1, "daemon-b", true)
+    for (const listener of stateListeners) listener(client.state)
+    expect(harness.controller.session.player).toMatchObject({
+      is_playing: true,
+      progress_ms: 12_345,
+      fetched_at: 678,
+      track: { id: "B" },
+    })
+
+    client.state = state("idle", 2, "daemon-b")
+    for (const listener of stateListeners) listener(client.state)
+    expect(harness.controller.session.player?.track).toBeNull()
+    client.state = state("B", 3, "daemon-b")
+    for (const listener of stateListeners) listener(client.state)
+
+    const play = harness.controller.playPause()
+    const firstSeek = harness.controller.seek(10_000)
+    const latestSeek = harness.controller.seek(20_000)
+    await flush()
+    expect(calls).toEqual(["play"])
+    playGate.resolve()
+    await flush()
+    await flush()
+    expect(harness.controller.session.player?.is_playing).toBe(true)
+    expect(calls).toEqual(["play", "seek:20000"])
+    seekGate.resolve()
+    await Promise.all([play, firstSeek, latestSeek])
+    expect(harness.controller.session.player?.progress_ms).toBe(20_000)
+
+    await harness.controller.next()
+    expect(harness.controller.session.error).toBe("next failed")
+    expect(harness.toasts).toHaveLength(1)
+    client.connection = { type: "terminal", error: { message: "incompatible" } }
+    for (const listener of connectionListeners) listener(client.connection)
+    expect(harness.controller.session.error).toBe("incompatible")
+  } finally {
+    reconcile.resolve()
+    playGate.resolve()
+    seekGate.resolve()
+    harness.controller.dispose()
+  }
+})
+
+test("session artwork completion requires the current full recording identity", async () => {
+  const stateListeners = new Set<(state: any) => void>()
+  const nativeA = deferred<any>()
+  const resolverA = deferred<any>()
+  const coverB = { id: "cover-b", png_base64: "", accent: "", cells: [] }
+  const state = (id: string) => ({
+    revision: 1,
+    daemonInstanceId: "daemon",
+    state: {
+      ...player(false),
+      track: {
+        id,
+        uri: `system:${id}`,
+        name: id === "B" ? "Replacement" : "Shared",
+        artists: "Artist",
+        album: "Album",
+        duration_ms: 180_000,
+      },
+    },
+  })
+  const client: any = {
+    daemonInstanceId: "daemon",
+    selectedRevision: 1,
+    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
+    state: state("A"),
+    status: { kind: "ready", provider: "media-control", message: "ready" },
+    connection: { type: "connected", daemonInstanceId: "daemon" },
+    subscribeState(listener: (value: any) => void) {
+      stateListeners.add(listener)
+      listener(this.state)
+      return () => stateListeners.delete(listener)
+    },
+    subscribeStatus() {
+      return () => {}
+    },
+    subscribeConnection() {
+      return () => {}
+    },
+    async toggle() {
+      return { action: "toggle" as const }
+    },
+    async play() {
+      return { action: "play" as const }
+    },
+    async pause() {
+      return { action: "pause" as const }
+    },
+    async next() {
+      return { action: "next" as const }
+    },
+    async previous() {
+      return { action: "previous" as const }
+    },
+    async seek() {
+      return { action: "seek" as const }
+    },
+    artwork(identity: { id: string }) {
+      return identity.id === "A"
+        ? nativeA.promise
+        : Promise.resolve({ type: "available", base64: "B" })
+    },
+    async dispose() {},
+  }
+  const harness = createHarness({
+    backend: createSessionSystemMedia({
+      createClient: async () => client,
+      resolveArtworkDetails: (_key, _target, data) =>
+        data === "A"
+          ? resolverA.promise
+          : Promise.resolve({ artwork: coverB, duration_ms: 180_000 }),
+    }),
+  })
+
+  try {
+    await flush()
+    client.state = state("B")
+    for (const listener of stateListeners) listener(client.state)
+    await flush()
+    await flush()
+    expect(harness.controller.session.player?.track?.artwork).toBe(coverB)
+
+    nativeA.resolve({ type: "available", base64: "A" })
+    await flush()
+    resolverA.resolve({
+      artwork: { id: "cover-a", png_base64: "", accent: "", cells: [] },
+      duration_ms: 180_000,
+    })
+    await flush()
+    await flush()
+    expect(harness.controller.session.player?.track).toMatchObject({
+      id: "B",
+      artwork: coverB,
+    })
+  } finally {
+    nativeA.resolve({ type: "available", base64: "A" })
+    resolverA.resolve({ artwork: null, duration_ms: 180_000 })
+    harness.controller.dispose()
+  }
+})
 
 test("optimistic resume updates playback state at command completion", () => {
   expect(optimisticPlayerState(paused, true, 8_000)).toMatchObject({

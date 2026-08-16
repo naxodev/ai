@@ -58,6 +58,8 @@ export type MusicChangeEvent =
       state: PlayerState
     })
   | Exclude<CoreMusicChangeEvent, { type: "snapshot" }>
+  /** Host-local projection of session provider/connection lifecycle. */
+  | { type: "lifecycle"; message: string | null }
 
 export type MusicChangeListener = (event?: MusicChangeEvent) => void
 
@@ -71,6 +73,8 @@ export type MusicBackend = Omit<
   subscribePresentation?: (
     listener: ArtworkPresentationListener,
   ) => MusicChangeDisposer
+  /** Optional asynchronous host-resource release. */
+  dispose?: () => void | Promise<void>
 }
 
 export function emptyPlayer(): PlayerState {

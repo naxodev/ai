@@ -146,13 +146,16 @@ export function createController(
   let transportRevision = 0
   let pendingIntents: TransportIntent[] = []
   let activeIntent: TransportIntent | null = null
-  let errorFromTransport = false
+  let errorOwner: "lifecycle" | "transport" | null = null
 
   const isActive = () => !disposed
 
-  const setError = (message: string | null, fromTransport = false) => {
+  const setError = (
+    message: string | null,
+    owner: "lifecycle" | "transport" | null = null,
+  ) => {
     if (!isActive()) return
-    errorFromTransport = message !== null && fromTransport
+    errorOwner = message === null ? null : owner
     setSession((d) => {
       d.error = message
     })
@@ -220,7 +223,7 @@ export function createController(
               const player = mergePlayerPresentation(session.player, sampled)
               setSession((d) => {
                 d.player = player
-                if (!errorFromTransport) d.error = null
+                if (errorOwner === null) d.error = null
               })
             }
           } catch (e) {
@@ -298,7 +301,7 @@ export function createController(
         () => {
           if (!isActive() || generation !== lifecycleGeneration) return
           transportRevision++
-          setError(null)
+          if (errorOwner !== "lifecycle") setError(null)
           if (intent.kind === "play" || intent.kind === "pause") {
             setSession((d) => {
               d.player = optimisticPlayerState(d.player, intent.kind === "play")
@@ -315,7 +318,7 @@ export function createController(
         (error) => {
           if (!isActive() || generation !== lifecycleGeneration) return
           const message = errMsg(error)
-          setError(message, true)
+          setError(message, "transport")
           context.ui.toast.show({ title: "Music", message, variant: "error" })
           scheduleReconciliation(0)
         },
@@ -393,13 +396,20 @@ export function createController(
       if (event?.type === "snapshot") {
         setSession((d) => {
           d.player = event.state
-          d.error = null
+          if (errorOwner !== "lifecycle") d.error = null
         })
-        errorFromTransport = false
+        if (errorOwner !== "lifecycle") errorOwner = null
         // A snapshot is authoritative, so older provider reads cannot restore it.
         sampleRequestSequence++
         pendingSample = false
         schedulePoll()
+        return
+      }
+      if (event?.type === "lifecycle") {
+        // A connected/ready transition can clear only the lifecycle message it
+        // owns; it must not erase a later command failure.
+        if (event.message !== null || errorOwner === "lifecycle")
+          setError(event.message, "lifecycle")
         return
       }
       void requestRefresh()
@@ -429,6 +439,10 @@ export function createController(
       eventDisposer = null
       presentationDisposer?.()
       presentationDisposer = null
+      // Backend release comes after listener teardown and lifecycle fencing.
+      // It is asynchronous at the session boundary but controller disposal
+      // remains synchronous and idempotent for existing callers.
+      void Promise.resolve(backend.dispose?.()).catch(() => {})
       stopPoll()
       pendingSample = false
       for (const intent of pendingIntents) settleIntent(intent)

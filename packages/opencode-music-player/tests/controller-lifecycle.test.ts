@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { createController } from "../index.tsx"
+import { createSessionSystemMedia } from "../system-media.ts"
 import { CompactPlayer } from "../ui.tsx"
 
 const player = (id: string) => ({
@@ -254,6 +255,238 @@ test("disposal before the deferred runner turn starts no backend command", async
 
   expect(plays).toBe(0)
   expect(session.loading).toBe(false)
+})
+
+test("controller tears down listeners before asynchronously releasing its backend", async () => {
+  const order: string[] = []
+  const session = { loading: false, error: null, player: null as any }
+  const context = {
+    storage: {
+      memory: () => [
+        session,
+        (update: (state: typeof session) => void) => update(session),
+      ],
+    },
+    ui: { toast: { show: () => {} } },
+  }
+  const controller = createController(context as any, {
+    createBackend: () =>
+      ({
+        player: async () => null,
+        subscribe: () => () => order.push("state"),
+        subscribePresentation: () => () => order.push("presentation"),
+        dispose: async () => order.push("backend"),
+      }) as any,
+    scheduleTimeout: (() => 1) as any,
+    clearScheduledTimeout: (() => {}) as any,
+    delay: async () => {},
+  })
+
+  controller.dispose()
+  controller.dispose()
+  await Promise.resolve()
+  expect(order).toEqual(["state", "presentation", "backend"])
+})
+
+test("controller disposal releases a late session client before any adapter callback can start", async () => {
+  let resolveClient: ((client: unknown) => void) | undefined
+  let clientDisposals = 0
+  let timers = 0
+  const session = { loading: false, error: null, player: null as any }
+  const context = {
+    storage: {
+      memory: () => [
+        session,
+        (update: (state: typeof session) => void) => update(session),
+      ],
+    },
+    ui: { toast: { show: () => {} } },
+  }
+  const backend = createSessionSystemMedia({
+    createClient: () =>
+      new Promise((resolve) => {
+        resolveClient = resolve
+      }) as any,
+  })
+  const controller = createController(context as any, {
+    createBackend: () => backend,
+    scheduleTimeout: (() => ++timers) as any,
+    clearScheduledTimeout: (() => {}) as any,
+    delay: async () => {},
+  })
+
+  // The one-shot adapter factory starts on its first microtask.
+  await Promise.resolve()
+  controller.dispose()
+  resolveClient?.({ dispose: async () => clientDisposals++ })
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+
+  expect(clientDisposals).toBe(1)
+  expect(session).toEqual({ loading: false, error: null, player: null })
+  expect(timers).toBe(0)
+})
+
+test("installed session adapter fences retained callbacks and held commands before release", async () => {
+  const order: string[] = []
+  const stateListeners = new Set<(value: any) => void>()
+  const statusListeners = new Set<(value: any) => void>()
+  const connectionListeners = new Set<(value: any) => void>()
+  let retainedState: ((value: any) => void) | undefined
+  let retainedStatus: ((value: any) => void) | undefined
+  let retainedConnection: ((value: any) => void) | undefined
+  let resolvePlay: (() => void) | undefined
+  let resolveNativeArtwork: ((value: any) => void) | undefined
+  let resolveArtwork: ((value: any) => void) | undefined
+  let clientDisposals = 0
+  let playCalls = 0
+  let nextCalls = 0
+  let timers = 0
+  const session = { loading: false, error: null, player: null as any }
+  const toasts: unknown[] = []
+  const state = {
+    revision: 1,
+    daemonInstanceId: "daemon-a",
+    state: {
+      track: {
+        id: "held-artwork",
+        uri: "system:held-artwork",
+        name: "Held artwork",
+        artists: "Artist",
+        album: "Album",
+        duration_ms: 180_000,
+      },
+      is_playing: false,
+      progress_ms: 0,
+      shuffle: false,
+      repeat: "off",
+      device: null,
+      fetched_at: 1,
+    },
+  }
+  const client = {
+    state,
+    status: { kind: "ready", provider: "media-control", message: "ready" },
+    connection: { type: "connected", daemonInstanceId: "daemon-a" },
+    daemonInstanceId: "daemon-a",
+    selectedRevision: 1,
+    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
+    subscribeState(listener: (value: any) => void) {
+      retainedState = listener
+      stateListeners.add(listener)
+      listener(this.state)
+      return () => {
+        order.push("state")
+        stateListeners.delete(listener)
+      }
+    },
+    subscribeStatus(listener: (value: any) => void) {
+      retainedStatus = listener
+      statusListeners.add(listener)
+      listener(this.status)
+      return () => {
+        order.push("status")
+        statusListeners.delete(listener)
+      }
+    },
+    subscribeConnection(listener: (value: any) => void) {
+      retainedConnection = listener
+      connectionListeners.add(listener)
+      listener(this.connection)
+      return () => {
+        order.push("connection")
+        connectionListeners.delete(listener)
+      }
+    },
+    async toggle() {
+      return { action: "toggle" as const }
+    },
+    play() {
+      playCalls++
+      return new Promise<void>((resolve) => {
+        resolvePlay = resolve
+      })
+    },
+    async pause() {
+      return { action: "pause" as const }
+    },
+    async next() {
+      nextCalls++
+      return { action: "next" as const }
+    },
+    async previous() {
+      return { action: "previous" as const }
+    },
+    async seek() {
+      return { action: "seek" as const }
+    },
+    artwork() {
+      return new Promise((resolve) => {
+        resolveNativeArtwork = resolve
+      })
+    },
+    async dispose() {
+      clientDisposals++
+      order.push("client")
+    },
+  }
+  const context = {
+    storage: {
+      memory: () => [
+        session,
+        (update: (value: typeof session) => void) => update(session),
+      ],
+    },
+    ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
+  }
+  const controller = createController(context as any, {
+    createBackend: () =>
+      createSessionSystemMedia({
+        createClient: async () => client as any,
+        resolveArtworkDetails: () =>
+          new Promise((resolve) => {
+            resolveArtwork = resolve
+          }),
+      }),
+    scheduleTimeout: (() => ++timers) as any,
+    clearScheduledTimeout: (() => {}) as any,
+    delay: async () => {},
+  })
+  await controller.refreshAll()
+  const retainedPlayer = session.player
+  const command = controller.playPause()
+  const queued = controller.next()
+  await Promise.resolve()
+  await Promise.resolve()
+  const timersAtDisposal = timers
+  controller.dispose()
+  controller.dispose()
+  await Promise.all([command, queued])
+  resolvePlay?.()
+  // Invoke callback references retained by the public client, rather than the
+  // now-empty subscription Sets, to prove adapter fencing after unsubscription.
+  retainedState?.(state)
+  retainedStatus?.(client.status)
+  retainedConnection?.({
+    type: "reconnecting",
+    error: { message: "late reconnect", retryable: true },
+  })
+  resolveNativeArtwork?.({ type: "available", base64: "late" })
+  await Promise.resolve()
+  resolveArtwork?.({ artwork: null, duration_ms: 180_000 })
+  await Promise.resolve()
+  await Promise.resolve()
+
+  expect(order).toEqual(["state", "status", "connection", "client"])
+  expect(clientDisposals).toBe(1)
+  expect(playCalls).toBe(1)
+  expect(nextCalls).toBe(0)
+  expect(session.loading).toBe(false)
+  expect(session.error).toBeNull()
+  expect(session.player).toBe(retainedPlayer)
+  expect(toasts).toEqual([])
+  expect(timers).toBe(timersAtDisposal)
 })
 
 test("post-disposal openApp resolves before opening, toasting, delaying, or refreshing", async () => {
