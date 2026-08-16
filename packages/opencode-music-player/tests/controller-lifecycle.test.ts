@@ -112,18 +112,12 @@ function client(name: string) {
   return { value, listeners }
 }
 
-test("disposal before factory resolution releases the client without timers or callbacks", async () => {
+test("disposal before factory resolution releases the client without callbacks", async () => {
   const late = deferred<any>()
   const { context: host, session } = context()
-  let timers = 0
-  const backend = createSessionSystemMedia({ createClient: () => late.promise })
+  const media = createSessionSystemMedia({ createClient: () => late.promise })
   const controller = createController(host as any, {
-    createBackend: () => backend,
-    scheduleTimeout: (() => ++timers) as any,
-    clearScheduledTimeout: (() => {}) as any,
-    delay: async () => {
-      timers++
-    },
+    createSessionMedia: () => media,
   })
   controller.dispose()
   const next = client("late").value
@@ -131,7 +125,6 @@ test("disposal before factory resolution releases the client without timers or c
   await flush()
   expect(next.disposals).toBe(1)
   expect(session.player).toBeNull()
-  expect(timers).toBe(0)
 })
 
 test("disposal settles held work once and leaves another session client healthy", async () => {
@@ -145,7 +138,7 @@ test("disposal settles held work once and leaves another session client healthy"
   const secondHost = context()
   const create = (host: ReturnType<typeof context>, value: any) =>
     createController(host.context as any, {
-      createBackend: () =>
+      createSessionMedia: () =>
         createSessionSystemMedia({
           createClient: async () => value,
           resolveArtworkDetails: async (_key, target) => ({
@@ -153,13 +146,6 @@ test("disposal settles held work once and leaves another session client healthy"
             duration_ms: target.duration_ms,
           }),
         }),
-      scheduleTimeout: (() => {
-        throw new Error("no controller timer")
-      }) as any,
-      clearScheduledTimeout: (() => {}) as any,
-      delay: async () => {
-        throw new Error("no reconciliation")
-      },
     })
   const controllerA = create(firstHost, first.value)
   const controllerB = create(secondHost, second.value)

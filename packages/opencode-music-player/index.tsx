@@ -1,13 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode-ai/plugin/tui"
 import { createSessionSystemMedia, openNowPlayingApp } from "./system-media.ts"
-import { isMac, mergeArtworkCompletion, type MusicBackend } from "./types.ts"
+import { isMac, mergeArtworkCompletion, type SessionMedia } from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
 
 type Context = Plugin.Context
 type SessionStore = UiState
-type TransportKind = "play" | "pause" | "next" | "previous" | "seek"
-
 type SeekIntent = {
   positionMs: number
   resolves: Array<() => void>
@@ -24,12 +22,8 @@ export type Controller = {
   dispose: () => void
 }
 
-/** Timer/delay seams remain source-compatible but are not used by session mode. */
 export type ControllerDependencies = {
-  createBackend: () => MusicBackend
-  scheduleTimeout: typeof setTimeout
-  clearScheduledTimeout: typeof clearTimeout
-  delay: (ms: number) => Promise<void>
+  createSessionMedia: () => SessionMedia
 }
 
 /** Apply successful daemon transport state until the next authoritative replay. */
@@ -75,10 +69,7 @@ function seekTarget(positionMs: number, durationMs?: number): number | null {
 }
 
 const controllerDependencies: ControllerDependencies = {
-  createBackend: createSessionSystemMedia,
-  scheduleTimeout: setTimeout,
-  clearScheduledTimeout: clearTimeout,
-  delay: Bun.sleep,
+  createSessionMedia: createSessionSystemMedia,
 }
 
 function errMsg(error: unknown): string {
@@ -95,7 +86,7 @@ export function createController(
     "music-player.session.v5",
     { initial: { loading: false, error: null, player: null } },
   )
-  const backend = dependencies.createBackend()
+  const media = dependencies.createSessionMedia()
   let disposed = false
   let lifecycleGeneration = 0
   let eventDisposer: (() => void) | null = null
@@ -149,11 +140,9 @@ export function createController(
   }
 
   const runCommand = (
-    kind: TransportKind,
-    command: () => Promise<unknown> | undefined,
+    command: () => Promise<unknown>,
     afterSuccess?: () => void,
   ) => {
-    void kind
     if (!isActive()) return Promise.resolve()
     const generation = lifecycleGeneration
     const commandSnapshotEpoch = snapshotEpoch
@@ -188,8 +177,7 @@ export function createController(
   const runSeek = (intent: SeekIntent) => {
     activeSeek = intent
     const operation = runCommand(
-      "seek",
-      () => backend.seek?.(intent.positionMs),
+      () => media.seek(intent.positionMs),
       () => {
         setSession((draft) => {
           draft.player = optimisticSeekPlayerState(
@@ -215,7 +203,7 @@ export function createController(
     if (!isActive()) return
     const generation = lifecycleGeneration
     try {
-      const player = await backend.player()
+      const player = await media.player()
       if (!isActive() || generation !== lifecycleGeneration || receivedSnapshot)
         return
       setSession((draft) => {
@@ -232,8 +220,7 @@ export function createController(
     playbackTarget = nextPlaying
     playbackOperations++
     return runCommand(
-      nextPlaying ? "play" : "pause",
-      () => (nextPlaying ? backend.play() : backend.pause?.()),
+      () => (nextPlaying ? media.play() : media.pause()),
       () => {
         setSession((draft) => {
           draft.player = optimisticPlayerState(draft.player, nextPlaying)
@@ -247,12 +234,7 @@ export function createController(
 
   const seek = (positionMs: number) => {
     const target = seekTarget(positionMs, session.player?.track?.duration_ms)
-    if (
-      !session.player?.track ||
-      !backend.seek ||
-      target === null ||
-      !isActive()
-    )
+    if (!session.player?.track || target === null || !isActive())
       return Promise.resolve()
     return new Promise<void>((resolve) => {
       if (activeSeek) {
@@ -268,36 +250,34 @@ export function createController(
     })
   }
 
-  eventDisposer =
-    backend.subscribe?.((event) => {
-      if (!isActive()) return
-      if (event?.type === "snapshot") {
-        receivedSnapshot = true
-        snapshotEpoch++
-        setSession((draft) => {
-          draft.player = event.state
-        })
-        return
-      }
-      if (event?.type === "lifecycle") {
-        // Lifecycle and transport feedback are retained independently. A
-        // connection loss takes precedence, a transport failure temporarily
-        // takes precedence over provider status, and clearing it restores the
-        // latest daemon lifecycle state without requiring a repeated event.
-        setLifecycleError(event.message, event.source)
-        if (event.message !== null && latestSeek) {
-          latestSeek.resolves.splice(0).forEach((resolve) => resolve())
-          latestSeek = null
-        }
-      }
-    }) ?? null
-  presentationDisposer =
-    backend.subscribePresentation?.((event) => {
-      if (!isActive()) return
+  eventDisposer = media.subscribe((event) => {
+    if (!isActive()) return
+    if (event?.type === "snapshot") {
+      receivedSnapshot = true
+      snapshotEpoch++
       setSession((draft) => {
-        draft.player = mergeArtworkCompletion(draft.player, event)
+        draft.player = event.state
       })
-    }) ?? null
+      return
+    }
+    if (event?.type === "lifecycle") {
+      // Lifecycle and transport feedback are retained independently. A
+      // connection loss takes precedence, a transport failure temporarily
+      // takes precedence over provider status, and clearing it restores the
+      // latest daemon lifecycle state without requiring a repeated event.
+      setLifecycleError(event.message, event.source)
+      if (event.message !== null && latestSeek) {
+        latestSeek.resolves.splice(0).forEach((resolve) => resolve())
+        latestSeek = null
+      }
+    }
+  })
+  presentationDisposer = media.subscribePresentation((event) => {
+    if (!isActive()) return
+    setSession((draft) => {
+      draft.player = mergeArtworkCompletion(draft.player, event)
+    })
+  })
   void refreshAll()
 
   return {
@@ -318,14 +298,8 @@ export function createController(
     },
     playPause,
     seek,
-    next: () =>
-      backend.next
-        ? runCommand("next", () => backend.next?.())
-        : Promise.resolve(),
-    prev: () =>
-      backend.previous
-        ? runCommand("previous", () => backend.previous?.())
-        : Promise.resolve(),
+    next: () => runCommand(() => media.next()),
+    prev: () => runCommand(() => media.previous()),
     dispose() {
       if (disposed) return
       disposed = true
@@ -339,7 +313,7 @@ export function createController(
       activeSeek?.resolves.splice(0).forEach((resolve) => resolve())
       activeSeek = null
       for (const resolve of [...pending]) settle(resolve)
-      void Promise.resolve(backend.dispose?.()).catch(() => {})
+      void media.dispose().catch(() => {})
       if (session.loading) {
         setSession((draft) => {
           draft.loading = false
@@ -402,7 +376,7 @@ function AppHost(props: { context: Context; ctrl: Controller }) {
 export function createMusicPlayerPlugin(options?: {
   createController?: (context: Context) => Controller
   /** Test-only factory override; production always uses the session adapter. */
-  createBackend?: () => MusicBackend
+  createSessionMedia?: () => SessionMedia
 }) {
   return Plugin.define({
     id: "music-player",
@@ -418,10 +392,10 @@ export function createMusicPlayerPlugin(options?: {
         options?.createController?.(context) ??
         createController(
           context,
-          options?.createBackend
+          options?.createSessionMedia
             ? {
                 ...controllerDependencies,
-                createBackend: options.createBackend,
+                createSessionMedia: options.createSessionMedia,
               }
             : controllerDependencies,
         )

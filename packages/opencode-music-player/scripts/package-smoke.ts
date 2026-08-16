@@ -123,20 +123,22 @@ let playing = true
 const plugin = createMusicPlayerPlugin({
   createController: (context) => {
     return createController(context, {
-      createBackend: () => ({
+      createSessionMedia: () => ({
         player: async () => ({
           track,
           is_playing: playing,
           progress_ms: 123000,
           fetched_at: Date.now(),
         }),
-        searchTracks: async () => [],
         play: async () => { playing = true },
         pause: async () => { playing = false },
+        next: async () => {},
+        previous: async () => {},
+        seek: async () => {},
+        subscribe: () => () => {},
+        subscribePresentation: () => () => {},
+        dispose: async () => {},
       }),
-      scheduleTimeout: setTimeout,
-      clearScheduledTimeout: clearTimeout,
-      delay: Bun.sleep,
     })
   },
 })

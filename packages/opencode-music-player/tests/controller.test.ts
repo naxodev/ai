@@ -135,7 +135,6 @@ function harness(
     player: null as PlayerState | null,
   }
   const toasts: unknown[] = []
-  let timerCalls = 0
   const context = {
     storage: {
       memory: () => [
@@ -146,18 +145,13 @@ function harness(
     ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
   }
   const controller = createController(context as any, {
-    createBackend: () =>
+    createSessionMedia: () =>
       createSessionSystemMedia({
         createClient: async () => client,
         resolveArtworkDetails,
       }),
-    scheduleTimeout: (() => ++timerCalls) as any,
-    clearScheduledTimeout: (() => {}) as any,
-    delay: async () => {
-      timerCalls++
-    },
   })
-  return { controller, session, toasts, timers: () => timerCalls }
+  return { controller, session, toasts }
 }
 
 test("production session controller receives replay/live/replacement state without host polling", async () => {
@@ -170,7 +164,6 @@ test("production session controller receives replay/live/replacement state witho
     fetched_at: 42,
     track: { id: "A" },
   })
-  expect(view.timers()).toBe(0)
 
   client.emitState(player("paused"))
   client.emitState(player("idle"))
@@ -186,7 +179,6 @@ test("production session controller receives replay/live/replacement state witho
     is_playing: true,
     track: { id: "B" },
   })
-  expect(view.timers()).toBe(0)
   view.controller.dispose()
 })
 
@@ -211,7 +203,6 @@ test("commands delegate immediately, retain narrow latest seek, and preserve loa
     is_playing: true,
     progress_ms: 20_000,
   })
-  expect(view.timers()).toBe(0)
   view.controller.dispose()
 })
 
@@ -294,7 +285,6 @@ test("lifecycle and transport errors do not erase one another or reconcile", asy
   expect(view.session.error).toBe("incompatible")
   await view.controller.refreshAll()
   expect(view.session.error).toBe("incompatible")
-  expect(view.timers()).toBe(0)
   view.controller.dispose()
 })
 
@@ -397,7 +387,6 @@ test("disposal settles callers and fences held command and late state", async ()
   expect(client.disposeCalls).toBe(1)
   expect(view.session.player).toBe(before)
   expect(view.session.loading).toBeFalse()
-  expect(view.timers()).toBe(0)
 })
 
 const paused = player("track")

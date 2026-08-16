@@ -23,7 +23,12 @@ const expectedFiles = new Set([
 ])
 const manifest = (await Bun.file(
   new URL("../package.json", import.meta.url),
-).json()) as { bin?: Record<string, string> }
+).json()) as {
+  exports?: Record<string, string>
+  bin?: Record<string, string>
+}
+if (manifest.exports?.["."] !== "./index.ts")
+  throw new Error("package root export must point at index.ts")
 if (manifest.bin?.["naxodev-music-sessiond"] !== "./dist/music-sessiond.js")
   throw new Error("package bin must point at dist/music-sessiond.js")
 const process = Bun.spawn(
@@ -38,6 +43,6 @@ for (const expected of expectedFiles)
   if (!files.has(expected))
     throw new Error(`npm package is missing ${expected}`)
 for (const file of files)
-  if (file.startsWith("tests/") || file.startsWith("scripts/"))
-    throw new Error(`npm package contains development file ${file}`)
+  if (!expectedFiles.has(file))
+    throw new Error(`npm package contains unexpected file ${file}`)
 console.log(`Verified npm package contents (${files.size} files)`)

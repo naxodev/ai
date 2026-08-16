@@ -47,7 +47,7 @@
       "name": "@naxodev/opencode-music-player",
       "version": "0.1.0",
       "dependencies": {
-        "@naxodev/music-core": "workspace:*",
+        "@naxodev/music-core": "^0.1.0",
         "@opencode-ai/plugin": "0.0.0-next-17395",
         "@opentui/core": "0.5.2",
         "@opentui/solid": "0.5.2",
@@ -99,7 +99,7 @@
       "name": "@naxodev/pi-music-dock",
       "version": "0.1.0",
       "dependencies": {
-        "@naxodev/music-core": "workspace:*",
+        "@naxodev/music-core": "^0.1.0",
       },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "0.84.0",

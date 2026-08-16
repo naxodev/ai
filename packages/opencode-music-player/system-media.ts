@@ -16,9 +16,9 @@ import type {
   ArtworkCompletionEvent,
   ArtworkIdentity,
   ArtworkPresentationListener,
-  MusicBackend,
-  MusicChangeEvent,
-  MusicError,
+  SessionMedia,
+  SessionMediaEvent,
+  SessionMediaLifecycleEvent,
   PlayerState,
 } from "./types.ts"
 
@@ -319,11 +319,11 @@ function artworkForTrack(
  */
 export function createSessionSystemMedia(
   overrides: SessionSystemMediaOverrides = {},
-): MusicBackend {
+): SessionMedia {
   const factory = overrides.createClient ?? createOpenCodeSessionClient
   const resolver = overrides.resolveArtworkDetails ?? resolveArtworkDetails
   const now = overrides.now ?? Date.now
-  const listeners = new Set<(event?: MusicChangeEvent) => void>()
+  const listeners = new Set<(event: SessionMediaEvent) => void>()
   const presentationListeners = new Set<ArtworkPresentationListener>()
   let disposed = false
   let client: ReconnectingMusicSessionClient | undefined
@@ -342,7 +342,7 @@ export function createSessionSystemMedia(
     clientReleased = true
     return Promise.resolve(next.dispose()).catch(() => {})
   }
-  const emit = (event?: MusicChangeEvent) => {
+  const emit = (event: SessionMediaEvent) => {
     if (disposed) return
     for (const listener of [...listeners]) {
       try {
@@ -365,7 +365,7 @@ export function createSessionSystemMedia(
     },
     isActive: () => !disposed,
   }
-  const lifecycle = (): Extract<MusicChangeEvent, { type: "lifecycle" }> => {
+  const lifecycle = (): SessionMediaLifecycleEvent => {
     if (
       latestConnection?.type === "reconnecting" ||
       latestConnection?.type === "terminal"
@@ -495,19 +495,9 @@ export function createSessionSystemMedia(
   }
 
   return {
-    id: "music-session",
-    label: "System media",
-    remoteControl: true,
-    authenticated: () => true,
     async player() {
       await activeClient()
       return project(latest)
-    },
-    async searchTracks(): Promise<never> {
-      throw {
-        status: 501,
-        message: "Search in the app that's playing",
-      } satisfies MusicError
     },
     async play() {
       await (await activeClient()).play()

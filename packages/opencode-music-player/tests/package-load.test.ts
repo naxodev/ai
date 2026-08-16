@@ -100,7 +100,7 @@ test("production session adapter is shared by both slots and disposes only its c
     keymap: { layer: () => {} },
   }
   const testPlugin = createMusicPlayerPlugin({
-    createBackend: () => {
+    createSessionMedia: () => {
       backendFactories++
       return createSessionSystemMedia({
         createClient: async () => {

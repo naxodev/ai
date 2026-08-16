@@ -1,12 +1,30 @@
 import { expect, test } from "bun:test"
+import type { ProviderStatus, RevisionedState } from "../index.ts"
 import {
+  baselineCapabilities,
+  createReconnectingMusicSessionClient,
   createSystemMedia,
+  PROTOCOL,
   resetClock,
   seekClock,
   setClockPlaying,
   syncFromSample,
   trackKey,
 } from "../index.ts"
+
+test("root exports the reconnecting host session surface", () => {
+  const clientFactory: typeof createReconnectingMusicSessionClient =
+    createReconnectingMusicSessionClient
+  const state: RevisionedState | undefined = undefined
+  const status: ProviderStatus | undefined = undefined
+  const protocol: typeof PROTOCOL = PROTOCOL
+  const capabilities: typeof baselineCapabilities = baselineCapabilities
+  expect(clientFactory).toBeFunction()
+  expect(state).toBeUndefined()
+  expect(status).toBeUndefined()
+  expect(protocol.major).toBeGreaterThan(0)
+  expect(capabilities).toContain("state-replay")
+})
 
 test("legacy clock exports retain their behavior without affecting backend clocks", async () => {
   resetClock()

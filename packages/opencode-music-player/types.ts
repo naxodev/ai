@@ -1,7 +1,4 @@
 import type {
-  MusicChangeDisposer,
-  MusicChangeEvent as CoreMusicChangeEvent,
-  MusicBackend as CoreMusicBackend,
   PlayerState as CorePlayerState,
   Track as CoreTrack,
 } from "@naxodev/music-core"
@@ -9,8 +6,6 @@ import {
   emptyPlayer as emptyCorePlayer,
   formatMs,
   isMac,
-  mergePlayer,
-  sameTrackIdentity,
 } from "@naxodev/music-core"
 
 export type { Device, MusicError } from "@naxodev/music-core"
@@ -53,33 +48,36 @@ export type PlayerState = Omit<CorePlayerState, "track"> & {
   track: Track | null
 }
 
-export type MusicChangeEvent =
-  | (Omit<Extract<CoreMusicChangeEvent, { type: "snapshot" }>, "state"> & {
-      state: PlayerState
-    })
-  | Exclude<CoreMusicChangeEvent, { type: "snapshot" }>
-  /** Host-local projection of session provider/connection lifecycle. */
-  | {
-      type: "lifecycle"
-      message: string | null
-      /** Distinguishes terminal/reconnect authority from provider feedback. */
-      source?: "connection" | "provider" | "acquisition"
-    }
+export type SessionMediaSnapshotEvent = {
+  type: "snapshot"
+  state: PlayerState
+}
 
-export type MusicChangeListener = (event?: MusicChangeEvent) => void
+/** Host-local projection of session provider/connection lifecycle. */
+export type SessionMediaLifecycleEvent = {
+  type: "lifecycle"
+  message: string | null
+  source: "connection" | "provider" | "acquisition"
+}
 
-export type MusicBackend = Omit<
-  CoreMusicBackend,
-  "player" | "searchTracks" | "subscribe"
-> & {
+export type SessionMediaEvent =
+  SessionMediaSnapshotEvent | SessionMediaLifecycleEvent
+export type SessionMediaListener = (event: SessionMediaEvent) => void
+export type SessionMediaDisposer = () => void
+
+/** The OpenCode controller's session-only media contract. */
+export type SessionMedia = {
   player: () => Promise<PlayerState | null>
-  searchTracks: (query: string, limit?: number) => Promise<Track[]>
-  subscribe?: (listener: MusicChangeListener) => MusicChangeDisposer
-  subscribePresentation?: (
+  play: () => Promise<unknown>
+  pause: () => Promise<unknown>
+  next: () => Promise<unknown>
+  previous: () => Promise<unknown>
+  seek: (positionMs: number) => Promise<unknown>
+  subscribe: (listener: SessionMediaListener) => SessionMediaDisposer
+  subscribePresentation: (
     listener: ArtworkPresentationListener,
-  ) => MusicChangeDisposer
-  /** Optional asynchronous host-resource release. */
-  dispose?: () => void | Promise<void>
+  ) => SessionMediaDisposer
+  dispose: () => Promise<void>
 }
 
 export function emptyPlayer(): PlayerState {
@@ -112,50 +110,6 @@ export function mergeArtworkCompletion(
       artwork_loading: false,
       duration_ms:
         track.duration_ms > 0 ? track.duration_ms : event.duration_ms,
-    },
-  }
-}
-
-/** Keep same-track presentation stable across incomplete provider samples. */
-export function mergePlayerPresentation(
-  previous: PlayerState | null,
-  next: PlayerState | null,
-): PlayerState | null {
-  const merged = mergePlayer(previous, next)
-  const matchingMetadata =
-    !!previous?.track?.name &&
-    !!merged?.track?.name &&
-    !!previous.track.artists &&
-    !!merged.track.artists &&
-    previous.track.name === merged.track.name &&
-    previous.track.artists === merged.track.artists
-  const compatibleAlbum =
-    !previous?.track?.album ||
-    !merged?.track?.album ||
-    previous.track.album === merged.track.album
-  const compatibleDuration =
-    !previous?.track?.duration_ms ||
-    !merged?.track?.duration_ms ||
-    Math.abs(previous.track.duration_ms - merged.track.duration_ms) <= 1_000
-  if (
-    !previous?.track ||
-    !merged?.track ||
-    (!sameTrackIdentity(previous.track, merged.track) && !matchingMetadata) ||
-    !compatibleAlbum ||
-    !compatibleDuration
-  ) {
-    return merged
-  }
-
-  return {
-    ...merged,
-    track: {
-      ...merged.track,
-      duration_ms:
-        merged.track.duration_ms > 0
-          ? merged.track.duration_ms
-          : previous.track.duration_ms,
-      artwork: merged.track.artwork ?? previous.track.artwork,
     },
   }
 }
