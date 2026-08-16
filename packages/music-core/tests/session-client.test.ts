@@ -14,6 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises"
 import net from "node:net"
+import { EventEmitter } from "node:events"
 import { NdjsonFramer } from "../session/framing.ts"
 import {
   MusicSessionClientError,
@@ -23,6 +24,7 @@ import {
   createMusicSessionClient,
   createReconnectingMusicSessionClient,
   launchManagedMusicSessionDaemon,
+  resolveMusicSessionDaemonRuntime,
   discoverMusicSession,
   type MusicSessionClient,
   type ReconnectingMusicSessionClient,
@@ -1266,10 +1268,15 @@ test("managed launcher uses detached packaged entry and releases its child handl
       invocation = { command, args, options }
       return {
         once: (event, listener) => {
-          listeners.set(event, listener)
+          listeners.set(event, listener as (cause?: Error) => void)
         },
         off: (event) => {
           removed.push(event)
+        },
+        stderr: {
+          on: () => {},
+          off: () => {},
+          unref: () => {},
         },
         unref: () => {
           unrefs++
@@ -1285,13 +1292,147 @@ test("managed launcher uses detached packaged entry and releases its child handl
     args: ["/absolute/music-sessiond.js"],
     options: {
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
       shell: false,
       env: { PATH: process.env.PATH ?? "" },
     },
   })
   expect(removed).toEqual(["spawn", "error"])
   expect(unrefs).toBe(1)
+})
+
+test("daemon runtime selection accepts Node and Bun CLI but rejects embedded Bun", () => {
+  expect(
+    resolveMusicSessionDaemonRuntime({
+      execPath: "/runtime/node",
+      release: { name: "node" },
+      versions: {},
+    }),
+  ).toBe("/runtime/node")
+  expect(
+    resolveMusicSessionDaemonRuntime({
+      execPath: "/runtime/bun",
+      release: { name: "node" },
+      versions: { bun: "1.3.7" },
+    }),
+  ).toBe("/runtime/bun")
+  expect(
+    resolveMusicSessionDaemonRuntime({
+      execPath: "/runtime/opencode2",
+      release: { name: "node" },
+      versions: { bun: "1.3.7" },
+    }),
+  ).toBe("node")
+})
+
+test("managed launcher retains bounded daemon diagnostics for early exit", async () => {
+  class Child extends EventEmitter {
+    readonly stderr = new EventEmitter()
+    unref() {}
+  }
+  const child = new Child()
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const launched = launchManagedMusicSessionDaemon(runtime, {
+    entry: () => "/absolute/music-sessiond.js",
+    spawn: () => child,
+  })
+  await Promise.resolve()
+  child.emit("spawn")
+  const launch = await launched
+  child.stderr.emit(
+    "data",
+    new TextEncoder().encode(
+      `ignored PLAYBACK_SENTINEL ARTWORK_SENTINEL ENV_SENTINEL ${"x".repeat(1_000)}\n`,
+    ),
+  )
+  child.stderr.emit("data", new TextEncoder().encode("music-sessiond: first\r"))
+  child.stderr.emit("data", new TextEncoder().encode("\nmusic-sessiond: early"))
+  child.stderr.emit("data", new TextEncoder().encode(" failure\n"))
+  child.stderr.emit(
+    "data",
+    new TextEncoder().encode(`music-sessiond: ${"x".repeat(300)}`),
+  )
+  child.stderr.emit("data", new TextEncoder().encode("x".repeat(300)))
+  child.stderr.emit("data", new TextEncoder().encode("\n"))
+  child.emit("exit", 23, null)
+  expect(launch.earlyFailure()).toMatchObject({
+    _tag: "MusicSession.StartupError",
+    operation: "exit",
+    exitCode: 23,
+  })
+  expect(launch.earlyFailure()?.diagnostic).toContain("music-sessiond: first")
+  expect(launch.earlyFailure()?.diagnostic).toContain(
+    "music-sessiond: early failure",
+  )
+  expect(launch.earlyFailure()?.diagnostic).not.toContain("ignored")
+  expect(launch.earlyFailure()?.diagnostic).not.toContain("PLAYBACK_SENTINEL")
+  expect(launch.earlyFailure()?.diagnostic).not.toContain("ARTWORK_SENTINEL")
+  expect(launch.earlyFailure()?.diagnostic).not.toContain("ENV_SENTINEL")
+  expect(
+    Buffer.byteLength(launch.earlyFailure()?.diagnostic ?? "", "utf8"),
+  ).toBeLessThanOrEqual(512)
+  expect(launch.earlyFailure()?.diagnostic).toContain("music-sessiond: x")
+})
+
+test("managed launcher truncates diagnostics on a valid UTF-8 boundary", async () => {
+  class Child extends EventEmitter {
+    readonly stderr = new EventEmitter()
+    unref() {}
+  }
+  const child = new Child()
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const launched = launchManagedMusicSessionDaemon(runtime, {
+    entry: () => "/absolute/music-sessiond.js",
+    spawn: () => child,
+  })
+  await Promise.resolve()
+  child.emit("spawn")
+  const launch = await launched
+  child.stderr.emit(
+    "data",
+    Buffer.concat([
+      Buffer.from(`music-sessiond: ${"x".repeat(495)}`),
+      Buffer.from("😀"),
+    ]),
+  )
+  child.emit("exit", 23, null)
+  const diagnostic = launch.earlyFailure()?.diagnostic
+  expect(diagnostic).toStartWith("music-sessiond:")
+  expect(diagnostic).not.toContain("�")
+  expect(Buffer.byteLength(diagnostic ?? "", "utf8")).toBeLessThanOrEqual(512)
+})
+
+test("managed launcher recognizes readiness only after a split complete line", async () => {
+  class Child extends EventEmitter {
+    readonly stderr = new EventEmitter()
+    unref() {}
+  }
+  const child = new Child()
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const launched = launchManagedMusicSessionDaemon(runtime, {
+    entry: () => "/absolute/music-sessiond.js",
+    spawn: () => child,
+  })
+  await Promise.resolve()
+  child.emit("spawn")
+  const launch = await launched
+  child.stderr.emit("data", new TextEncoder().encode("music-sessiond liste"))
+  expect(launch.ready()).toBe(false)
+  child.stderr.emit("data", new TextEncoder().encode("ning on /tmp/s.sock\r"))
+  expect(launch.ready()).toBe(false)
+  child.stderr.emit("data", new TextEncoder().encode("\n"))
+  expect(launch.ready()).toBe(true)
+  child.emit("exit", 23, null)
+  expect(launch.earlyFailure()).toBeUndefined()
 })
 
 test("managed launcher reports synchronous and initial spawn failures", async () => {
@@ -1316,9 +1457,10 @@ test("managed launcher reports synchronous and initial spawn failures", async ()
     entry: () => "/absolute/music-sessiond.js",
     spawn: () => ({
       once: (event, listener) => {
-        listeners.set(event, listener)
+        listeners.set(event, listener as (cause?: Error) => void)
       },
       off: () => {},
+      stderr: { on: () => {}, off: () => {}, unref: () => {} },
       unref: () => {},
     }),
   })
@@ -2034,6 +2176,154 @@ test("marker release failure disposes a successful client and remains observable
     await server?.close().catch(() => {})
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("owned daemon readiness closes the transient hello-reset window", async () => {
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const generation = scriptedGeneration("startup-generation")
+  const lease = {
+    paths: runtime,
+    attemptToken: "owned-startup-window",
+    release: async () => {},
+  }
+  let attempts = 0
+  let discoveries = 0
+  let launches = 0
+  let ready = false
+  const client = await Effect.runPromise(
+    connectOrStartMusicSessionEffect(
+      {
+        runtime,
+        clientId: "owned-startup-window",
+        hostKind: "test",
+        startup: { attempts: 5, initialDelayMs: 1, maxDelayMs: 1 },
+        launcher: async () => {
+          launches++
+          return { ready: () => ready, earlyFailure: () => undefined }
+        },
+      },
+      {
+        acquireLease: async () => ({ type: "acquired", lease }),
+        onAttempt: () => {
+          attempts++
+          if (attempts === 4) ready = true
+        },
+        discover: async () => {
+          discoveries++
+          return discoveries < 3
+            ? { type: "missing" }
+            : { type: "healthy", client: generation.client }
+        },
+      },
+    ),
+  )
+  expect(client).toBe(generation.client)
+  expect(launches).toBe(1)
+  // The startup's third attempt observed readiness=false and did not probe.
+  expect(discoveries).toBe(3)
+  client.dispose()
+})
+
+test("a managed child early exit reaches acquisition without becoming timeout", async () => {
+  class Child extends EventEmitter {
+    readonly stderr = new EventEmitter()
+    unref() {}
+  }
+  const child = new Child()
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const lease = {
+    paths: runtime,
+    attemptToken: "early-exit-boundary",
+    release: async () => {},
+  }
+  let discoveries = 0
+  await expect(
+    Effect.runPromise(
+      connectOrStartMusicSessionEffect(
+        {
+          runtime,
+          clientId: "early-exit-boundary",
+          hostKind: "test",
+          startup: { attempts: 5, initialDelayMs: 1, maxDelayMs: 1 },
+          launcher: (paths) =>
+            launchManagedMusicSessionDaemon(paths, {
+              entry: () => "/absolute/music-sessiond.js",
+              spawn: () => {
+                queueMicrotask(() => {
+                  child.emit("spawn")
+                  child.stderr.emit(
+                    "data",
+                    new TextEncoder().encode("music-sessiond: early"),
+                  )
+                  child.stderr.emit(
+                    "data",
+                    new TextEncoder().encode(" failure\n"),
+                  )
+                  child.emit("exit", 23, "SIGTERM")
+                })
+                return child
+              },
+            }),
+        },
+        {
+          acquireLease: async () => ({ type: "acquired", lease }),
+          discover: async () => {
+            discoveries++
+            return { type: "missing" }
+          },
+        },
+      ),
+    ),
+  ).rejects.toMatchObject({
+    operation: "exit",
+    exitCode: 23,
+    signal: "SIGTERM",
+    diagnostic: "music-sessiond: early failure",
+  })
+  expect(discoveries).toBe(2)
+})
+
+test("a peer remains terminal occupied after the launched daemon is ready", async () => {
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const lease = {
+    paths: runtime,
+    attemptToken: "ready-peer",
+    release: async () => {},
+  }
+  let discoveries = 0
+  await expect(
+    Effect.runPromise(
+      connectOrStartMusicSessionEffect(
+        {
+          runtime,
+          clientId: "ready-peer",
+          hostKind: "test",
+          startup: { attempts: 5, initialDelayMs: 1, maxDelayMs: 1 },
+          launcher: async () => ({
+            ready: () => true,
+            earlyFailure: () => undefined,
+          }),
+        },
+        {
+          acquireLease: async () => ({ type: "acquired", lease }),
+          discover: async () => {
+            discoveries++
+            return discoveries < 3 ? { type: "missing" } : { type: "occupied" }
+          },
+        },
+      ),
+    ),
+  ).rejects.toMatchObject({ operation: "occupied" })
+  expect(discoveries).toBe(3)
 })
 
 test("marker is released after startup timeout and interruption", async () => {
@@ -2824,6 +3114,271 @@ test("malformed and reset managed peers stay occupied without cleanup", async ()
       )
       await rm(root, { recursive: true, force: true })
     }
+  }
+})
+
+test("a retryable reset with a live startup marker remains starting", async () => {
+  const root = await mkdtemp("/tmp/music-session-marker-reset-")
+  let server: net.Server | undefined
+  try {
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    const acquired = await acquireStartupMarkerLease(runtime)
+    if (acquired.type !== "acquired") throw new Error("expected marker lease")
+    server = net.createServer((socket) => socket.destroy())
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject)
+      server!.listen(runtime.socketPath, resolve)
+    })
+    await chmod(runtime.socketPath, 0o600)
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "marker-reset",
+      hostKind: "test",
+    })
+    expect(found.type).toBe("starting")
+    expect("cleanup" in found).toBe(false)
+    expect((await lstat(runtime.socketPath)).isSocket()).toBe(true)
+    await acquired.lease.release()
+  } finally {
+    await new Promise<void>(
+      (resolve) => server?.close(() => resolve()) ?? resolve(),
+    )
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("terminal reset and malformed peers do not borrow live-marker authority", async () => {
+  for (const mode of ["no-marker", "dead-marker", "malformed"] as const) {
+    const root = await mkdtemp(`/tmp/music-session-terminal-${mode}-`)
+    let server: net.Server | undefined
+    try {
+      const uid = process.getuid?.() ?? -1
+      const runtime = resolveMusicSessionRuntimePaths({
+        root,
+        uid,
+        ...(mode === "dead-marker"
+          ? {
+              dependencies: {
+                processExists: () => {
+                  throw Object.assign(new Error("gone"), { code: "ESRCH" })
+                },
+              },
+            }
+          : {}),
+      })
+      await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+      if (mode !== "no-marker") {
+        await writeFile(
+          runtime.markerPath,
+          JSON.stringify({
+            version: 1,
+            uid,
+            pid: mode === "dead-marker" ? 123 : process.pid,
+            attemptToken: mode,
+          }),
+          { mode: 0o600 },
+        )
+        await chmod(runtime.markerPath, 0o600)
+      }
+      server = net.createServer((socket) => {
+        if (mode === "malformed") socket.end("not json\n")
+        else socket.destroy()
+      })
+      await new Promise<void>((resolve, reject) => {
+        server!.once("error", reject)
+        server!.listen(runtime.socketPath, resolve)
+      })
+      await chmod(runtime.socketPath, 0o600)
+      const socket = await lstat(runtime.socketPath)
+      const marker =
+        mode === "no-marker" ? undefined : await lstat(runtime.markerPath)
+      const found = await discoverMusicSession({
+        runtime,
+        clientId: `terminal-${mode}`,
+        hostKind: "test",
+      })
+      expect(found).toEqual({ type: "occupied" })
+      const afterSocket = await lstat(runtime.socketPath)
+      expect([afterSocket.dev, afterSocket.ino]).toEqual([
+        socket.dev,
+        socket.ino,
+      ])
+      if (marker) {
+        const afterMarker = await lstat(runtime.markerPath)
+        expect([afterMarker.dev, afterMarker.ino]).toEqual([
+          marker.dev,
+          marker.ino,
+        ])
+      }
+    } finally {
+      await new Promise<void>(
+        (resolve) => server?.close(() => resolve()) ?? resolve(),
+      )
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("reset classification fails closed when endpoint or marker changes during inspection", async () => {
+  for (const artifact of ["endpoint", "marker"] as const) {
+    const root = await mkdtemp(`/tmp/music-session-reset-replaced-${artifact}-`)
+    let server: net.Server | undefined
+    try {
+      const uid = process.getuid?.() ?? -1
+      const base = resolveMusicSessionRuntimePaths({ root, uid })
+      await Effect.runPromise(prepareManagedRuntimeDirectory(base))
+      await writeFile(
+        base.markerPath,
+        JSON.stringify({
+          version: 1,
+          uid,
+          pid: process.pid,
+          attemptToken: "original",
+        }),
+        { mode: 0o600 },
+      )
+      await chmod(base.markerPath, 0o600)
+      let replaced = false
+      let markerReads = 0
+      const runtime = resolveMusicSessionRuntimePaths({
+        root,
+        uid,
+        dependencies: {
+          readFile: (async (path) => {
+            const contents = await readFile(path, "utf8")
+            if (path === base.markerPath && ++markerReads === 2) {
+              replaced = true
+              if (artifact === "endpoint") {
+                await new Promise<void>((resolve) =>
+                  server?.close(() => resolve()),
+                )
+                await leaveStaleSocket(base)
+              } else {
+                await rm(base.markerPath)
+                await writeFile(
+                  base.markerPath,
+                  JSON.stringify({
+                    version: 1,
+                    uid,
+                    pid: process.pid,
+                    attemptToken: "replacement",
+                  }),
+                  { mode: 0o600 },
+                )
+                await chmod(base.markerPath, 0o600)
+              }
+            }
+            return contents
+          }) as typeof readFile,
+        },
+      })
+      server = net.createServer((socket) => socket.destroy())
+      await new Promise<void>((resolve, reject) => {
+        server!.once("error", reject)
+        server!.listen(base.socketPath, resolve)
+      })
+      await chmod(base.socketPath, 0o600)
+      const originalSocket = await lstat(base.socketPath)
+      const originalMarker = await lstat(base.markerPath)
+      const found = await discoverMusicSession({
+        runtime,
+        clientId: `reset-replaced-${artifact}`,
+        hostKind: "test",
+      })
+      expect(found).toEqual({ type: "occupied" })
+      expect(replaced).toBe(true)
+      const socket = await lstat(base.socketPath)
+      const marker = await lstat(base.markerPath)
+      if (artifact === "endpoint")
+        expect([socket.dev, socket.ino]).not.toEqual([
+          originalSocket.dev,
+          originalSocket.ino,
+        ])
+      else
+        expect([marker.dev, marker.ino]).not.toEqual([
+          originalMarker.dev,
+          originalMarker.ino,
+        ])
+    } finally {
+      await new Promise<void>(
+        (resolve) => server?.close(() => resolve()) ?? resolve(),
+      )
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("reset classification rejects an in-place marker generation rewrite", async () => {
+  const root = await mkdtemp("/tmp/music-session-reset-marker-rewrite-")
+  let server: net.Server | undefined
+  try {
+    const uid = process.getuid?.() ?? -1
+    const base = resolveMusicSessionRuntimePaths({ root, uid })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(base))
+    await writeFile(
+      base.markerPath,
+      JSON.stringify({
+        version: 1,
+        uid,
+        pid: process.pid,
+        attemptToken: "original",
+      }),
+      { mode: 0o600 },
+    )
+    await chmod(base.markerPath, 0o600)
+    let markerReads = 0
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid,
+      dependencies: {
+        readFile: (async (path) => {
+          const contents = await readFile(path, "utf8")
+          if (path === base.markerPath && ++markerReads === 2) {
+            await writeFile(
+              base.markerPath,
+              JSON.stringify({
+                version: 1,
+                uid,
+                pid: process.pid,
+                attemptToken: "rewritten-in-place",
+              }),
+              "utf8",
+            )
+            await chmod(base.markerPath, 0o600)
+          }
+          return contents
+        }) as typeof readFile,
+      },
+    })
+    server = net.createServer((socket) => socket.destroy())
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject)
+      server!.listen(base.socketPath, resolve)
+    })
+    await chmod(base.socketPath, 0o600)
+    const socket = await lstat(base.socketPath)
+    const marker = await lstat(base.markerPath)
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "reset-marker-rewrite",
+      hostKind: "test",
+    })
+    expect(found).toEqual({ type: "occupied" })
+    const afterSocket = await lstat(base.socketPath)
+    const afterMarker = await lstat(base.markerPath)
+    expect([afterSocket.dev, afterSocket.ino]).toEqual([socket.dev, socket.ino])
+    expect([afterMarker.dev, afterMarker.ino]).toEqual([marker.dev, marker.ino])
+    expect(await readFile(base.markerPath, "utf8")).toContain(
+      "rewritten-in-place",
+    )
+  } finally {
+    await new Promise<void>(
+      (resolve) => server?.close(() => resolve()) ?? resolve(),
+    )
+    await rm(root, { recursive: true, force: true })
   }
 })
 

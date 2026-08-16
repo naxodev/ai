@@ -771,6 +771,72 @@ const inspectEndpoint = async (paths: MusicSessionRuntimePaths) => {
     : undefined
 }
 
+type MarkerGeneration = {
+  readonly marker: ArtifactProof
+  readonly pid: number
+  readonly attemptToken: string
+}
+
+/**
+ * Best-effort pre-hello generation proof. An invalid marker cannot block a
+ * healthy hello, but a reset can wait only for this exact live generation.
+ */
+const inspectLiveMarkerGeneration = async (
+  paths: MusicSessionRuntimePaths,
+): Promise<MarkerGeneration | undefined> => {
+  await Effect.runPromise(prepareManagedRuntimeDirectory(paths))
+  const stat = await missing(paths, paths.markerPath)
+  if (
+    !stat ||
+    !stat.isFile() ||
+    !sameOwner(stat, paths.uid) ||
+    !hasExactMode(stat, 0o600) ||
+    stat.size > 4096
+  )
+    return undefined
+  const marker = {
+    ...identity(paths.markerPath, stat),
+    kind: "marker",
+  } satisfies ArtifactProof
+  let parsed: Schema.Schema.Type<typeof MarkerSchema>
+  try {
+    parsed = Schema.decodeUnknownSync(MarkerSchema)(
+      JSON.parse(
+        await (runtimeIo(paths).readFile ?? readFile)(paths.markerPath, "utf8"),
+      ),
+    )
+  } catch {
+    return undefined
+  }
+  if (parsed.uid !== paths.uid || !(await unchanged(paths, marker)))
+    return undefined
+  try {
+    ;(runtimeIo(paths).processExists ?? ((pid) => process.kill(pid, 0)))(
+      parsed.pid,
+    )
+  } catch (cause: unknown) {
+    if (
+      typeof cause === "object" &&
+      cause !== null &&
+      "code" in cause &&
+      cause.code === "ESRCH"
+    )
+      return undefined
+  }
+  return { marker, pid: parsed.pid, attemptToken: parsed.attemptToken }
+}
+
+const sameMarkerGeneration = (
+  left: MarkerGeneration,
+  right: MarkerGeneration,
+) =>
+  left.marker.dev === right.marker.dev &&
+  left.marker.ino === right.marker.ino &&
+  left.marker.uid === right.marker.uid &&
+  left.marker.mode === right.marker.mode &&
+  left.pid === right.pid &&
+  left.attemptToken === right.attemptToken
+
 /** Only inspection/probe code can create this guarded cleanup closure. */
 const staleCleanup = (
   paths: MusicSessionRuntimePaths,
@@ -830,14 +896,17 @@ export class ManagedRuntimeProbe {
   readonly socketPath: string | undefined
   #paths: MusicSessionRuntimePaths
   #socket: ArtifactProof | undefined
+  #markerGeneration: MarkerGeneration | undefined
   #ownedAuthority: LeaseAuthority | undefined
   private constructor(
     paths: MusicSessionRuntimePaths,
     socket: ArtifactProof | undefined,
+    markerGeneration: MarkerGeneration | undefined,
     ownedAuthority?: LeaseAuthority,
   ) {
     this.#paths = paths
     this.#socket = socket
+    this.#markerGeneration = markerGeneration
     this.#ownedAuthority = ownedAuthority
     this.socketPath = socket?.path
   }
@@ -851,12 +920,18 @@ export class ManagedRuntimeProbe {
       return new ManagedRuntimeProbe(
         paths,
         await inspectEndpoint(paths),
+        await inspectLiveMarkerGeneration(paths),
         ownedAuthority,
       )
     } catch (cause) {
       if (!(cause instanceof MusicSessionRuntimeError)) throw cause
       const inspected = await inspectManagedRuntime(paths, ownedAuthority)
-      return new ManagedRuntimeProbe(paths, inspected.socket, ownedAuthority)
+      return new ManagedRuntimeProbe(
+        paths,
+        inspected.socket,
+        await inspectLiveMarkerGeneration(paths),
+        ownedAuthority,
+      )
     }
   }
   async healthy<T>(value: T): Promise<ManagedRuntimeProbeResult<T>> {
@@ -883,6 +958,27 @@ export class ManagedRuntimeProbe {
   }
   occupied(): ManagedRuntimeProbeResult<never> {
     return { type: "occupied" }
+  }
+  /** A live, independently proven unchanged marker authorizes waiting only. */
+  async starting(): Promise<"starting" | "occupied"> {
+    const before = this.#markerGeneration
+    if (!this.#socket || !before) return "occupied"
+    const inspected = await inspectManagedRuntime(
+      this.#paths,
+      this.#ownedAuthority,
+    )
+    const after = await inspectLiveMarkerGeneration(this.#paths)
+    // The reset is attributable only to the endpoint and marker generation
+    // observed before hello. In-place rewrites and artifact replacements both
+    // fail closed before granting waiting authority.
+    if (
+      inspected.deadMarker ||
+      !(await unchanged(this.#paths, this.#socket)) ||
+      !after ||
+      !sameMarkerGeneration(before, after)
+    )
+      return "occupied"
+    return "starting"
   }
   async absent(): Promise<ManagedRuntimeProbeResult<never>> {
     return this.#markerResult(undefined)

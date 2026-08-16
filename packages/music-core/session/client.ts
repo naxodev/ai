@@ -1,6 +1,7 @@
 import net from "node:net"
 import { spawn as spawnChild } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { basename } from "node:path"
 import {
   Deferred,
   Duration,
@@ -765,6 +766,16 @@ export async function discoverMusicSession(
       ["ECONNREFUSED", "ENOENT"].includes(cause.transportCode)
     )
       return nonEndpoint()
+    // A reset is retryable only when an independently proven live startup
+    // marker still owns this generation. A malformed/unmarked peer remains
+    // occupied and never gains cleanup authority.
+    if (
+      cause instanceof MusicSessionClientError &&
+      cause.code === "CONNECTION_LOST" &&
+      cause.retryable &&
+      (await probe.starting()) === "starting"
+    )
+      return { type: "starting" }
     return { type: "occupied" }
   }
 }
@@ -777,25 +788,51 @@ export class MusicSessionStartupError extends Schema.TaggedErrorClass<MusicSessi
   {
     operation: Schema.Union([
       Schema.Literal("spawn"),
+      Schema.Literal("exit"),
       Schema.Literal("timeout"),
       Schema.Literal("occupied"),
     ]),
     message: Schema.String,
+    exitCode: Schema.optional(Schema.Number),
+    signal: Schema.optional(Schema.String),
+    diagnostic: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
+const MAX_DAEMON_DIAGNOSTIC_BYTES = 512
+
+type DaemonStderr = {
+  on(event: "data", listener: (chunk: Uint8Array) => void): unknown
+  off(event: "data", listener: (chunk: Uint8Array) => void): unknown
+  unref?(): void
+}
 type SpawnedDaemon = {
   once(event: "spawn" | "error", listener: (cause?: Error) => void): unknown
+  once(
+    event: "exit",
+    listener: (code: number | null, signal: string | null) => void,
+  ): unknown
   off(event: "spawn" | "error", listener: (cause?: Error) => void): unknown
+  off(
+    event: "exit",
+    listener: (code: number | null, signal: string | null) => void,
+  ): unknown
+  readonly stderr: DaemonStderr | null
   unref(): void
+}
+export type MusicSessionDaemonLaunch = {
+  /** The daemon reports readiness only after its real graph has started. */
+  ready(): boolean
+  /** Retains only a bounded, daemon-prefixed early-exit diagnostic. */
+  earlyFailure(): MusicSessionStartupError | undefined
 }
 export type MusicSessionDaemonLauncher = (
   runtime: MusicSessionRuntimePaths,
-) => Promise<void>
+) => Promise<void | MusicSessionDaemonLaunch>
 type ManagedSpawnOptions = {
   readonly detached: true
-  readonly stdio: "ignore"
+  readonly stdio: ["ignore", "ignore", "pipe"]
   readonly shell: false
   readonly env: NodeJS.ProcessEnv
 }
@@ -806,7 +843,22 @@ export type MusicSessionDaemonLauncherDependencies = {
     args: readonly string[],
     options: ManagedSpawnOptions,
   ) => SpawnedDaemon
+  /** Test-only runtime identity seam for embedded hosts. */
+  readonly runtime?: () => string
 }
+export type MusicSessionRuntimeIdentity = {
+  readonly execPath: string
+  readonly release: { readonly name?: string } | undefined
+  readonly versions: { readonly bun?: string }
+}
+/** Select Node only when the embedding executable is not a verified JS runner. */
+export const resolveMusicSessionDaemonRuntime = (
+  identity: MusicSessionRuntimeIdentity = process,
+) =>
+  identity.release?.name === "node" &&
+  (identity.versions.bun === undefined || basename(identity.execPath) === "bun")
+    ? identity.execPath
+    : "node"
 const productionLauncherDependencies: MusicSessionDaemonLauncherDependencies = {
   entry: () =>
     fileURLToPath(new URL("../dist/music-sessiond.js", import.meta.url)),
@@ -817,15 +869,19 @@ const productionLauncherDependencies: MusicSessionDaemonLauncherDependencies = {
 export const launchManagedMusicSessionDaemon = async (
   _runtime: MusicSessionRuntimePaths,
   dependencies: MusicSessionDaemonLauncherDependencies = productionLauncherDependencies,
-): Promise<void> => {
+): Promise<MusicSessionDaemonLaunch> => {
   let child: SpawnedDaemon
   try {
-    child = dependencies.spawn(process.execPath, [dependencies.entry()], {
-      detached: true,
-      stdio: "ignore",
-      shell: false,
-      env: { PATH: process.env.PATH ?? "" },
-    })
+    child = dependencies.spawn(
+      dependencies.runtime?.() ?? resolveMusicSessionDaemonRuntime(),
+      [dependencies.entry()],
+      {
+        detached: true,
+        stdio: ["ignore", "ignore", "pipe"],
+        shell: false,
+        env: { PATH: process.env.PATH ?? "" },
+      },
+    )
   } catch (cause) {
     throw new MusicSessionStartupError({
       operation: "spawn",
@@ -833,6 +889,103 @@ export const launchManagedMusicSessionDaemon = async (
       cause,
     })
   }
+  let earlyFailure: MusicSessionStartupError | undefined
+  let ready = false
+  let diagnostic = Buffer.alloc(0)
+  let lineKind: "prefix" | "ready" | "diagnostic" | "other" = "prefix"
+  let linePrefix = Buffer.alloc(0)
+  let diagnosticLine = Buffer.alloc(0)
+  const readyPrefix = Buffer.from("music-sessiond listening on ")
+  const diagnosticPrefix = Buffer.from("music-sessiond:")
+  const appendDiagnostic = (line: Buffer) => {
+    if (diagnostic.length >= MAX_DAEMON_DIAGNOSTIC_BYTES) return
+    const separator =
+      diagnostic.length === 0 ? Buffer.alloc(0) : Buffer.from("\n")
+    const available = MAX_DAEMON_DIAGNOSTIC_BYTES - diagnostic.length
+    diagnostic = Buffer.concat([diagnostic, separator, line]).subarray(
+      0,
+      available + diagnostic.length,
+    )
+  }
+  const decodedDiagnostic = () => {
+    // A byte cap can end in the middle of UTF-8. Decode only a prefix whose
+    // re-encoded form remains within the host-visible byte budget.
+    for (let end = diagnostic.length; end >= 0; end--) {
+      const text = diagnostic.subarray(0, end).toString("utf8").trimEnd()
+      if (Buffer.byteLength(text, "utf8") <= MAX_DAEMON_DIAGNOSTIC_BYTES)
+        return text
+    }
+    return ""
+  }
+  const resetLine = () => {
+    lineKind = "prefix"
+    linePrefix = Buffer.alloc(0)
+    diagnosticLine = Buffer.alloc(0)
+  }
+  const finishLine = () => {
+    if (lineKind === "ready") {
+      ready = true
+      releaseCapture()
+    } else if (lineKind === "diagnostic") {
+      const line =
+        diagnosticLine[diagnosticLine.length - 1] === 0x0d
+          ? diagnosticLine.subarray(0, -1)
+          : diagnosticLine
+      appendDiagnostic(line)
+    }
+    resetLine()
+  }
+  const receiveByte = (byte: number) => {
+    if (byte === 0x0a) {
+      finishLine()
+      return
+    }
+    if (lineKind === "diagnostic") {
+      if (diagnosticLine.length < MAX_DAEMON_DIAGNOSTIC_BYTES)
+        diagnosticLine = Buffer.concat([diagnosticLine, Buffer.of(byte)])
+      return
+    }
+    if (lineKind !== "prefix") return
+    linePrefix = Buffer.concat([linePrefix, Buffer.of(byte)])
+    if (readyPrefix.subarray(0, linePrefix.length).equals(linePrefix)) {
+      if (linePrefix.length === readyPrefix.length) lineKind = "ready"
+      return
+    }
+    if (diagnosticPrefix.subarray(0, linePrefix.length).equals(linePrefix)) {
+      if (linePrefix.length === diagnosticPrefix.length) {
+        lineKind = "diagnostic"
+        diagnosticLine = linePrefix
+      }
+      return
+    }
+    lineKind = "other"
+  }
+  const onStderr = (chunk: Uint8Array) => {
+    for (const byte of chunk) {
+      receiveByte(byte)
+      if (ready) return
+    }
+  }
+  const releaseCapture = () => {
+    child.stderr?.off("data", onStderr)
+    child.off("exit", exited)
+  }
+  child.stderr?.on("data", onStderr)
+  child.stderr?.unref?.()
+  const exited = (code: number | null, signal: string | null) => {
+    if (ready) return
+    if (lineKind === "diagnostic") appendDiagnostic(diagnosticLine)
+    resetLine()
+    earlyFailure ??= new MusicSessionStartupError({
+      operation: "exit",
+      message: "music session daemon exited before endpoint readiness",
+      ...(code === null ? {} : { exitCode: code }),
+      ...(signal === null ? {} : { signal }),
+      ...(diagnostic.length > 0 ? { diagnostic: decodedDiagnostic() } : {}),
+    })
+    releaseCapture()
+  }
+  child.once("exit", exited)
   await new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       child.off("spawn", spawned)
@@ -845,6 +998,8 @@ export const launchManagedMusicSessionDaemon = async (
     }
     const failed = (cause?: Error) => {
       cleanup()
+      child.off("exit", exited)
+      child.stderr?.off("data", onStderr)
       reject(
         new MusicSessionStartupError({
           operation: "spawn",
@@ -856,6 +1011,7 @@ export const launchManagedMusicSessionDaemon = async (
     child.once("spawn", spawned)
     child.once("error", failed)
   })
+  return { ready: () => ready, earlyFailure: () => earlyFailure }
 }
 
 export type ConnectOrStartMusicSessionOptions = MusicSessionDiscoveryOptions & {
@@ -969,6 +1125,9 @@ export const connectOrStartMusicSessionEffect = (
     const { attempts, initialDelayMs, maxDelayMs } =
       yield* resolveMusicSessionStartup(options.startup)
     const lease = yield* Ref.make<StartupMarkerLease | undefined>(undefined)
+    const launched = yield* Ref.make<MusicSessionDaemonLaunch | undefined>(
+      undefined,
+    )
     const spawned = yield* Ref.make(false)
     const releaseOwned = Effect.uninterruptible(
       Ref.getAndSet(lease, undefined).pipe(
@@ -992,6 +1151,13 @@ export const connectOrStartMusicSessionEffect = (
     const attempt = Effect.gen(function* () {
       yield* Effect.sync(() => observe(dependencies.onAttempt))
       const ownedLease = yield* Ref.get(lease)
+      const launch = yield* Ref.get(launched)
+      const earlyFailure = launch?.earlyFailure()
+      if (earlyFailure) return yield* Effect.fail(earlyFailure)
+      // A daemon-owned readiness line closes the listener/hello window. Test
+      // launchers that return void retain the historical immediate probe seam.
+      if (launch && !launch.ready())
+        return yield* Effect.fail(new StartupPending())
       const discovery = yield* promise(() =>
         discover({
           ...options,
@@ -999,6 +1165,11 @@ export const connectOrStartMusicSessionEffect = (
           ...(ownedLease ? { ownedLease } : {}),
         }),
       )
+      // If the child died while the probe was in flight, preserve its causal
+      // startup error rather than translating the probe's peer result.
+      const failureAfterDiscovery = launch?.earlyFailure()
+      if (failureAfterDiscovery)
+        return yield* Effect.fail(failureAfterDiscovery)
       if (discovery.type === "healthy")
         return yield* Effect.onInterrupt(
           Effect.gen(function* () {
@@ -1026,7 +1197,7 @@ export const connectOrStartMusicSessionEffect = (
         )
       if (discovery.type === "incompatible")
         return yield* Effect.fail(discovery.error)
-      if (discovery.type === "occupied")
+      if (discovery.type === "occupied") {
         return yield* Effect.fail(
           new MusicSessionStartupError({
             operation: "occupied",
@@ -1034,6 +1205,7 @@ export const connectOrStartMusicSessionEffect = (
               "music session endpoint is occupied by an unclassifiable peer",
           }),
         )
+      }
       if (discovery.type === "stale") {
         yield* promise(discovery.cleanup)
         return yield* Effect.fail(new StartupPending())
@@ -1055,7 +1227,8 @@ export const connectOrStartMusicSessionEffect = (
       if (discovery.type === "missing" && ownedLease) {
         if (!(yield* Ref.get(spawned))) {
           yield* Ref.set(spawned, true)
-          yield* promise(() => launcher(runtime))
+          const nextLaunch = yield* promise(() => launcher(runtime))
+          if (nextLaunch) yield* Ref.set(launched, nextLaunch)
         }
         return yield* Effect.fail(new StartupPending())
       }
