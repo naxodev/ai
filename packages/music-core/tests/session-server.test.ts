@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { chmod, lstat, mkdtemp, rm, unlink, writeFile } from "node:fs/promises"
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  readdir,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
 import net from "node:net"
@@ -55,6 +63,180 @@ const readUntil = async (stream: ReadableStream<Uint8Array>, text: string) => {
     }
   } finally {
     reader.releaseLock()
+  }
+}
+
+type ContenderObservation = {
+  readonly id: string
+  readonly event: string
+  readonly message?: string
+  readonly status?: number
+  readonly counts?: {
+    readonly subscriptions: number
+    readonly disposals: number
+    readonly providerDisposals: number
+    readonly samples: number
+    readonly commands: number
+  }
+}
+
+type DaemonContender = {
+  readonly child: ReturnType<typeof Bun.spawn>
+  readonly observations: ContenderObservation[]
+  readonly ready: Promise<void>
+  readonly listening: Promise<void>
+  readonly collected: Promise<void>
+  readonly output: () => string
+}
+
+const awaitContenderExit = async (
+  contender: DaemonContender,
+  label: string,
+): Promise<number> =>
+  Effect.runPromise(
+    Effect.promise(async () => {
+      const [status] = await Promise.all([
+        contender.child.exited,
+        contender.collected,
+      ])
+      return status
+    })
+      .pipe(Effect.timeout("2 seconds"))
+      .pipe(
+        Effect.catch(() =>
+          Effect.fail(
+            new Error(
+              `${label} contender did not exit and close stderr: ${contender.output()}`,
+            ),
+          ),
+        ),
+      ),
+  )
+
+const spawnDaemonContender = (id: string, path: string): DaemonContender => {
+  const runner = new URL("../session/music-sessiond.ts", import.meta.url).href
+  const config = new URL("../session/config.ts", import.meta.url).href
+  const provider = new URL("../session/provider.ts", import.meta.url).href
+  const server = new URL("../session/server.ts", import.meta.url).href
+  const script = `import { Layer } from "effect";
+    import { runMusicSessionDaemon } from ${JSON.stringify(runner)};
+    import { layer as configLayer } from ${JSON.stringify(config)};
+    import { createFakeProvider, layerFromLegacy } from ${JSON.stringify(provider)};
+    import { layerWithHooks } from ${JSON.stringify(server)};
+    const [id, socketPath] = process.argv.slice(1);
+    const emit = (event) => console.error(JSON.stringify({ id, ...event }));
+    const sessionProvider = createFakeProvider();
+    let coordinators = 0;
+    const statuses = [];
+    process.stdin.resume();
+    const release = new Promise((resolve) => {
+      process.stdin.once("end", resolve);
+    });
+    emit({ event: "barrier" });
+    await release;
+    await runMusicSessionDaemon({
+      argv: ["--socket", socketPath],
+      diagnostic: (message) => emit({ event: "diagnostic", message }),
+      setStatus: (status) => {
+        statuses.push(status);
+        process.exitCode = status;
+        emit({ event: "status", status });
+      },
+      graph: (options) => Layer.provide(
+        layerWithHooks({
+          onCoordinator: () => {
+            coordinators += 1;
+            emit({ event: "coordinator" });
+          },
+        }, layerFromLegacy(sessionProvider)),
+        configLayer(options),
+      ),
+    });
+    emit({
+      event: "final",
+      status: process.exitCode ?? 0,
+      statuses,
+      coordinators,
+      counts: {
+        subscriptions: sessionProvider.counts.subscriptions,
+        disposals: sessionProvider.counts.disposals,
+        providerDisposals: sessionProvider.counts.providerDisposals,
+        samples: sessionProvider.counts.samples,
+        commands: sessionProvider.calls.length,
+      },
+    });`
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "--cwd",
+      new URL("..", import.meta.url).pathname,
+      "--eval",
+      script,
+      "--",
+      id,
+      path,
+    ],
+    { stdin: "pipe", stdout: "ignore", stderr: "pipe" },
+  )
+  const stderr = child.stderr
+  if (!stderr || typeof stderr === "number")
+    throw new Error(`contender ${id} stderr was not piped`)
+  const observations: ContenderObservation[] = []
+  let transcript = ""
+  let readyResolve: () => void = () => {}
+  let listeningResolve: () => void = () => {}
+  const ready = new Promise<void>((resolve) => {
+    readyResolve = resolve
+  })
+  const listening = new Promise<void>((resolve) => {
+    listeningResolve = resolve
+  })
+  const collected = (async () => {
+    const reader = stderr.getReader()
+    const decoder = new TextDecoder()
+    let pending = ""
+    const observe = (line: string) => {
+      if (!line) return
+      transcript = `${transcript}${line}\n`.slice(-16_384)
+      let observation: ContenderObservation
+      try {
+        observation = JSON.parse(
+          line.replace(/\u001b\[[0-9;]*m/g, ""),
+        ) as ContenderObservation
+      } catch {
+        return
+      }
+      if (observation.id !== id || typeof observation.event !== "string") return
+      observations.push(observation)
+      if (observation.event === "barrier") readyResolve()
+      if (
+        observation.event === "diagnostic" &&
+        observation.message?.startsWith("music-sessiond listening")
+      )
+        listeningResolve()
+    }
+    try {
+      while (true) {
+        const next = await reader.read()
+        if (next.done) break
+        pending += decoder.decode(next.value, { stream: true })
+        const lines = pending.split("\n")
+        pending = lines.pop() ?? ""
+        for (const line of lines) observe(line)
+      }
+      pending += decoder.decode()
+      observe(pending)
+    } finally {
+      reader.releaseLock()
+    }
+  })()
+  return {
+    child,
+    observations,
+    ready,
+    listening,
+    collected,
+    output: () => transcript,
   }
 }
 
@@ -1082,6 +1264,208 @@ test("simultaneous daemon bind contenders retain one provider owner", async () =
     expect(existsSync(path)).toBe(true)
   } finally {
     await winner?.close().catch(() => {})
+  }
+})
+
+test("process daemon contenders retain one winner and a non-interfering loser", async () => {
+  let directory: string | undefined
+  let first: DaemonContender | undefined
+  let second: DaemonContender | undefined
+  let firstClient:
+    Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let secondClient:
+    Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let winner: DaemonContender | undefined
+  let loser: DaemonContender | undefined
+  let winnerExited = false
+  let loserExited = false
+  try {
+    directory = await mkdtemp("/tmp/music-session-process-contender-")
+    const path = `${directory}/session.sock`
+    first = spawnDaemonContender("first", path)
+    second = spawnDaemonContender("second", path)
+    await Effect.runPromise(
+      Effect.promise(() => Promise.all([first!.ready, second!.ready]))
+        .pipe(Effect.timeout("2 seconds"))
+        .pipe(
+          Effect.catch(() =>
+            Effect.fail(
+              new Error(
+                `contender barrier failed: first=${first?.output()} second=${second?.output()}`,
+              ),
+            ),
+          ),
+        ),
+    )
+    await Promise.all(
+      [first, second].map(async (contender) => {
+        const stdin = contender.child.stdin
+        if (!stdin || typeof stdin === "number")
+          throw new Error(
+            `contender stdin was not piped: ${contender.output()}`,
+          )
+        await stdin.end()
+      }),
+    )
+
+    await Effect.runPromise(
+      Effect.promise(() => Promise.race([first!.listening, second!.listening]))
+        .pipe(Effect.timeout("2 seconds"))
+        .pipe(
+          Effect.catch(() =>
+            Effect.fail(
+              new Error(
+                `no contender listened: first=${first?.output()} second=${second?.output()}`,
+              ),
+            ),
+          ),
+        ),
+    )
+    winner = first.observations.some(
+      (observation) =>
+        observation.event === "diagnostic" &&
+        observation.message?.startsWith("music-sessiond listening"),
+    )
+      ? first
+      : second
+    loser = winner === first ? second : first
+    const before = await lstat(path)
+    expect(before.isSocket()).toBe(true)
+    expect(before.mode & 0o777).toBe(0o600)
+    const identity = [before.dev, before.ino, before.uid]
+    firstClient = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "process-winner-first",
+      hostKind: "test",
+    })
+    await Promise.all([
+      new Promise<void>((resolve) =>
+        firstClient?.subscribeStatus(() => resolve()),
+      ),
+      new Promise<void>((resolve) =>
+        firstClient?.subscribeState(() => resolve()),
+      ),
+    ])
+    expect(firstClient.daemonInstanceId).not.toBe("")
+    expect(firstClient.selectedRevision).toBeGreaterThanOrEqual(0)
+    expect(firstClient.status?.kind).toBe("ready")
+    expect(firstClient.state?.daemonInstanceId).toBe(
+      firstClient.daemonInstanceId,
+    )
+
+    const loserStatus = await awaitContenderExit(loser, "loser")
+    loserExited = true
+    expect(loserStatus).toBe(1)
+    const loserOutput = loser.output()
+    expect(loserOutput).toContain("MusicSession.SocketError")
+    expect(loserOutput).toContain("[listen]")
+    expect(
+      loserOutput.includes(path) ||
+        loserOutput.includes("socket path is already occupied"),
+    ).toBe(true)
+    expect(
+      loser.observations.some(
+        (observation) =>
+          observation.event === "diagnostic" &&
+          observation.message?.startsWith("music-sessiond listening"),
+      ),
+    ).toBe(false)
+    expect(
+      loser.observations.filter(
+        (observation) => observation.event === "coordinator",
+      ),
+    ).toHaveLength(0)
+    expect(
+      loser.observations.find((observation) => observation.event === "final"),
+    ).toMatchObject({
+      status: 1,
+      counts: {
+        subscriptions: 0,
+        disposals: 0,
+        providerDisposals: 0,
+        samples: 0,
+        commands: 0,
+      },
+    })
+    expect(loserOutput).not.toContain("music-sessiond stopped")
+
+    const after = await lstat(path)
+    expect([after.dev, after.ino, after.uid]).toEqual(identity)
+    expect(after.isSocket()).toBe(true)
+    expect(after.mode & 0o777).toBe(0o600)
+    expect(firstClient.status?.kind).toBe("ready")
+    expect(await firstClient.play()).toEqual({ action: "play" })
+    secondClient = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "process-winner-second",
+      hostKind: "test",
+    })
+    await new Promise<void>((resolve) =>
+      secondClient?.subscribeState(() => resolve()),
+    )
+    expect(secondClient.daemonInstanceId).toBe(firstClient.daemonInstanceId)
+    expect(secondClient.state?.daemonInstanceId).toBe(
+      firstClient.daemonInstanceId,
+    )
+
+    firstClient.dispose()
+    firstClient = undefined
+    secondClient.dispose()
+    secondClient = undefined
+    winner.child.kill("SIGTERM")
+    const winnerStatus = await awaitContenderExit(winner, "winner")
+    winnerExited = true
+    expect(winnerStatus).toBe(0)
+    expect(
+      winner.observations.filter(
+        (observation) => observation.event === "coordinator",
+      ),
+    ).toHaveLength(1)
+    expect(
+      winner.observations.filter(
+        (observation) =>
+          observation.event === "diagnostic" &&
+          observation.message?.startsWith("music-sessiond listening"),
+      ),
+    ).toHaveLength(1)
+    expect(
+      winner.observations.find((observation) => observation.event === "final"),
+    ).toMatchObject({
+      status: 0,
+      counts: {
+        subscriptions: 1,
+        disposals: 1,
+        providerDisposals: 1,
+      },
+    })
+    expect(winner.output()).toContain("music-sessiond stopped")
+    expect(existsSync(path)).toBe(false)
+    expect(existsSync(`${path}.bind-lock`)).toBe(false)
+    expect(
+      (await readdir(directory)).some(
+        (entry) => entry.includes(".bind-lock.") && entry.endsWith(".tmp"),
+      ),
+    ).toBe(false)
+  } finally {
+    firstClient?.dispose()
+    secondClient?.dispose()
+    for (const contender of [first, second]) {
+      if (!contender) continue
+      if (contender === winner && winnerExited) continue
+      if (contender === loser && loserExited) continue
+      contender.child.kill("SIGKILL")
+    }
+    await Promise.all(
+      [first, second]
+        .filter(
+          (contender): contender is DaemonContender => contender !== undefined,
+        )
+        .map(async (contender) => {
+          await contender.child.exited.catch(() => {})
+          await contender.collected.catch(() => {})
+        }),
+    )
+    if (directory) await rm(directory, { recursive: true, force: true })
   }
 })
 

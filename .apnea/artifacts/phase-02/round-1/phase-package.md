@@ -2,244 +2,205 @@
 status: done
 ---
 
-# Phase 2 package: schema-owned wire contract and revision negotiation
+# Phase 2 package: prove process-level two-daemon singleton non-interference
 
 ## Intent
 
-Turn the existing explicit-path foreground protocol into one additive contract owned by Effect `Schema`. Add real wire-revision range and capability negotiation while preserving manually started server/client operation.
+Prove, and only prove, that two separate daemon processes racing the same explicit Unix socket produce one healthy listener/provider/coordinator winner and one tagged nonzero loser that cannot disturb the winner.
 
-This phase ends with a current client and the immediately preceding wire revision sharing one already-running daemon/provider, and an incompatible client receiving one actionable typed failure without affecting healthy peers. It does not add discovery, process launch, reconnect, idle shutdown, load hardening, artwork, or host integration.
+This phase exercises socket bind as final singleton authority below startup-marker coordination. Both contenders must run the real `runMusicSessionDaemon` process boundary and the Phase 1 selected graph. Use an explicit `--socket` path so neither contender uses `connectOrStart` or a startup marker. The winner must complete a real client hello after the loser exits; the loser must acquire zero provider Layer, event subscription, coordinator, polling, or command ownership.
 
-Preserve the approved provider, coordinator, server-lifecycle, and Phase 1 process-boundary commits. Keep all unrelated worktree content and `docs/music-session-architecture.html` unchanged. Use only the repository-pinned Effect v4 APIs.
+Treat Phase 1 selected shutdown/readiness, the current same-process bind race, and all accumulated singleton/startup behavior as baseline. Do not add Phase 3 `TestClock`, 20-client convergence, marker-release, launcher, or incompatibility acceptance.
 
 ## Files to touch
 
-Only as required:
+Prefer a test-only change:
 
-- `packages/music-core/session/protocol.ts`
-- `packages/music-core/session/framing.ts`
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/client.ts`
-- `packages/music-core/tests/session-protocol.test.ts`
 - `packages/music-core/tests/session-server.test.ts`
-- `packages/music-core/tests/session-client.test.ts`
 
-`packages/music-core/session/framing.ts` need not change if its existing NDJSON boundary already satisfies the contract; retain its focused tests either way.
+Only if the separate-process proof exposes a real boundary defect, narrowly correct its existing owner in:
+
+- `packages/music-core/session/server.ts`
+- `packages/music-core/session/music-sessiond.ts`
+
+Do not add a new source or test module.
 
 ## Files not to touch
 
 - `packages/music-core/session/config.ts`
+- `packages/music-core/session/client.ts`
+- `packages/music-core/session/protocol.ts`
+- `packages/music-core/session/framing.ts`
 - `packages/music-core/session/provider.ts`
 - `packages/music-core/session/coordinator.ts`
-- `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/system-media.ts`
 - `packages/music-core/index.ts`
 - `packages/music-core/package.json`
 - `packages/music-core/project.json`
-- `packages/music-core/scripts/verify-pack.ts`
-- `packages/music-core/tests/system-media.test.ts`
+- `packages/music-core/tests/session-client.test.ts`
+- `packages/music-core/tests/session-protocol.test.ts`
 - `packages/music-core/tests/session-coordinator.test.ts`
-- Anything under `packages/opencode-music-player/`
-- Anything under `packages/pi-music-dock/`
+- `packages/music-core/tests/system-media.test.ts`
+- Anything under `packages/opencode-music-player/` or `packages/pi-music-dock/`
 - `README.md`, package READMEs, and `docs/music-session-architecture.html`
 - `.apnea/state.json` and unrelated `.apnea` tasks/artifacts
 
-Do not broaden this phase merely to update package exports; Phase 13 owns final public-package surface cleanup. Existing relative imports can exercise the contract now.
-
-## Contract decisions for this phase
-
-Implement one explicit compatibility model rather than inferring compatibility from package versions:
-
-1. Protocol major identifies a fundamentally incompatible family.
-2. A client advertises an inclusive minimum/maximum wire-revision range for that major.
-3. The daemon advertises its inclusive supported range and selects the highest revision in the overlap.
-4. Treat the existing `{ major: 1, minor: 0 }` hello/hello-result shape as the immediately preceding legacy wire revision. Introduce one current range-negotiating revision and support exactly the current plus that preceding revision in this phase.
-5. Package version remains diagnostics only. Never reject, replace, or classify compatibility from `PACKAGE_VERSION`.
-6. Capabilities are negotiated as the daemon/client intersection in deterministic daemon order. `state-replay` is required for a successful session; `transport` is optional but required before accepting a transport request.
-7. Unknown additive capabilities are ignored rather than treated as protocol incompatibility. Missing a capability for an action produces `UNSUPPORTED_CAPABILITY`, not `INCOMPATIBLE_PROTOCOL`.
-8. A disjoint major/range produces `INCOMPATIBLE_PROTOCOL` with structured details containing both the client's offered range and daemon's supported range. The message must also be actionable when rendered without inspecting details.
-
-Keep post-hello revision-1 messages wire-compatible unless a schema correction is required. Do not invent two nominally different but behaviorally untested “current” clients as skew evidence; the integration test must send the actual preceding legacy hello shape.
+Do not change bind policy merely to make the test deterministic. The current crash-safe reservation and socket identity must be exercised as production code.
 
 ## Exact implementation steps
 
-### 1. Define the complete wire model with Effect Schema
+### 1. Preserve the approved Phase 1 baseline
 
-In `packages/music-core/session/protocol.ts`:
+1. Start from approved change `08acaab5` and inspect the current diff before editing.
+2. Retain the Phase 1 provider-only selected graph, deterministic event-subscription readiness, and coordinator → connections → provider → listener shutdown order.
+3. Retain the existing bind reservation implementation: exclusive publication, proven-dead recovery, exact-identity cleanup, and release after successful socket hardening.
+4. Do not reset or rewrite accumulated startup changes in `config.ts`, `client.ts`, or their tests.
 
-1. Define schemas first and derive TypeScript types from those schemas instead of maintaining parallel hand-written object types.
-2. Add schema-owned types for:
-   - protocol range and selected/negotiated protocol;
-   - legacy hello protocol and legacy hello result;
-   - capabilities and host kind;
-   - hello, state, and transport requests;
-   - provider status, track, device, player state, and revisioned state;
-   - status/state events;
-   - success and failure responses;
-   - hello result;
-   - stable protocol errors, including structured incompatibility details.
-3. Model wire variants with discriminated `Schema` structs/unions using the existing external `type`, `ok`, `kind`, and action discriminators. Do not replace the JSON wire names with Effect-internal `_tag` fields.
-4. Put semantic constraints in schemas/checks:
-   - request IDs, revisions, progress, duration, fetched time, and seek positions are non-negative safe integers;
-   - range minimum is not greater than maximum;
-   - selected revision lies within the daemon range represented by the result;
-   - seek requires `positionMs`, while non-seek transport must not semantically accept it;
-   - response success/failure variants cannot contain contradictory required payloads;
-   - nested track/device/state/status/error fields have the declared types and finite-number constraints.
-5. Preserve additive object evolution: tolerate unrelated extra object fields where safe, while still validating every known semantic field. Do not use excess-field tolerance to bypass the seek/non-seek rule.
-6. Keep the stable error codes already present. Extend only the incompatible-protocol variant with typed range details; do not expose defects or Node/Effect internals on the wire.
-7. Keep constructor helpers such as `response`, `failure`, and `protocolError`, but have them construct values conforming to the schemas. Provide one incompatibility constructor that always includes both ranges.
-8. Replace the current `record`, `id`, and `player` shape-validation path with decoders/guards derived from the schemas. `requestIdFromUnknown` may remain as a safe-correlation helper, but it must decode a minimal schema rather than cast an arbitrary record.
-9. Expose decoding functions appropriate to their callers:
-   - Effect-based unknown decoding for the server's Effect request path;
-   - result/synchronous wrappers only where the Node client callback or focused pure tests require them.
-   All wrappers must share the same schemas and error mapping; do not duplicate validation logic.
-10. Map schema parse failures to the existing stable `ProtocolError` envelope at this boundary. Preserve specific public classifications for unsupported action, invalid seek, duplicate request ID, unsupported capability, and incompatible protocol instead of leaking `ParseError` formatting.
+### 2. Add an in-test separate-process contender harness
 
-### 2. Implement pure range and capability negotiation
+In `packages/music-core/tests/session-server.test.ts`:
 
-In `packages/music-core/session/protocol.ts`:
+1. Add local helper code in this existing test file to spawn one contender with `Bun.spawn`; do not create a fixture file.
+2. Run each child with `process.execPath`, `--eval`, and absolute module URLs for the existing `music-sessiond.ts`, `config.ts`, `provider.ts`, and `server.ts` modules, following the established executable subprocess test pattern in this file.
+3. Give both children the same absolute explicit socket argument through `--socket`. Explicit mode intentionally bypasses managed runtime discovery and startup-marker coordination.
+4. In each child, compose exactly the shared selected graph:
+   - `layerWithHooks(...)` from `server.ts`;
+   - `layerFromLegacy(createFakeProvider())` as the selected provider Layer;
+   - the existing config Layer for options supplied by `runMusicSessionDaemon`.
+   Do not precompose or externally own `coordinatorLayer`.
+5. Use the existing `runMusicSessionDaemon` runner. Do not duplicate its signal wait, error formatting, status handling, or graph lifetime in the child script.
+6. Give each contender a distinct ID and emit bounded newline-delimited JSON observations on stderr. Record only lifecycle metadata, never playback state. At minimum record:
+   - child ready at the parent-controlled race barrier;
+   - daemon diagnostics, including listening or tagged listen failure;
+   - `onCoordinator` acquisition count;
+   - exit status selected by `setStatus`;
+   - final fake-provider counts (`subscriptions`, event disposals, provider disposals, samples) after the runner returns.
+7. Keep the child's provider object private. The observable ownership proof is provider Layer finalization/subscription plus coordinator acquisition, not object construction in test setup.
+8. Pipe stdin and stderr, ignore stdout, use no shell, and retain each child handle immediately so `finally` can terminate it even if setup or parsing fails.
 
-1. Define one exported current protocol descriptor containing major and supported revision range. Retain a clear legacy mapping from existing major/minor `1.0` to the preceding revision.
-2. Implement a pure negotiation helper:
-   - majors must match;
-   - overlap lower bound is the greater minimum;
-   - overlap upper bound is the lesser maximum;
-   - no overlap returns the structured incompatible error;
-   - overlap selects its upper bound.
-3. Normalize a decoded legacy hello to a one-revision offered range. Preserve enough decoded information for the server to emit the legacy hello-result shape to that peer.
-4. Intersect capabilities deterministically using daemon capability order. Require `state-replay`; permit a state-only client without `transport` to complete hello.
-5. Return one negotiated value containing selected revision, negotiated capabilities, and whether legacy response encoding is required. Avoid mutable module-global negotiation state.
-6. Unit-test range endpoints, highest-overlap selection, disjoint ranges, major mismatch, reversed/malformed ranges, unknown capabilities, and required-capability absence.
+### 3. Synchronize a real bind race without startup behavior
 
-### 3. Apply the schema boundary and negotiated contract in the server
+1. Have each child announce barrier readiness before invoking the daemon runner, then wait for one byte/line or stdin closure from the parent.
+2. Start both stderr collectors immediately and wait until both children report barrier readiness.
+3. Release both stdin barriers back-to-back. Do not stagger them based on socket appearance and do not invoke `connectOrStart`.
+4. Use process/event promises or Effect synchronization to observe outcomes. Do not use `setTimeout`, `setInterval`, `Bun.sleep`, filesystem polling, or an ad hoc retry loop. The Bun test timeout or an Effect timeout may serve only as a deadlock sentinel.
+5. Require exactly one listening observation and exactly one contender failure. A test where one daemon is deliberately started after the other is not sufficient.
 
-In `packages/music-core/session/server.ts`:
+### 4. Prove winner and loser ownership
 
-1. Keep all Phase 1 listener, connection scope, closing gate, cleanup, and process behavior unchanged.
-2. For each connection, replace the `hello` boolean with connection-local negotiated session state that is absent before hello and contains selected revision/capabilities afterward.
-3. Decode every inbound frame through the shared request schema boundary. Do not inspect unknown objects with casts such as `as Partial<ProtocolError>`.
-4. Preserve safe correlation:
-   - malformed input without a schema-valid non-negative request ID closes only that connection;
-   - malformed but safely correlatable input receives one stable failure response;
-   - request IDs remain strictly increasing, including rejected requests.
-5. Require hello first. Decode both:
-   - the actual preceding legacy `{ major: 1, minor: 0 }` hello;
-   - the current range-advertising hello.
-6. Negotiate major/range and capabilities once. On success:
-   - return the legacy hello-result shape to a legacy peer;
-   - return the current result with selected revision, daemon supported range, package version, instance ID, and negotiated capabilities to a current peer;
-   - then start the existing scoped replay forwarders.
-7. On incompatibility, send one `INCOMPATIBLE_PROTOCOL` response with both ranges and close only that connection after the response is handed to the socket. Existing healthy clients and the shared coordinator/provider remain live.
-8. Enforce negotiated capabilities on post-hello actions. A connection without `transport` must receive `UNSUPPORTED_CAPABILITY` and remain governed by normal connection-local policy; never submit the command to the coordinator.
-9. Keep hello-first, second-hello rejection, strictly increasing request IDs, action validation, and seek validation. Do not change coordinator command/error behavior.
-10. Construct status/state/response frames through the schema-owned wire constructors. Internal coordinator values are trusted, but the transport representation must have one schema-defined shape.
-11. Preserve framing locality: malformed JSON, oversized input, blank frames, and incomplete EOF close only the offending connection. Do not add Phase 8 write-pressure or queue behavior.
+For the loser:
 
-### 4. Update the explicit client handshake only as far as negotiation requires
+1. Await prompt process exit with status `1`.
+2. Assert diagnostics retain `MusicSession.SocketError`, operation `[listen]`, the contested path/useful message, and no misleading successful-listening diagnostic.
+3. Assert `onCoordinator` was never observed.
+4. Assert final provider counts are all zero for ownership-sensitive fields: no event subscription, event-source disposal, provider disposal, sample/poll activity, or command work.
+5. Assert it never emits a normal stopped-success outcome.
 
-In `packages/music-core/session/client.ts`:
+For the winner:
 
-1. Keep this an explicit socket-path client. Do not add runtime discovery, auto-start, reconnect, retries, or daemon replacement.
-2. Send the current advertised major/revision range and requested capabilities in hello. Production defaults request the existing baseline capabilities.
-3. If test/version simulation needs overrides, add narrow optional client options for supported protocol range and requested capabilities. Validate those options before connecting.
-4. Decode every daemon frame through the shared server-frame schema. Decode hello success through the current hello-result schema and verify:
-   - the selected major matches what the client offered;
-   - selected revision lies in the offered range;
-   - returned capabilities are a subset of requested capabilities and include required `state-replay`.
-5. Expose the selected revision (or negotiated protocol value) alongside existing `daemonInstanceId` and `negotiatedCapabilities` so later phases do not infer it from package version.
-6. Preserve queued status/state frames arriving with hello. Do not expand this phase into Phase 3's response-correlation, pending-call settlement, listener-exception, stale-generation, or reconnect work.
-7. If hello is incompatible, malformed, or semantically impossible, destroy the socket and return one `MusicSessionClientError` with the stable protocol code/message. Do not retry or start another process.
-8. Keep command methods and disposal behavior otherwise unchanged, except for capability preflight if needed to prevent a knowingly unsupported transport write.
+1. Assert one listening diagnostic and one coordinator acquisition.
+2. As soon as listening is observed, capture the real socket's `lstat` identity (`dev`, `ino`, `uid`) and exact `0600` mode.
+3. Create and retain a real `createMusicSessionClient` against that path. Require negotiated hello, nonempty daemon instance ID, replay/status, and a healthy selected revision.
+4. Await the loser's exit while the first supported client remains connected.
+5. Re-stat the socket and assert the same device/inode/owner and `0600` mode. The path must still be a Unix socket.
+6. Create a second real client after loser exit and require completed hello against the same daemon instance ID. This proves loser cleanup did not unlink, replace, chmod, close, or otherwise poison the winner.
+7. Dispose only the test clients, send `SIGTERM` to the winner, and assert normal status `0`/no nonzero status callback.
+8. Assert winner final counts show exactly one provider ownership lifecycle: one event subscription, one event-source disposal, and one provider disposal. Coordinator acquisition is exactly one.
+9. After winner exit, assert the explicit socket and `${socketPath}.bind-lock` are absent and no temporary bind-reservation name remains in the test directory.
 
-### 5. Keep framing shared and revision-neutral
+Do not send a signal to the loser as part of its expected path. It must terminate from its own tagged bind failure.
 
-In `packages/music-core/session/framing.ts` and `packages/music-core/tests/session-protocol.test.ts`:
+### 5. Make every failure path cleanup-safe
 
-1. Retain one NDJSON framer for both sides and one byte limit.
-2. Preserve UTF-8 decoder state across chunks, multiple frames per chunk, blank/malformed JSON rejection, oversize rejection before unbounded retention, and incomplete-frame detection at EOF.
-3. Change framing production code only if schema integration exposes a real defect. Revisions belong inside decoded frames, not in a second framing format.
-4. Do not add compression, binary framing, write-pressure policy, or revision-specific framers.
+1. Create one real temporary directory for the test and place the short explicit socket path inside it.
+2. Retain child handles, stdin writers, stderr readers/collectors, clients, and captured paths immediately after acquisition; do not hide them in an all-or-nothing `Promise.all` assignment.
+3. In `finally`:
+   - dispose both clients if created;
+   - close/cancel stdin and stderr resources;
+   - send `SIGKILL` only to children still alive because the test failed;
+   - await both child exit promises without double-wait races;
+   - remove the temporary directory recursively.
+4. Cleanup must not depend on the winner/loser assertions being correct. If both children hang, both lose, or both claim listening, `finally` must still complete.
+5. Keep child diagnostics bounded and include them in assertion failures for debuggability.
 
-### 6. Add focused protocol tests
+### 6. Correct production only if the process proof exposes a defect
 
-In `packages/music-core/tests/session-protocol.test.ts`:
+If the new test fails because production violates the specified policy, make the smallest correction in `server.ts` or `music-sessiond.ts`:
 
-1. Replace the single “v1 hello” assumption with explicit legacy and current hello fixtures.
-2. Prove schema rejection for malformed nested protocol range, hello, state, track, device, status, error, success/failure response, action, and seek values.
-3. Prove additive unknown fields are tolerated where intended.
-4. Prove range negotiation chooses the highest overlap and returns structured client/daemon details on disjoint major/ranges.
-5. Prove capability intersection, required `state-replay`, optional `transport`, and unknown-capability handling.
-6. Retain the focused UTF-8, split/multiple-frame, oversize, and incomplete-EOF tests.
+1. Preserve socket bind/hardening before provider acquisition.
+2. Preserve exact-identity ownership: a contender may remove only its own reservation/partial bound path and must never unlink/chmod/close a peer's socket.
+3. Preserve the Phase 1 selected graph and shutdown order.
+4. Preserve the executable's tagged formatting and nonzero status on bind failure.
+5. Do not add process killing, replacement, startup-marker logic, retries, sleeps, or environment switches.
 
-### 7. Add focused real-socket compatibility tests
+A test-only observability hook may be added to the existing `ServerLifecycleHooks` only if current provider/coordinator counts cannot establish ownership. It must be synchronous, test-only, and incapable of changing production control flow.
 
-In `packages/music-core/tests/session-server.test.ts` and `packages/music-core/tests/session-client.test.ts`:
+### 7. Keep Phase 2 isolated
 
-1. Use unique real Unix paths and the existing fake provider/server facade. Keep every new client/socket/server in the Phase 1 failure-safe `try/finally` ownership pattern.
-2. Establish one current explicit client and one raw legacy client using the actual old hello shape. Assert both receive successful hello/replay from the same daemon instance and that provider subscription/acquisition remains one.
-3. Emit one provider snapshot and prove both supported revisions receive it.
-4. Connect a disjoint-range client. Assert one failure with:
-   - `INCOMPATIBLE_PROTOCOL`;
-   - both offered and daemon ranges;
-   - actionable message;
-   - closure of only that connection.
-5. After the incompatible peer closes, emit another update or issue a valid request through the healthy current peer to prove the daemon and existing connection remain live.
-6. Connect a state-only current client. Prove capability intersection succeeds, then prove a transport request is rejected before coordinator admission.
-7. Cover malformed current hello range, missing required capability, second hello, non-increasing ID, invalid action/seek, oversized frame, and incomplete EOF with compact focused cases. Do not duplicate the complete server lifecycle matrix.
-8. In client tests, prove current negotiation exposes selected revision/capabilities and that malformed or out-of-offer hello results fail once and destroy the socket. Defer general pending-request and generation behavior to Phase 3.
-9. Use Node event promises or Effect `Deferred`/`Queue`/`Latch`; do not use arbitrary sleeps, `Date.now()` uniqueness, raw timers, or repeated `Effect.yieldNow`.
-
-### 8. Keep the phase diff and Jujutsu workflow narrow
-
-1. Format only touched files.
-2. Run protocol/client/server focused tests before the package gate.
-3. Run the complete `music-core` target set as regression evidence for the approved provider/coordinator/server baseline.
-4. Inspect `jj diff --summary` and the exact diff. Preserve `.apnea/state.json`, `docs/music-session-architecture.html`, and unrelated changes.
-5. Keep work in the current phase child for review. Do not run `git commit`, push, or `jj squash` during the coding round. After approval, use the run's prescribed `jj squash` step for only this reviewed phase.
+1. Do not add or change `connectOrStart` behavior.
+2. Do not add startup-marker acquisition/release assertions.
+3. Do not add `TestClock`, schedule pacing/capping, 20-client convergence, launcher-option, spawn-failure, or incompatibility-race tests.
+4. Do not add reconnect, idle shutdown, fan-out bounds, artwork, host migration, packaging, or docs.
+5. Format only touched files and inspect the exact diff.
+6. Keep work in the current reviewed Jujutsu phase child. Do not run `git commit`, `jj commit`, `jj squash`, push, or open a PR. After approval, the orchestrator may squash only this reviewed phase through the prescribed workflow.
 
 ## Acceptance checks
 
-Phase 2 is done only when:
+Phase 2 is complete only when:
 
-- Requests, events, responses, nested state, capabilities, ranges, selected revision, and stable errors have one Effect-Schema-owned wire definition; the old manual `record`/`player`/cast validation path is gone.
-- Existing legacy major/minor `1.0` and the current range-advertising client negotiate supported revisions against one daemon, receive replay/live updates, and share one provider/coordinator.
-- Negotiation selects the highest overlapping revision and deterministic capability intersection; package version does not affect compatibility.
-- Disjoint major/ranges receive one actionable `INCOMPATIBLE_PROTOCOL` response containing both ranges, while healthy peers and the daemon remain live.
-- Missing required replay capability and use of unnegotiated transport capability produce stable errors without coordinator admission.
-- Hello-first ordering, second hello rejection, strictly increasing IDs, action/seek rules, malformed nested values, oversized frames, and incomplete EOF remain enforced at the shared boundary.
-- The explicit current client validates and exposes negotiated revision/capabilities, but still performs no discovery, launch, retry, reconnect, or command replay.
-- All new socket tests are failure-safe and deterministic; approved provider, coordinator, server lifecycle, cleanup, blocked-work, and late-write tests remain green without being redefined as Phase 2 acceptance.
+- Two separately spawned daemon processes cross a parent-controlled barrier and contend concurrently for one explicit real Unix socket.
+- Exactly one process listens, acquires one provider/event/coordinator owner, and completes real hello/replay.
+- Exactly one process exits promptly with status `1` and actionable tagged `[listen]` diagnostics.
+- The loser records zero provider subscription/finalization, coordinator, sample/poll, and command ownership.
+- The socket's exact identity and `0600` mode survive loser exit; an existing winner client remains healthy and a second client completes hello against the same daemon instance.
+- The winner exits cleanly on `SIGTERM`, finalizes its one provider lifecycle, and removes its socket/reservation artifacts.
+- Every child, stream, client, and temporary artifact is released on success and assertion failure.
+- Existing same-process singleton and Phase 1 shutdown/readiness tests remain green only as baseline regressions.
+- No Phase 3 startup acceptance enters this phase.
+- Unrelated worktree content, verified commits, `.apnea/state.json`, and `docs/music-session-architecture.html` remain untouched.
 
 ## Verify commands
 
 Run from the repository root:
 
 ```sh
-bun test packages/music-core/tests/session-protocol.test.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+bun test packages/music-core/tests/session-server.test.ts -t 'process.*daemon.*contender|daemon.*winner.*loser'
+bun test packages/music-core/tests/session-server.test.ts
+# Baseline regression only; it does not enlarge Phase 2 acceptance.
 bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 jj diff --summary
 ```
 
-Inspect the diff after the commands:
+Inspect the exact phase diff:
 
-- product/test changes are confined to the allowed Phase 2 paths;
-- `packages/music-core/session/protocol.ts` no longer contains parallel manual nested-state validators or unchecked boundary casts;
-- no discovery, spawning, reconnect, idle, fan-out, artwork, host, manifest, or documentation code entered the phase;
-- `.apnea/state.json` and unrelated dirty paths remain untouched.
+```sh
+jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
+git diff --check
+```
+
+Confirm manually:
+
+- the new proof uses two real child processes and one explicit real socket;
+- neither child invokes discovery, startup markers, the managed launcher, or `connectOrStart`;
+- loser ownership counts are zero and winner ownership counts are exactly one;
+- winner socket identity/mode and post-loser hello are asserted;
+- process/resource cleanup is unconditional;
+- any product correction is limited to the existing server/executable singleton boundary;
+- no client/config/startup, protocol, provider/coordinator behavior, host, package, or documentation path changed;
+- `.apnea/state.json` and unrelated dirty paths were not altered.
 
 ## Dependencies
 
-- Verified provider commit `e7103663` and coordinator commit `859fc01d`.
-- Verified scoped-server commit `66bc1f91` plus approved process-boundary commit `e70641bc`.
-- Current explicit Unix-socket server/client, NDJSON framer, fake provider, replay streams, and package-version diagnostic source.
-- Repository-pinned Effect v4 `Schema` APIs and Bun/Node Unix-domain socket support.
+- Approved full plan at `.apnea/artifacts/plan.md`.
+- Approved Phase 1 change `08acaab5`, including provider-only selected graph, deterministic event-source readiness, distinct provider/coordinator scopes, and ordered shutdown.
+- Current crash-safe bind reservation, exact socket identity/hardening, tagged `MusicSessionSocketError`, and executable `runMusicSessionDaemon` seam.
+- Existing `Bun.spawn` executable test pattern, `readUntil`/framing helpers, `createMusicSessionClient`, `createFakeProvider`, `layerFromLegacy`, and real Unix-socket support.
+- Repository-pinned Effect v4 and Bun child-process APIs.
 
 ## Non-goals
 
-- Runtime-directory discovery, path ownership/permissions, stale endpoint handling, startup markers, daemon spawning, singleton races, or healthy-generation replacement policy beyond returning the negotiated incompatibility result.
-- Reconnect, replacement generations, command indeterminacy refinements, command replay policy changes, idle shutdown, or lifecycle diagnostics expansion.
-- Per-client/global load bounds, slow-reader coalescing, 24-client proof, artwork, or cache behavior.
-- Provider retry/event semantics, coordinator authority/polling/reconciliation/FIFO changes, server lifecycle restructuring, blocked-work tests, late-write tests, or another cleanup audit.
-- OpenCode/Pi migration, host UI behavior, public index/manifests, packing, smokes, READMEs, or architecture HTML.
-- New source modules, publishing, committing, squashing before approval, pushing, opening a PR, editing `.apnea/state.json`, or resetting/cleaning unrelated worktree content.
+- Managed startup markers, `connectOrStart`, detached launcher behavior, `TestClock`, schedule pacing, twenty-client convergence, marker release diagnostics, or incompatibility races.
+- Reconnect, replacement generations, idle exit, 24-client load, backpressure, artwork, OpenCode, Pi, package smokes, READMEs, or architecture HTML.
+- Reopening Phase 1 graph readiness/shutdown except to fix a regression directly exposed by the process test.
+- New provider/coordinator semantics, protocol/schema changes, process replacement/killing policy, launchd/service installation, remote sockets, multi-user sharing, or durable history.
+- New source/test modules, unrelated cleanup, commits or squashing during coding, pushing, publishing, opening a PR, or editing `.apnea/state.json`.
