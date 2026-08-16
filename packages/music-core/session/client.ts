@@ -49,7 +49,11 @@ export type MusicSessionClientOptions = {
   maxFrameBytes?: number
   protocolRange?: ProtocolRange
   capabilities?: string[]
+  /** Local bound for unsettled transport requests on this connection. */
+  maxPendingRequests?: number
 }
+
+const DEFAULT_MAX_PENDING_REQUESTS = 128
 export class MusicSessionClientError extends Error {
   readonly code: ProtocolError["code"]
   readonly retryable: boolean
@@ -95,6 +99,7 @@ class Client implements MusicSessionClient {
   #framer: NdjsonFramer
   #nextId = 1
   #pending = new Map<number, Pending>()
+  #maxPendingRequests: number
   #disposed = false
   #failure: ProtocolError | undefined
   #terminalError: MusicSessionClientError | undefined
@@ -117,9 +122,14 @@ class Client implements MusicSessionClient {
         readonly reject: (error: MusicSessionClientError) => void
       }
     | undefined
-  constructor(socket: net.Socket, framer: NdjsonFramer) {
+  constructor(
+    socket: net.Socket,
+    framer: NdjsonFramer,
+    maxPendingRequests: number,
+  ) {
     this.#socket = socket
     this.#framer = framer
+    this.#maxPendingRequests = maxPendingRequests
   }
   get status() {
     return this.#status
@@ -293,6 +303,14 @@ class Client implements MusicSessionClient {
       )
     if (this.#failure)
       return Promise.reject(new MusicSessionClientError(this.#failure))
+    if (this.#pending.size >= this.#maxPendingRequests)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "SERVER_BUSY",
+          message: "client pending request limit reached",
+          retryable: true,
+        }),
+      )
     if (this.#nextId > Number.MAX_SAFE_INTEGER)
       return Promise.reject(
         new MusicSessionClientError({
@@ -512,6 +530,14 @@ export async function createMusicSessionClient(
       message: "invalid protocol revision range",
       retryable: false,
     })
+  const maxPendingRequests =
+    options.maxPendingRequests ?? DEFAULT_MAX_PENDING_REQUESTS
+  if (!Number.isSafeInteger(maxPendingRequests) || maxPendingRequests <= 0)
+    throw new MusicSessionClientError({
+      code: "INVALID_REQUEST",
+      message: "maxPendingRequests must be a positive safe integer",
+      retryable: false,
+    })
   const socket = net.createConnection(options.socketPath)
   await new Promise<void>((resolve, reject) => {
     const onConnect = () => {
@@ -542,7 +568,11 @@ export async function createMusicSessionClient(
       transportCode,
     )
   })
-  const client = new Client(socket, new NdjsonFramer(options.maxFrameBytes))
+  const client = new Client(
+    socket,
+    new NdjsonFramer(options.maxFrameBytes),
+    maxPendingRequests,
+  )
   await client.beginHandshake(
     encodeFrame({
       type: "hello",

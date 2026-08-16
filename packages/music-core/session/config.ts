@@ -99,6 +99,9 @@ export type MusicSessionOptions = {
   runtime?: MusicSessionRuntimePaths
   maxFrameBytes?: number
   commandQueueCapacity?: number
+  inboundChunkQueueCapacity?: number
+  maxFramesPerChunk?: number
+  mandatoryOutboundQueueCapacity?: number
   reconciliationMs?: { transport: number; navigation: number }
   pollMs?: { playing: number; paused: number; idle: number }
   /** Grace before a selected daemon with no negotiated clients exits. */
@@ -109,6 +112,9 @@ export type MusicSessionOptions = {
 export const defaults = {
   maxFrameBytes: 64 * 1024,
   commandQueueCapacity: 128,
+  inboundChunkQueueCapacity: 64,
+  maxFramesPerChunk: 128,
+  mandatoryOutboundQueueCapacity: 64,
   reconciliationMs: { transport: 120, navigation: 150 },
   pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
   // Long enough for a freshly launched local client to negotiate hello.
@@ -122,6 +128,9 @@ export type ResolvedMusicSessionOptions = {
   readonly runtime: MusicSessionRuntimePaths | undefined
   readonly maxFrameBytes: number
   readonly commandQueueCapacity: number
+  readonly inboundChunkQueueCapacity: number
+  readonly maxFramesPerChunk: number
+  readonly mandatoryOutboundQueueCapacity: number
   readonly reconciliationMs: {
     readonly transport: number
     readonly navigation: number
@@ -223,6 +232,19 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     "commandQueueCapacity",
     options.commandQueueCapacity ?? defaults.commandQueueCapacity,
   )
+  const inboundChunkQueueCapacity = yield* positiveSafeInteger(
+    "inboundChunkQueueCapacity",
+    options.inboundChunkQueueCapacity ?? defaults.inboundChunkQueueCapacity,
+  )
+  const maxFramesPerChunk = yield* positiveSafeInteger(
+    "maxFramesPerChunk",
+    options.maxFramesPerChunk ?? defaults.maxFramesPerChunk,
+  )
+  const mandatoryOutboundQueueCapacity = yield* positiveSafeInteger(
+    "mandatoryOutboundQueueCapacity",
+    options.mandatoryOutboundQueueCapacity ??
+      defaults.mandatoryOutboundQueueCapacity,
+  )
   const transport = yield* positiveSafeInteger(
     "reconciliationMs.transport",
     options.reconciliationMs?.transport ?? defaults.reconciliationMs.transport,
@@ -254,6 +276,9 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     runtime,
     maxFrameBytes,
     commandQueueCapacity,
+    inboundChunkQueueCapacity,
+    maxFramesPerChunk,
+    mandatoryOutboundQueueCapacity,
     reconciliationMs: { transport, navigation },
     pollMs: { playing, paused, idle },
     idleGraceMs,
@@ -302,6 +327,27 @@ export const layerFromConfig = Layer.effect(
         optionalNumber(
           "MUSIC_SESSION_COMMAND_QUEUE_CAPACITY",
           defaults.commandQueueCapacity,
+        ),
+      ),
+      inboundChunkQueueCapacity: number(
+        "inboundChunkQueueCapacity",
+        optionalNumber(
+          "MUSIC_SESSION_INBOUND_CHUNK_QUEUE_CAPACITY",
+          defaults.inboundChunkQueueCapacity,
+        ),
+      ),
+      maxFramesPerChunk: number(
+        "maxFramesPerChunk",
+        optionalNumber(
+          "MUSIC_SESSION_MAX_FRAMES_PER_CHUNK",
+          defaults.maxFramesPerChunk,
+        ),
+      ),
+      mandatoryOutboundQueueCapacity: number(
+        "mandatoryOutboundQueueCapacity",
+        optionalNumber(
+          "MUSIC_SESSION_MANDATORY_OUTBOUND_QUEUE_CAPACITY",
+          defaults.mandatoryOutboundQueueCapacity,
         ),
       ),
       transport: number(
@@ -363,6 +409,9 @@ export const layerFromConfig = Layer.effect(
       ...(options.socketPath ? { socketPath: options.socketPath } : {}),
       maxFrameBytes: options.maxFrameBytes,
       commandQueueCapacity: options.commandQueueCapacity,
+      inboundChunkQueueCapacity: options.inboundChunkQueueCapacity,
+      maxFramesPerChunk: options.maxFramesPerChunk,
+      mandatoryOutboundQueueCapacity: options.mandatoryOutboundQueueCapacity,
       reconciliationMs: {
         transport: options.transport,
         navigation: options.navigation,

@@ -110,6 +110,40 @@ test("startup timing resolves through the tagged config boundary", async () => {
     ),
   )
   expect(configuredIdleGrace).toBe(43)
+  await expect(
+    resolveConfig({
+      socketPath: "/tmp/music-session-config.sock",
+      inboundChunkQueueCapacity: 7,
+      maxFramesPerChunk: 8,
+      mandatoryOutboundQueueCapacity: 9,
+    }),
+  ).resolves.toMatchObject({
+    inboundChunkQueueCapacity: 7,
+    maxFramesPerChunk: 8,
+    mandatoryOutboundQueueCapacity: 9,
+  })
+  for (const setting of [
+    "inboundChunkQueueCapacity",
+    "maxFramesPerChunk",
+    "mandatoryOutboundQueueCapacity",
+  ] as const)
+    for (const value of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ])
+      await expect(
+        resolveConfig({
+          socketPath: "/tmp/music-session-config.sock",
+          [setting]: value,
+        }),
+      ).rejects.toMatchObject({
+        _tag: "MusicSession.ConfigError",
+        setting,
+      })
   expect(defaults.idleGraceMs).toBeGreaterThan(0)
   for (const [settings, setting] of [
     [{ attempts: 0 }, "startup.attempts"],
@@ -1371,6 +1405,7 @@ test("reconnecting client adopts one replacement generation without replay", asy
       runtime,
       clientId: "reconnecting",
       hostKind: "test",
+      maxPendingRequests: 1,
       startup: { attempts: 8, initialDelayMs: 5, maxDelayMs: 10 },
       launcher: async () => {
         launches++
@@ -1426,6 +1461,7 @@ test("reconnecting client adopts one replacement generation without replay", asy
     const retainedState = client.state
     firstProvider.blockTransport()
     const pending = client.play()
+    await expect(client.pause()).rejects.toMatchObject({ code: "SERVER_BUSY" })
     const closing = first!.close()
     await expect(pending).rejects.toMatchObject({
       code: "INDETERMINATE_COMMAND",
@@ -3588,6 +3624,61 @@ test("hello chunk status survives the active-reader transition", async () => {
     const replayed: string[] = []
     client.subscribeStatus((status) => replayed.push(status.message))
     expect(replayed).toEqual(["hello"])
+  } finally {
+    client?.dispose()
+    await daemon.close()
+  }
+})
+
+test("explicit client rejects invalid pending-request bounds before connecting", async () => {
+  for (const maxPendingRequests of [
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])
+    await expect(
+      createMusicSessionClient({
+        socketPath: `/tmp/music-session-invalid-pending-${process.pid}.sock`,
+        clientId: "invalid-pending-bound",
+        hostKind: "test",
+        maxPendingRequests,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_REQUEST" })
+})
+
+test("explicit client bounds pending requests and recovers after settlement", async () => {
+  const daemon = await startScriptedDaemon()
+  let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    client = await createMusicSessionClient({
+      socketPath: daemon.path,
+      clientId: "pending-bound",
+      hostKind: "test",
+      maxPendingRequests: 1,
+    })
+    const first = client.play()
+    await daemon.received(2)
+    await expect(client.pause()).rejects.toMatchObject({ code: "SERVER_BUSY" })
+    expect(daemon.frames()).toHaveLength(2)
+    daemon.send({
+      type: "response",
+      requestId: 1,
+      ok: true,
+      data: { action: "play" },
+    })
+    await expect(first).resolves.toEqual({ action: "play" })
+    const second = client.pause()
+    await daemon.received(3)
+    daemon.send({
+      type: "response",
+      requestId: 2,
+      ok: true,
+      data: { action: "pause" },
+    })
+    await expect(second).resolves.toEqual({ action: "pause" })
   } finally {
     client?.dispose()
     await daemon.close()

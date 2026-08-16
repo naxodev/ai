@@ -5,6 +5,7 @@ export class FrameError extends Error {
     this.name = "FrameError"
   }
 }
+export class FrameCountError extends FrameError {}
 export class NdjsonFramer {
   #buffer = ""
   // Decoder state must survive data events: a UTF-8 code point may span them.
@@ -16,7 +17,10 @@ export class NdjsonFramer {
       throw new Error("invalid frame limit")
     this.maxFrameBytes = maxFrameBytes
   }
-  push(chunk: string | Uint8Array): unknown[] {
+  push(
+    chunk: string | Uint8Array,
+    maxFrames = Number.MAX_SAFE_INTEGER,
+  ): unknown[] {
     // Scan raw bytes first so an oversized line is rejected before decoding or
     // retaining the chunk. Newline is a single ASCII byte in UTF-8.
     const bytes =
@@ -41,6 +45,8 @@ export class NdjsonFramer {
       !this.#buffer.includes("\n")
     )
       throw new FrameError("frame exceeds maximum size")
+    if (!Number.isSafeInteger(maxFrames) || maxFrames <= 0)
+      throw new Error("invalid decoded frame limit")
     const values: unknown[] = []
     while (true) {
       const newline = this.#buffer.indexOf("\n")
@@ -50,6 +56,8 @@ export class NdjsonFramer {
       if (Buffer.byteLength(line) > this.maxFrameBytes)
         throw new FrameError("frame exceeds maximum size")
       if (!line.trim()) throw new FrameError("blank frame")
+      if (values.length >= maxFrames)
+        throw new FrameCountError("too many frames in one chunk")
       try {
         values.push(JSON.parse(line))
       } catch {

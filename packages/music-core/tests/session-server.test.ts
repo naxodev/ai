@@ -2703,6 +2703,740 @@ test("pre-hello and rejected hello sockets cannot pin idle shutdown", async () =
   }
 })
 
+test("inbound frame burst overflow closes only the abusive connection", async () => {
+  const path = socketPath("inbound-overflow")
+  const provider = createFakeProvider()
+  let overflows = 0
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let healthy: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let abusive: net.Socket | undefined
+  let reader: ReturnType<typeof frameReader> | undefined
+  try {
+    server = await startMusicSessionServer(
+      {
+        socketPath: path,
+        maxFramesPerChunk: 1,
+        inboundChunkQueueCapacity: 2,
+      },
+      provider,
+      { onInboundOverflow: () => overflows++ },
+    )
+    healthy = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "healthy-overflow",
+      hostKind: "test",
+    })
+    abusive = await connected(path)
+    reader = frameReader(abusive)
+    abusive.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: PROTOCOL,
+        packageVersion: "test",
+        clientId: "abusive-overflow",
+        hostKind: "test",
+        capabilities: ["state-replay", "transport"],
+      })}\n`,
+    )
+    await reader.next(
+      (frame) => frame.type === "response" && frame.requestId === 0,
+    )
+    const closed = new Promise<void>((resolve) =>
+      abusive!.once("close", resolve),
+    )
+    abusive.write(
+      `${JSON.stringify({ type: "state", requestId: 1 })}\n${JSON.stringify({ type: "state", requestId: 2 })}\n`,
+    )
+    await closed
+    expect(overflows).toBe(1)
+    expect(await healthy.play()).toEqual({ action: "play" })
+    expect(provider.calls).toEqual(["play"])
+  } finally {
+    reader?.dispose()
+    abusive?.destroy()
+    healthy?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
+test("inbound chunk overflow during a blocked request stays local", async () => {
+  const path = socketPath("inbound-chunk-overflow")
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let healthy: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let abusive: net.Socket | undefined
+  let reader: ReturnType<typeof frameReader> | undefined
+  let overflowed = 0
+  let watchQueued = false
+  let resolveQueued: (() => void) | undefined
+  let resolveTransportStarted: (() => void) | undefined
+  const transportStarted = new Promise<void>((resolve) => {
+    resolveTransportStarted = resolve
+  })
+  const transport = provider.transport.bind(provider)
+  provider.transport = async (...args) => {
+    resolveTransportStarted?.()
+    return transport(...args)
+  }
+  try {
+    provider.blockTransport()
+    server = await startMusicSessionServer(
+      { socketPath: path, inboundChunkQueueCapacity: 1 },
+      provider,
+      {
+        onInboundQueued: () => {
+          if (watchQueued) resolveQueued?.()
+        },
+        onInboundOverflow: () => overflowed++,
+      },
+    )
+    healthy = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "healthy-chunk-overflow",
+      hostKind: "test",
+    })
+    abusive = await connected(path)
+    reader = frameReader(abusive)
+    abusive.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: PROTOCOL,
+        packageVersion: "test",
+        clientId: "abusive-chunk-overflow",
+        hostKind: "test",
+        capabilities: ["state-replay", "transport"],
+      })}\n`,
+    )
+    await reader.next(
+      (frame) => frame.type === "response" && frame.requestId === 0,
+    )
+    abusive.write(
+      `${JSON.stringify({
+        type: "transport",
+        requestId: 1,
+        action: "play",
+      })}\n`,
+    )
+    await Effect.runPromise(
+      Effect.promise(() => transportStarted).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() => Effect.fail(new Error("transport did not block"))),
+      ),
+    )
+    const queued = new Promise<void>((resolve) => {
+      resolveQueued = resolve
+    })
+    watchQueued = true
+    abusive.write(`${JSON.stringify({ type: "state", requestId: 2 })}\n`)
+    await Effect.runPromise(
+      Effect.promise(() => queued).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() => Effect.fail(new Error("chunk was not queued"))),
+      ),
+    )
+    const closed = new Promise<void>((resolve) =>
+      abusive!.once("close", resolve),
+    )
+    abusive.write(`${JSON.stringify({ type: "state", requestId: 3 })}\n`)
+    await Effect.runPromise(
+      Effect.promise(() => closed).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Effect.fail(new Error("abusive socket did not close")),
+        ),
+      ),
+    )
+    expect(overflowed).toBe(1)
+    provider.releaseTransport()
+    await expect(healthy.pause()).resolves.toEqual({ action: "pause" })
+    const revision = (healthy.state?.revision ?? 0) + 1
+    const updated = new Promise<void>((resolve) =>
+      healthy!.subscribeState((state) => {
+        if (state.revision >= revision) resolve()
+      }),
+    )
+    provider.emit({
+      type: "snapshot",
+      state: { ...provider.state, fetched_at: 99 },
+    })
+    await Effect.runPromise(
+      Effect.promise(() => updated).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Effect.fail(new Error("healthy peer did not update")),
+        ),
+      ),
+    )
+  } finally {
+    provider.releaseTransport()
+    reader?.dispose()
+    abusive?.destroy()
+    healthy?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
+test("oversized provider state is contained without taking down its selected graph", async () => {
+  const serverModule = new URL("../session/server.ts", import.meta.url).href
+  const effectModule = new URL(
+    "../node_modules/effect/dist/index.js",
+    import.meta.url,
+  ).href
+  const providerModule = new URL("../session/provider.ts", import.meta.url).href
+  const clientModule = new URL("../session/client.ts", import.meta.url).href
+  const protocolModule = new URL("../session/protocol.ts", import.meta.url).href
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "--eval",
+      `import net from "node:net"
+       import { basename } from "node:path"
+       import { existsSync, readdirSync } from "node:fs"
+       import { randomUUID } from "node:crypto"
+       import { startMusicSessionServer } from ${JSON.stringify(serverModule)}
+       import { createMusicSessionClient } from ${JSON.stringify(clientModule)}
+       import { createFakeProvider } from ${JSON.stringify(providerModule)}
+       import { PROTOCOL } from ${JSON.stringify(protocolModule)}
+       import { Effect, Fiber, Stream } from ${JSON.stringify(effectModule)}
+       const path = \`/tmp/music-session-oversized-\${process.pid}-\${randomUUID()}.sock\`
+       const provider = createFakeProvider()
+       const initialState = provider.state
+       const awaitWithin = (promise, label) => Effect.runPromise(
+         Effect.promise(() => promise).pipe(
+           Effect.timeout("2 seconds"),
+           Effect.catch(() => Effect.fail(new Error(\`timed out waiting for \${label}\`))),
+         ),
+       )
+       let server
+       let target
+       let healthy
+       let observer
+       try {
+         let overflows = 0
+         let finalized
+         const targetFinalized = new Promise((resolve) => { finalized = resolve })
+         server = await startMusicSessionServer(
+           { socketPath: path, maxFrameBytes: 4096 },
+           provider,
+           {
+             onOutboundOverflow: () => overflows++,
+             onConnectionFinalized: () => finalized(),
+           },
+         )
+         target = net.createConnection(path)
+         await awaitWithin(new Promise((resolve, reject) => {
+           target.once("connect", resolve)
+           target.once("error", reject)
+         }), "oversized target connection")
+         const closed = new Promise((resolve) => target.once("close", resolve))
+         let hello = ""
+         let emitted = false
+         target.on("data", (chunk) => {
+           hello += chunk
+           if (emitted || !hello.includes("\\\"requestId\\\":0")) return
+           emitted = true
+           provider.emit({
+             type: "snapshot",
+             state: {
+               ...initialState,
+               track: {
+                 uri: "spotify:track:oversized",
+                 id: "oversized",
+                 name: "x".repeat(8192),
+                 artists: "artist",
+                 album: "album",
+                 duration_ms: 60_000,
+               },
+               fetched_at: 77,
+             },
+           })
+         })
+         target.write(JSON.stringify({
+           type: "hello", requestId: 0, protocol: PROTOCOL,
+           packageVersion: "test", clientId: "oversized-target", hostKind: "test",
+           capabilities: ["state-replay", "transport"],
+         }) + "\\n")
+         await awaitWithin(closed, "oversized target close")
+         await awaitWithin(targetFinalized, "oversized target finalization")
+         if (overflows !== 1) throw new Error(\`expected one overflow, got \${overflows}\`)
+
+         let observed
+         const boundedState = new Promise((resolve) => { observed = resolve })
+         observer = Effect.runFork(server.coordinator.states.pipe(
+           Stream.runForEach((snapshot) => Effect.sync(() => {
+             if (snapshot.state.fetched_at === 78) observed()
+           })),
+         ))
+         await Effect.runPromise(Effect.yieldNow)
+         provider.emit({
+           type: "snapshot",
+           state: { ...initialState, fetched_at: 78 },
+         })
+         await awaitWithin(boundedState, "bounded coordinator replacement")
+
+         if (!existsSync(path)) throw new Error("listener disappeared after local overflow")
+         healthy = await createMusicSessionClient({
+           socketPath: path, clientId: "oversized-healthy", hostKind: "test",
+         })
+         const replay = new Promise((resolve) => healthy.subscribeState((snapshot) => {
+           if (snapshot.state.fetched_at === 78) resolve()
+         }))
+         await awaitWithin(replay, "healthy state replay")
+         const result = await healthy.play()
+         if (result.action !== "play") throw new Error("healthy protocol command failed")
+       } finally {
+         healthy?.dispose()
+         if (observer) await Effect.runPromise(Fiber.interrupt(observer))
+         target?.destroy()
+         if (server) await server.close()
+         const reservationPrefix = \`\${basename(path)}.bind-lock.\`
+         if (
+           existsSync(path) ||
+           existsSync(\`\${path}.bind-lock\`) ||
+           readdirSync("/tmp").some((entry) => entry.startsWith(reservationPrefix))
+         )
+           throw new Error("selected server left oversized-test runtime artifacts")
+       }`,
+    ],
+    { stdout: "ignore", stderr: "pipe" },
+  )
+  const stderr = child.stderr
+  if (!stderr || typeof stderr === "number")
+    throw new Error("oversized child stderr was not piped")
+  const diagnostics = new Response(stderr).text()
+  let exited = false
+  try {
+    const status = await Effect.runPromise(
+      Effect.promise(() => child.exited).pipe(Effect.timeout("5 seconds")),
+    )
+    exited = true
+    if (status !== 0)
+      throw new Error(`oversized child exited ${status}: ${await diagnostics}`)
+  } finally {
+    if (!exited) {
+      child.kill("SIGKILL")
+      await Effect.runPromise(
+        Effect.promise(() => child.exited).pipe(
+          Effect.timeout("2 seconds"),
+          Effect.catch(() => Effect.void),
+        ),
+      )
+    }
+    await diagnostics.catch(() => {})
+  }
+})
+
+test("24 alternating clients share one selected provider and fan out updates", async () => {
+  const path = socketPath("24-client-fanout")
+  const provider = createFakeProvider()
+  const clients: Awaited<ReturnType<typeof createMusicSessionClient>>[] = []
+  const counts = { listener: 0, coordinator: 0, idle: 0 }
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  try {
+    server = await startMusicSessionServer(
+      {
+        socketPath: path,
+        idleGraceMs: 10_000,
+        inboundChunkQueueCapacity: 16,
+        maxFramesPerChunk: 32,
+        mandatoryOutboundQueueCapacity: 32,
+      },
+      provider,
+      {
+        onListener: () => counts.listener++,
+        onCoordinator: () => counts.coordinator++,
+        onIdleStarted: () => counts.idle++,
+      },
+    )
+    const settled = await Promise.allSettled(
+      Array.from({ length: 24 }, (_, index) =>
+        createMusicSessionClient({
+          socketPath: path,
+          clientId: `fanout-${index}`,
+          hostKind: index % 2 === 0 ? "opencode" : "pi",
+        }),
+      ),
+    )
+    const failures: unknown[] = []
+    for (const result of settled)
+      if (result.status === "fulfilled") clients.push(result.value)
+      else failures.push(result.reason)
+    if (failures.length > 0)
+      throw new AggregateError(failures, "client startup")
+    const instanceIds = new Set(
+      clients.map((client) => client.daemonInstanceId),
+    )
+    expect(instanceIds.size).toBe(1)
+    expect([...instanceIds][0]).not.toBe("")
+    expect(new Set(clients.map((client) => client.selectedRevision))).toEqual(
+      new Set([1]),
+    )
+    expect(
+      new Set(
+        clients.map((client) => JSON.stringify(client.negotiatedCapabilities)),
+      ).size,
+    ).toBe(1)
+    await Promise.all(
+      clients.flatMap((client) => [
+        new Promise<void>((resolve) => client.subscribeStatus(() => resolve())),
+        new Promise<void>((resolve) => client.subscribeState(() => resolve())),
+      ]),
+    )
+    expect(provider.counts.subscriptions).toBe(1)
+    expect(provider.counts.samples).toBe(1)
+    expect(counts).toEqual({ listener: 1, coordinator: 1, idle: 1 })
+
+    const nextRevision = (clients[0]?.state?.revision ?? 0) + 1
+    const updated = clients.map(
+      (client) =>
+        new Promise<void>((resolve) =>
+          client.subscribeState((state) => {
+            if (state.revision >= nextRevision) resolve()
+          }),
+        ),
+    )
+    provider.emit({
+      type: "snapshot",
+      state: { ...provider.state, fetched_at: 24 },
+    })
+    await Promise.all(updated)
+    clients.shift()?.dispose()
+    const remainingUpdate = Promise.all(
+      clients.map(
+        (client) =>
+          new Promise<void>((resolve) =>
+            client.subscribeState((state) => {
+              if (state.revision > nextRevision) resolve()
+            }),
+          ),
+      ),
+    )
+    provider.emit({
+      type: "snapshot",
+      state: { ...provider.state, fetched_at: 25 },
+    })
+    await remainingUpdate
+    expect(counts.idle).toBe(1)
+  } finally {
+    for (const client of clients) client.dispose()
+    await server?.close().catch(() => {})
+  }
+  expect(provider.counts).toMatchObject({
+    subscriptions: 1,
+    disposals: 1,
+    providerDisposals: 1,
+  })
+  expect(existsSync(path)).toBe(false)
+  const socketName = path.split("/").at(-1)!
+  expect(
+    (await readdir("/tmp")).filter((name) =>
+      name.startsWith(`${socketName}.bind-lock`),
+    ),
+  ).toEqual([])
+})
+
+test("a paused reader backpressures locally while 23 clients keep receiving state", async () => {
+  const path = socketPath("slow-reader")
+  const provider = createFakeProvider()
+  const healthy: Awaited<ReturnType<typeof createMusicSessionClient>>[] = []
+  let slow: net.Socket | undefined
+  let reader: ReturnType<typeof frameReader> | undefined
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let backpressured = 0
+  let writerBlocked = false
+  let coalesced = 0
+  let outboundOverflows = 0
+  let slowServerSocket: net.Socket | undefined
+  let joined = 0
+  let resolveBackpressure: (() => void) | undefined
+  let resolveOutboundOverflow: (() => void) | undefined
+  const backpressure = new Promise<void>((resolve) => {
+    resolveBackpressure = resolve
+  })
+  const outboundOverflow = new Promise<void>((resolve) => {
+    resolveOutboundOverflow = resolve
+  })
+  try {
+    server = await startMusicSessionServer(
+      {
+        socketPath: path,
+        maxFrameBytes: 64 * 1024,
+        mandatoryOutboundQueueCapacity: 2,
+      },
+      provider,
+      {
+        onJoinCommitted: (socket) => {
+          joined++
+          if (joined !== 24) return
+          slowServerSocket = socket
+          ;(
+            socket as unknown as {
+              _writableState: { highWaterMark: number }
+            }
+          )._writableState.highWaterMark = 1
+        },
+        onWriteBackpressure: (socket) => {
+          if (socket !== slowServerSocket) return
+          backpressured++
+          resolveBackpressure?.()
+        },
+        onWriterBlocked: (socket) => {
+          if (socket === slowServerSocket) writerBlocked = true
+        },
+        onWriterUnblocked: (socket) => {
+          if (socket === slowServerSocket) writerBlocked = false
+        },
+        onStateCoalesced: (socket) => {
+          if (socket === slowServerSocket) coalesced++
+        },
+        onOutboundOverflow: (socket) => {
+          if (socket !== slowServerSocket) return
+          outboundOverflows++
+          resolveOutboundOverflow?.()
+        },
+      },
+    )
+    const settled = await Promise.allSettled(
+      Array.from({ length: 23 }, (_, index) =>
+        createMusicSessionClient({
+          socketPath: path,
+          clientId: `slow-reader-healthy-${index}`,
+          hostKind: index % 2 === 0 ? "opencode" : "pi",
+        }),
+      ),
+    )
+    const failures: unknown[] = []
+    for (const result of settled)
+      if (result.status === "fulfilled") healthy.push(result.value)
+      else failures.push(result.reason)
+    if (failures.length > 0) throw new AggregateError(failures, "startup")
+    slow = await connected(path)
+    reader = frameReader(slow)
+    slow.write(
+      `${JSON.stringify({
+        type: "hello",
+        requestId: 0,
+        protocol: PROTOCOL,
+        packageVersion: "test",
+        clientId: "paused-reader",
+        hostKind: "test",
+        capabilities: ["state-replay", "transport"],
+      })}\n`,
+    )
+    await reader.next(
+      (frame) => frame.type === "response" && frame.requestId === 0,
+    )
+    reader.dispose()
+    reader = undefined
+    expect(slowServerSocket).toBeDefined()
+    slow.pause()
+    const track = {
+      uri: "spotify:track:slow-reader",
+      id: "slow-reader",
+      name: "x".repeat(4_096),
+      artists: "artist",
+      album: "album",
+      duration_ms: 60_000,
+    }
+    for (let revision = 1; revision <= 64; revision++) {
+      provider.state = { ...provider.state, track, fetched_at: revision }
+      provider.emit({ type: "snapshot", state: provider.state })
+      await Effect.runPromise(Effect.yieldNow)
+    }
+    await Effect.runPromise(
+      Effect.promise(() => backpressure).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Effect.fail(new Error("paused reader did not backpressure")),
+        ),
+      ),
+    )
+    expect(backpressured).toBeGreaterThan(0)
+    expect(writerBlocked).toBe(true)
+    for (let revision = 65; revision <= 72; revision++) {
+      provider.state = { ...provider.state, track, fetched_at: revision }
+      provider.emit({ type: "snapshot", state: provider.state })
+    }
+    await Effect.runPromise(Effect.yieldNow)
+    expect(coalesced).toBeGreaterThan(0)
+    expect(writerBlocked).toBe(true)
+    const target = (healthy[0]?.state?.revision ?? 0) + 1
+    const converged = Promise.all(
+      healthy.map(
+        (client) =>
+          new Promise<void>((resolve) =>
+            client.subscribeState((state) => {
+              if (state.revision >= target) resolve()
+            }),
+          ),
+      ),
+    )
+    provider.state = { ...provider.state, track, fetched_at: 73 }
+    provider.emit({ type: "snapshot", state: provider.state })
+    await Effect.runPromise(
+      Effect.promise(() => converged).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Effect.fail(new Error("healthy clients did not converge")),
+        ),
+      ),
+    )
+    expect(writerBlocked).toBe(true)
+    expect(await healthy[0]!.play()).toEqual({ action: "play" })
+    expect(await healthy[1]!.pause()).toEqual({ action: "pause" })
+    expect(writerBlocked).toBe(true)
+    expect(provider.calls).toEqual(["play", "pause"])
+    const closed = new Promise<void>((resolve) => slow!.once("close", resolve))
+    slow.write(
+      Array.from(
+        { length: 16 },
+        (_, index) =>
+          `${JSON.stringify({ type: "state", requestId: index + 1 })}\n`,
+      ).join(""),
+    )
+    await Effect.runPromise(
+      Effect.promise(() => outboundOverflow).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Effect.fail(
+            new Error("paused reader did not overflow mandatory work"),
+          ),
+        ),
+      ),
+    )
+    slow.resume()
+    await Effect.runPromise(
+      Effect.promise(() => closed).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Effect.fail(new Error("paused reader did not close")),
+        ),
+      ),
+    )
+    expect(outboundOverflows).toBe(1)
+  } finally {
+    reader?.dispose()
+    slow?.destroy()
+    for (const client of healthy) client.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
+test("real clients retain global FIFO and recover after command-lane overflow", async () => {
+  const path = socketPath("command-overflow")
+  const provider = createFakeProvider()
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let one: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let two: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let three: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let four: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let resolveTransportStarted: (() => void) | undefined
+  let observeAdmission:
+    ((action: "pause" | "next" | "previous") => void) | undefined
+  const transportStarted = new Promise<void>((resolve) => {
+    resolveTransportStarted = resolve
+  })
+  const nextAdmission = (expected: "pause" | "next" | "previous") =>
+    new Promise<void>((resolve, reject) => {
+      observeAdmission = (actual) => {
+        observeAdmission = undefined
+        if (actual === expected) resolve()
+        else
+          reject(
+            new Error(`expected ${expected} admission, received ${actual}`),
+          )
+      }
+    })
+  const transport = provider.transport.bind(provider)
+  provider.transport = async (...args) => {
+    resolveTransportStarted?.()
+    return transport(...args)
+  }
+  try {
+    provider.blockTransport()
+    server = await startMusicSessionServer(
+      { socketPath: path, commandQueueCapacity: 2 },
+      provider,
+      {
+        onCommandAdmission: (action) => {
+          if (action === "pause" || action === "next" || action === "previous")
+            observeAdmission?.(action)
+        },
+      },
+    )
+    one = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "command-overflow-one",
+      hostKind: "test",
+    })
+    two = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "command-overflow-two",
+      hostKind: "test",
+    })
+    three = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "command-overflow-three",
+      hostKind: "test",
+    })
+    four = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "command-overflow-four",
+      hostKind: "test",
+    })
+    const first = one.play()
+    await Effect.runPromise(
+      Effect.promise(() => transportStarted).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() => Effect.fail(new Error("transport did not start"))),
+      ),
+    )
+    const pauseAdmission = nextAdmission("pause")
+    const second = two.pause()
+    await Effect.runPromise(
+      Effect.promise(() => pauseAdmission).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() => Effect.fail(new Error("pause was not admitted"))),
+      ),
+    )
+    const nextAdmissionObserved = nextAdmission("next")
+    const third = three.next()
+    await Effect.runPromise(
+      Effect.promise(() => nextAdmissionObserved).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() => Effect.fail(new Error("next was not admitted"))),
+      ),
+    )
+    const previousAdmission = nextAdmission("previous")
+    const rejected = four.previous()
+    await Effect.runPromise(
+      Effect.promise(() => previousAdmission).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() => Effect.fail(new Error("previous was not admitted"))),
+      ),
+    )
+    await expect(rejected).rejects.toMatchObject({ code: "SERVER_BUSY" })
+    provider.releaseTransport()
+    await expect(Promise.all([first, second, third])).resolves.toEqual([
+      { action: "play" },
+      { action: "pause" },
+      { action: "next" },
+    ])
+    expect(provider.calls).toEqual(["play", "pause", "next"])
+    await expect(two.previous()).resolves.toEqual({ action: "previous" })
+    expect(provider.calls).toEqual(["play", "pause", "next", "previous"])
+  } finally {
+    provider.releaseTransport()
+    one?.dispose()
+    two?.dispose()
+    three?.dispose()
+    four?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
 test("two clients share the daemon command lane", async () => {
   const path = socketPath("commands")
   const provider = createFakeProvider()

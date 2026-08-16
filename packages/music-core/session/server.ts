@@ -11,7 +11,9 @@ import {
   Fiber,
   FiberSet,
   Layer,
+  Option,
   Queue,
+  Ref,
   Schema,
   Scope,
   Stream,
@@ -21,7 +23,7 @@ import {
   prepareManagedRuntimeDirectory,
   type MusicSessionOptions,
 } from "./config.ts"
-import { NdjsonFramer, encodeFrame } from "./framing.ts"
+import { FrameCountError, NdjsonFramer, encodeFrame } from "./framing.ts"
 import {
   baselineCapabilities,
   decodeRequestEffect,
@@ -139,6 +141,13 @@ export type ServerLifecycleHooks = {
   readonly onIdleStarted?: () => void
   readonly onIdleCanceled?: () => void
   readonly onIdleExpired?: () => void
+  readonly onInboundQueued?: (socket: net.Socket) => void
+  readonly onInboundOverflow?: (socket: net.Socket) => void
+  readonly onOutboundOverflow?: (socket: net.Socket) => void
+  readonly onStateCoalesced?: (socket: net.Socket) => void
+  readonly onWriteBackpressure?: (socket: net.Socket) => void
+  readonly onWriterBlocked?: (socket: net.Socket) => void
+  readonly onWriterUnblocked?: (socket: net.Socket) => void
 }
 const invokeHook = (hook: (() => void) | undefined) => {
   try {
@@ -480,6 +489,9 @@ const connection = (
   socket: net.Socket,
   coordinator: Coordinator,
   maxFrameBytes: number,
+  inboundChunkQueueCapacity: number,
+  maxFramesPerChunk: number,
+  mandatoryOutboundQueueCapacity: number,
   hooks: ServerLifecycleHooks,
   reportFailure: (cause: unknown) => void,
   onJoin: Effect.Effect<void>,
@@ -487,8 +499,16 @@ const connection = (
 ) =>
   Effect.gen(function* () {
     const endOfInput = Symbol("end-of-input")
-    const input = yield* Queue.bounded<Buffer | typeof endOfInput>(64)
-    const completion = yield* Queue.unbounded<void>()
+    const input = yield* Queue.bounded<Buffer | typeof endOfInput>(
+      inboundChunkQueueCapacity,
+    )
+    const completion = yield* Queue.bounded<void>(1)
+    const mandatory = yield* Queue.bounded<{
+      readonly frame: Buffer
+      readonly end?: boolean
+    }>(mandatoryOutboundQueueCapacity)
+    const outboundWake = yield* Queue.bounded<void>(1)
+    const latestState = yield* Ref.make<Buffer | undefined>(undefined)
     let ended = false
     let closed = false
     const close = () => {
@@ -498,7 +518,10 @@ const connection = (
       }
     }
     const onData = (chunk: Buffer) => {
-      if (!Queue.offerUnsafe(input, chunk)) close()
+      if (!Queue.offerUnsafe(input, chunk)) {
+        invokeValueHook(hooks.onInboundOverflow, socket)
+        close()
+      } else invokeValueHook(hooks.onInboundQueued, socket)
     }
     const onEnd = () => {
       ended = true
@@ -537,6 +560,8 @@ const connection = (
         }).pipe(
           Effect.andThen(Queue.shutdown(input)),
           Effect.andThen(Queue.shutdown(completion)),
+          Effect.andThen(Queue.shutdown(mandatory)),
+          Effect.andThen(Queue.shutdown(outboundWake)),
           Effect.ensuring(
             (joined ? onLeave : Effect.void).pipe(
               Effect.ensuring(
@@ -552,18 +577,123 @@ const connection = (
     let session: NegotiatedSession | undefined
     let joined = false
     let highestId = -1
-    const send = (value: unknown) =>
+    const encode = (value: unknown) => {
+      const frame = encodeFrame(value)
+      return Buffer.byteLength(frame) <= maxFrameBytes
+        ? Buffer.from(frame)
+        : undefined
+    }
+    const sendRequired = (value: unknown, end = false) =>
       Effect.sync(() => {
-        if (!closed && !socket.destroyed) {
-          invokeHook(() => hooks.onWriteAttempt?.(socket))
-          socket.write(encodeFrame(value))
+        if (closed || socket.destroyed) return
+        const frame = encode(value)
+        if (!frame) {
+          invokeValueHook(hooks.onOutboundOverflow, socket)
+          close()
+          return
         }
+        if (!Queue.offerUnsafe(mandatory, { frame, ...(end ? { end } : {}) })) {
+          invokeValueHook(hooks.onOutboundOverflow, socket)
+          close()
+          return
+        }
+        Queue.offerUnsafe(outboundWake, undefined)
       })
+    const sendState = (value: unknown) => {
+      if (closed || socket.destroyed) return Effect.void
+      const frame = encode(value)
+      if (!frame)
+        return Effect.sync(() => {
+          invokeValueHook(hooks.onOutboundOverflow, socket)
+          close()
+        })
+      return Ref.get(latestState).pipe(
+        Effect.tap((previous) =>
+          Effect.sync(() => {
+            if (previous) invokeValueHook(hooks.onStateCoalesced, socket)
+          }),
+        ),
+        Effect.andThen(Ref.set(latestState, frame)),
+        Effect.andThen(
+          Effect.sync(() => {
+            Queue.offerUnsafe(outboundWake, undefined)
+          }),
+        ),
+      )
+    }
+    const awaitDrain = Effect.callback<void>((resume) => {
+      const cleanup = () => {
+        socket.off("drain", onDrain)
+        socket.off("close", onClose)
+        socket.off("error", onError)
+      }
+      const onDrain = () => {
+        cleanup()
+        resume(Effect.void)
+      }
+      const onClose = () => {
+        cleanup()
+        resume(Effect.void)
+      }
+      const onError = () => {
+        cleanup()
+        resume(Effect.void)
+      }
+      socket.once("drain", onDrain)
+      socket.once("close", onClose)
+      socket.once("error", onError)
+      return Effect.sync(cleanup)
+    })
+    const write = (outbound: {
+      readonly frame: Buffer
+      readonly end?: boolean
+    }) =>
+      Effect.sync(() => {
+        if (closed || socket.destroyed) return true
+        invokeHook(() => hooks.onWriteAttempt?.(socket))
+        if (outbound.end) {
+          socket.end(outbound.frame)
+          return true
+        }
+        return socket.write(outbound.frame)
+      }).pipe(
+        Effect.flatMap((writable) =>
+          writable
+            ? Effect.void
+            : Effect.sync(() => {
+                invokeValueHook(hooks.onWriteBackpressure, socket)
+                invokeValueHook(hooks.onWriterBlocked, socket)
+              }).pipe(
+                Effect.andThen(awaitDrain),
+                Effect.ensuring(
+                  Effect.sync(() =>
+                    invokeValueHook(hooks.onWriterUnblocked, socket),
+                  ),
+                ),
+              ),
+        ),
+      )
+    const nextOutbound = (): Effect.Effect<{
+      readonly frame: Buffer
+      readonly end?: boolean
+    }> =>
+      Effect.gen(function* () {
+        const required = yield* Queue.poll(mandatory)
+        if (Option.isSome(required)) return required.value
+        const state = yield* Ref.getAndSet(latestState, undefined)
+        if (state) return { frame: state }
+        yield* Queue.take(outboundWake)
+        return yield* nextOutbound()
+      })
+    yield* Effect.forever(nextOutbound().pipe(Effect.flatMap(write))).pipe(
+      Effect.forkScoped,
+    )
+    const send = sendRequired
     const reject = (
       request: Request,
       code: Parameters<typeof protocolError>[0],
       message: string,
-    ) => send(failure(request.requestId, protocolError(code, message)))
+    ) => sendRequired(failure(request.requestId, protocolError(code, message)))
     const process = Effect.fn("MusicSession.Connection.frame")(function* (
       raw: unknown,
     ) {
@@ -604,8 +734,14 @@ const connection = (
       highestId = request.requestId
       if (!session) {
         if (request.type !== "hello") {
-          yield* reject(request, "INVALID_REQUEST", "hello is required first")
-          return close()
+          yield* sendRequired(
+            failure(
+              request.requestId,
+              protocolError("INVALID_REQUEST", "hello is required first"),
+            ),
+            true,
+          )
+          return
         }
         const negotiated = negotiateHello(
           request,
@@ -613,9 +749,11 @@ const connection = (
           baselineCapabilities,
         )
         if ("code" in negotiated) {
-          yield* send(failure(request.requestId, negotiated))
-          if (negotiated.code === "INCOMPATIBLE_PROTOCOL")
-            return yield* Effect.sync(() => socket.end())
+          yield* sendRequired(
+            failure(request.requestId, negotiated),
+            negotiated.code === "INCOMPATIBLE_PROTOCOL",
+          )
+          if (negotiated.code === "INCOMPATIBLE_PROTOCOL") return
           return
         }
         session = negotiated
@@ -639,7 +777,9 @@ const connection = (
         )
         yield* Effect.sync(() => invokeHook(hooks.onForwarderStarted))
         yield* coordinator.status.pipe(
-          Stream.runForEach((status) => send({ type: "status", status })),
+          Stream.runForEach((status) =>
+            sendRequired({ type: "status", status }),
+          ),
           Effect.ensuring(
             Effect.sync(() => invokeHook(hooks.onForwarderFinalized)),
           ),
@@ -647,7 +787,9 @@ const connection = (
         )
         yield* Effect.sync(() => invokeHook(hooks.onForwarderStarted))
         yield* coordinator.states.pipe(
-          Stream.runForEach((snapshot) => send({ type: "state", snapshot })),
+          Stream.runForEach((snapshot) =>
+            sendState({ type: "state", snapshot }),
+          ),
           Effect.ensuring(
             Effect.sync(() => invokeHook(hooks.onForwarderFinalized)),
           ),
@@ -704,8 +846,10 @@ const connection = (
                 Queue.offerUnsafe(completion, undefined)
               })
             : Effect.try({
-                try: () => framer.push(chunk),
-                catch: () => {
+                try: () => framer.push(chunk, maxFramesPerChunk),
+                catch: (cause) => {
+                  if (cause instanceof FrameCountError)
+                    invokeValueHook(hooks.onInboundOverflow, socket)
                   close()
                   return [] as unknown[]
                 },
@@ -791,6 +935,9 @@ const makeLayer = (
               socket,
               coordinator,
               config.maxFrameBytes,
+              config.inboundChunkQueueCapacity,
+              config.maxFramesPerChunk,
+              config.mandatoryOutboundQueueCapacity,
               hooks,
               reportFailure,
               onJoin,
@@ -965,13 +1112,15 @@ const makeLayer = (
       yield* Effect.yieldNow
       let firstEventPullPending = true
       const coordinatorEvents = Stream.fromPull(
-        Effect.sync(() => {
-          if (firstEventPullPending) {
-            firstEventPullPending = false
-            return Fiber.join(firstEventPull)
-          }
-          return eventsPull
-        }),
+        Effect.sync(() =>
+          Effect.suspend(() => {
+            if (firstEventPullPending) {
+              firstEventPullPending = false
+              return Fiber.join(firstEventPull)
+            }
+            return eventsPull
+          }),
+        ),
       )
       const coordinatorProvider = SessionProvider.of({
         ...provider,
