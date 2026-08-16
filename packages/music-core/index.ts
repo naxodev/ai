@@ -71,9 +71,13 @@ export {
 export type {
   MusicSessionClient,
   MusicSessionClientOptions,
+  MusicSessionConnectionLifecycle,
+  ReconnectingMusicSessionClient,
+  ReconnectingMusicSessionClientOptions,
 } from "./session/client.ts"
 export {
   createMusicSessionClient,
+  createReconnectingMusicSessionClient,
   MusicSessionClientError,
 } from "./session/client.ts"
 export type {

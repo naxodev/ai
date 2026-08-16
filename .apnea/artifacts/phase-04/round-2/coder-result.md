@@ -2,43 +2,64 @@
 status: done
 ---
 
-## Changed
+## Rework completed
 
-Extended the deterministic partial-hardening failure test to prove all acquired resources finalize:
+Addressed every finding from the Phase 4 review.
 
-- pre-creates an unrelated runtime-directory file and verifies partial cleanup preserves it;
-- uses a tracked fake provider and verifies its disposer runs exactly once after the failed scoped startup;
-- retains existing assertions for tagged hardening failure, listener closure, exact partial socket removal, and directory retention.
+- Natural reconnect-supervisor termination now retains `terminal` lifecycle state and its listeners instead of running managed disposal. Caller/scope disposal still closes resources, but does not overwrite a prior actionable terminal outcome.
+- Managed terminal errors now preserve `MusicSessionRuntimeError` and `MusicSessionConfigError` alongside startup/protocol errors, retaining their tagged operation/path/setting data.
+- Added a client-module-only connector seam to drive deterministic scoped generation races; it is not exported from the public core index.
+- Registered each successfully connected explicit client as a scoped resource before wrapper adoption, so scoped cleanup owns completed generations across disposal/adoption handoff.
+- Added deterministic coverage for replacement incompatibility (including retained exact ranges and no loop), runtime terminal preservation, TestClock cancellation of a reconnect sleep, and the bounded Phase 3 replacement schedule/no busy loop.
+- Expanded real A→B selected-server coverage: commands reject immediately during reconnect, retained A state replays to a reconnect-time subscriber, and idempotent unsubscription prevents B replay delivery.
 
-Files touched:
+## Files touched
 
-- `packages/music-core/tests/session-server.test.ts`
+- `packages/music-core/session/client.ts`
+- `packages/music-core/tests/session-client.test.ts`
+- `.apnea/artifacts/phase-04/round-2/coder-result.md`
 
-No commit, push, or `.apnea/state.json` edit was performed.
+`packages/music-core/index.ts` remains the prior Phase 4 public-surface change and was not modified in this rework. No server/config/protocol changes were needed.
 
 ## Verify transcript
 
 ```text
+$ bunx nx run music-core:typecheck
+exit 0
+NX Successfully ran target typecheck for project music-core
+
+$ bun test packages/music-core/tests/session-client.test.ts -t 'reconnect|replacement generation|indeterminate'
+exit 0
+7 pass, 0 fail
+39 expect() calls
+
 $ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
 exit 0
-60 pass, 0 fail
+92 pass, 0 fail
+515 expect() calls
 
 $ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 exit 0
-190 pass, 0 fail
+222 pass, 0 fail
+930 expect() calls
 Verified npm package contents (21 files)
 NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
-$ ! rg -n "Bun\\.spawn|child_process|spawn\\(" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+$ ! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/client.ts
 exit 0
 
-$ jj diff --summary && git diff --check
+$ jj diff --summary
+exit 0
+Phase source diff remains limited to music-core index/client/client-test paths. Existing unrelated .apnea metadata/tasks and .apnea/state.json remain dirty and untouched.
+
+$ jj diff --git packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/protocol.ts packages/music-core/index.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+
+$ git diff --check
 exit 0
 ```
 
-The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
-
 ## Residual risks
 
-- Remaining ownership/disappearance and executable-selection matrix cases remain for Phase 4 review.
-- No process launch, retry, reconnect, or idle-shutdown behavior was added.
+- The client/server suite emits pre-existing intentional injected cleanup and marker-release warnings; commands exit successfully.
+- No commit, push, or `.apnea/state.json` edit was performed.

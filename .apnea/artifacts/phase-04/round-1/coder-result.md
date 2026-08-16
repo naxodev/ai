@@ -4,57 +4,70 @@ status: done
 
 ## Changed
 
-Implemented the Phase 4 managed runtime/discovery slice.
+Implemented the Phase 4 managed reconnect client in the existing session client module.
 
-- Added compact per-UID runtime path resolution, typed runtime failures, owner-only directory/socket/marker inspection, bounded marker decoding, identity-checked stale cleanup, and a narrow test runtime seam in `config.ts`.
-- Added one-shot managed endpoint discovery in `client.ts`; only completed hello produces healthy/incompatible outcomes, and refusal with a revalidated identity produces guarded stale cleanup.
-- Hardened server bind/finalization to prepare managed directories, chmod/capture the bound socket, and unlink only the captured device/inode identity.
-- Made daemon socket selection optional, selecting the managed default without spawning or startup coordination, while preserving absolute explicit overrides and tagged path diagnostics.
-- Added focused managed resolver/discovery and managed-server ownership tests.
+- Added exact, retained explicit-client terminal observation. Retryable transport loss is distinguishable from malformed/protocol terminal failures; late terminal subscribers receive the same retained error once, and disposal cannot replace it.
+- Added a separate `ReconnectingMusicSessionClient` contract with retained state/status, current generation metadata, lifecycle subscription/state, immediate no-queue commands, and asynchronous idempotent disposal.
+- Added a scoped Effect supervisor (`createReconnectingMusicSessionClientEffect`) plus Promise owner. It reuses `connectOrStartMusicSessionEffect` for every initial/replacement generation, fences callbacks by a monotonically increasing token, retains A state during reconnect, adopts B replay across lower revisions, and rejects unavailable commands instead of replaying them.
+- Exported only the host-neutral reconnecting constructor and types from `packages/music-core/index.ts`.
+- Added real Unix selected-server integration evidence for A → loss → B: indeterminate blocked A command, retained state during reconnect, lower-revision B replay, no replay on B, lifecycle ordering, listener isolation, and idempotent disposal. Added explicit terminal-observation coverage.
 
-Files touched:
+## Files touched
 
-- `packages/music-core/session/config.ts`
 - `packages/music-core/session/client.ts`
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
+- `packages/music-core/index.ts`
 - `packages/music-core/tests/session-client.test.ts`
-- `packages/music-core/tests/session-server.test.ts`
-
-No commit, push, or `.apnea/state.json` edit was performed.
+- `.apnea/artifacts/phase-04/round-1/coder-result.md`
 
 ## Verify transcript
 
 ```text
+$ bunx nx run music-core:typecheck
+exit 0
+NX Successfully ran target typecheck for project music-core
+
+$ bun test packages/music-core/tests/session-client.test.ts -t 'terminal observation|reconnect|replacement generation|indeterminate'
+exit 0
+4 pass, 0 fail
+26 expect() calls
+
+$ bun test packages/music-core/tests/session-client.test.ts -t 'reconnect|replacement generation|indeterminate'
+exit 0
+3 pass, 0 fail
+
 $ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
 exit 0
-45 pass, 0 fail
+88 pass, 0 fail
 
 $ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 exit 0
-175 pass, 0 fail
+218 pass, 0 fail
+913 expect() calls
 Verified npm package contents (21 files)
 NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
-$ ! rg -n "Bun\\.spawn|child_process|spawn\\(" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+$ ! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/client.ts
+exit 0
+
+$ test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"
 exit 0
 
 $ jj diff --summary
 exit 0
+M packages/music-core/index.ts
 M packages/music-core/session/client.ts
-M packages/music-core/session/config.ts
-M packages/music-core/session/music-sessiond.ts
-M packages/music-core/session/server.ts
 M packages/music-core/tests/session-client.test.ts
-M packages/music-core/tests/session-server.test.ts
+(unrelated pre-existing phase metadata/tasks and .apnea/state.json remain dirty and untouched)
+
+$ jj diff --git packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/protocol.ts packages/music-core/index.ts packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+exit 0
+Only the allowed Phase 4 index/client/test paths changed; config/protocol/server-test were unchanged by this phase.
 
 $ git diff --check
 exit 0
 ```
 
-The server suite's intentional injected unlink-failure case logs its expected warning while exiting successfully.
-
 ## Residual risks
 
-- A post-verification isolated rerun of three pre-existing system-provider server cases timed out after Bun reported dangling media-control processes; the complete focused and full runs above passed before the final diagnostics-only formatting change. Final TypeScript check, static spawn scan, and diff check passed after that change.
-- Managed marker creation/startup arbitration, spawning, retries, reconnect, and idle shutdown remain intentionally deferred to later phases.
+- Intentional injected cleanup and marker-release tests still emit bounded warnings during the suite; all verification commands exit successfully.
+- No commit, push, or `.apnea/state.json` edit was performed.

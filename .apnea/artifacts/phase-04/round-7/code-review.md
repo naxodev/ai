@@ -1,32 +1,29 @@
 ---
 status: done
-verdict: CHANGES_REQUIRED
+verdict: APPROVED
+nits: |
+  Remove the now-unused #replace method and private setters in ManagedMusicSessionClient; they leave misleading non-atomic mutation paths beside the Ref.modify transitions. Continue tracking the disclosed Phase 3 20-client convergence flake even though the isolated repetitions and fresh full rerun passed.
 ---
 
 ## Package comparison
 
-The Phase 4 package remains aligned with the approved plan and the cumulative diff remains within its six allowed files. Round 7 adds the required narrow observation seam and useful wrong-mode directory, symlinked directory, regular-file socket, and `EPERM` marker evidence.
+The Phase 4 package remains aligned with the approved plan. The cumulative implementation stays within the allowed music-core client/index/test scope and does not introduce idle shutdown, fan-out, artwork, host, packaging, or documentation work.
 
 ## Findings
 
-### High — Core stale/incompatible discovery acceptance remains unverified
+No blocking findings.
 
-The suite still has no real no-listener stale socket fixture, so the phase's primary cleanup capability has not been exercised end to end. Add focused real-socket evidence for refusal plus identity recheck, idempotent cleanup, disappearance, and replacement with a regular file or symlink that must be retained.
+Round 7 atomically reserves one shared disposal completion before invoking the selected scope/fiber closer. Concurrent and lifecycle-listener-reentrant callers receive that same completion, and it resolves only after shutdown has released active ownership. This closes the remaining disposal-idempotence finding.
 
-There is also no discovery-level disjoint protocol-range test proving `incompatible` preserves both ranges, exposes no cleanup capability, leaves socket/directory identity unchanged, and permits a later supported client. Malformed/reset peers likewise remain untested as conservative `occupied` results with no cleanup.
-
-### High — Managed artifact and marker fail-closed coverage remains incomplete
-
-Round 7 covers `0755` and symlinked directories, a regular-file socket, and marker `EPERM`. The package still requires deterministic evidence for foreign-owned and non-directory runtime roots; symlinked, foreign-owned, and wrong-mode sockets; and dead, unknown-error, malformed, wrong-mode, symlinked, foreign-owned, and non-regular markers. Assert each unsafe artifact remains unchanged and no cleanup capability is returned.
-
-Use the new dependency seam only for facts that cannot be created unprivileged; keep real files/symlinks/sockets for the rest.
-
-### High — Managed server and executable boundaries remain incomplete
-
-The server suite still lacks post-bind hardening-failure cleanup and a second managed server proving it cannot chmod, close, or unlink the first while the first remains connectable. The executable suite still lacks no-flag managed-default preparation, explicit override behavior, and tagged operation/path/message diagnostics with nonzero status for an unsafe default runtime.
-
-These are explicit package sections 5–8 acceptance checks and cannot be deferred to startup/reconnect phases.
+The cumulative Phase 4 implementation now provides the separate managed contract, scoped reconnect supervision through the existing bounded startup workflow, structured terminal outcomes, generation fencing, retained replay, truthful command behavior, bounded cancellation ownership, listener/lifecycle behavior, and host-neutral public exports required by the package.
 
 ## Verification
 
-The coder reports 51 focused tests and 181 music-core tests passing, with build, typecheck, format, package, production spawn scan, summary, and diff checks green. The new seam and cases are supported, but the remaining core Phase 4 classifications and cleanup boundaries above are not yet covered.
+The coder supplied passing evidence for:
+
+- focused reconnect/disposal tests: 12 passed;
+- client/server tests: 97 passed;
+- fresh uncached build, typecheck, test, format, and package matrix: 227 tests and 956 expectations passed;
+- raw-timer scan and `git diff --check`.
+
+The first uncached matrix encountered the disclosed pre-existing convergence flake, but the isolated test passed five consecutive runs and the subsequent uncached full matrix passed. This does not block this Phase 4 gate.

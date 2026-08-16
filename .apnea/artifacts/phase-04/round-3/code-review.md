@@ -5,22 +5,24 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 4 package remains aligned with the approved plan and the cumulative diff remains confined to its six allowed files. The latest round adds foreign-owner/non-directory coverage, simulated refusal disappearance, and executable selection/diagnostic tests.
+The Phase 4 package remains aligned with the approved plan. Round 3 stays within the allowed client and client-test paths and fixes terminal-to-disposed lifecycle behavior and the tested late-discovery handoff.
 
 ## Findings
 
-### High — The “wrong-mode socket” case is not a socket
+### Critical — Interruption after healthy discovery but during guarded cleanup still leaks the client
 
-In `managed discovery rejects unsafe socket artifacts...`, both `file` and `wrong-mode` create a regular file; the latter merely chmods that file to `0644`. Discovery can therefore reject it solely for wrong type, so the test does not prove that a real same-user Unix socket with non-`0600` permissions is rejected and retained.
+The new generic Promise wrapper disposes a late resolved value only when that value itself contains a client (`packages/music-core/session/client.ts:792-823`). After discovery has already returned `{ type: "healthy", client, cleanup }`, the workflow separately awaits `discovery.cleanup()` at lines 867-876. If managed disposal interrupts during that cleanup and cleanup later succeeds, the Promise resolves `undefined`; `disposeLateClient` has no client to release, control never reaches line 877, and the already-handshaken client is neither returned nor disposed.
 
-Use a real live or stale Unix socket, change only its mode, then assert typed rejection, unchanged device/inode/mode, no connection, and no cleanup/unlink.
+The added late-discovery test interrupts before discovery resolves, so it does not cover this second ownership gap. Make the healthy client scoped/guarded continuously from discovery completion through cleanup, marker release, and final handoff, and add a cancellation case that pauses successful cleanup after hello.
 
-### High — Executable tests bypass managed preparation and real path-error propagation
+### High — Generation finalizers accumulate for the entire managed-client lifetime
 
-`executable selects managed default or explicit socket through one graph` replaces the complete graph with `Layer.succeed`; it proves only which options are passed to the seam, not that no-flag execution actually prepares/binds the managed default. Likewise, the tagged-failure test throws `MusicSessionRuntimeError` directly from the graph factory, so it does not exercise a real unsafe managed-directory failure through config/server wrapping and executable diagnostics.
+Every successful generation is registered with `Effect.acquireRelease` in the supervisor's outer scope (`client.ts:1280-1288`). When a generation terminates, `#release(active)` only unsubscribes it; the scope finalizer retaining that explicit client remains registered until the managed client is finally disposed. Each reconnect therefore adds another retained client/finalizer, causing unbounded memory growth across daemon generations and repeated disposal only at final scope closure. Give each connect/adopt attempt bounded generation ownership that is closed/deregistered when that generation ends while preserving the disposal-vs-adoption handoff.
 
-Add focused composition evidence using the selected options with the real config/server ownership boundary (a fake provider is sufficient): prove managed directory/socket preparation for no flag, explicit unmanaged behavior for the flag, and an actual unsafe managed runtime reaching operation/path/message plus nonzero status. Keep process startup/spawning out of the test.
+### Medium — The late-callback test mostly proves unsubscription, not generation fencing
+
+After A terminates, `#release` removes its status/state/terminal listeners. The fixture's later `first.status`, `first.state`, and `first.terminal` calls iterate only the now-empty listener sets, so no stale callback actually enters the wrapper's token checks. Retain captured A callbacks (or queue them before unsubscription and deliver afterward) to prove stale callbacks that are already in flight cannot mutate B. The scripted old command also resolves successfully after A loss, unlike the explicit client's required indeterminate settlement; keep the controlled fixture faithful to that contract when testing late response behavior.
 
 ## Verification
 
-The coder reports 65 focused tests and 195 music-core tests passing, with build, typecheck, format, package, production spawn scan, summary, and diff checks green. Most Phase 4 security/discovery behavior is now covered, but the two acceptance assertions above do not yet exercise the claimed boundaries.
+The coder supplied passing focused, combined, full-target, timer-scan, and diff evidence (9 focused tests, 94 combined tests, 224 full tests). The prior terminal/disposal findings are covered, but the remaining cleanup-stage leak and lifetime finalizer accumulation are not.

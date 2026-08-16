@@ -5,40 +5,31 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 4 package is aligned with the approved plan and the diff is confined to its six allowed files. The implementation does not yet satisfy the package's security and discovery contract.
+The Phase 4 package matches the approved plan, and the diff is confined to the allowed client, public-index, and client-test paths. No later idle/fan-out/artwork/host work entered the phase.
 
 ## Findings
 
-### Critical — Stale cleanup authority is publicly forgeable
+### Critical — Terminal supervision is immediately overwritten as disposal
 
-`config.ts` exports both `inspectManagedRuntime()` observations and `staleCleanup(paths, proofs)`. `ArtifactProof` is only a structural type, and `staleCleanup()` never requires `proof.path` to equal the managed socket or marker path. A caller importing this module can construct matching stat fields for an arbitrary owned socket/regular file and obtain a path-based unlink closure.
+`ManagedMusicSessionClient.#finish` publishes the required retained terminal state at `packages/music-core/session/client.ts:1169-1173`, but every natural supervisor exit runs `managed.shutdown()` through `Effect.ensuring` at line 1249. `shutdown()` sets `#disposed`, publishes `disposed`, and clears every listener (`1175-1195`). Therefore replacement incompatibility, schedule exhaustion, unsafe/occupied startup, and non-retryable explicit-client errors are only momentarily terminal before becoming disposed; callers cannot inspect retained terminal details or subscribe after the transition. Reserve disposed semantics for caller/scope interruption and preserve terminal state when supervision stops naturally.
 
-Keep proof creation and cleanup construction file-local and unforgeable. Discovery should receive only internal observations and return the guarded/idempotent closure; there must be no exported generic cleanup function accepting paths/proofs.
+### High — Non-startup runtime/config failures lose their actionable structure
 
-### High — The executable's default is accidentally configured as unmanaged
+`asManagedTerminal` (`client.ts:970-981`) preserves only `MusicSessionClientError` and `MusicSessionStartupError`. Secure runtime and config failures returned by the reused startup workflow are converted to a generic non-retryable `CONNECTION_LOST`, dropping tagged operation/path/setting data. This does not meet the package requirement that occupied/unsafe/config terminal outcomes remain actionable. Preserve or truthfully wrap those structured boundary errors in the managed lifecycle contract.
 
-With no `--socket`, `runMusicSessionDaemon()` resolves the managed socket string and passes it to `productionGraph(socketPath)`, which calls `configLayer({ socketPath })`. That marks the path as an explicit override (`runtime` is undefined), so the server does not prepare the managed directory. On a fresh machine the default daemon therefore tries to bind inside a missing directory, and it also loses managed ownership classification.
+### High — Most required reconnect race and terminal evidence is absent
 
-Pass absence/default intent through the graph (or pass the resolved runtime record), while retaining an explicit flag as unmanaged.
+The phase adds one explicit-terminal test and one successful real A→B integration test (`session-client.test.ts:663-772`). It does not provide the required deterministic evidence for:
 
-### High — Discovery consults markers in the wrong order and can authorize cleanup during startup
+- TestClock-paced replacement exhaustion/interruption and no busy loop;
+- disposal while sleeping/connecting and disposal of a client that completes late;
+- replacement incompatibility with exact range details and no later attempt;
+- independently controlled late A state/status/terminal/response callbacks after B adoption;
+- commands rejecting immediately during reconnect;
+- retained status replay, listener unsubscription, and terminal lifecycle retention.
 
-`inspectManagedRuntime()` parses/classifies the marker before the socket hello. Thus a healthy or incompatible daemon accompanied by a malformed/unsafe marker is rejected before hello, contrary to the rule that endpoint classification wins and markers are consulted afterward.
-
-After a refused socket, discovery also returns `stale` whenever the socket identity is unchanged, even if the reinspection contains a live/unknown marker. That can expose socket cleanup while a conservatively live startup owner exists. Reinspect/classify the endpoint first, then return `starting` for any live/unknown marker; only a validated dead marker may join stale authority. Identity changes must fail with `MusicSessionRuntimeError`, not a plain `Error`.
-
-### High — Filesystem hardening is incomplete
-
-The shared `ownerOnly()` predicate accepts any owner-bit combination as long as group/other bits are clear. It therefore accepts directories and markers with modes such as `0600`, `0400`, or `0000`, and inspected sockets not exactly `0600`, despite the package requiring directory `0700` and socket/marker `0600`.
-
-Also, if listen succeeds but `captureBoundPath()` fails, `cleanupPartial` closes the listener without removing the socket created by that partial acquisition. Preserve a proven partial-bind identity and remove only that identity on hardening failure.
-
-### High — Required acceptance evidence is largely absent
-
-Only resolver/preparation, one healthy discovery, and one ordinary managed-server ownership path were added. Missing focused evidence includes unsafe directory/socket/marker types, ownership and exact modes; compatible versus incompatible precedence; real stale socket and dead/live/unknown marker classifications; malformed/reset peers; stale cleanup idempotence and replacement refusal; managed bound-path replacement; second-server non-interference; and executable default versus explicit selection.
-
-The current tests would not detect the security/classification defects above. Add the focused real-filesystem/socket matrix from package sections 7–8 with failure-safe cleanup.
+There is also no connector seam capable of driving the late-completion/generation races described by the package. These are Phase 4 acceptance requirements, not later-phase expansion.
 
 ## Verification
 
-The coder reports 45 focused tests and 175 music-core tests plus build, typecheck, format, package, spawn scan, and diff check passing. Those regressions are useful, but the coder also notes the complete suite was not rerun after the final change and an isolated server rerun timed out with dangling media-control processes. In any event, the reported tests do not establish the missing Phase 4 acceptance boundaries.
+The coder supplied passing typecheck, focused, combined, full-target, timer-scan, runtime-artifact, and diff evidence (4 focused tests, 88 combined tests, 218 full tests). The focused count largely selects pre-existing indeterminate tests and does not cover the missing terminal/race matrix above.

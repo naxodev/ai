@@ -18,10 +18,14 @@ import { NdjsonFramer } from "../session/framing.ts"
 import {
   MusicSessionClientError,
   connectOrStartMusicSession,
+  createReconnectingMusicSessionClientEffect,
   connectOrStartMusicSessionEffect,
   createMusicSessionClient,
+  createReconnectingMusicSessionClient,
   launchManagedMusicSessionDaemon,
   discoverMusicSession,
+  type MusicSessionClient,
+  type ReconnectingMusicSessionClient,
 } from "../session/client.ts"
 import {
   acquireStartupMarkerLease,
@@ -30,8 +34,22 @@ import {
   resolveMusicSessionRuntimePaths,
   resolveMusicSessionStartup,
 } from "../session/config.ts"
-import { Clock, Effect, Fiber, Latch, Random } from "effect"
+import {
+  Clock,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Latch,
+  Random,
+  Scope,
+} from "effect"
 import { TestClock } from "effect/testing"
+import {
+  type ProviderStatus,
+  type RevisionedState,
+  type TransportResult,
+} from "../session/protocol.ts"
 import {
   createFakeProvider,
   startMusicSessionServer,
@@ -309,6 +327,669 @@ async function startScriptedDaemon(helloTail = ""): Promise<ScriptedDaemon> {
     },
   }
 }
+
+const scriptedGeneration = (daemonInstanceId: string) => {
+  const statusListeners = new Set<(status: ProviderStatus) => void>()
+  const stateListeners = new Set<(state: RevisionedState) => void>()
+  const terminalListeners = new Set<(error: MusicSessionClientError) => void>()
+  let disposed = false
+  let status: ProviderStatus | undefined
+  let state: RevisionedState | undefined
+  const playResolvers: {
+    resolve: (result: TransportResult) => void
+    reject: (error: MusicSessionClientError) => void
+  }[] = []
+  const queuedCallbacks: (() => void)[] = []
+  const notify = <A>(listeners: Set<(value: A) => void>, value: A) => {
+    for (const listener of [...listeners]) listener(value)
+  }
+  const queue = <A>(listeners: Set<(value: A) => void>, value: A) => {
+    queuedCallbacks.push(
+      ...[...listeners].map((listener) => () => listener(value)),
+    )
+  }
+  const client: MusicSessionClient = {
+    daemonInstanceId,
+    negotiatedCapabilities: [],
+    selectedRevision: 1,
+    get status() {
+      return status
+    },
+    get state() {
+      return state
+    },
+    subscribeStatus: (listener) => {
+      statusListeners.add(listener)
+      if (status) listener(status)
+      return () => statusListeners.delete(listener)
+    },
+    subscribeState: (listener) => {
+      stateListeners.add(listener)
+      if (state) listener(state)
+      return () => stateListeners.delete(listener)
+    },
+    subscribeTerminal: (listener) => {
+      terminalListeners.add(listener)
+      return () => terminalListeners.delete(listener)
+    },
+    toggle: async () => ({ action: "toggle" }),
+    play: () =>
+      new Promise<TransportResult>((resolve, reject) =>
+        playResolvers.push({ resolve, reject }),
+      ),
+    pause: async () => ({ action: "pause" }),
+    next: async () => ({ action: "next" }),
+    previous: async () => ({ action: "previous" }),
+    seek: async () => ({ action: "seek" }),
+    dispose: () => {
+      disposed = true
+      statusListeners.clear()
+      stateListeners.clear()
+      terminalListeners.clear()
+    },
+  }
+  return {
+    client,
+    status: (next: ProviderStatus) => {
+      status = next
+      notify(statusListeners, next)
+    },
+    queueStatus: (next: ProviderStatus) => {
+      status = next
+      queue(statusListeners, next)
+    },
+    state: (next: RevisionedState) => {
+      state = next
+      notify(stateListeners, next)
+    },
+    queueState: (next: RevisionedState) => {
+      state = next
+      queue(stateListeners, next)
+    },
+    terminal: (error: MusicSessionClientError) => {
+      notify(terminalListeners, error)
+      for (const pending of playResolvers.splice(0))
+        pending.reject(
+          new MusicSessionClientError({
+            code: "INDETERMINATE_COMMAND",
+            message: "generation lost before command response",
+            retryable: false,
+          }),
+        )
+    },
+    queueTerminal: (error: MusicSessionClientError) => {
+      queue(terminalListeners, error)
+    },
+    flushQueued: () => {
+      for (const callback of queuedCallbacks.splice(0)) callback()
+    },
+    respondPlay: () => playResolvers.shift()?.resolve({ action: "play" }),
+    get disposed() {
+      return disposed
+    },
+  }
+}
+
+test("explicit terminal observation replays one retained retryable loss", async () => {
+  const daemon = await startScriptedDaemon()
+  let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    client = await createMusicSessionClient({
+      socketPath: daemon.path,
+      clientId: "terminal-observer",
+      hostKind: "test",
+    })
+    const observed: MusicSessionClientError[] = []
+    const terminal = new Promise<void>((resolve) => {
+      client!.subscribeTerminal((error) => {
+        observed.push(error)
+        resolve()
+      })
+    })
+    daemon.destroy()
+    await terminal
+    expect(observed).toHaveLength(1)
+    expect(observed[0]).toMatchObject({
+      code: "CONNECTION_LOST",
+      retryable: true,
+    })
+    client.subscribeTerminal((error) => observed.push(error))
+    client.dispose()
+    expect(observed).toHaveLength(2)
+    expect(observed[1]).toBe(observed[0])
+  } finally {
+    client?.dispose()
+    await daemon.close()
+  }
+})
+
+test("reconnecting disposal disposes a late Promise discovery client", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  const late = scriptedGeneration("generation-b")
+  let connects = 0
+  let resolveDiscovery: (() => void) | undefined
+  let markDiscoveryStarted: (() => void) | undefined
+  const discoveryStarted = new Promise<void>((resolve) => {
+    markDiscoveryStarted = resolve
+  })
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "late-discovery", hostKind: "test" },
+        {
+          connect: (options) => {
+            connects++
+            if (connects === 1) return Effect.succeed(first.client)
+            return connectOrStartMusicSessionEffect(options, {
+              discover: () =>
+                new Promise((resolve) => {
+                  resolveDiscovery = () =>
+                    resolve({ type: "healthy", client: late.client })
+                  markDiscoveryStarted?.()
+                }),
+            })
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    await discoveryStarted
+    await managed.dispose()
+    resolveDiscovery?.()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(connects).toBe(2)
+    expect(late.disposed).toBe(true)
+    expect(managed.connection.type).toBe("disposed")
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting disposal owns a client that loses the reservation-to-adoption race", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  const late = scriptedGeneration("generation-b")
+  let connects = 0
+  let managed: ReconnectingMusicSessionClient | undefined
+  let resolveDisposed: (() => void) | undefined
+  const disposed = new Promise<void>((resolve) => {
+    resolveDisposed = resolve
+  })
+  try {
+    managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "reservation-race", hostKind: "test" },
+        {
+          connect: () => {
+            connects++
+            return connects === 1
+              ? Effect.succeed(first.client)
+              : Effect.succeed(late.client)
+          },
+          onReserved: () => {
+            if (connects === 2)
+              void managed?.dispose().then(() => resolveDisposed?.())
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    await disposed
+    expect(connects).toBe(2)
+    expect(late.disposed).toBe(true)
+    expect(managed.connection.type).toBe("disposed")
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting disposal is one completion through a reentrant listener", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "dispose-once", hostKind: "test" },
+        { connect: () => Effect.succeed(first.client) },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    let outer: Promise<void> | undefined
+    let reentrant: Promise<void> | undefined
+    managed.subscribeConnection((state) => {
+      if (state.type === "disposed") reentrant = managed.dispose()
+    })
+    outer = managed.dispose()
+    const concurrent = managed.dispose()
+    expect(concurrent).toBe(outer)
+    await outer
+    expect(reentrant).toBe(outer)
+    expect(first.disposed).toBe(true)
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting disposal owns a healthy client while cleanup is interrupted", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  const late = scriptedGeneration("generation-b")
+  let connects = 0
+  let resolveCleanup: (() => void) | undefined
+  let markCleanupStarted: (() => void) | undefined
+  const cleanupStarted = new Promise<void>((resolve) => {
+    markCleanupStarted = resolve
+  })
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "late-cleanup", hostKind: "test" },
+        {
+          connect: (options) => {
+            connects++
+            if (connects === 1) return Effect.succeed(first.client)
+            return connectOrStartMusicSessionEffect(options, {
+              discover: async () => ({
+                type: "healthy",
+                client: late.client,
+                cleanup: () =>
+                  new Promise<void>((resolve) => {
+                    resolveCleanup = resolve
+                    markCleanupStarted?.()
+                  }),
+              }),
+            })
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    await cleanupStarted
+    await managed.dispose()
+    resolveCleanup?.()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(connects).toBe(2)
+    expect(late.disposed).toBe(true)
+    expect(managed.connection.type).toBe("disposed")
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting fences late A callbacks and replays retained listeners", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  const second = scriptedGeneration("generation-b")
+  const player = createFakeProvider().state
+  const aStatus: ProviderStatus = {
+    kind: "ready",
+    provider: null,
+    message: "generation A",
+  }
+  const bStatus: ProviderStatus = {
+    kind: "ready",
+    provider: null,
+    message: "generation B",
+  }
+  const aState: RevisionedState = {
+    daemonInstanceId: "generation-a",
+    revision: 9,
+    state: player,
+  }
+  const bState: RevisionedState = {
+    daemonInstanceId: "generation-b",
+    revision: 1,
+    state: player,
+  }
+  first.status(aStatus)
+  first.state(aState)
+  second.status(bStatus)
+  second.state(bState)
+  const replacement = Deferred.makeUnsafe<MusicSessionClient>()
+  let connects = 0
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "generation-fence", hostKind: "test" },
+        {
+          connect: () => {
+            connects++
+            return connects === 1
+              ? Effect.succeed(first.client)
+              : Deferred.await(replacement)
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    const statuses: string[] = []
+    const states: string[] = []
+    const lifecycle: string[] = []
+    managed.subscribeStatus((status) => statuses.push(status.message))
+    managed.subscribeState((state) => states.push(state.daemonInstanceId))
+    managed.subscribeConnection((state) => lifecycle.push(state.type))
+    const oldPlay = managed.play()
+    first.queueStatus({ ...aStatus, message: "late A status" })
+    first.queueState({ ...aState, revision: 10 })
+    first.queueTerminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "late A terminal",
+        retryable: true,
+      }),
+    )
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    const retainedStatuses: string[] = []
+    const retainedStates: string[] = []
+    const unsubscribeStatus = managed.subscribeStatus((status) =>
+      retainedStatuses.push(status.message),
+    )
+    const unsubscribeState = managed.subscribeState((state) =>
+      retainedStates.push(state.daemonInstanceId),
+    )
+    expect(retainedStatuses).toEqual(["generation A"])
+    expect(retainedStates).toEqual(["generation-a"])
+    unsubscribeStatus()
+    unsubscribeStatus()
+    unsubscribeState()
+    unsubscribeState()
+    Deferred.doneUnsafe(replacement, Effect.succeed(second.client))
+    await new Promise<void>((resolve) => {
+      managed.subscribeConnection((state) => {
+        if (
+          state.type === "connected" &&
+          state.daemonInstanceId === "generation-b"
+        )
+          resolve()
+      })
+    })
+    const replacementPlay = managed.play()
+    let replacementSettled = false
+    void replacementPlay.then(() => {
+      replacementSettled = true
+    })
+    await expect(oldPlay).rejects.toMatchObject({
+      code: "INDETERMINATE_COMMAND",
+    })
+    first.flushQueued()
+    await Promise.resolve()
+    expect(replacementSettled).toBe(false)
+    second.respondPlay()
+    await expect(replacementPlay).resolves.toEqual({ action: "play" })
+    expect(managed.status).toEqual(bStatus)
+    expect(managed.state).toEqual(bState)
+    expect(statuses).toEqual(["generation A", "generation B"])
+    expect(states).toEqual(["generation-a", "generation-b"])
+    expect(retainedStatuses).toEqual(["generation A"])
+    expect(retainedStates).toEqual(["generation-a"])
+    expect(lifecycle).toEqual(["connected", "reconnecting", "connected"])
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting replacement incompatibility retains its terminal range once", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  const range = { major: 1, minRevision: 0, maxRevision: 1 }
+  const incompatible = new MusicSessionClientError({
+    code: "INCOMPATIBLE_PROTOCOL",
+    message: "replacement is incompatible",
+    retryable: false,
+    details: { client: range, daemon: { ...range, minRevision: 9 } },
+  })
+  let attempts = 0
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "replacement-incompatible", hostKind: "test" },
+        {
+          connect: () => {
+            attempts++
+            return attempts === 1
+              ? Effect.succeed(first.client)
+              : Effect.fail(incompatible)
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    const terminal = new Promise<void>((resolve) => {
+      managed.subscribeConnection((state) => {
+        if (state.type === "terminal") resolve()
+      })
+    })
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    await terminal
+    expect(managed.connection).toEqual({
+      type: "terminal",
+      error: incompatible,
+    })
+    expect(attempts).toBe(2)
+    const replayed: unknown[] = []
+    managed.subscribeConnection((state) => replayed.push(state))
+    expect(replayed).toEqual([{ type: "terminal", error: incompatible }])
+    await Promise.resolve()
+    expect(attempts).toBe(2)
+    const afterTerminal: string[] = []
+    managed.subscribeConnection((state) => afterTerminal.push(state.type))
+    await managed.dispose()
+    expect(managed.connection.type).toBe("disposed")
+    expect(afterTerminal).toEqual(["terminal", "disposed"])
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting preserves runtime failures instead of disguising them", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  const runtimeFailure = new MusicSessionRuntimeError({
+    operation: "inspect",
+    path: "/tmp/music-session-test",
+    message: "unsafe runtime",
+  })
+  let attempts = 0
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "replacement-runtime", hostKind: "test" },
+        {
+          connect: () => {
+            attempts++
+            return attempts === 1
+              ? Effect.succeed(first.client)
+              : Effect.fail(runtimeFailure)
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    const terminal = new Promise<void>((resolve) => {
+      managed.subscribeConnection((state) => {
+        if (state.type === "terminal") resolve()
+      })
+    })
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    await terminal
+    expect(managed.connection).toEqual({
+      type: "terminal",
+      error: runtimeFailure,
+    })
+    expect(attempts).toBe(2)
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting disposal interrupts a TestClock replacement sleep", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const clock = await Effect.runPromise(
+    TestClock.make().pipe(Effect.provideService(Scope.Scope, scope)),
+  )
+  const first = scriptedGeneration("generation-a")
+  let attempts = 0
+  let replacementStarted: (() => void) | undefined
+  const started = new Promise<void>((resolve) => {
+    replacementStarted = resolve
+  })
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "replacement-dispose", hostKind: "test" },
+        {
+          connect: () => {
+            attempts++
+            if (attempts === 1) return Effect.succeed(first.client)
+            return Effect.gen(function* () {
+              replacementStarted?.()
+              yield* Effect.sleep("1 hour")
+              throw new Error("interrupted replacement slept to completion")
+            })
+          },
+        },
+      ).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.provideService(Clock.Clock, clock),
+      ),
+    )
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    await started
+    await managed.dispose()
+    await Effect.runPromise(clock.adjust("1 day"))
+    expect(attempts).toBe(2)
+    expect(managed.connection.type).toBe("disposed")
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting uses the bounded Phase 3 schedule without a busy loop", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const clock = await Effect.runPromise(
+    TestClock.make().pipe(Effect.provideService(Scope.Scope, scope)),
+  )
+  const first = scriptedGeneration("generation-a")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root: "/tmp",
+    uid: process.getuid?.() ?? -1,
+  })
+  const replacementAttempt = Latch.makeUnsafe()
+  const lease = {
+    paths: runtime,
+    attemptToken: "reconnect-test-lease",
+    release: async () => {},
+  }
+  let connects = 0
+  let startupAttempts = 0
+  let launches = 0
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        {
+          runtime,
+          clientId: "replacement-schedule",
+          hostKind: "test",
+          startup: { attempts: 3, initialDelayMs: 10, maxDelayMs: 20 },
+        },
+        {
+          connect: (options) => {
+            connects++
+            if (connects === 1) return Effect.succeed(first.client)
+            return connectOrStartMusicSessionEffect(
+              {
+                ...options,
+                launcher: async () => {
+                  launches++
+                },
+              },
+              {
+                discover: async () => ({ type: "missing" }),
+                acquireLease: async () => ({ type: "acquired", lease }),
+                onAttempt: () => {
+                  startupAttempts++
+                  Latch.openUnsafe(replacementAttempt)
+                },
+              },
+            )
+          },
+        },
+      ).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.provideService(Clock.Clock, clock),
+        Random.withSeed("reconnect-pacing"),
+      ),
+    )
+    const terminal = new Promise<void>((resolve) => {
+      managed.subscribeConnection((state) => {
+        if (state.type === "terminal") resolve()
+      })
+    })
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+    )
+    await Effect.runPromise(Latch.await(replacementAttempt))
+    expect(connects).toBe(2)
+    expect(startupAttempts).toBe(1)
+    await Effect.runPromise(clock.adjust("5 millis"))
+    expect(startupAttempts).toBe(1)
+    await Effect.runPromise(clock.adjust("1 hour"))
+    await terminal
+    expect(startupAttempts).toBe(3)
+    expect(launches).toBe(1)
+    expect(managed.connection).toMatchObject({
+      type: "terminal",
+      error: { _tag: "MusicSession.StartupError", operation: "timeout" },
+    })
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
 
 test("managed launcher uses detached packaged entry and releases its child handle", async () => {
   const listeners = new Map<string, (cause?: Error) => void>()
@@ -622,6 +1303,129 @@ test("connect-or-start acquires one marker, launches once, and returns a hello c
   } finally {
     client?.dispose()
     await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("reconnecting client adopts one replacement generation without replay", async () => {
+  const root = await mkdtemp("/tmp/music-session-reconnect-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const firstProvider = createFakeProvider()
+  const secondProvider = createFakeProvider()
+  let first: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let second: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let launches = 0
+  let client:
+    Awaited<ReturnType<typeof createReconnectingMusicSessionClient>> | undefined
+  try {
+    client = await createReconnectingMusicSessionClient({
+      runtime,
+      clientId: "reconnecting",
+      hostKind: "test",
+      startup: { attempts: 8, initialDelayMs: 5, maxDelayMs: 10 },
+      launcher: async () => {
+        launches++
+        if (launches === 1)
+          first = await startMusicSessionServer({ runtime }, firstProvider)
+        else second = await startMusicSessionServer({ runtime }, secondProvider)
+      },
+    })
+    const firstInstance = client.daemonInstanceId
+    const lifecycle: string[] = []
+    const states: number[] = []
+    let connectedReplacement: (() => void) | undefined
+    let reconnecting: (() => void) | undefined
+    let stateFromA: (() => void) | undefined
+    const replacement = new Promise<void>((resolve) => {
+      connectedReplacement = resolve
+    })
+    const reconnectingSeen = new Promise<void>((resolve) => {
+      reconnecting = resolve
+    })
+    const updatedA = new Promise<void>((resolve) => {
+      stateFromA = resolve
+    })
+    client.subscribeConnection(() => {
+      throw new Error("listener isolation")
+    })
+    client.subscribeConnection((state) => {
+      lifecycle.push(state.type)
+      if (state.type === "reconnecting") reconnecting?.()
+      if (
+        state.type === "connected" &&
+        state.daemonInstanceId !== firstInstance
+      )
+        connectedReplacement?.()
+    })
+    client.subscribeState(() => {
+      throw new Error("listener isolation")
+    })
+    client.subscribeState((state) => {
+      states.push(state.revision)
+      if (state.daemonInstanceId === firstInstance && state.revision > 1)
+        stateFromA?.()
+    })
+    firstProvider.emit({
+      type: "snapshot",
+      state: { ...firstProvider.state, fetched_at: 1 },
+    })
+    firstProvider.emit({
+      type: "snapshot",
+      state: { ...firstProvider.state, fetched_at: 2 },
+    })
+    await updatedA
+    const retainedState = client.state
+    firstProvider.blockTransport()
+    const pending = client.play()
+    const closing = first!.close()
+    await expect(pending).rejects.toMatchObject({
+      code: "INDETERMINATE_COMMAND",
+    })
+    await reconnectingSeen
+    expect(client.state).toEqual(retainedState)
+    await expect(client.play()).rejects.toMatchObject({
+      code: "CONNECTION_LOST",
+      retryable: true,
+    })
+    const replayDuringReconnect: number[] = []
+    const unsubscribeReplay = client.subscribeState((state) =>
+      replayDuringReconnect.push(state.revision),
+    )
+    expect(replayDuringReconnect).toEqual([retainedState!.revision])
+    unsubscribeReplay()
+    unsubscribeReplay()
+    await replacement
+    expect(client.connection.type).toBe("connected")
+    expect(client.daemonInstanceId).not.toBe(firstInstance)
+    expect(launches).toBe(2)
+    expect(client.state?.daemonInstanceId).toBe(client.daemonInstanceId)
+    expect(client.state!.revision).toBeLessThan(retainedState!.revision)
+    expect(states).toContain(retainedState!.revision)
+    expect(replayDuringReconnect).toEqual([retainedState!.revision])
+    expect(secondProvider.calls).toEqual([])
+    expect(await client.play()).toEqual({ action: "play" })
+    expect(secondProvider.calls).toEqual(["play"])
+    expect(lifecycle).toEqual(["connected", "reconnecting", "connected"])
+    firstProvider.releaseTransport()
+    await closing
+    await client.dispose()
+    await client.dispose()
+    expect(client.connection.type).toBe("disposed")
+    await expect(client.play()).rejects.toMatchObject({ code: "DISPOSED" })
+    expect(lifecycle).toEqual([
+      "connected",
+      "reconnecting",
+      "connected",
+      "disposed",
+    ])
+  } finally {
+    await client?.dispose().catch(() => {})
+    firstProvider.releaseTransport()
+    await first?.close().catch(() => {})
+    await second?.close().catch(() => {})
     await rm(root, { recursive: true, force: true })
   }
 })
