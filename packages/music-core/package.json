@@ -62,7 +62,8 @@
     "format:check": "prettier --check --ignore-path ../../.gitignore .",
     "build": "bun build ./session/music-sessiond.ts --target=node --outfile ./dist/music-sessiond.js",
     "prepack": "bun run build",
-    "pack:check": "bun run build && bun run scripts/verify-pack.ts"
+    "pack:check": "bun run build && bun run scripts/verify-pack.ts",
+    "smoke:package": "bun run scripts/verify-pack.ts --installed-smoke"
   },
   "dependencies": {
     "effect": "4.0.0-beta.101"

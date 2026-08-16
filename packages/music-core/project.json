@@ -39,6 +39,13 @@
         "command": "bun run pack:check",
         "cwd": "packages/music-core"
       }
+    },
+    "smoke": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run smoke:package",
+        "cwd": "packages/music-core"
+      }
     }
   }
 }

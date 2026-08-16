@@ -1,26 +1,16 @@
 {
   "version": 1,
-  "slug": "music-session-lifecycle-slices",
+  "slug": "music-session-release-gates",
   "step": "committing",
-  "phase_index": 11,
+  "phase_index": 1,
   "phase_count_hint": null,
   "rounds": {
     "plan_review": 1,
-    "phase-01/code_review": 2,
-    "phase-02/code_review": 2,
-    "phase-03/code_review": 4,
-    "phase-04/code_review": 7,
-    "phase-05/code_review": 8,
-    "phase-06/code_review": 11,
-    "phase-07/code_review": 15,
-    "phase-08/code_review": 7,
-    "phase-09/code_review": 4,
-    "phase-10/code_review": 2,
-    "phase-11/code_review": 1
+    "phase-01/code_review": 1
   },
   "vcs": "jj",
   "allow_dirty": true,
-  "goal": "Continue and finish the machine-local Effect TypeScript v4 music-session migration from the current dirty worktree. Preserve every verified commit, all accumulated singleton/startup work, and docs/music-session-architecture.html. Do not push or open a PR. The previous run was abandoned because one phase combined a production selected-graph shutdown deadlock with process singleton races and a large startup acceptance matrix. Inspect current source and abandoned artifacts. Phase 1 must cover ONLY the selected production graph shutdown cycle: separate listener, coordinator, and provider ownership so shutdown stops acceptance, interrupts coordinator work, awaits dependent connections, finalizes provider, and releases listener without deadlock; verify through the real selected blocked-work topology. Treat existing singleton/startup behavior and tests as baseline only. Phase 2 should cover ONLY process-level two-daemon singleton winner/loser non-interference. Phase 3 should cover ONLY Effect TestClock startup pacing, 20-client convergence, marker release, and incompatibility races. Then continue reconnect, idle shutdown, 24-client fan-out, artwork, OpenCode, Pi, cleanup, packed smokes, docs, full verification, and pr-description as narrow tactical packages. Never add later-phase acceptance to an earlier gate. Use Effect v4 only, jj squash workflow, Pi role profiles, regular panes, and preserve unrelated changes.",
+  "goal": "Finish the machine-local Effect TypeScript v4 music-session migration from the current dirty worktree. Preserve every verified commit, the accumulated packed-core harness, docs/music-session-architecture.html, and unrelated changes. Do not push or open a PR. The prior run was abandoned because its packed-core phase package was contradictory. Phase 1 must cover ONLY the installed packed-core Node daemon/client smoke and must explicitly adopt these achievable policies: keep the current package export surface; use a unique structurally supplied managed runtime path rather than requiring an unexported resolver; delete owned runtime artifacts after confirmed process termination; retain and report the temporary root when process-group termination cannot be confirmed rather than deleting beneath a possibly live process. Accept the existing passing installed smoke if it proves package-name imports, manifest-selected daemon, hello/replay, invalid config, disposal, bounded idle exit, provider isolation, and successful cleanup. Do not add unrelated acceptance. Then continue only the remaining exact OpenCode pin smoke, exact Pi smoke, docs/current architecture, full repository checks, mixed-host verification, and pr-description as narrow phases. Use Effect v4 only, jj squash workflow, Pi role profiles, regular panes, and preserve unrelated worktree changes.",
   "last_error": null,
   "pending_artifact": null,
   "pending_role": null,
@@ -34,20 +24,20 @@
   "pending_extended": false,
   "role_panes": {
     "planner": {
-      "pane_id": "w2:pCP",
-      "label": "apnea:planner:msvw8yk1-3jse"
+      "pane_id": "w2:pD8",
+      "label": "apnea:planner:mswcsxkf-zpru"
     },
     "reviewer": {
-      "pane_id": "w2:pCQ",
-      "label": "apnea:reviewer:msvwes9b-sebp"
+      "pane_id": "w2:pDA",
+      "label": "apnea:reviewer:mswcxyhm-nn12"
     },
     "coder": {
-      "pane_id": "w2:pD4",
-      "label": "apnea:coder:msw8y10j-y9i2"
+      "pane_id": "w2:pDB",
+      "label": "apnea:coder:mswd12ne-pew0"
     }
   },
   "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
   "reviewer_tree_fingerprint": null,
-  "current_phase_package": ".apnea/artifacts/phase-11/round-1/phase-package.md",
-  "current_code_review": ".apnea/artifacts/phase-11/round-1/code-review.md"
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": ".apnea/artifacts/phase-01/round-1/code-review.md"
 }

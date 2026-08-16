@@ -9,19 +9,32 @@ import {
 import { layer as serverLayer, MusicSessionServerService } from "./server.ts"
 
 function usage() {
-  console.log("Usage: naxodev-music-sessiond [--socket <absolute-path>]")
+  console.log(
+    "Usage: naxodev-music-sessiond [--socket <absolute-path>] [--idle-grace-ms <positive-safe-integer>]",
+  )
 }
-function socketArgument(argv: readonly string[]): string | undefined {
+type DaemonArguments = {
+  readonly socketPath: string | undefined
+  readonly idleGraceMs: number | undefined
+}
+function daemonArguments(argv: readonly string[]): DaemonArguments {
   if (argv.includes("--help") || argv.includes("-h")) {
     usage()
     process.exit(0)
   }
-  const index = argv.indexOf("--socket")
-  if (index < 0) return undefined
-  const value = argv[index + 1]
-  if (!value || !value.startsWith("/"))
+  const value = (flag: string) => {
+    const index = argv.indexOf(flag)
+    if (index < 0) return undefined
+    const next = argv[index + 1]
+    if (!next) throw new Error(`${flag} requires a value`)
+    return next
+  }
+  const socketPath = value("--socket")
+  if (socketPath !== undefined && !socketPath.startsWith("/"))
     throw new Error("--socket requires an absolute Unix socket path")
-  return value
+  const idleGrace = value("--idle-grace-ms")
+  if (idleGrace === undefined) return { socketPath, idleGraceMs: undefined }
+  return { socketPath, idleGraceMs: Number(idleGrace) }
 }
 
 const formatDaemonError = (error: unknown) => {
@@ -96,12 +109,18 @@ export const runMusicSessionDaemon = async (
   const setStatus =
     options.setStatus ?? ((status) => (process.exitCode = status))
   try {
-    const explicitSocket = socketArgument(options.argv ?? process.argv.slice(2))
-    const runtime = explicitSocket
+    const arguments_ = daemonArguments(options.argv ?? process.argv.slice(2))
+    const runtime = arguments_.socketPath
       ? undefined
       : (options.runtime ?? resolveMusicSessionRuntimePaths())
-    const socketPath = explicitSocket ?? runtime!.socketPath
-    const graphOptions = explicitSocket ? { socketPath } : { runtime: runtime! }
+    const socketPath = arguments_.socketPath ?? runtime!.socketPath
+    const idleGrace =
+      arguments_.idleGraceMs === undefined
+        ? {}
+        : { idleGraceMs: arguments_.idleGraceMs }
+    const graphOptions = arguments_.socketPath
+      ? { socketPath, ...idleGrace }
+      : { runtime: runtime!, ...idleGrace }
     const graph = options.graph
       ? options.graph(graphOptions)
       : productionGraph(graphOptions)

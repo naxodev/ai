@@ -2,42 +2,54 @@
 status: done
 ---
 
-Implemented the selected production graph split: provider and coordinator now build once in separate child scopes after listener hardening; shutdown closes coordinator, drains connections, closes provider, then releases listener/path. `layerWithHooks` and the Promise adapter now accept provider layers only. Added selected-topology blocked-command evidence with real Unix client, ordering hooks, interruption, exact-once finalization, indeterminate settlement, and no late write.
+## What changed
 
-Files changed for this phase:
-- `packages/music-core/session/server.ts`
-- `packages/music-core/tests/session-server.test.ts`
+No product-source change was needed. The existing dirty packed-core implementation satisfies this phase: the installed smoke imports `@naxodev/music-core`, selects the daemon from the installed manifest, supplies a unique structural runtime beneath its temporary root, validates invalid configuration, completes hello/replay, isolates providers, awaits disposal and bounded idle exit, and reports cleanup success. Package exports remain unchanged.
 
-Verification:
+## Files touched
+
+- `.apnea/artifacts/phase-01/round-1/coder-result.md`
+
+No phase-owned product files were modified.
+
+## Verification transcript
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts -t 'selected.*blocked|blocked.*selected'
+$ bunx nx run music-core:smoke --skip-nx-cache
 exit: 0
-(pass) selected graph shutdown interrupts blocked coordinator work before draining connections
-1 pass, 0 fail
+> nx run music-core:smoke
+> bun run smoke:package
+$ bun run scripts/verify-pack.ts --installed-smoke
+installed Node v24.8.0
+installed package root: /private/tmp/music-core-installed-smoke-tvOddD/install/node_modules/@naxodev/music-core/index.ts
+manifest daemon: /private/tmp/music-core-installed-smoke-tvOddD/install/node_modules/@naxodev/music-core/dist/music-sessiond.js
+negotiated daemon: music-session-z6lwf5z2lx revision 1
+status-zero idle exit and cleanup: ok
+NX Successfully ran target smoke for project music-core
 
-$ bun test packages/music-core/tests/session-server.test.ts
+$ ! find packages/music-core -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
 exit: 0
-35 pass, 0 fail
-
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit: 0
-NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
-203 pass, 0 fail
-
-$ ! rg -n 'Effect\.runSync|setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
-exit: 0
+(no output; no prohibited artifacts found)
 
 $ jj diff --summary
 exit: 0
-Inspected: phase paths remain limited to server, daemon, and server-test alongside pre-existing dirty worktree files.
+tail:
+M packages/music-core/package.json
+M packages/music-core/project.json
+M packages/music-core/scripts/verify-pack.ts
+M packages/music-core/session/music-sessiond.ts
 
-$ jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
+$ jj status
 exit: 0
-Inspected: provider-only selection, separate scopes, and coordinator -> connections -> provider -> listener order are present.
-
-$ git diff --check
-exit: 0
+tail:
+M packages/music-core/package.json
+M packages/music-core/project.json
+M packages/music-core/scripts/verify-pack.ts
+M packages/music-core/session/music-sessiond.ts
+Working copy  (@) : kyzluvzy 95deca42 (no description set)
+Parent commit (@-): luotokos 31f1c2d4 chore(music): remove per-host provider ownership
 ```
 
-Residual risks: none identified for the Phase 1 selected shutdown topology. Existing unrelated dirty worktree changes (including `.apnea/state.json`) were not modified.
+## Residual risks
+
+The verification is machine-local and depends on the installed Node/npm environment. Pre-existing unrelated worktree and `.apnea` changes were preserved; `.apnea/state.json` was not edited.
