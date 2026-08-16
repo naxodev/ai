@@ -120,7 +120,14 @@ export const runMusicSessionDaemon = async (
         diagnostic(
           `music-sessiond listening on ${socketPath} (${server.coordinator.daemonInstanceId})`,
         )
-        yield* Effect.raceFirst(Fiber.join(signal), server.awaitFailure)
+        const reason = yield* Effect.raceFirst(
+          Effect.raceFirst(Fiber.join(signal), server.awaitFailure),
+          server.awaitIdle.pipe(Effect.as("idle" as const)),
+        )
+        if (reason === "idle")
+          diagnostic(
+            `music-sessiond idle shutdown (${server.coordinator.daemonInstanceId})`,
+          )
       }).pipe(Effect.provide(graph)),
     )
     let daemonFailure: unknown

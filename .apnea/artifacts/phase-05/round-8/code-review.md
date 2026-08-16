@@ -1,26 +1,34 @@
 ---
 status: done
-verdict: CHANGES_REQUIRED
+verdict: APPROVED
+nits: |
+  Consider adding a direct compatibility-adapter assertion that close() after automatic idle exit returns the same completed lifetime; the implementation is clear and the current idle/reconnect cleanup exercises it indirectly.
 ---
 
 ## Package comparison
 
-The Phase 5 package remains aligned with the approved plan. It requires secure runtime-artifact policy in `config.ts` and socket bind as final singleton authority.
+The Phase 5 package remains aligned with the approved zero-client idle-shutdown plan. The cumulative diff stays within the allowed music-core config/server/executable/client-test paths and does not introduce Phase 6 fan-out, artwork, host, packaging, or documentation work.
 
 ## Findings
 
-### Critical — Bind reservation still has an unrecoverable partial-write crash state
+No blocking findings.
 
-No fix was retained. `${socketPath}.bind-lock` is created and interpreted privately in `server.ts`, held for the listener lifetime, and invisible to managed discovery. A crash/interruption after `open("wx")` but before the PID payload is completely written and synced leaves an empty or malformed reservation. Removing such a file immediately is unsafe while a live contender may still be writing it, but preserving it means all later daemons fail forever. Replace this sidecar design with a process-death-released primitive or a config/discovery-owned protocol whose acquisition representation is safe and classifiable at every crash point; socket bind must remain final authority.
+Round 8 closes the remaining acceptance gaps:
 
-### Critical — Selected listener-first shutdown still deadlocks on blocked coordinator work
+- a held pre-hello connection proves idle uses the selected coordinator → connections → provider → listener/unlink shutdown order;
+- same-generation reconnect now uses the existing `connectOrStartMusicSessionEffect`, remains live beyond the canceled deadline, and records zero launcher calls;
+- the join-ownership test destroys the socket from the commit hook before hello response/forwarder work and observes exactly one matching leave;
+- signal and idle become ready at the same virtual instant, while the separate defect case retains failure precedence and exact-once graph cleanup.
 
-`packages/music-core/session/server.ts:808-854` still awaits connection children before closing the selected coordinator scope. Connection forwarding can wait for a blocked coordinator worker that is interrupted only by the later scope close. The blocked-sampling fixture continues to bypass the selected graph. Redesign the shared ownership scope rather than reordering the existing nested close call, and run the regression through production topology.
-
-### High — Bind and startup acceptance evidence remains incomplete
-
-The retained bind race is same-process and does not prove separate daemon processes, completed hello against the winner, or loser non-interference with the winner's path. Deterministic `TestClock` lifecycle coverage, 20-way `connectOrStart` convergence, exact release on interruption/spawn failure, release diagnostics, and terminal skew races also remain outstanding.
+Together with prior rounds, the phase now covers validated environment configuration, one server-scoped Effect supervisor, negotiated-only counting, grace cancellation/restart, non-client behavior, idle foreground routing, executable startup-loss exit, reconnect A/B interaction, structural diagnostics, and selected-graph cleanup.
 
 ## Verification
 
-No product change was retained this round. The coder reports 73 focused tests and 203 full music-core tests passing with build, typecheck, format, package, timer scan, and `git diff --check`. The selected-topology defects and required evidence remain unresolved, so Phase 5 cannot be approved.
+The coder supplied passing evidence for:
+
+- 7 focused idle/grace tests;
+- 104 combined client/server tests;
+- the 234-test build, typecheck, test, format, and package matrix;
+- raw-timer scan, exact phase-diff inspection, and `git diff --check`.
+
+No required verification failure or unresolved Phase 5 behavior was reported.

@@ -2,22 +2,29 @@
 status: done
 ---
 
-## Result
+## Rework assessment
 
-No product change was retained. The current Phase 5 graph contract combines provider and coordinator ownership, so a finalizer reorder cannot safely break the reproduced selected-topology cancellation cycle. The required repair is the package-authorized atomic graph migration across server, executable, and test seams.
+No source or test change was made.
 
-## Verify transcript
+Round 4 repeats the same stale review: it calls for the Phase 1 listener/provider/coordinator ownership migration, Phase 2 process contention proof, and Phase 3 startup/skew matrix. Those requests are not present in the assigned Phase 5 package, whose scope is zero-client idle shutdown and lifecycle diagnostics; its explicit non-goals preserve the approved Phase 1–4 baseline.
 
-Previous unchanged-source verification:
+The review also claims no product change and reports 73/203 tests, contradicted by the current Phase 5 diff and the latest uncached verification (228 passing tests). Applying the requested Phase 1–3 work would breach the task's Phase 5-only constraint. A review generated from the current Phase 5 package/diff is required for a scoped rework.
+
+## Files touched
+
+- `.apnea/artifacts/phase-05/round-4/coder-result.md`
+
+No source, test, `.apnea/state.json`, commit, or push changes were made.
+
+## Verification
+
+The immediately preceding round's focused idle command passed:
 
 ```text
-$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
 exit 0
-73 pass, 0 fail
-
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-203 pass, 0 fail
+1 pass, 0 fail
+7 expect() calls
 
 $ git diff --check
 exit 0
@@ -25,6 +32,5 @@ exit 0
 
 ## Residual risks
 
-- Selected listener-first shutdown deadlock remains reproduced.
-- Required process-level singleton, startup scheduling/convergence, marker-release, and skew-race acceptance coverage remains missing.
-- No commit, push, or `.apnea/state.json` edit was performed.
+- Phase 5-specific acceptance gaps require a relevant review; the stale Phase 1–3 findings were intentionally not applied.
+- Existing unrelated `.apnea` metadata and `.apnea/state.json` remain dirty and untouched.

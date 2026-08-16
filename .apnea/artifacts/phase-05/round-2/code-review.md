@@ -5,22 +5,31 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 5 package remains aligned with the approved plan. It is confined to singleton auto-start, listener-first ownership, bounded startup scheduling, and version-skew policy; reconnect, load, artwork, and host migration remain out of scope.
+The assigned package is Phase 5 zero-client idle shutdown and remains aligned with the approved plan. The Round 1 review was also explicitly against this Phase 5 package; it did not request singleton/startup or Phase 1–3 rework.
 
 ## Findings
 
-### Critical — The selected listener-first graph still deadlocks during shutdown
+### Critical — The negotiated join/leave ownership race remains unchanged
 
-No product change was retained. As acknowledged in the coder result, the real selected blocked-work topology still times out while the green fixture supplies its coordinator externally and bypasses the ownership cycle. The combined coordinator/provider scope waits for connection children before interrupting coordinator work those children may depend on. Split the shared graph contract into distinct listener, provider, and coordinator ownership so shutdown can refuse new work, interrupt coordinator work, await connections, finalize provider ownership, and release the listener without a cycle. Retain the blocked-work regression through the actual selected topology.
+No source changed in Round 2. A compatible hello still executes `yield* onJoin` before assigning `joined = true` in `packages/music-core/session/server.ts`. Interruption after the queue accepts the join but before the assignment causes the connection finalizer to skip `onLeave`, retaining a phantom negotiated-client count and preventing idle shutdown. Enrollment and the finalizer's leave obligation must be transferred interruption-safely, with deterministic immediate-disconnect evidence.
 
-### High — Process-level singleton and loser non-interference evidence remains absent
+### High — The required Phase 5 acceptance matrix remains missing
 
-The package requires daemon contenders that bypass marker coordination, exactly one listener/provider winner, a completed hello against that winner, a tagged/nonzero loser, and proof that the loser cannot unlink, chmod, close, or otherwise disturb the winner's socket. This evidence is still missing.
+Round 2 adds no tests. The only focused idle test still covers initial no-client expiry, not the package's required real-client lifecycle. Evidence remains absent for:
 
-### High — Required startup and skew evidence remains incomplete
+- grace cancellation/restart across one client, two clients, non-last departure, last departure, and rejoin;
+- raw pre-hello, malformed, and incompatible sockets not pinning the daemon;
+- exact selected-graph ordering/artifact cleanup and signal/idle/defect convergence;
+- executable startup-loss status-zero idle exit and bounded cleanup;
+- reconnect rejoining generation A before grace and adopting B after A exits;
+- bounded structural diagnostics without playback payloads.
 
-The suite still lacks deterministic Effect `TestClock` pacing/capping/exhaustion/success/interruption, 20-way `connectOrStart` convergence on one launcher/listener/provider, exact marker release on interruption and whole-workflow spawn failure, release-diagnostic retention, and terminal incompatibility races before acquisition, after acquisition, and while waiting.
+The Round 2 coder result itself acknowledges that the assigned Phase 5 gaps remain.
 
-## Verification
+### High — The environment-backed idle-grace Config entry remains missing
 
-The coder retained no product changes and cites the last unchanged-source verification: 73 focused tests and 203 full music-core tests passed, with `git diff --check` clean. Those green tests exclude the reproduced selected-topology deadlock and do not satisfy the remaining Phase 5 acceptance matrix.
+`MusicSessionConfigLive` still exposes the other runtime timings but neither reads a matching idle-grace `Config` value nor passes it into `resolve`. Production therefore remains fixed to the default instead of receiving the package-required validated environment-backed setting. Focused invalid-value coverage is also incomplete.
+
+### Medium — Round 2 verification is incomplete
+
+The coder supplied typecheck, one focused idle test, `git diff --check`, and a diff summary only. The required combined client/server suite, uncached full build/typecheck/test/format/package matrix, and raw-timer scan were not reported for this round. More importantly, passing the single existing idle test cannot satisfy the missing acceptance evidence above.

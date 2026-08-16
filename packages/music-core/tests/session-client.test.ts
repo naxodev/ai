@@ -33,9 +33,14 @@ import {
   prepareManagedRuntimeDirectory,
   resolveMusicSessionRuntimePaths,
   resolveMusicSessionStartup,
+  resolveConfig,
+  defaults,
+  layerFromConfig,
+  MusicSessionConfig,
 } from "../session/config.ts"
 import {
   Clock,
+  ConfigProvider,
   Deferred,
   Effect,
   Exit,
@@ -65,6 +70,47 @@ test("startup timing resolves through the tagged config boundary", async () => {
       }),
     ),
   ).resolves.toEqual({ attempts: 3, initialDelayMs: 10, maxDelayMs: 40 })
+  await expect(
+    resolveConfig({
+      socketPath: "/tmp/music-session-config.sock",
+      idleGraceMs: 42,
+    }),
+  ).resolves.toMatchObject({ idleGraceMs: 42 })
+  for (const idleGraceMs of [
+    0,
+    -1,
+    1.5,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])
+    await expect(
+      resolveConfig({
+        socketPath: "/tmp/music-session-config.sock",
+        idleGraceMs,
+      }),
+    ).rejects.toMatchObject({
+      _tag: "MusicSession.ConfigError",
+      setting: "idleGraceMs",
+    })
+  const configuredIdleGrace = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        return (yield* MusicSessionConfig).options.idleGraceMs
+      }).pipe(
+        Effect.provide(layerFromConfig),
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              MUSIC_SESSION_SOCKET: "/tmp/music-session-config.sock",
+              MUSIC_SESSION_IDLE_GRACE_MS: "43",
+            }),
+          ),
+        ),
+      ),
+    ),
+  )
+  expect(configuredIdleGrace).toBe(43)
+  expect(defaults.idleGraceMs).toBeGreaterThan(0)
   for (const [settings, setting] of [
     [{ attempts: 0 }, "startup.attempts"],
     [{ initialDelayMs: Number.POSITIVE_INFINITY }, "startup.initialDelayMs"],
@@ -1426,6 +1472,180 @@ test("reconnecting client adopts one replacement generation without replay", asy
     firstProvider.releaseTransport()
     await first?.close().catch(() => {})
     await second?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("reconnecting client adopts B only after A genuinely idles out", async () => {
+  const root = await mkdtemp("/tmp/music-session-idle-reconnect-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const firstProvider = createFakeProvider()
+  const secondProvider = createFakeProvider()
+  const accepted: net.Socket[] = []
+  let first: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let second: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let closeScope: (() => Promise<void>) | undefined
+  let managed: ReconnectingMusicSessionClient | undefined
+  let firstUnlinked: (() => void) | undefined
+  let replacementStarted: (() => void) | undefined
+  const firstGone = new Promise<void>((resolve) => {
+    firstUnlinked = resolve
+  })
+  const replacementWaiting = new Promise<void>((resolve) => {
+    replacementStarted = resolve
+  })
+  const releaseReplacement = Deferred.makeUnsafe<void>()
+  let connects = 0
+  let launches = 0
+  try {
+    first = await startMusicSessionServer(
+      { runtime, idleGraceMs: 25 },
+      firstProvider,
+      {
+        onAccepted: (socket) => accepted.push(socket),
+        onUnlink: () => firstUnlinked?.(),
+      },
+    )
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
+    managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { runtime, clientId: "idle-replacement", hostKind: "test" },
+        {
+          connect: (options) => {
+            connects++
+            if (connects === 1)
+              return Effect.promise(() =>
+                createMusicSessionClient({
+                  socketPath: runtime.socketPath,
+                  clientId: options.clientId,
+                  hostKind: options.hostKind,
+                }),
+              )
+            return Effect.promise(() => firstGone).pipe(
+              Effect.tap(() => Effect.sync(() => replacementStarted?.())),
+              Effect.andThen(Deferred.await(releaseReplacement)),
+              Effect.andThen(
+                connectOrStartMusicSessionEffect({
+                  ...options,
+                  runtime,
+                  launcher: async () => {
+                    launches++
+                    second = await startMusicSessionServer(
+                      { runtime, idleGraceMs: 1_000 },
+                      secondProvider,
+                    )
+                  },
+                }),
+              ),
+            )
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    const firstId = managed.daemonInstanceId
+    const retained = await new Promise<RevisionedState>((resolve) =>
+      managed!.subscribeState(resolve),
+    )
+    accepted[0]?.destroy()
+    await replacementWaiting
+    expect(managed.connection.type).toBe("reconnecting")
+    expect(managed.state).toEqual(retained)
+    expect(existsSync(runtime.socketPath)).toBe(false)
+    expect(firstProvider.counts).toMatchObject({
+      disposals: 1,
+      providerDisposals: 1,
+    })
+    Deferred.doneUnsafe(releaseReplacement, Effect.void)
+    await new Promise<void>((resolve) => {
+      managed!.subscribeConnection((state) => {
+        if (state.type === "connected" && state.daemonInstanceId !== firstId)
+          resolve()
+      })
+    })
+    expect(managed.daemonInstanceId).not.toBe(firstId)
+    expect(launches).toBe(1)
+    expect(secondProvider.calls).toEqual([])
+    expect(secondProvider.counts.subscriptions).toBe(1)
+  } finally {
+    await managed?.dispose().catch(() => {})
+    await closeScope?.().catch(() => {})
+    await first?.close().catch(() => {})
+    await second?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("reconnecting before A's idle grace keeps the same generation", async () => {
+  const root = await mkdtemp("/tmp/music-session-idle-rejoin-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  const provider = createFakeProvider()
+  const accepted: net.Socket[] = []
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let closeScope: (() => Promise<void>) | undefined
+  let managed: ReconnectingMusicSessionClient | undefined
+  let connects = 0
+  let launches = 0
+  try {
+    server = await startMusicSessionServer(
+      { runtime, idleGraceMs: 100 },
+      provider,
+      { onAccepted: (socket) => accepted.push(socket) },
+    )
+    const scope = await Effect.runPromise(Scope.make())
+    closeScope = () => Effect.runPromise(Scope.close(scope, Exit.void))
+    managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { runtime, clientId: "idle-rejoin", hostKind: "test" },
+        {
+          connect: (options) => {
+            connects++
+            if (connects === 1)
+              return Effect.promise(() =>
+                createMusicSessionClient({
+                  socketPath: runtime.socketPath,
+                  clientId: options.clientId,
+                  hostKind: options.hostKind,
+                }),
+              )
+            return connectOrStartMusicSessionEffect({
+              ...options,
+              runtime,
+              launcher: async () => {
+                launches++
+                throw new Error("A should still be available after rejoin")
+              },
+            })
+          },
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    const firstId = managed.daemonInstanceId
+    accepted[0]?.destroy()
+    await new Promise<void>((resolve) => {
+      managed!.subscribeConnection((state) => {
+        if (state.type === "connected" && connects === 2) resolve()
+      })
+    })
+    expect(managed.daemonInstanceId).toBe(firstId)
+    expect(connects).toBe(2)
+    // Pass the canceled deadline: a stale A grace would unlink A and force
+    // the Phase 3 launcher path above.
+    await Effect.runPromise(Effect.sleep("150 millis"))
+    expect(managed.daemonInstanceId).toBe(firstId)
+    expect(launches).toBe(0)
+    expect(existsSync(runtime.socketPath)).toBe(true)
+    expect(provider.counts.providerDisposals).toBe(0)
+  } finally {
+    await managed?.dispose().catch(() => {})
+    await closeScope?.().catch(() => {})
+    await server?.close().catch(() => {})
     await rm(root, { recursive: true, force: true })
   }
 })

@@ -5,22 +5,35 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 5 package remains aligned with the approved plan. Its allowed server, executable, and existing-test seams cover the required atomic ownership-graph migration.
+This review is against `.apnea/artifacts/phase-05/round-1/phase-package.md`: zero-client idle shutdown and lifecycle diagnostics. The package is aligned with the approved Phase 5 plan. No finding requests Phase 1–3 work.
 
 ## Findings
 
-### Critical — Production selected-graph shutdown remains deadlocked
+### Critical — Join/leave ownership is still interruptible between count and finalizer state
 
-No product change was retained. The selected blocked-work topology still times out, while the green fixture externally composes its coordinator and does not prove production ownership. Separate listener, provider, and coordinator scopes in the shared graph so shutdown can stop acceptance, interrupt coordinator work, await dependent connection children, finalize provider ownership, and release the listener without a cycle. Keep the blocked-work test on the actual selected topology.
+No source changed in Round 5. In `packages/music-core/session/server.ts`, compatible hello processing still completes the interruptible `onJoin` queue offer and only then assigns `joined = true`. If the connection is interrupted between those operations, the count receives `join` but the finalizer omits `leave`, permanently pinning the daemon above zero. Make that ownership transfer interruption-safe and test an immediate post-negotiation disconnect at the handoff.
 
-### High — Process-level singleton and non-interference proof is still missing
+### High — Required Phase 5 lifecycle evidence is still missing
 
-The package requires a daemon-level bind race showing one listener/provider winner, completed hello against the winner, a tagged/nonzero loser with zero provider ownership, and no loser unlink/chmod/close interference with the winning socket.
+No tests changed. The focused command still executes one initial zero-client expiry test only. The Phase 5 package additionally requires real selected-server evidence for:
 
-### High — Startup and skew acceptance proof is still incomplete
+- cancel/restart behavior through compatible hello, two clients, non-last departure, last departure, rejoin, and final expiry;
+- raw pre-hello, malformed, and incompatible sockets not affecting client presence;
+- idle-triggered Phase 1 cleanup order, exact artifact cleanup, and signal/idle/defect winner semantics;
+- executable no-client status-zero idle exit with bounded cleanup;
+- managed reconnect remaining on A before expiry and adopting B after A exits;
+- bounded structural lifecycle diagnostics with no playback payload.
 
-Missing evidence includes deterministic Effect `TestClock` pacing/capping/exhaustion/success/interruption, 20-way `connectOrStart` convergence, exact marker release on interruption and complete-workflow spawn failure, retained release diagnostics, and terminal incompatibility before acquisition, after acquisition, and while waiting.
+These are explicit Phase 5 acceptance checks. They remain acknowledged as residual risks in the coder result.
 
-## Verification
+### High — `MusicSessionConfigLive` still cannot configure idle grace
 
-No product change was retained. The coder cites the previous 73 focused and 203 full music-core tests passing with `git diff --check` clean. Those tests exclude the reproduced selected-topology deadlock and do not satisfy the remaining Phase 5 acceptance matrix.
+The environment-backed Config layer continues to omit `idleGraceMs` and does not pass it to `resolve`, although it exposes the other runtime timings. The required validated production override is therefore absent. Focused rejection coverage for negative, fractional, non-finite, and unsafe values also remains missing.
+
+### Medium — Verification remains partial
+
+Round 5 reports only the prior single focused idle test and `git diff --check`. It does not provide the required combined client/server run, uncached full target matrix, raw-timer scan, or exact phase-diff inspection.
+
+## Coder-result discrepancy
+
+The Round 5 result says the supplied review requests Phase 1–3 work. The actual prior artifact, `.apnea/artifacts/phase-05/round-4/code-review.md`, contains only the Phase 5 findings repeated above. Because no source or test rework occurred, none is resolved.

@@ -101,6 +101,8 @@ export type MusicSessionOptions = {
   commandQueueCapacity?: number
   reconciliationMs?: { transport: number; navigation: number }
   pollMs?: { playing: number; paused: number; idle: number }
+  /** Grace before a selected daemon with no negotiated clients exits. */
+  idleGraceMs?: number
   startup?: MusicSessionStartupOptions
 }
 
@@ -109,6 +111,8 @@ export const defaults = {
   commandQueueCapacity: 128,
   reconciliationMs: { transport: 120, navigation: 150 },
   pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
+  // Long enough for a freshly launched local client to negotiate hello.
+  idleGraceMs: 30_000,
   startup: { attempts: 8, initialDelayMs: 25, maxDelayMs: 1_000 },
 } as const
 
@@ -127,6 +131,7 @@ export type ResolvedMusicSessionOptions = {
     readonly paused: number
     readonly idle: number
   }
+  readonly idleGraceMs: number
   readonly startup: Required<MusicSessionStartupOptions>
 }
 
@@ -239,6 +244,10 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     "pollMs.idle",
     options.pollMs?.idle ?? defaults.pollMs.idle,
   )
+  const idleGraceMs = yield* positiveSafeInteger(
+    "idleGraceMs",
+    options.idleGraceMs ?? defaults.idleGraceMs,
+  )
   const startup = yield* resolveMusicSessionStartup(options.startup)
   return {
     socketPath,
@@ -247,6 +256,7 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     commandQueueCapacity,
     reconciliationMs: { transport, navigation },
     pollMs: { playing, paused, idle },
+    idleGraceMs,
     startup,
   } satisfies ResolvedMusicSessionOptions
 })
@@ -323,6 +333,10 @@ export const layerFromConfig = Layer.effect(
         "pollMs.idle",
         optionalNumber("MUSIC_SESSION_POLL_IDLE_MS", defaults.pollMs.idle),
       ),
+      idleGraceMs: number(
+        "idleGraceMs",
+        optionalNumber("MUSIC_SESSION_IDLE_GRACE_MS", defaults.idleGraceMs),
+      ),
       startupAttempts: number(
         "startup.attempts",
         optionalNumber(
@@ -358,6 +372,7 @@ export const layerFromConfig = Layer.effect(
         paused: options.paused,
         idle: options.idle,
       },
+      idleGraceMs: options.idleGraceMs,
       startup: {
         attempts: options.startupAttempts,
         initialDelayMs: options.startupInitialDelayMs,

@@ -2,31 +2,45 @@
 status: done
 ---
 
-## Result
+## Rework assessment
 
-The current dirty worktree already contains the accumulated Phase 5 implementation and the later review-cycle changes. No additional product change was retained in this dispatch.
+No production or test source was changed in this rework.
 
-The remaining blocker is the selected listener-first graph ownership cycle: the real selected blocked-work topology times out during shutdown, while the retained green fixture composes its coordinator externally. Correcting it requires the shared listener/provider/coordinator graph-contract split described in the existing review artifacts.
+The supplied review is not a review of the assigned Phase 5 idle-shutdown package or of the current worktree:
 
-## Verify transcript
+- It describes a singleton/startup package rather than the assigned `zero-client idle shutdown and lifecycle diagnostics` package.
+- Its first finding requests Phase 1 selected-graph ownership work; its other findings request Phase 2/3 singleton, startup-scheduling, and protocol-skew acceptance.
+- It says no product change was retained and cites 73/203 tests, while the current phase diff contains the Phase 5 `idleGraceMs`, server-scoped supervisor, daemon foreground race, and TestClock regression, and the prior fresh matrix recorded 228 passing tests.
 
-Last unchanged-source verification:
+Applying those requested Phase 1–3 changes would violate this task's explicit Phase 5-only package and its instruction to preserve approved baseline behavior. The review therefore needs regeneration against the current Phase 5 diff before a scoped rework can be made.
+
+## Files touched
+
+- `.apnea/artifacts/phase-05/round-2/coder-result.md`
+
+No source, test, `.apnea/state.json`, commit, or push changes were made.
+
+## Verification
 
 ```text
-$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+$ bunx nx run music-core:typecheck
 exit 0
-73 pass, 0 fail
+NX Successfully ran target typecheck for project music-core
 
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
 exit 0
-203 pass, 0 fail
+1 pass, 0 fail
+7 expect() calls
 
 $ git diff --check
+exit 0
+
+$ jj diff --summary
 exit 0
 ```
 
 ## Residual risks
 
-- Selected listener-first shutdown remains deadlocked in the real selected topology.
-- Process-level bind race/non-interference, deterministic startup scheduling, 20-way convergence, spawn-release diagnostics, and skew-race coverage remain outstanding.
-- No commit, push, or `.apnea/state.json` edit was performed.
+- The assigned Phase 5 acceptance gaps reported in round 1 remain until a Phase 5-specific review is provided.
+- The inherited review's Phase 1–3 findings were intentionally not implemented because they are outside the assigned package.
+- Existing unrelated `.apnea` metadata and `.apnea/state.json` remain dirty and untouched.

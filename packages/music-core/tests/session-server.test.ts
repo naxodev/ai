@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
 import net from "node:net"
 import {
+  Clock,
   Context,
   Effect,
   Exit,
@@ -23,6 +24,7 @@ import {
   Ref,
   Scope,
 } from "effect"
+import { TestClock } from "effect/testing"
 import {
   layer as configLayer,
   prepareManagedRuntimeDirectory,
@@ -526,7 +528,7 @@ test("incompatible and state-only peers do not disturb a healthy session", async
   try {
     server = await startMusicSessionServer(
       { socketPath: path, maxFrameBytes: 4096 },
-      undefined,
+      createFakeProvider(),
       {
         onCommandAdmission: () => admissions++,
       },
@@ -1864,6 +1866,92 @@ test("executable composes one real graph for managed default and explicit socket
   }
 })
 
+test("executable exits cleanly after its initial no-client idle grace", async () => {
+  let directory: string | undefined
+  let daemon: ReturnType<typeof Bun.spawn> | undefined
+  try {
+    directory = await mkdtemp("/tmp/music-sessiond-idle-")
+    if (!directory) throw new Error("temporary directory was not created")
+    const runner = new URL("../session/music-sessiond.ts", import.meta.url).href
+    const config = new URL("../session/config.ts", import.meta.url).href
+    const provider = new URL("../session/provider.ts", import.meta.url).href
+    const server = new URL("../session/server.ts", import.meta.url).href
+    const path = `${directory}/daemon.sock`
+    daemon = Bun.spawn(
+      [
+        process.execPath,
+        "--cwd",
+        new URL("..", import.meta.url).pathname,
+        "--eval",
+        `import { Layer } from "effect";
+         import { runMusicSessionDaemon } from ${JSON.stringify(runner)};
+         import { layer as configLayer } from ${JSON.stringify(config)};
+         import { createFakeProvider, layerFromLegacy } from ${JSON.stringify(provider)};
+         import { layerWithHooks } from ${JSON.stringify(server)};
+         const provider = createFakeProvider();
+         const signals = {
+           SIGINT: process.listenerCount("SIGINT"),
+           SIGTERM: process.listenerCount("SIGTERM"),
+         };
+         await runMusicSessionDaemon({
+           argv: process.argv.slice(1),
+           graph: (options) => Layer.provide(
+             layerWithHooks({}, layerFromLegacy(provider)),
+             configLayer({ ...options, idleGraceMs: 30 }),
+           ),
+         });
+         console.error(JSON.stringify({
+           event: "idle-final",
+           counts: provider.counts,
+           signalListeners: {
+             SIGINT: process.listenerCount("SIGINT") - signals.SIGINT,
+             SIGTERM: process.listenerCount("SIGTERM") - signals.SIGTERM,
+           },
+         }));`,
+        "--",
+        "--socket",
+        path,
+      ],
+      { stdout: "ignore", stderr: "pipe" },
+    )
+    const stderr = daemon.stderr
+    if (!stderr || typeof stderr === "number")
+      throw new Error("daemon stderr was not piped")
+    const [ready, output] = stderr.tee()
+    await readUntil(ready, "music-sessiond listening")
+    const status = await Effect.runPromise(
+      Effect.promise(() => daemon!.exited).pipe(Effect.timeout("2 seconds")),
+    )
+    const diagnostics = await Effect.runPromise(
+      Effect.promise(() => new Response(output).text()).pipe(
+        Effect.timeout("2 seconds"),
+      ),
+    )
+    expect(status).toBe(0)
+    expect(diagnostics).toContain("music-sessiond idle shutdown")
+    expect(diagnostics).toContain("music-sessiond stopped")
+    expect(diagnostics).toContain('"event":"idle-final"')
+    expect(diagnostics).toContain('"providerDisposals":1')
+    expect(diagnostics).toContain('"SIGINT":0')
+    expect(diagnostics).toContain('"SIGTERM":0')
+    expect(diagnostics).not.toContain("progress_ms")
+    expect(diagnostics).not.toContain("artwork")
+    expect(existsSync(path)).toBe(false)
+    expect(existsSync(`${path}.bind-lock`)).toBe(false)
+    expect(
+      (await readdir(directory)).filter((entry) =>
+        entry.startsWith("daemon.sock.bind-lock."),
+      ),
+    ).toEqual([])
+  } finally {
+    if (daemon) {
+      daemon.kill("SIGKILL")
+      await daemon.exited
+    }
+    if (directory) await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test("executable reports actual unsafe managed-runtime preparation with nonzero status", async () => {
   const root = await mkdtemp("/tmp/music-sessiond-unsafe-")
   const runtime = resolveMusicSessionRuntimePaths({
@@ -2217,6 +2305,401 @@ test("two socket admissions retain FIFO order while the first transport blocks",
     one?.dispose()
     two?.dispose()
     await closeScope?.()
+  }
+})
+
+test("idle grace tracks negotiated clients, cancels, restarts, and expires once", async () => {
+  const path = socketPath("idle-grace")
+  const provider = createFakeProvider()
+  const counts: number[] = []
+  const order: string[] = []
+  let starts = 0
+  let canceled = 0
+  let expires = 0
+  let inputs = 0
+  let processors = 0
+  let connections = 0
+  let forwardersStarted = 0
+  let forwardersFinalized = 0
+  let closes = 0
+  let unlinks = 0
+  let notify = () => {}
+  const changed = () => {
+    notify()
+    notify = () => {}
+  }
+  const waitForCount = (count: number, occurrence: number) =>
+    new Promise<void>((resolve) => {
+      const check = () => {
+        if (counts.filter((value) => value === count).length >= occurrence)
+          resolve()
+        else notify = check
+      }
+      check()
+    })
+  const graph = Layer.provide(
+    layerWithHooks(
+      {
+        onClientCount: (count) => {
+          counts.push(count)
+          changed()
+        },
+        onIdleStarted: () => starts++,
+        onIdleCanceled: () => canceled++,
+        onIdleExpired: () => expires++,
+        onCoordinatorScopeFinalized: () => order.push("coordinator"),
+        onInputFinalized: () => inputs++,
+        onInputProcessorFinalized: () => processors++,
+        onConnectionFinalized: () => {
+          connections++
+          order.push("connection")
+        },
+        onForwarderStarted: () => forwardersStarted++,
+        onForwarderFinalized: () => forwardersFinalized++,
+        onProviderScopeFinalized: () => order.push("provider"),
+        onClose: () => closes++,
+        onListenerFinalized: () => order.push("listener"),
+        onUnlink: () => {
+          unlinks++
+          order.push("unlink")
+        },
+      },
+      layerFromLegacy(provider),
+    ),
+    configLayer({ socketPath: path, idleGraceMs: 25 }),
+  )
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make()
+        yield* Effect.gen(function* () {
+          const service = yield* MusicSessionServerService
+          yield* clock.adjust("24 millis")
+          expect(expires).toBe(0)
+          expect(existsSync(path)).toBe(true)
+
+          const firstCount = waitForCount(1, 1)
+          const one = yield* Effect.promise(() =>
+            createMusicSessionClient({
+              socketPath: path,
+              clientId: "idle-one",
+              hostKind: "test",
+            }),
+          )
+          yield* Effect.promise(() => firstCount)
+          yield* clock.adjust("1 hour")
+          expect(expires).toBe(0)
+
+          const secondCount = waitForCount(2, 1)
+          const two = yield* Effect.promise(() =>
+            createMusicSessionClient({
+              socketPath: path,
+              clientId: "idle-two",
+              hostKind: "test",
+            }),
+          )
+          yield* Effect.promise(() => secondCount)
+          one.dispose()
+          yield* Effect.promise(() => waitForCount(1, 2))
+          expect(starts).toBe(1)
+
+          two.dispose()
+          yield* Effect.promise(() => waitForCount(0, 2))
+          expect(starts).toBe(2)
+          yield* clock.adjust("24 millis")
+          expect(expires).toBe(0)
+
+          const rejoined = waitForCount(1, 3)
+          const three = yield* Effect.promise(() =>
+            createMusicSessionClient({
+              socketPath: path,
+              clientId: "idle-three",
+              hostKind: "test",
+            }),
+          )
+          yield* Effect.promise(() => rejoined)
+          yield* clock.adjust("1 hour")
+          expect(expires).toBe(0)
+          three.dispose()
+          yield* Effect.promise(() => waitForCount(0, 3))
+          yield* clock.adjust("25 millis")
+          yield* service.awaitIdle
+          expect(counts).toEqual([0, 1, 2, 1, 0, 1, 0])
+          expect(starts).toBe(3)
+          expect(canceled).toBe(2)
+          expect(expires).toBe(1)
+        }).pipe(
+          Effect.provide(graph),
+          Effect.provideService(Clock.Clock, clock),
+        )
+      }),
+    ),
+  )
+  expect(inputs).toBe(3)
+  expect(processors).toBe(3)
+  expect(connections).toBe(3)
+  expect(forwardersStarted).toBe(6)
+  expect(forwardersFinalized).toBe(6)
+  expect(closes).toBe(1)
+  expect(unlinks).toBe(1)
+  // The last leave happens before its grace can begin; after that the sole
+  // selected graph finalizer preserves coordinator → provider → listener.
+  expect(order).toEqual([
+    "connection",
+    "connection",
+    "connection",
+    "coordinator",
+    "provider",
+    "listener",
+    "unlink",
+  ])
+  expect(existsSync(path)).toBe(false)
+  expect(existsSync(`${path}.bind-lock`)).toBe(false)
+  expect(provider.counts).toMatchObject({
+    subscriptions: 1,
+    disposals: 1,
+    providerDisposals: 1,
+  })
+})
+
+test("signal and server defects take foreground precedence over idle expiry", async () => {
+  const signalPath = socketPath("idle-signal-race")
+  const defectPath = socketPath("idle-defect-race")
+  const signals = new EventEmitter()
+  let idleExpired = 0
+  const signalFinalization = { provider: 0, listener: 0 }
+  const signalGraph = Layer.provide(
+    layerWithHooks(
+      {
+        onIdleExpired: () => {
+          idleExpired++
+          // Make SIGTERM ready at the same controlled virtual instant.
+          signals.emit("SIGTERM")
+        },
+        onProviderScopeFinalized: () => signalFinalization.provider++,
+        onListenerFinalized: () => signalFinalization.listener++,
+      },
+      layerFromLegacy(createFakeProvider()),
+    ),
+    configLayer({ socketPath: signalPath, idleGraceMs: 25 }),
+  )
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make()
+        yield* Effect.gen(function* () {
+          const service = yield* MusicSessionServerService
+          const signal = yield* waitForSignal(signals).pipe(Effect.forkScoped)
+          yield* Effect.yieldNow
+          const foreground = yield* Effect.raceFirst(
+            Fiber.join(signal).pipe(Effect.as("signal" as const)),
+            service.awaitIdle.pipe(Effect.as("idle" as const)),
+          ).pipe(Effect.forkScoped)
+          yield* Effect.yieldNow
+          yield* clock.adjust("25 millis")
+          expect(yield* Fiber.join(foreground)).toBe("signal")
+          yield* Fiber.join(signal)
+          expect(idleExpired).toBe(1)
+        }).pipe(
+          Effect.provide(signalGraph),
+          Effect.provideService(Clock.Clock, clock),
+        )
+      }),
+    ),
+  )
+  expect(signalFinalization).toEqual({ provider: 1, listener: 1 })
+  expect(existsSync(signalPath)).toBe(false)
+
+  let listener: net.Server | undefined
+  let defectIdleExpired = 0
+  const defectFinalization = { provider: 0, listener: 0 }
+  const defectGraph = Layer.provide(
+    layerWithHooks(
+      {
+        onListener: (server) => {
+          listener = server
+        },
+        onIdleExpired: () => defectIdleExpired++,
+        onProviderScopeFinalized: () => defectFinalization.provider++,
+        onListenerFinalized: () => defectFinalization.listener++,
+      },
+      layerFromLegacy(createFakeProvider()),
+    ),
+    configLayer({ socketPath: defectPath, idleGraceMs: 25 }),
+  )
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make()
+        yield* Effect.gen(function* () {
+          const service = yield* MusicSessionServerService
+          listener?.emit("error", new Error("injected idle race defect"))
+          yield* clock.adjust("25 millis")
+          yield* service.awaitFailure.pipe(
+            Effect.match({
+              onFailure: (error) =>
+                Effect.sync(() => {
+                  expect(error).toMatchObject({ operation: "server" })
+                }),
+              onSuccess: () => Effect.die("expected server failure"),
+            }),
+          )
+          expect(defectIdleExpired).toBe(0)
+        }).pipe(
+          Effect.provide(defectGraph),
+          Effect.provideService(Clock.Clock, clock),
+        )
+      }),
+    ),
+  )
+  expect(defectFinalization).toEqual({ provider: 1, listener: 1 })
+  expect(existsSync(defectPath)).toBe(false)
+})
+
+test("post-join interruption publishes one matching idle leave", async () => {
+  const path = socketPath("idle-join-handoff")
+  const counts: number[] = []
+  let joined: (() => void) | undefined
+  let left: (() => void) | undefined
+  const committed = new Promise<void>((resolve) => {
+    joined = resolve
+  })
+  const departed = new Promise<void>((resolve) => {
+    left = resolve
+  })
+  const graph = Layer.provide(
+    layerWithHooks(
+      {
+        onClientCount: (count) => {
+          counts.push(count)
+          if (count === 0 && counts.length > 1) left?.()
+        },
+        // Destroy from the commit hook, before hello response/forwarders can
+        // run, to exercise the ownership-transfer interruption boundary.
+        onJoinCommitted: (socket) => {
+          socket.destroy()
+          joined?.()
+        },
+      },
+      layerFromLegacy(createFakeProvider()),
+    ),
+    configLayer({ socketPath: path, idleGraceMs: 25 }),
+  )
+  let client: net.Socket | undefined
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const clock = yield* TestClock.make()
+          yield* Effect.gen(function* () {
+            const service = yield* MusicSessionServerService
+            client = yield* Effect.promise(() => connected(path))
+            client.write(
+              `${JSON.stringify({
+                type: "hello",
+                requestId: 0,
+                protocol: PROTOCOL,
+                packageVersion: "test",
+                clientId: "idle-handoff",
+                hostKind: "test",
+                capabilities: ["state-replay", "transport"],
+              })}\n`,
+            )
+            yield* Effect.promise(() => committed)
+            yield* Effect.promise(() => departed)
+            expect(counts).toEqual([0, 1, 0])
+            yield* clock.adjust("25 millis")
+            yield* service.awaitIdle
+          }).pipe(
+            Effect.provide(graph),
+            Effect.provideService(Clock.Clock, clock),
+          )
+        }),
+      ),
+    )
+  } finally {
+    client?.destroy()
+  }
+})
+
+test("pre-hello and rejected hello sockets cannot pin idle shutdown", async () => {
+  const path = socketPath("idle-non-clients")
+  const provider = createFakeProvider()
+  const counts: number[] = []
+  const order: string[] = []
+  const graph = Layer.provide(
+    layerWithHooks(
+      {
+        onClientCount: (count) => counts.push(count),
+        onCoordinatorScopeFinalized: () => order.push("coordinator"),
+        onConnectionFinalized: () => order.push("connection"),
+        onProviderScopeFinalized: () => order.push("provider"),
+        onListenerFinalized: () => order.push("listener"),
+        onUnlink: () => order.push("unlink"),
+      },
+      layerFromLegacy(provider),
+    ),
+    configLayer({ socketPath: path, idleGraceMs: 25 }),
+  )
+  const sockets: net.Socket[] = []
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const clock = yield* TestClock.make()
+          yield* Effect.gen(function* () {
+            const service = yield* MusicSessionServerService
+            const preHello = yield* Effect.promise(() => connected(path))
+            sockets.push(preHello)
+            const malformed = yield* Effect.promise(() => connected(path))
+            sockets.push(malformed)
+            malformed.write('{"type":"hello"\n')
+            const incompatible = yield* Effect.promise(() => connected(path))
+            sockets.push(incompatible)
+            incompatible.write(
+              `${JSON.stringify({
+                type: "hello",
+                requestId: 0,
+                protocol: {
+                  major: PROTOCOL.major,
+                  minRevision: 9,
+                  maxRevision: 9,
+                },
+                packageVersion: "future",
+                clientId: "future",
+                hostKind: "test",
+                capabilities: ["state-replay"],
+              })}\n`,
+            )
+            yield* clock.adjust("25 millis")
+            yield* service.awaitIdle
+            expect(counts).toEqual([0])
+          }).pipe(
+            Effect.provide(graph),
+            Effect.provideService(Clock.Clock, clock),
+          )
+        }),
+      ),
+    )
+    expect(sockets.every((socket) => socket.destroyed)).toBe(true)
+    // This held raw pre-hello connection is still owned at idle expiry, so it
+    // proves the selected shutdown ordering rather than departure history.
+    expect(order).toEqual([
+      "coordinator",
+      "connection",
+      "connection",
+      "connection",
+      "provider",
+      "listener",
+      "unlink",
+    ])
+    expect(existsSync(path)).toBe(false)
+    expect(provider.counts).toMatchObject({
+      disposals: 1,
+      providerDisposals: 1,
+    })
+  } finally {
+    for (const socket of sockets) socket.destroy()
   }
 })
 

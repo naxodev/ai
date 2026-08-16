@@ -2,22 +2,29 @@
 status: done
 ---
 
-## Result
+## Rework assessment
 
-No product change was retained. The prior review finding remains: the selected listener-first topology reproduces a shutdown deadlock, and the retained fixture bypasses it through external coordinator composition.
+No production or test source was changed.
 
-A correct fix requires an atomic shared-graph interface migration to separate listener, provider, and coordinator ownership. No safe partial change was made.
+The supplied round-3 review is again not a review of the assigned Phase 5 idle-shutdown package or current worktree. It calls the package "singleton auto-start, listener-first ownership, bounded Effect scheduling, and terminal skew handling," then requests Phase 1 selected-graph shutdown, Phase 2 process contention, and Phase 3 startup/skew work. Those are explicitly baseline/non-goals of the assigned Phase 5 package.
 
-## Verify transcript
+It also reports that no product changes were retained and cites 73 focused / 203 full tests. This contradicts the current Phase 5 diff, which contains `idleGraceMs`, negotiated-client join/leave accounting, one server-scoped Effect idle supervisor, foreground idle races, and the TestClock idle regression; the latest uncached matrix recorded 228 passing tests.
+
+Implementing the requested Phase 1–3 work would violate the Phase 5-only scope. A review generated from the actual Phase 5 diff is required before a scoped source rework can be performed.
+
+## Files touched
+
+- `.apnea/artifacts/phase-05/round-3/coder-result.md`
+
+No source, test, `.apnea/state.json`, commit, or push changes were made.
+
+## Verification
 
 ```text
-$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
 exit 0
-73 pass, 0 fail
-
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-203 pass, 0 fail
+1 pass, 0 fail
+7 expect() calls
 
 $ git diff --check
 exit 0
@@ -25,6 +32,6 @@ exit 0
 
 ## Residual risks
 
-- Selected listener-first shutdown deadlock remains.
-- Process-level singleton/non-interference, deterministic startup scheduling, convergence, marker-release, and skew-race evidence remains missing.
-- No commit, push, or `.apnea/state.json` edit was performed.
+- Phase 5 acceptance evidence still needs a Phase 5-specific review and the additional scenarios identified in the round-1 result.
+- The inherited Phase 1–3 findings remain intentionally unmodified because they are outside the assigned package.
+- Existing unrelated `.apnea` metadata and `.apnea/state.json` remain dirty and untouched.

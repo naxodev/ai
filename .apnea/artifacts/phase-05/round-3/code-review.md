@@ -5,22 +5,31 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The Phase 5 package remains aligned with the approved plan. It stays within singleton auto-start, listener-first ownership, bounded Effect scheduling, and terminal skew handling.
+The assigned package and the prior Round 2 review are both explicitly about Phase 5 zero-client idle shutdown. The package remains aligned with the approved plan and does not request Phase 1–3 implementation.
 
 ## Findings
 
-### Critical — Selected listener-first shutdown remains deadlocked
+### Critical — The negotiated join can still lose its matching leave
 
-No product fix was retained. The real selected blocked-work topology still times out, while the retained fixture injects an externally owned coordinator and therefore does not exercise production ownership. The combined coordinator/provider scope waits for connection children before interrupting coordinator work those children may depend on. Apply the package-authorized shared-graph migration so listener, provider, and coordinator ownership are distinct and shutdown can refuse acceptance, interrupt coordinator work, await connections, finalize the provider, and release the listener without cyclic waits. Retain the regression through the actual selected topology.
+Round 3 makes no source change. A compatible hello still performs the interruptible `yield* onJoin` before assigning `joined = true` in `packages/music-core/session/server.ts`. If interruption occurs after the queue accepted the join but before the assignment, the connection finalizer skips `onLeave`, leaving a phantom client count that prevents idle shutdown. Transfer enrollment and leave ownership interruption-safely and prove the immediate-close race deterministically.
 
-### High — Process-level singleton and loser non-interference evidence remains absent
+### High — Explicit Phase 5 acceptance remains unimplemented and unproven
 
-The required daemon-level bind race is still missing: exactly one listener/provider winner, completed hello against that winner, a tagged/nonzero loser with zero provider ownership, and proof that the loser cannot unlink, chmod, close, or otherwise disturb the winner's socket.
+Round 3 adds no tests. The focused suite still contains only one initial no-client expiry case. The package additionally requires real selected-server evidence for:
 
-### High — Required startup and skew evidence remains incomplete
+- grace cancellation, two-client counting, non-last departure, last-client restart, rejoin cancellation, and fresh exact-once expiry;
+- raw pre-hello, malformed, and incompatible peers not pinning the daemon;
+- selected Phase 1 cleanup order, exact artifact identity, signal/idle/defect convergence, and no masked defect;
+- executable startup-loss idle exit with status zero and bounded resource cleanup;
+- managed reconnect rejoining A before expiry and adopting B after A exits;
+- bounded structural lifecycle diagnostics with no playback payload.
 
-The suite still lacks deterministic Effect `TestClock` pacing/capping/exhaustion/success/interruption, 20-way `connectOrStart` convergence, exact marker release on interruption and complete-workflow spawn failure, release-diagnostic retention, and terminal incompatibility races before acquisition, after acquisition, and while waiting.
+These are Phase 5 requirements quoted by the prior review, not out-of-scope Phase 1–3 requests. The coder result's own residual-risk section acknowledges that Phase 5 acceptance scenarios remain outstanding.
 
-## Verification
+### High — The environment-backed `idleGraceMs` setting remains absent
 
-The coder retained no product changes and reports 73 focused tests and 203 full music-core tests passing, with `git diff --check` clean. Those tests exclude the reproduced selected-topology deadlock and do not satisfy the remaining Phase 5 acceptance matrix.
+`MusicSessionConfigLive` still omits an idle-grace `Config` entry and does not pass one into `resolve`, despite exposing the other runtime timings. Production therefore cannot receive the required validated environment-backed override. Focused rejection evidence for negative, fractional, non-finite, and unsafe idle-grace values also remains absent.
+
+### Medium — Round 3 verification remains incomplete
+
+Only the single focused idle test and `git diff --check` were reported. The required combined client/server suite, uncached full target matrix, raw-timer scan, and exact phase-diff inspection were not supplied. In any event, the unchanged single idle test does not cover the missing acceptance above.

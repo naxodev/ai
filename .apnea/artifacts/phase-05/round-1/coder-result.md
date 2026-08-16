@@ -2,48 +2,58 @@
 status: done
 ---
 
-## Changed
+## Changes
 
-Implemented the initial Phase 5 managed-launch foundation:
+- Added config-owned `idleGraceMs` with a positive-safe-integer validation boundary and a 30-second production default, separate from provider `pollMs.idle`.
+- Added a single server-scoped serialized join/leave queue and Effect `sleep` supervisor. Only a compatible negotiated hello joins; the connection scope submits its one leave from its finalizer.
+- The supervisor starts an initial zero-client grace, cancels the live sleep on join, starts a fresh grace on the last leave, and completes a server-owned idle Deferred exactly once on expiry.
+- Exposed `awaitIdle` only through the internal server service. Both the daemon foreground and Promise compatibility lifetime race idle alongside their existing signal/close/fault paths, so normal idle exit uses the existing selected graph finalizer.
+- Added bounded lifecycle hooks for client count and idle grace state. Hook errors are isolated.
+- Added focused config coverage plus a real selected Layer/TestClock test proving initial grace, no early expiry, exact single expiry, and selected listener/provider cleanup.
 
-- Added exclusive, exact-owner startup marker leases with cryptographic attempt tokens, `wx` creation, owner-only marker validation, idempotent guarded release, and replacement refusal.
-- Allowed discovery to ignore only the caller's exact owned marker during its post-lease probe.
-- Added a detached packaged-daemon launcher boundary using absolute entry resolution, `stdio: "ignore"`, no shell, and exactly-once `unref` after spawn observation.
-- Added `connectOrStartMusicSession` / `connectOrStart`, which probes first, preserves incompatible/occupied terminal behavior, uses guarded stale cleanup, acquires/releases a marker, and launches at most once.
-- Added real marker-contention/replacement coverage and a real managed connect-or-start test using a launcher seam that starts the existing server over a Unix socket.
-
-Files touched:
+## Files touched
 
 - `packages/music-core/session/config.ts`
-- `packages/music-core/session/client.ts`
+- `packages/music-core/session/server.ts`
+- `packages/music-core/session/music-sessiond.ts`
 - `packages/music-core/tests/session-client.test.ts`
+- `packages/music-core/tests/session-server.test.ts`
+- `.apnea/artifacts/phase-05/round-1/coder-result.md`
 
-No commit, push, or `.apnea/state.json` edit was performed.
+No commit, push, `.apnea/state.json`, protocol, provider, coordinator, public index, package configuration, docs, or host changes were made.
 
-## Verify transcript
+## Verification
 
 ```text
-$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+$ bunx nx run music-core:typecheck
 exit 0
-67 pass, 0 fail
 
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
 exit 0
-197 pass, 0 fail
+1 pass, 0 fail
+
+$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts
+exit 0
+98 pass, 0 fail
+551 expect() calls
+
+$ NX_SKIP_NX_CACHE=true bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
+exit 0
+228 pass, 0 fail
+966 expect() calls
 Verified npm package contents (21 files)
-NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
-$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+$ ! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/session/client.ts
 exit 0
 
 $ jj diff --summary && git diff --check
 exit 0
 ```
 
-The focused and full runs emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; both exited successfully.
+The successful suites retain existing intentional injected cleanup/marker-release warnings.
 
 ## Residual risks
 
-- Listener-first server topology and the full concurrent 20-client/bind-race matrix remain to be implemented.
-- Startup timing defaults/configuration and a fully Effect-scoped pending-attempt workflow need completion; the current bounded schedule only paces valid foreign-marker waiting.
-- Launcher spawn-option/error-listener tests and protocol-skew cases remain to be added.
+- The package's broader real-socket matrix (pre-hello/malformed pinning, two-client last-leave/rejoin behavior, signal-versus-idle, child executable idle exit, and reconnect A-to-B idle replacement) remains unproven by focused new tests.
+- Existing reconnect behavior was not changed; no reconnect-specific idle integration test was added.
+- Pre-existing `.apnea` task/package metadata and `.apnea/state.json` remain dirty and untouched.

@@ -132,12 +132,29 @@ export type ServerLifecycleHooks = {
   readonly onConnectionFailure?: (cause: unknown) => void
   readonly onWriteAttempt?: (socket: net.Socket) => void
   readonly onCommandAdmission?: (action: TransportAction) => void
+  /** Bounded lifecycle observations; these never carry playback payloads. */
+  readonly onClientCount?: (count: number) => void
+  /** Observes the atomic compatible-hello ownership transfer. */
+  readonly onJoinCommitted?: (socket: net.Socket) => void
+  readonly onIdleStarted?: () => void
+  readonly onIdleCanceled?: () => void
+  readonly onIdleExpired?: () => void
 }
 const invokeHook = (hook: (() => void) | undefined) => {
   try {
     hook?.()
   } catch {
     // Test observation must never escape a Node callback or alter ownership.
+  }
+}
+const invokeValueHook = <A>(
+  hook: ((value: A) => void) | undefined,
+  value: A,
+) => {
+  try {
+    hook?.(value)
+  } catch {
+    // Lifecycle diagnostics are observation-only.
   }
 }
 
@@ -147,6 +164,8 @@ export class MusicSessionServerService extends Context.Service<
     readonly coordinator: Coordinator
     /** Scoped server faults are raced by the foreground daemon. */
     readonly awaitFailure: Effect.Effect<never, MusicSessionSocketError>
+    /** Completes normally when the selected daemon's zero-client grace expires. */
+    readonly awaitIdle: Effect.Effect<void>
     /** Synchronous boundary state for outer adapters after scope closure. */
     readonly failure: () => MusicSessionSocketError | undefined
     readonly cleanupFailures: () => ReadonlyArray<MusicSessionSocketError>
@@ -463,6 +482,8 @@ const connection = (
   maxFrameBytes: number,
   hooks: ServerLifecycleHooks,
   reportFailure: (cause: unknown) => void,
+  onJoin: Effect.Effect<void>,
+  onLeave: Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
     const endOfInput = Symbol("end-of-input")
@@ -517,14 +538,19 @@ const connection = (
           Effect.andThen(Queue.shutdown(input)),
           Effect.andThen(Queue.shutdown(completion)),
           Effect.ensuring(
-            Effect.sync(() => {
-              invokeHook(hooks.onInputFinalized)
-              invokeHook(hooks.onConnectionFinalized)
-            }),
+            (joined ? onLeave : Effect.void).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  invokeHook(hooks.onInputFinalized)
+                  invokeHook(hooks.onConnectionFinalized)
+                }),
+              ),
+            ),
           ),
         ),
     )
     let session: NegotiatedSession | undefined
+    let joined = false
     let highestId = -1
     const send = (value: unknown) =>
       Effect.sync(() => {
@@ -593,6 +619,18 @@ const connection = (
           return
         }
         session = negotiated
+        // Transfer lifecycle ownership atomically: interruption after the
+        // queue accepts join must still make this scope publish its leave.
+        yield* Effect.uninterruptible(
+          onJoin.pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                joined = true
+              }),
+            ),
+          ),
+        )
+        invokeValueHook(hooks.onJoinCommitted, socket)
         yield* send(
           response(
             request.requestId,
@@ -755,6 +793,8 @@ const makeLayer = (
               config.maxFrameBytes,
               hooks,
               reportFailure,
+              onJoin,
+              onLeave,
             ),
           ).pipe(
             // Preserve ordinary shutdown interruption. Genuine local failures
@@ -786,6 +826,18 @@ const makeLayer = (
       })
       invokeHook(() => hooks.onListener?.(server))
       const serverFaults = yield* Queue.unbounded<MusicSessionSocketError>()
+      // One server-owned serialized lifecycle stream; connections only submit
+      // negotiated join/leave events and never own a timer themselves.
+      const idleEvents = yield* Queue.unbounded<"join" | "leave">()
+      const idleComplete = Deferred.makeUnsafe<void>()
+      const onJoin = Queue.offer(idleEvents, "join").pipe(
+        Effect.asVoid,
+        Effect.ignore,
+      )
+      const onLeave = Queue.offer(idleEvents, "leave").pipe(
+        Effect.asVoid,
+        Effect.ignore,
+      )
       let serverFailure: MusicSessionSocketError | undefined
       const cleanupFailures: MusicSessionSocketError[] = []
       const cleanupComplete =
@@ -853,6 +905,7 @@ const makeLayer = (
             yield* closeProvider.pipe(Effect.ignore)
             invokeHook(hooks.onProviderScopeFinalized)
             yield* Queue.shutdown(serverFaults)
+            yield* Queue.shutdown(idleEvents)
             yield* Effect.sync(() => server.off("error", onServerError))
             const capture = <A>(
               effect: Effect.Effect<A, MusicSessionSocketError>,
@@ -938,9 +991,53 @@ const makeLayer = (
       coordinator = Context.get(coordinatorServices, MusicSessionCoordinator)
       active = true
       invokeHook(hooks.onCoordinator)
+      // The zero-client branch races a single Effect sleep against the next
+      // serialized event. `raceFirst` interrupts the losing sleeper, fencing
+      // stale generations without callback-owned timers.
+      const superviseIdle = (count: number): Effect.Effect<void> => {
+        invokeValueHook(hooks.onClientCount, count)
+        if (count === 0) {
+          invokeHook(hooks.onIdleStarted)
+          return Effect.raceFirst(
+            Effect.sleep(config.idleGraceMs).pipe(
+              Effect.as("expired" as const),
+            ),
+            Queue.take(idleEvents),
+          ).pipe(
+            Effect.flatMap((outcome) => {
+              if (outcome === "expired")
+                return Effect.sync(() => {
+                  // A server defect already observed by this graph has
+                  // foreground precedence over an otherwise ready idle grace.
+                  if (serverFailure) return
+                  invokeHook(hooks.onIdleExpired)
+                  Deferred.doneUnsafe(idleComplete, Effect.void)
+                })
+              if (outcome === "join") invokeHook(hooks.onIdleCanceled)
+              return superviseIdle(outcome === "join" ? 1 : 0)
+            }),
+          )
+        }
+        return Queue.take(idleEvents).pipe(
+          Effect.flatMap((event) =>
+            superviseIdle(
+              event === "join" ? count + 1 : Math.max(0, count - 1),
+            ),
+          ),
+        )
+      }
+      yield* superviseIdle(0).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.failCause(cause),
+        ),
+        Effect.forkScoped,
+      )
       return MusicSessionServerService.of({
         coordinator,
         awaitFailure,
+        awaitIdle: Deferred.await(idleComplete),
         failure: () => serverFailure,
         cleanupFailures: () => cleanupFailures,
         awaitCleanup: Deferred.await(cleanupComplete),
@@ -994,7 +1091,10 @@ export async function startMusicSessionServer(
       // A post-bind EventEmitter fault ends this exact scope, so the public
       // facade observes its tagged error through close() rather than leaving a
       // listener fault detached from the graph.
-      yield* Effect.raceFirst(Deferred.await(stop), service.awaitFailure)
+      yield* Effect.raceFirst(
+        Effect.raceFirst(Deferred.await(stop), service.awaitFailure),
+        service.awaitIdle,
+      )
     }).pipe(Effect.provide(graph)),
   )
   const running = Effect.runPromise(lifetime)

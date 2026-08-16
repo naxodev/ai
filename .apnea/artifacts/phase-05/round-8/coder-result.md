@@ -2,40 +2,51 @@
 status: done
 ---
 
-## Investigation
+## Changed
 
-No additional production change was retained this round.
+- Retained a real pre-hello connection through idle expiry and asserted selected shutdown ordering: coordinator → connections → provider → listener/unlink.
+- Made the join-transfer test destroy the accepted socket from the commit hook before hello response/forwarders, proving one matching leave under interruption.
+- Made signal and idle ready at the same TestClock instant; signal wins once and graph owners finalize once. Defect precedence remains covered.
+- Changed same-generation reconnect coverage to use `connectOrStartMusicSessionEffect`, wait past the canceled grace deadline, and assert A remains live with zero launcher calls.
 
-I attempted the required selected-topology shutdown reordering: stop listener/connection admission, interrupt connection fibers, close the coordinator scope, then await the fibers. Existing lifecycle tests showed this closes the selected scope before the provider finalizer is observed (`provider.counts.disposals` remained `0` in three established server lifecycle cases). The experiment was reverted to preserve the verified lifecycle baseline.
+## Files touched
 
-The remaining bind-reservation issue cannot be safely patched by treating an empty/partial exclusive-create file as stale: doing so creates a race that can delete the live contender's in-progress reservation. A correct repair requires either a process-death-released advisory lock primitive or a config/discovery-owned artifact protocol with an acquisition representation that is safe at every crash point. Neither is a small server-only patch.
+- `packages/music-core/session/server.ts`
+- `packages/music-core/tests/session-client.test.ts`
+- `packages/music-core/tests/session-server.test.ts`
+- `.apnea/artifacts/phase-05/round-8/coder-result.md`
 
 ## Verify transcript
 
 ```text
-$ bun test packages/music-core/tests/session-client.test.ts packages/music-core/tests/session-server.test.ts
+$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
 exit 0
-73 pass, 0 fail
+7 pass, 0 fail
+
+$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts
+exit 0
+104 pass, 0 fail
 
 $ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
 exit 0
-203 pass, 0 fail
+234 pass, 0 fail
 Verified npm package contents (21 files)
 NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
-$ ! rg -n "setTimeout\\(|setInterval\\(|Bun\\.sleep" packages/music-core/session/config.ts packages/music-core/session/client.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
+$ ! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/session/client.ts
 exit 0
+
+$ jj diff --git packages/music-core/session/config.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/session/client.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts
+exit 0
+inspected (1058 lines)
 
 $ git diff --check
 exit 0
 ```
 
-The focused run emitted the existing intentional injected unlink-failure warning from `session-server.test.ts`; it exited successfully.
+The full matrix emits expected injected cleanup-failure warnings from existing fixtures.
 
 ## Residual risks
 
-- Bind reservation policy remains private to `server.ts`; an interruption/crash before its PID payload is flushed can leave a conservative, unrecoverable reservation.
-- Selected listener-first shutdown still has the blocked coordinator/connection wait cycle.
-- The bind race has only same-process evidence; daemon-process hello and non-interference evidence is outstanding.
-- TestClock startup pacing, 20-way convergence, spawn-failure release diagnostics, and terminal skew-race coverage remain outstanding.
-- No commit, push, or `.apnea/state.json` edit was performed.
+- No new residual Phase 5 behavior is known; existing Phase 1–4 regression coverage remains baseline evidence.
+- Pre-existing unrelated `.apnea` and state changes remain untouched. No commit, push, or `.apnea/state.json` edit was performed.
