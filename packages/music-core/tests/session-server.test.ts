@@ -3437,6 +3437,302 @@ test("real clients retain global FIFO and recover after command-lane overflow", 
   }
 })
 
+test("artwork is capability-negotiated, authoritative, and cached per recording", async () => {
+  const path = socketPath("artwork")
+  const provider = createFakeProvider({
+    is_playing: false,
+    progress_ms: 0,
+    shuffle: false,
+    repeat: "off",
+    device: null,
+    track: {
+      id: "provider-id",
+      uri: "system:now:Song",
+      name: "Song",
+      artists: "Artist",
+      album: "Album",
+      duration_ms: 180_000,
+    },
+    fetched_at: 1,
+  })
+  const identity = {
+    id: "provider-id",
+    name: "Song",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 180_000,
+  }
+  provider.setArtworkResult({ type: "available", base64: "AQID" })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let oldPeer: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    server = await startMusicSessionServer({ socketPath: path }, provider)
+    client = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "artwork",
+      hostKind: "test",
+    })
+    await expect(client.artwork(identity)).resolves.toEqual({
+      type: "available",
+      base64: "AQID",
+    })
+    await expect(client.artwork(identity)).resolves.toEqual({
+      type: "available",
+      base64: "AQID",
+    })
+    expect(provider.artworkCalls).toBe(1)
+    await expect(
+      client.artwork({ ...identity, album: "Other" }),
+    ).resolves.toEqual({
+      type: "stale",
+    })
+    expect(provider.artworkCalls).toBe(1)
+
+    oldPeer = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "old-artwork-peer",
+      hostKind: "test",
+      capabilities: ["state-replay", "transport"],
+    })
+    await expect(oldPeer.artwork(identity)).rejects.toMatchObject({
+      code: "UNSUPPORTED_CAPABILITY",
+    })
+    await expect(oldPeer.play()).resolves.toEqual({ action: "play" })
+  } finally {
+    client?.dispose()
+    oldPeer?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
+test("real artwork responses contain exact, oversized, and malformed provider payloads", async () => {
+  const path = socketPath("artwork-wire-bounds")
+  const state = (name: string, fetched_at: number) => ({
+    is_playing: false,
+    progress_ms: 0,
+    shuffle: false,
+    repeat: "off" as const,
+    device: null,
+    track: {
+      id: name,
+      uri: `system:${name}`,
+      name,
+      artists: "Artist",
+      album: "Album",
+      duration_ms: 1,
+    },
+    fetched_at,
+  })
+  const identity = (name: string) => ({
+    id: name,
+    name,
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 1,
+  })
+  const provider = createFakeProvider(state("one", 1))
+  const nextState = (
+    client: Awaited<ReturnType<typeof createMusicSessionClient>>,
+    name: string,
+  ) =>
+    new Promise<void>((resolve) => {
+      const unsubscribe = client.subscribeState((snapshot) => {
+        if (snapshot.state.track?.name !== name) return
+        unsubscribe()
+        resolve()
+      })
+    })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    provider.setArtworkResult({ type: "available", base64: "AQ==" })
+    server = await startMusicSessionServer(
+      {
+        socketPath: path,
+        nativeArtworkMaxBytes: 1,
+        artworkCacheCapacity: 1,
+      },
+      provider,
+    )
+    client = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "artwork-wire-bounds",
+      hostKind: "test",
+    })
+    await expect(client.artwork(identity("one"))).resolves.toEqual({
+      type: "available",
+      base64: "AQ==",
+    })
+
+    const oversized = nextState(client, "two")
+    provider.state = state("two", 2)
+    provider.setArtworkResult({ type: "available", base64: "AQID" })
+    provider.emit({ type: "snapshot", state: provider.state })
+    await oversized
+    await expect(client.artwork(identity("two"))).resolves.toEqual({
+      type: "too-large",
+    })
+
+    const malformed = nextState(client, "three")
+    provider.state = state("three", 3)
+    provider.setArtworkResult({
+      type: "available",
+      base64: "not base64",
+    } as never)
+    provider.emit({ type: "snapshot", state: provider.state })
+    await malformed
+    await expect(client.artwork(identity("three"))).resolves.toEqual({
+      type: "unavailable",
+    })
+
+    const unavailable = nextState(client, "four")
+    provider.state = state("four", 4)
+    provider.setArtworkResult({ type: "unavailable" })
+    provider.emit({ type: "snapshot", state: provider.state })
+    await unavailable
+    await expect(client.artwork(identity("four"))).resolves.toEqual({
+      type: "unavailable",
+    })
+  } finally {
+    client?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
+test("blocked artwork remains isolated, shared, retryable, and connection-local", async () => {
+  const path = socketPath("artwork-isolation")
+  const state = (name: string, fetched_at: number) => ({
+    is_playing: false,
+    progress_ms: 0,
+    shuffle: false,
+    repeat: "off" as const,
+    device: null,
+    track: {
+      id: `provider-${name}`,
+      uri: `system:now:${name}`,
+      name,
+      artists: "Artist",
+      album: "Album",
+      duration_ms: 180_000,
+    },
+    fetched_at,
+  })
+  const identity = (name: string) => ({
+    id: `provider-${name}`,
+    name,
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 180_000,
+  })
+  const provider = createFakeProvider(state("one", 1))
+  const waitFor = async (condition: () => boolean, label: string) => {
+    for (let attempts = 0; attempts < 200; attempts++) {
+      if (condition()) return
+      await Bun.sleep(5)
+    }
+    throw new Error(`${label} did not complete`)
+  }
+  const waitForState = (
+    client: Awaited<ReturnType<typeof createMusicSessionClient>>,
+    name: string,
+  ) =>
+    new Promise<void>((resolve) => {
+      const unsubscribe = client.subscribeState((snapshot) => {
+        if (snapshot.state.track?.name !== name) return
+        unsubscribe()
+        resolve()
+      })
+    })
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let one: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let two: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let three: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    provider.setArtworkResult({ type: "available", base64: "AQID" })
+    server = await startMusicSessionServer(
+      { socketPath: path, artworkCacheCapacity: 2 },
+      provider,
+    )
+    one = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "artwork-isolation-one",
+      hostKind: "test",
+    })
+    two = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "artwork-isolation-two",
+      hostKind: "test",
+    })
+    three = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "artwork-isolation-three",
+      hostKind: "test",
+    })
+
+    provider.blockArtwork()
+    const first = one.artwork(identity("one"))
+    const joined = two.artwork(identity("one"))
+    await waitFor(() => provider.artworkCalls === 1, "shared artwork read")
+    const changed = waitForState(three, "two")
+    provider.state = state("two", 2)
+    provider.emit({ type: "snapshot", state: provider.state })
+    await changed
+    await expect(three.play()).resolves.toEqual({ action: "play" })
+    provider.releaseArtwork()
+    await expect(Promise.all([first, joined])).resolves.toEqual([
+      { type: "stale" },
+      { type: "stale" },
+    ])
+
+    const restored = waitForState(two, "one")
+    provider.state = state("one", 3)
+    provider.emit({ type: "snapshot", state: provider.state })
+    await restored
+    await expect(two.artwork(identity("one"))).resolves.toEqual({
+      type: "available",
+      base64: "AQID",
+    })
+    expect(provider.artworkCalls).toBe(2)
+
+    const third = waitForState(two, "three")
+    provider.state = state("three", 4)
+    provider.emit({ type: "snapshot", state: provider.state })
+    await third
+    provider.blockArtwork()
+    const abandoned = one.artwork(identity("three"))
+    const survivor = two.artwork(identity("three"))
+    await waitFor(() => provider.artworkCalls === 3, "pending artwork read")
+    one.dispose()
+    provider.releaseArtwork()
+    await expect(abandoned).rejects.toMatchObject({ code: "DISPOSED" })
+    await expect(survivor).resolves.toEqual({
+      type: "available",
+      base64: "AQID",
+    })
+
+    const failedState = waitForState(two, "four")
+    provider.state = state("four", 5)
+    provider.emit({ type: "snapshot", state: provider.state })
+    await failedState
+    provider.failNextArtwork()
+    await expect(two.artwork(identity("four"))).rejects.toMatchObject({
+      code: "PROVIDER_FAILURE",
+    })
+    await expect(two.artwork(identity("four"))).resolves.toEqual({
+      type: "available",
+      base64: "AQID",
+    })
+    expect(provider.artworkCalls).toBe(5)
+  } finally {
+    provider.releaseArtwork()
+    one?.dispose()
+    two?.dispose()
+    three?.dispose()
+    await server?.close().catch(() => {})
+  }
+})
+
 test("two clients share the daemon command lane", async () => {
   const path = socketPath("commands")
   const provider = createFakeProvider()

@@ -20,13 +20,16 @@ import {
 } from "../types.ts"
 import { mergePlayer } from "../reconcile.ts"
 import { MusicSessionConfig } from "./config.ts"
+import { decodeArtworkResult } from "./protocol.ts"
 import type {
+  ArtworkIdentity,
+  ArtworkResult,
   ProtocolErrorCode,
   ProviderStatus,
   RevisionedState,
   TransportAction,
 } from "./protocol.ts"
-import { SessionProvider } from "./provider.ts"
+import { ProviderError, SessionProvider } from "./provider.ts"
 
 export type CommandResult = { readonly action: TransportAction }
 type CommandCode = Extract<
@@ -107,6 +110,16 @@ export const claimSampling = (
       ? [undefined, { ...current, generation, pending: true }]
       : [generation, { active: true, pending: false, generation }]
   })
+type ArtworkAdmission =
+  | {
+      readonly type: "join"
+      readonly deferred: Deferred.Deferred<ArtworkResult, ProviderError>
+    }
+  | {
+      readonly type: "own"
+      readonly deferred: Deferred.Deferred<ArtworkResult, ProviderError>
+    }
+  | { readonly type: "busy" }
 type Job = {
   readonly action: TransportAction
   readonly positionMs?: number
@@ -141,6 +154,9 @@ export class MusicSessionCoordinator extends Context.Service<
     readonly status: Stream.Stream<ProviderStatus>
     readonly states: Stream.Stream<RevisionedState>
     readonly current: () => Effect.Effect<RevisionedState>
+    readonly artwork: (
+      identity: ArtworkIdentity,
+    ) => Effect.Effect<ArtworkResult, import("./provider.ts").ProviderError>
     readonly submit: (
       action: TransportAction,
       positionMs?: number,
@@ -152,6 +168,7 @@ export const layer = Layer.effect(
   MusicSessionCoordinator,
   Effect.gen(function* () {
     const config = (yield* MusicSessionConfig).options
+    const coordinatorScope = yield* Scope.Scope
     const provider = yield* SessionProvider
     const daemonInstanceId = instanceId()
     const statusRef = yield* SubscriptionRef.make<ProviderStatus>({
@@ -165,6 +182,25 @@ export const layer = Layer.effect(
       state: emptyPlayer(),
     })
     const commands = yield* Queue.bounded<Job>(config.commandQueueCapacity)
+    const artworkStore = yield* Ref.make({
+      settled: new Map<string, ArtworkResult>(),
+      inFlight: new Map<
+        string,
+        Deferred.Deferred<ArtworkResult, ProviderError>
+      >(),
+    })
+    const artworkKey = (identity: ArtworkIdentity) => JSON.stringify(identity)
+    const matchesArtwork = (state: PlayerState, identity: ArtworkIdentity) => {
+      const track = state.track
+      return (
+        !!track &&
+        track.id === identity.id &&
+        track.name === identity.name &&
+        track.artists === identity.artists &&
+        track.album === identity.album &&
+        track.duration_ms === identity.duration_ms
+      )
+    }
     const lifecycle = yield* Ref.make({
       closed: false,
       pending: new Set<Job>(),
@@ -484,6 +520,134 @@ export const layer = Layer.effect(
     yield* sample("initial")
     yield* restartPoll()
 
+    const artwork = (identity: ArtworkIdentity) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const before = yield* SubscriptionRef.get(stateRef)
+          if (!matchesArtwork(before.state, identity))
+            return { type: "stale" } as const
+          const key = artworkKey(identity)
+          const deferred = yield* Deferred.make<ArtworkResult, ProviderError>()
+          const admission = yield* Ref.modify<
+            {
+              settled: Map<string, ArtworkResult>
+              inFlight: Map<
+                string,
+                Deferred.Deferred<ArtworkResult, ProviderError>
+              >
+            },
+            | ArtworkAdmission
+            | { readonly type: "hit"; readonly result: ArtworkResult }
+          >(artworkStore, (store) => {
+            const hit = store.settled.get(key)
+            if (hit) return [{ type: "hit" as const, result: hit }, store]
+            const existing = store.inFlight.get(key)
+            if (existing)
+              return [{ type: "join" as const, deferred: existing }, store]
+            if (store.inFlight.size >= config.artworkCacheCapacity)
+              return [{ type: "busy" as const }, store]
+            const settled = new Map(store.settled)
+            while (
+              settled.size + store.inFlight.size >=
+              config.artworkCacheCapacity
+            )
+              settled.delete(settled.keys().next().value!)
+            const inFlight = new Map(store.inFlight)
+            inFlight.set(key, deferred)
+            return [
+              { type: "own" as const, deferred },
+              { settled, inFlight },
+            ]
+          })
+          if (admission.type === "hit") return admission.result
+          if (admission.type === "busy")
+            return yield* Effect.fail(
+              new ProviderError({
+                operation: "artwork",
+                message: "artwork cache is full",
+                cause: { cause: new Error("artwork cache is full") },
+              }),
+            )
+          if (admission.type === "join")
+            return yield* restore(Deferred.await(admission.deferred))
+          const interrupted = new ProviderError({
+            operation: "artwork",
+            message: "artwork lookup interrupted",
+            cause: { cause: new Error("artwork lookup interrupted") },
+          })
+          const complete = (exit: {
+            readonly result?: ArtworkResult
+            readonly error?: ProviderError
+          }): Effect.Effect<void> =>
+            Effect.uninterruptible(
+              Ref.modify(artworkStore, (store) => {
+                // A newer generation may own this key only after this exact deferred is gone.
+                if (store.inFlight.get(key) !== admission.deferred)
+                  return [false, store] as const
+                const inFlight = new Map(store.inFlight)
+                inFlight.delete(key)
+                const settled = new Map(store.settled)
+                if (exit.result?.type === "available")
+                  settled.set(key, exit.result)
+                return [true, { settled, inFlight }] as const
+              }).pipe(
+                Effect.flatMap((owned) =>
+                  !owned
+                    ? Effect.void
+                    : exit.error
+                      ? Deferred.fail(admission.deferred, exit.error)
+                      : Deferred.succeed(admission.deferred, exit.result!),
+                ),
+              ),
+            )
+          const workflow = provider
+            .nativeArtwork(identity, config.nativeArtworkMaxBytes)
+            .pipe(
+              Effect.match({
+                onSuccess: (value) => ({ ok: true as const, value }),
+                onFailure: (error) => ({ ok: false as const, error }),
+              }),
+              Effect.flatMap((outcome) => {
+                if (!outcome.ok) return complete({ error: outcome.error })
+                return SubscriptionRef.get(stateRef).pipe(
+                  Effect.flatMap((after) => {
+                    let validated: ArtworkResult
+                    try {
+                      validated = decodeArtworkResult(outcome.value)
+                    } catch {
+                      validated = { type: "unavailable" }
+                    }
+                    const padding =
+                      validated.type === "available"
+                        ? validated.base64.endsWith("==")
+                          ? 2
+                          : validated.base64.endsWith("=")
+                            ? 1
+                            : 0
+                        : 0
+                    const decodedBytes =
+                      validated.type === "available"
+                        ? (validated.base64.length / 4) * 3 - padding
+                        : 0
+                    const value =
+                      decodedBytes > config.nativeArtworkMaxBytes
+                        ? ({ type: "too-large" } as const)
+                        : validated
+                    return complete({
+                      result: matchesArtwork(after.state, identity)
+                        ? value
+                        : { type: "stale" },
+                    })
+                  }),
+                )
+              }),
+              Effect.catchCause(() => complete({ error: interrupted })),
+              Effect.onInterrupt(() => complete({ error: interrupted })),
+            )
+          yield* Effect.forkIn(coordinatorScope)(workflow)
+          return yield* restore(Deferred.await(admission.deferred))
+        }),
+      )
     const submit = Effect.fn("MusicSession.Coordinator.submit")(function* (
       action: TransportAction,
       positionMs?: number,
@@ -532,6 +696,7 @@ export const layer = Layer.effect(
       status: SubscriptionRef.changes(statusRef),
       states: SubscriptionRef.changes(stateRef),
       current: () => SubscriptionRef.get(stateRef),
+      artwork,
       submit,
     })
   }),

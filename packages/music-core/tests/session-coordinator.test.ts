@@ -46,12 +46,17 @@ const fixture = () =>
   )
 type Fixture = Awaited<ReturnType<typeof fixture>>
 
-const graph = (provider: Fixture, capacity = 128) =>
+const graph = (
+  provider: Fixture,
+  capacity = 128,
+  artworkCacheCapacity?: number,
+) =>
   Layer.provide(
     Layer.provide(coordinatorLayer, provider.layer),
     configLayer({
       socketPath: "/tmp/music-session-test.sock",
       commandQueueCapacity: capacity,
+      ...(artworkCacheCapacity === undefined ? {} : { artworkCacheCapacity }),
       reconciliationMs: { transport: 120, navigation: 150 },
       pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
     }),
@@ -101,6 +106,7 @@ test("config defaults, overrides, ConfigProvider parity, and typed failures", as
     resolve(configLayer({ socketPath: "/tmp/config.sock" })),
   )
   expect(defaults.maxFrameBytes).toBe(64 * 1024)
+  expect(defaults.nativeArtworkMaxBytes).toBe(1024)
   const concrete = await Effect.runPromise(
     resolve(
       configLayer({
@@ -112,6 +118,9 @@ test("config defaults, overrides, ConfigProvider parity, and typed failures", as
       }),
     ),
   )
+  // A small but valid frame derives a smaller native read bound; it never
+  // permits a response that the mandatory lane cannot encode.
+  expect(concrete.nativeArtworkMaxBytes).toBe(288)
   const fromConfig = await Effect.runPromise(
     resolve(layerFromConfig).pipe(
       Effect.provide(
@@ -163,6 +172,7 @@ test("config defaults, overrides, ConfigProvider parity, and typed failures", as
   for (const [setting, invalid] of [
     ["socketPath", { socketPath: "" }],
     ["maxFrameBytes", { maxFrameBytes: 0 }],
+    ["maxFrameBytes", { maxFrameBytes: 131 }],
     ["commandQueueCapacity", { commandQueueCapacity: Number.NaN }],
     [
       "reconciliationMs.transport",
@@ -195,6 +205,212 @@ test("config defaults, overrides, ConfigProvider parity, and typed failures", as
       ),
     )
     expect(failure).toMatchObject({ _tag: "MusicSession.ConfigError", setting })
+  }
+})
+
+test("artwork preserves authority, shares in-flight work, retries failures, and evicts", async () => {
+  const provider = await fixture()
+  const state = (name: string, fetched_at: number) => ({
+    ...emptyPlayer(),
+    track: track(name),
+    fetched_at,
+  })
+  const identity = (name: string) => ({
+    id: name,
+    name,
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 10_000,
+  })
+  await Effect.runPromise(provider.setState(state("one", 1)))
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const updates = yield* subscribeStates(coordinator)
+        const one = identity("one")
+        const two = identity("two")
+
+        // A mismatch never reaches the provider.
+        expect(yield* coordinator.artwork(two)).toEqual({ type: "stale" })
+        expect(yield* Ref.get(provider.artworkCalls)).toBe(0)
+
+        yield* provider.setArtworkResult({ type: "available", base64: "AQID" })
+        yield* provider.blockArtwork
+        const first = yield* coordinator.artwork(one).pipe(Effect.forkScoped)
+        yield* Latch.await(provider.artworkStarted)
+        const second = yield* coordinator.artwork(one).pipe(Effect.forkScoped)
+        yield* Effect.yieldNow
+        expect(yield* Ref.get(provider.artworkCalls)).toBe(1)
+
+        // Artwork never enters the command lane and a later authoritative
+        // state invalidates both joined callers when the read completes.
+        yield* coordinator.submit("play")
+        yield* Queue.take(updates)
+        yield* snapshot(provider, state("two", 2))
+        expect((yield* Queue.take(updates)).track?.name).toBe("two")
+        yield* provider.releaseArtwork
+        expect(yield* Fiber.join(first)).toEqual({ type: "stale" })
+        expect(yield* Fiber.join(second)).toEqual({ type: "stale" })
+
+        yield* snapshot(provider, state("one", 3))
+        expect((yield* Queue.take(updates)).track?.name).toBe("one")
+        yield* provider.failNextArtwork()
+        const failed = yield* coordinator.artwork(one).pipe(
+          Effect.match({
+            onSuccess: () => "success",
+            onFailure: () => "failed",
+          }),
+        )
+        expect(failed).toBe("failed")
+        yield* provider.setArtworkResult({ type: "available", base64: "AQID" })
+        expect(yield* coordinator.artwork(one)).toEqual({
+          type: "available",
+          base64: "AQID",
+        })
+        expect(yield* Ref.get(provider.artworkCalls)).toBe(3)
+
+        // Capacity one evicts the oldest settled identity, so returning to it
+        // triggers a fresh provider read rather than retaining unbounded data.
+        yield* snapshot(provider, state("two", 4))
+        expect((yield* Queue.take(updates)).track?.name).toBe("two")
+        expect(yield* coordinator.artwork(two)).toEqual({
+          type: "available",
+          base64: "AQID",
+        })
+        yield* snapshot(provider, state("one", 5))
+        expect((yield* Queue.take(updates)).track?.name).toBe("one")
+        expect(yield* coordinator.artwork(one)).toEqual({
+          type: "available",
+          base64: "AQID",
+        })
+        expect(yield* Ref.get(provider.artworkCalls)).toBe(5)
+      }).pipe(Effect.provide(graph(provider, 128, 1))),
+    ),
+  )
+})
+
+test("artwork caller interruption leaves an equal-key lookup owned by the coordinator", async () => {
+  const provider = await fixture()
+  const state = { ...emptyPlayer(), track: track("one"), fetched_at: 1 }
+  const identity = {
+    id: "one",
+    name: "one",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 10_000,
+  }
+  await Effect.runPromise(provider.setState(state))
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* provider.setArtworkResult({ type: "available", base64: "AQID" })
+        yield* provider.blockArtwork
+        const first = yield* coordinator
+          .artwork(identity)
+          .pipe(Effect.forkScoped)
+        yield* Queue.take(provider.artworkStarts)
+        const joined = yield* coordinator
+          .artwork(identity)
+          .pipe(Effect.forkScoped)
+        yield* Fiber.interrupt(first)
+        expect(yield* Ref.get(provider.interruptedArtwork)).toBe(0)
+        yield* provider.releaseArtwork
+        expect(yield* Fiber.join(joined)).toEqual({
+          type: "available",
+          base64: "AQID",
+        })
+        expect(yield* Ref.get(provider.artworkCalls)).toBe(1)
+      }).pipe(Effect.provide(graph(provider, 128, 1))),
+    ),
+  )
+})
+
+test("artwork distinct-key admission is bounded and recovers after release", async () => {
+  const provider = await fixture()
+  const state = (name: string, fetched_at: number) => ({
+    ...emptyPlayer(),
+    track: track(name),
+    fetched_at,
+  })
+  const identity = (name: string) => ({
+    id: name,
+    name,
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 10_000,
+  })
+  await Effect.runPromise(provider.setState(state("one", 1)))
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const updates = yield* subscribeStates(coordinator)
+        yield* provider.setArtworkResult({ type: "available", base64: "AQID" })
+        yield* provider.blockArtwork
+        const first = yield* coordinator
+          .artwork(identity("one"))
+          .pipe(Effect.forkScoped)
+        yield* Queue.take(provider.artworkStarts)
+        yield* snapshot(provider, state("two", 2))
+        expect((yield* Queue.take(updates)).track?.name).toBe("two")
+        const busy = yield* coordinator.artwork(identity("two")).pipe(
+          Effect.match({
+            onSuccess: () => undefined,
+            onFailure: (error) => error,
+          }),
+        )
+        expect(busy).toMatchObject({ operation: "artwork" })
+        yield* provider.releaseArtwork
+        expect(yield* Fiber.join(first)).toEqual({ type: "stale" })
+        expect(yield* coordinator.artwork(identity("two"))).toEqual({
+          type: "available",
+          base64: "AQID",
+        })
+        expect(yield* Ref.get(provider.artworkCalls)).toBe(2)
+      }).pipe(Effect.provide(graph(provider, 128, 1))),
+    ),
+  )
+})
+
+test("coordinator shutdown interrupts blocked artwork and clears waiters", async () => {
+  const provider = await fixture()
+  const state = { ...emptyPlayer(), track: track("one"), fetched_at: 1 }
+  const identity = {
+    id: "one",
+    name: "one",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 10_000,
+  }
+  await Effect.runPromise(provider.setState(state))
+  const scope = await Effect.runPromise(Scope.make())
+  try {
+    const services = await Effect.runPromise(
+      Scope.provide(scope)(Layer.build(graph(provider, 128, 1))),
+    )
+    const coordinator = Context.get(services, MusicSessionCoordinator)
+    await Effect.runPromise(
+      provider.setArtworkResult({ type: "available", base64: "AQID" }),
+    )
+    await Effect.runPromise(provider.blockArtwork)
+    const owner = Effect.runPromise(coordinator.artwork(identity))
+    await Effect.runPromise(Queue.take(provider.artworkStarts))
+    const joined = Effect.runPromise(coordinator.artwork(identity))
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await expect(owner).rejects.toMatchObject({ operation: "artwork" })
+    await expect(joined).rejects.toMatchObject({ operation: "artwork" })
+    expect(await Effect.runPromise(Ref.get(provider.interruptedArtwork))).toBe(
+      1,
+    )
+    expect(await Effect.runPromise(Ref.get(provider.finalizations))).toBe(1)
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
   }
 })
 

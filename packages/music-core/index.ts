@@ -81,6 +81,8 @@ export {
   MusicSessionClientError,
 } from "./session/client.ts"
 export type {
+  ArtworkIdentity,
+  ArtworkResult,
   Capability,
   HostKind,
   ProtocolError,

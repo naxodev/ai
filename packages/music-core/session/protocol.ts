@@ -1,13 +1,18 @@
 import { Effect } from "effect"
 import * as Schema from "effect/Schema"
+import { Buffer } from "node:buffer"
 import type { PlayerState as CorePlayerState } from "../types.ts"
-import { PACKAGE_VERSION } from "./config.ts"
+import { MAX_ARTWORK_BASE64_CHARS, PACKAGE_VERSION } from "./config.ts"
 
 export { PACKAGE_VERSION }
 
 export const LEGACY_PROTOCOL = { major: 1, minor: 0 } as const
 export const PROTOCOL = { major: 1, minRevision: 0, maxRevision: 1 } as const
-export const baselineCapabilities = ["state-replay", "transport"] as const
+export const baselineCapabilities = [
+  "state-replay",
+  "transport",
+  "native-artwork",
+] as const
 
 const SafeInt = Schema.Finite.check(
   Schema.isInt(),
@@ -131,6 +136,41 @@ export const ProviderStatusSchema = Schema.Struct({
 })
 export type ProviderStatus = Schema.Schema.Type<typeof ProviderStatusSchema>
 
+const BoundedIdentityString = Schema.String.check(Schema.isMaxLength(1_024))
+export const ArtworkIdentitySchema = Schema.Struct({
+  id: BoundedIdentityString.check(Schema.isMinLength(1)),
+  name: BoundedIdentityString,
+  artists: BoundedIdentityString,
+  album: BoundedIdentityString,
+  duration_ms: SafeInt,
+})
+export type ArtworkIdentity = Schema.Schema.Type<typeof ArtworkIdentitySchema>
+const CanonicalBase64 = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(MAX_ARTWORK_BASE64_CHARS),
+  Schema.makeFilter((value) => {
+    // This guard is deliberately inside the filter: Schema accumulates other
+    // check failures, so an earlier max-length failure alone cannot prevent a
+    // later canonicality check from allocating an attacker-controlled buffer.
+    if (value.length > MAX_ARTWORK_BASE64_CHARS || value.length % 4 !== 0)
+      return [{ path: [], issue: "must be bounded canonical base64" }]
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value))
+      return [{ path: [], issue: "must be canonical base64" }]
+    return Buffer.from(value, "base64").toString("base64") === value
+      ? []
+      : [{ path: [], issue: "must be canonical base64" }]
+  }),
+)
+export const ArtworkResultSchema = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("available"),
+    base64: CanonicalBase64,
+  }),
+  Schema.Struct({ type: Schema.Literal("unavailable") }),
+  Schema.Struct({ type: Schema.Literal("stale") }),
+  Schema.Struct({ type: Schema.Literal("too-large") }),
+])
+export type ArtworkResult = Schema.Schema.Type<typeof ArtworkResultSchema>
 export const TrackSchema = Schema.Struct({
   uri: Schema.String,
   id: Schema.String,
@@ -215,7 +255,14 @@ export const TransportRequestSchema = Schema.Struct({
   }),
 )
 export type TransportRequest = Schema.Schema.Type<typeof TransportRequestSchema>
-export type Request = HelloRequest | StateRequest | TransportRequest
+export const ArtworkRequestSchema = Schema.Struct({
+  type: Schema.Literal("artwork"),
+  requestId: SafeInt,
+  identity: ArtworkIdentitySchema,
+})
+export type ArtworkRequest = Schema.Schema.Type<typeof ArtworkRequestSchema>
+export type Request =
+  HelloRequest | StateRequest | TransportRequest | ArtworkRequest
 
 export const StatusEventSchema = Schema.Struct({
   type: Schema.Literal("status"),
@@ -408,6 +455,8 @@ export function decodeRequest(value: unknown): Request {
   }
   if (envelope.type === "state")
     return decode(StateRequestSchema, value, "invalid state request")
+  if (envelope.type === "artwork")
+    return decode(ArtworkRequestSchema, value, "invalid artwork request")
   if (envelope.type === "transport") {
     const raw = decode(
       TransportEnvelopeSchema,
@@ -454,6 +503,12 @@ export const decodeRequestEffect = (value: unknown) =>
 
 export function decodeTransportResult(value: unknown): TransportResult {
   return decode(TransportResultSchema, value, "invalid transport result")
+}
+export function decodeArtworkIdentity(value: unknown): ArtworkIdentity {
+  return decode(ArtworkIdentitySchema, value, "invalid artwork identity")
+}
+export function decodeArtworkResult(value: unknown): ArtworkResult {
+  return decode(ArtworkResultSchema, value, "invalid artwork result")
 }
 
 export function decodeServerFrame(value: unknown): Event | Response {

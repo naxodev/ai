@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { NdjsonFramer, FrameError } from "../session/framing.ts"
 import * as Schema from "effect/Schema"
 import {
+  decodeArtworkResult,
   decodeHelloResult,
   decodeRequest,
   decodeServerFrame,
@@ -251,6 +252,22 @@ describe("session protocol", () => {
     const frames = new NdjsonFramer()
     expect(frames.push(bytes.slice(0, split))).toEqual([])
     expect(frames.push(bytes.slice(split))).toEqual([{ title: "é" }])
+  })
+  test("artwork results require bounded canonical base64", () => {
+    expect(decodeArtworkResult({ type: "available", base64: "AQ==" })).toEqual({
+      type: "available",
+      base64: "AQ==",
+    })
+    for (const base64 of [
+      "A",
+      "AAAA=",
+      "AR==",
+      "!@#$",
+      "A".repeat(256 * 1024 + 4),
+    ])
+      expect(() => decodeArtworkResult({ type: "available", base64 })).toThrow(
+        "invalid artwork result",
+      )
   })
   test("rejects an oversized line before accepting its chunk", () => {
     const frames = new NdjsonFramer(8)

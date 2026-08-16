@@ -23,7 +23,12 @@ import {
   type MusicChangeEvent,
   type PlayerState,
 } from "../types.ts"
-import type { ProviderStatus, TransportAction } from "./protocol.ts"
+import type {
+  ArtworkIdentity,
+  ArtworkResult,
+  ProviderStatus,
+  TransportAction,
+} from "./protocol.ts"
 
 export class ProviderError extends Schema.TaggedErrorClass<ProviderError>()(
   "MusicSession.ProviderError",
@@ -47,6 +52,10 @@ export class SessionProvider extends Context.Service<
       action: TransportAction,
       positionMs?: number,
     ) => Effect.Effect<void, ProviderError>
+    readonly nativeArtwork: (
+      identity: ArtworkIdentity,
+      maxBytes: number,
+    ) => Effect.Effect<ArtworkResult, ProviderError>
     readonly events: Stream.Stream<MusicChangeEvent, ProviderError>
   }
 >()("@naxodev/music-core/SessionProvider") {}
@@ -313,6 +322,13 @@ const serviceFromAdapter = (
         catch: (cause) => providerError("transport", cause),
       })
     })
+    const nativeArtwork = (identity: ArtworkIdentity, maxBytes: number) =>
+      backend.nativeArtwork
+        ? Effect.tryPromise({
+            try: () => backend.nativeArtwork!(identity, maxBytes),
+            catch: (cause) => providerError("artwork", cause),
+          })
+        : Effect.succeed({ type: "unavailable" } as const)
     return SessionProvider.of({
       status: Effect.fn("MusicSession.Provider.status")(function* () {
         return yield* Effect.try({
@@ -322,6 +338,7 @@ const serviceFromAdapter = (
       }),
       sample,
       transport,
+      nativeArtwork,
       events,
     })
   })
@@ -364,6 +381,10 @@ export type LegacySessionProvider = {
   sample(): Promise<PlayerState | null>
   subscribe(listener: (event: MusicChangeEvent) => void): () => void
   transport(action: TransportAction, positionMs?: number): Promise<void>
+  nativeArtwork?(
+    identity: ArtworkIdentity,
+    maxBytes: number,
+  ): Promise<ArtworkResult>
   dispose(): void
 }
 
@@ -393,6 +414,13 @@ export const layerFromLegacy = (provider: LegacySessionProvider) =>
             catch: (cause) => providerError("sample", cause),
           })
         }),
+        nativeArtwork: (identity, maxBytes) =>
+          provider.nativeArtwork
+            ? Effect.tryPromise({
+                try: () => provider.nativeArtwork!(identity, maxBytes),
+                catch: (cause) => providerError("artwork", cause),
+              })
+            : Effect.succeed({ type: "unavailable" } as const),
         transport: Effect.fn("MusicSession.Provider.transport")(function* (
           action: TransportAction,
           positionMs?: number,
@@ -417,6 +445,14 @@ export type CoordinatorProviderFixture = {
   readonly releaseSample: Effect.Effect<void>
   readonly blockTransport: Effect.Effect<void>
   readonly releaseTransport: Effect.Effect<void>
+  readonly blockArtwork: Effect.Effect<void>
+  readonly releaseArtwork: Effect.Effect<void>
+  readonly failNextArtwork: (cause?: Error) => Effect.Effect<void>
+  readonly setArtworkResult: (result: ArtworkResult) => Effect.Effect<void>
+  readonly artworkStarted: Latch.Latch
+  readonly artworkStarts: Queue.Dequeue<number>
+  readonly artworkCalls: Ref.Ref<number>
+  readonly interruptedArtwork: Ref.Ref<number>
   readonly failNextSample: (cause?: Error) => Effect.Effect<void>
   readonly returnNullNextSample: Effect.Effect<void>
   readonly failNextTransport: (cause?: Error) => Effect.Effect<void>
@@ -453,7 +489,10 @@ export const makeCoordinatorProviderFixture = (
     const state = yield* Ref.make(initial)
     const sampleGate = yield* Latch.make(true)
     const transportGate = yield* Latch.make(true)
+    const artworkGate = yield* Latch.make(true)
     const sampleStarted = yield* Latch.make(false)
+    const artworkStarted = yield* Latch.make(false)
+    const artworkStarts = yield* Queue.unbounded<number>()
     const sampleCompleted = yield* Latch.make(false)
     const sampleStarts = yield* Queue.unbounded<number>()
     const sampleCompletions = yield* Queue.unbounded<number>()
@@ -474,6 +513,12 @@ export const makeCoordinatorProviderFixture = (
     const nextSampleFailure = yield* Ref.make<Error | undefined>(undefined)
     const nextSampleNull = yield* Ref.make(false)
     const nextTransportFailure = yield* Ref.make<Error | undefined>(undefined)
+    const nextArtworkFailure = yield* Ref.make<Error | undefined>(undefined)
+    const artworkResult = yield* Ref.make<ArtworkResult>({
+      type: "unavailable",
+    })
+    const artworkCalls = yield* Ref.make(0)
+    const interruptedArtwork = yield* Ref.make(0)
     const calls = yield* Ref.make<
       ReadonlyArray<{
         readonly action: TransportAction
@@ -526,6 +571,21 @@ export const makeCoordinatorProviderFixture = (
                   provider: "media-control",
                   message: "fixture",
                 }),
+              nativeArtwork: () =>
+                Ref.updateAndGet(artworkCalls, (count) => count + 1).pipe(
+                  Effect.tap((count) => Queue.offer(artworkStarts, count)),
+                  Effect.tap(() => Latch.open(artworkStarted)),
+                  Effect.andThen(Latch.await(artworkGate)),
+                  Effect.andThen(Ref.getAndSet(nextArtworkFailure, undefined)),
+                  Effect.flatMap((failure) =>
+                    failure
+                      ? Effect.fail(providerError("artwork", failure))
+                      : Ref.get(artworkResult),
+                  ),
+                  Effect.onInterrupt(() =>
+                    Ref.update(interruptedArtwork, (count) => count + 1),
+                  ),
+                ),
               sample: () =>
                 Effect.acquireUseRelease(
                   Effect.gen(function* () {
@@ -632,6 +692,15 @@ export const makeCoordinatorProviderFixture = (
       releaseSample: Latch.open(sampleGate).pipe(Effect.asVoid),
       blockTransport: Latch.close(transportGate).pipe(Effect.asVoid),
       releaseTransport: Latch.open(transportGate).pipe(Effect.asVoid),
+      blockArtwork: Latch.close(artworkGate).pipe(Effect.asVoid),
+      releaseArtwork: Latch.open(artworkGate).pipe(Effect.asVoid),
+      failNextArtwork: (cause = new Error("artwork failed")) =>
+        Ref.set(nextArtworkFailure, cause),
+      setArtworkResult: (result) => Ref.set(artworkResult, result),
+      artworkStarted,
+      artworkStarts,
+      artworkCalls,
+      interruptedArtwork,
       failNextSample: (cause = new Error("sample failed")) =>
         Ref.set(nextSampleFailure, cause),
       returnNullNextSample: Ref.set(nextSampleNull, true),
@@ -669,7 +738,12 @@ export type FakeProvider = LegacySessionProvider & {
   failNextSample(cause?: Error): void
   returnNullNextSample(): void
   failNextTransport(cause?: Error): void
+  blockArtwork(): void
+  releaseArtwork(): void
+  failNextArtwork(cause?: Error): void
+  setArtworkResult(result: ArtworkResult): void
   calls: string[]
+  artworkCalls: number
   counts: {
     subscriptions: number
     disposals: number
@@ -697,9 +771,13 @@ export function createFakeProvider(
   let nextSampleFailure: Error | undefined
   let nextSampleNull = false
   let nextTransportFailure: Error | undefined
+  let artworkGate: Gate | undefined
+  let nextArtworkFailure: Error | undefined
+  let artworkResult: ArtworkResult = { type: "unavailable" }
   const fake: FakeProvider = {
     state: initial,
     calls: [],
+    artworkCalls: 0,
     counts: {
       subscriptions: 0,
       disposals: 0,
@@ -724,6 +802,14 @@ export function createFakeProvider(
       }
       await sampleGate?.wait
       return fake.state
+    },
+    async nativeArtwork() {
+      fake.artworkCalls++
+      const failure = nextArtworkFailure
+      nextArtworkFailure = undefined
+      if (failure) throw failure
+      await artworkGate?.wait
+      return artworkResult
     },
     subscribe(next) {
       fake.counts.subscriptions++
@@ -783,6 +869,19 @@ export function createFakeProvider(
     },
     failNextTransport(cause = new Error("fake transport failure")) {
       nextTransportFailure = cause
+    },
+    blockArtwork() {
+      artworkGate ??= gate()
+    },
+    releaseArtwork() {
+      artworkGate?.release()
+      artworkGate = undefined
+    },
+    failNextArtwork(cause = new Error("fake artwork failure")) {
+      nextArtworkFailure = cause
+    },
+    setArtworkResult(result) {
+      artworkResult = result
     },
     dispose() {
       fake.counts.providerDisposals++

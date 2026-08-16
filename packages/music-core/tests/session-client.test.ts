@@ -51,6 +51,7 @@ import {
 } from "effect"
 import { TestClock } from "effect/testing"
 import {
+  type ArtworkResult,
   type ProviderStatus,
   type RevisionedState,
   type TransportResult,
@@ -320,7 +321,10 @@ type ScriptedDaemon = {
   close(): Promise<void>
 }
 
-async function startScriptedDaemon(helloTail = ""): Promise<ScriptedDaemon> {
+async function startScriptedDaemon(
+  helloTail = "",
+  capabilities = ["state-replay", "transport"],
+): Promise<ScriptedDaemon> {
   const path = `/tmp/music-session-scripted-${process.pid}-${randomUUID()}.sock`
   const received: ScriptedFrame[] = []
   const receivedWaiters = new Set<{
@@ -360,7 +364,7 @@ async function startScriptedDaemon(helloTail = ""): Promise<ScriptedDaemon> {
           }
         if (frame.type === "hello")
           connection.write(
-            `${JSON.stringify({ type: "response", requestId: 0, ok: true, data: { daemonInstanceId: "daemon", packageVersion: "test", protocol: { major: 1, minRevision: 0, maxRevision: 1, selectedRevision: 1 }, capabilities: ["state-replay", "transport"] } })}\n${helloTail}`,
+            `${JSON.stringify({ type: "response", requestId: 0, ok: true, data: { daemonInstanceId: "daemon", packageVersion: "test", protocol: { major: 1, minRevision: 0, maxRevision: 1, selectedRevision: 1 }, capabilities } })}\n${helloTail}`,
           )
       }
     })
@@ -419,6 +423,10 @@ const scriptedGeneration = (daemonInstanceId: string) => {
     resolve: (result: TransportResult) => void
     reject: (error: MusicSessionClientError) => void
   }[] = []
+  const artworkResolvers: {
+    resolve: (result: ArtworkResult) => void
+    reject: (error: MusicSessionClientError) => void
+  }[] = []
   const queuedCallbacks: (() => void)[] = []
   const notify = <A>(listeners: Set<(value: A) => void>, value: A) => {
     for (const listener of [...listeners]) listener(value)
@@ -461,6 +469,10 @@ const scriptedGeneration = (daemonInstanceId: string) => {
     next: async () => ({ action: "next" }),
     previous: async () => ({ action: "previous" }),
     seek: async () => ({ action: "seek" }),
+    artwork: () =>
+      new Promise<ArtworkResult>((resolve, reject) =>
+        artworkResolvers.push({ resolve, reject }),
+      ),
     dispose: () => {
       disposed = true
       statusListeners.clear()
@@ -486,7 +498,7 @@ const scriptedGeneration = (daemonInstanceId: string) => {
       state = next
       queue(stateListeners, next)
     },
-    terminal: (error: MusicSessionClientError) => {
+    terminal: (error: MusicSessionClientError, preserveArtwork = false) => {
       notify(terminalListeners, error)
       for (const pending of playResolvers.splice(0))
         pending.reject(
@@ -496,6 +508,15 @@ const scriptedGeneration = (daemonInstanceId: string) => {
             retryable: false,
           }),
         )
+      if (!preserveArtwork)
+        for (const pending of artworkResolvers.splice(0))
+          pending.reject(
+            new MusicSessionClientError({
+              code: "CONNECTION_LOST",
+              message: "generation lost before artwork response",
+              retryable: true,
+            }),
+          )
     },
     queueTerminal: (error: MusicSessionClientError) => {
       queue(terminalListeners, error)
@@ -504,6 +525,11 @@ const scriptedGeneration = (daemonInstanceId: string) => {
       for (const callback of queuedCallbacks.splice(0)) callback()
     },
     respondPlay: () => playResolvers.shift()?.resolve({ action: "play" }),
+    respondArtwork: (result: ArtworkResult = { type: "unavailable" }) =>
+      artworkResolvers.shift()?.resolve(result),
+    get artworkCalls() {
+      return artworkResolvers.length
+    },
     get disposed() {
       return disposed
     },
@@ -540,6 +566,154 @@ test("explicit terminal observation replays one retained retryable loss", async 
   } finally {
     client?.dispose()
     await daemon.close()
+  }
+})
+
+test("explicit artwork requests correlate independently and settle disposed work", async () => {
+  const daemon = await startScriptedDaemon("", [
+    "state-replay",
+    "transport",
+    "native-artwork",
+  ])
+  let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  const identity = {
+    id: "id",
+    name: "Song",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 1,
+  }
+  try {
+    client = await createMusicSessionClient({
+      socketPath: daemon.path,
+      clientId: "artwork-correlation",
+      hostKind: "test",
+    })
+    const first = client.artwork(identity)
+    const second = client.artwork({ ...identity, id: "other" })
+    const frames = await daemon.received(3)
+    const requests = frames.slice(1)
+    expect(requests.map((frame) => frame.type)).toEqual(["artwork", "artwork"])
+    daemon.send({
+      type: "response",
+      requestId: requests[1]!.requestId,
+      ok: true,
+      data: { type: "unavailable" },
+    })
+    daemon.send({
+      type: "response",
+      requestId: requests[0]!.requestId,
+      ok: true,
+      data: { type: "available", base64: "AQ==" },
+    })
+    await expect(first).resolves.toEqual({ type: "available", base64: "AQ==" })
+    await expect(second).resolves.toEqual({ type: "unavailable" })
+
+    const disposed = client.artwork(identity)
+    await daemon.received(4)
+    client.dispose()
+    await expect(disposed).rejects.toMatchObject({ code: "DISPOSED" })
+  } finally {
+    client?.dispose()
+    await daemon.close()
+  }
+})
+
+test("explicit artwork requests report connection loss rather than command indeterminacy", async () => {
+  const daemon = await startScriptedDaemon("", [
+    "state-replay",
+    "transport",
+    "native-artwork",
+  ])
+  let client: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  try {
+    client = await createMusicSessionClient({
+      socketPath: daemon.path,
+      clientId: "artwork-loss",
+      hostKind: "test",
+    })
+    const pending = client.artwork({
+      id: "id",
+      name: "Song",
+      artists: "Artist",
+      album: "Album",
+      duration_ms: 1,
+    })
+    await daemon.received(2)
+    daemon.destroy()
+    await expect(pending).rejects.toMatchObject({ code: "CONNECTION_LOST" })
+  } finally {
+    client?.dispose()
+    await daemon.close()
+  }
+})
+
+test("reconnecting artwork is delegated once and never replayed after loss", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const first = scriptedGeneration("generation-a")
+  const second = scriptedGeneration("generation-b")
+  let connects = 0
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "artwork-generation", hostKind: "test" },
+        {
+          connect: () =>
+            Effect.succeed(++connects === 1 ? first.client : second.client),
+        },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    const pending = managed.artwork({
+      id: "id",
+      name: "Song",
+      artists: "Artist",
+      album: "Album",
+      duration_ms: 1,
+    })
+    expect(first.artworkCalls).toBe(1)
+    first.terminal(
+      new MusicSessionClientError({
+        code: "CONNECTION_LOST",
+        message: "generation A disappeared",
+        retryable: true,
+      }),
+      true,
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(connects).toBe(2)
+    expect(second.artworkCalls).toBe(0)
+    first.respondArtwork({ type: "available", base64: "AQ==" })
+    await expect(pending).rejects.toMatchObject({ code: "CONNECTION_LOST" })
+    expect(second.artworkCalls).toBe(0)
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+  }
+})
+
+test("reconnecting artwork fences a late completion after managed disposal", async () => {
+  const scope = await Effect.runPromise(Scope.make())
+  const generation = scriptedGeneration("generation-a")
+  try {
+    const managed = await Effect.runPromise(
+      createReconnectingMusicSessionClientEffect(
+        { clientId: "artwork-disposal", hostKind: "test" },
+        { connect: () => Effect.succeed(generation.client) },
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    )
+    const pending = managed.artwork({
+      id: "id",
+      name: "Song",
+      artists: "Artist",
+      album: "Album",
+      duration_ms: 1,
+    })
+    expect(generation.artworkCalls).toBe(1)
+    await managed.dispose()
+    generation.respondArtwork({ type: "available", base64: "AQ==" })
+    await expect(pending).rejects.toMatchObject({ code: "DISPOSED" })
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
   }
 })
 
@@ -3700,7 +3874,11 @@ test("explicit client exposes current negotiated revision and capabilities", asy
       hostKind: "test",
     })
     expect(client.selectedRevision).toBe(1)
-    expect(client.negotiatedCapabilities).toEqual(["state-replay", "transport"])
+    expect(client.negotiatedCapabilities).toEqual([
+      "state-replay",
+      "transport",
+      "native-artwork",
+    ])
   } finally {
     client?.dispose()
     await server?.close().catch(() => {})

@@ -31,6 +31,8 @@ import {
   decodeHelloResult,
   decodeServerFrame,
   PROTOCOL,
+  type ArtworkIdentity,
+  type ArtworkResult,
   type HostKind,
   type ProtocolError,
   type ProviderStatus,
@@ -39,6 +41,8 @@ import {
   type TransportAction,
   type TransportResult,
   decodeTransportResult,
+  decodeArtworkIdentity,
+  decodeArtworkResult,
 } from "./protocol.ts"
 
 export type MusicSessionClientOptions = {
@@ -69,12 +73,20 @@ export class MusicSessionClientError extends Error {
     this.details = error.details
   }
 }
-type Pending = {
-  readonly id: number
-  readonly action: TransportAction
-  readonly resolve: (value: TransportResult) => void
-  readonly reject: (error: MusicSessionClientError) => void
-}
+type Pending =
+  | {
+      readonly kind: "transport"
+      readonly id: number
+      readonly action: TransportAction
+      readonly resolve: (value: TransportResult) => void
+      readonly reject: (error: MusicSessionClientError) => void
+    }
+  | {
+      readonly kind: "artwork"
+      readonly id: number
+      readonly resolve: (value: ArtworkResult) => void
+      readonly reject: (error: MusicSessionClientError) => void
+    }
 type Listener<T> = (value: T) => void
 export type MusicSessionClient = {
   readonly daemonInstanceId: string
@@ -92,6 +104,7 @@ export type MusicSessionClient = {
   next(): Promise<TransportResult>
   previous(): Promise<TransportResult>
   seek(positionMs: number): Promise<TransportResult>
+  artwork(identity: ArtworkIdentity): Promise<ArtworkResult>
   dispose(): void
 }
 class Client implements MusicSessionClient {
@@ -247,10 +260,14 @@ class Client implements MusicSessionClient {
         return
       }
       try {
-        const result = decodeTransportResult(frame.data)
-        if (result.action !== pending.action)
-          throw new Error("transport result action does not match request")
-        this.settleSuccess(pending, result)
+        if (pending.kind === "artwork")
+          this.settleSuccess(pending, decodeArtworkResult(frame.data))
+        else {
+          const result = decodeTransportResult(frame.data)
+          if (result.action !== pending.action)
+            throw new Error("transport result action does not match request")
+          this.settleSuccess(pending, result)
+        }
       } catch {
         this.terminate({
           code: "CONNECTION_LOST",
@@ -279,10 +296,15 @@ class Client implements MusicSessionClient {
         listener(frame.snapshot)
       } catch {}
   }
-  private settleSuccess(pending: Pending, result: TransportResult) {
+  private settleSuccess(
+    pending: Pending,
+    result: TransportResult | ArtworkResult,
+  ) {
     if (this.#pending.get(pending.id) !== pending) return
     this.#pending.delete(pending.id)
-    pending.resolve(result)
+    ;(pending.resolve as (value: TransportResult | ArtworkResult) => void)(
+      result,
+    )
   }
   private settleFailure(pending: Pending, error: ProtocolError) {
     if (this.#pending.get(pending.id) !== pending) return
@@ -321,7 +343,13 @@ class Client implements MusicSessionClient {
       )
     const requestId = this.#nextId++
     return new Promise<TransportResult>((resolve, reject) => {
-      const pending: Pending = { id: requestId, action, resolve, reject }
+      const pending: Pending = {
+        kind: "transport",
+        id: requestId,
+        action,
+        resolve,
+        reject,
+      }
       this.#pending.set(requestId, pending)
       try {
         this.#socket.write(
@@ -346,6 +374,76 @@ class Client implements MusicSessionClient {
           code: "CONNECTION_LOST",
           message:
             cause instanceof Error ? cause.message : "connection write failed",
+          retryable: true,
+        })
+      }
+    })
+  }
+  artwork(identity: ArtworkIdentity): Promise<ArtworkResult> {
+    try {
+      identity = decodeArtworkIdentity(identity)
+    } catch (cause) {
+      return Promise.reject(new MusicSessionClientError(cause as ProtocolError))
+    }
+    if (this.#disposed)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "DISPOSED",
+          message: "client is disposed",
+          retryable: false,
+        }),
+      )
+    if (this.#failure)
+      return Promise.reject(new MusicSessionClientError(this.#failure))
+    if (!this.negotiatedCapabilities.includes("native-artwork"))
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "UNSUPPORTED_CAPABILITY",
+          message: "native-artwork was not negotiated",
+          retryable: false,
+        }),
+      )
+    if (this.#pending.size >= this.#maxPendingRequests)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "SERVER_BUSY",
+          message: "client pending request limit reached",
+          retryable: true,
+        }),
+      )
+    if (this.#nextId > Number.MAX_SAFE_INTEGER)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "INVALID_REQUEST",
+          message: "request ID space exhausted",
+          retryable: false,
+        }),
+      )
+    const requestId = this.#nextId++
+    return new Promise<ArtworkResult>((resolve, reject) => {
+      const pending: Pending = {
+        kind: "artwork",
+        id: requestId,
+        resolve,
+        reject,
+      }
+      this.#pending.set(requestId, pending)
+      try {
+        this.#socket.write(
+          encodeFrame({ type: "artwork", requestId, identity }),
+          (error) => {
+            if (error)
+              this.terminate({
+                code: "CONNECTION_LOST",
+                message: error.message,
+                retryable: true,
+              })
+          },
+        )
+      } catch {
+        this.terminate({
+          code: "CONNECTION_LOST",
+          message: "connection write failed",
           retryable: true,
         })
       }
@@ -458,6 +556,13 @@ class Client implements MusicSessionClient {
     this.#terminalListeners.clear()
     this.#statusListeners.clear()
     this.#stateListeners.clear()
+    for (const pending of [...this.#pending.values()])
+      if (pending.kind === "artwork")
+        this.settleFailure(pending, {
+          code: "CONNECTION_LOST",
+          message: "connection ended before artwork result",
+          retryable: true,
+        })
     this.failAll({
       code: "INDETERMINATE_COMMAND",
       message: "connection ended before command result",
@@ -1020,6 +1125,7 @@ export type ReconnectingMusicSessionClient = {
   next(): Promise<TransportResult>
   previous(): Promise<TransportResult>
   seek(positionMs: number): Promise<TransportResult>
+  artwork(identity: ArtworkIdentity): Promise<ArtworkResult>
   /** Resolves only after the active generation and supervisor have stopped. */
   dispose(): Promise<void>
 }
@@ -1262,6 +1368,22 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     return active
       ? active.client.seek(positionMs)
       : Promise.reject(this.#unavailable())
+  }
+  artwork(identity: ArtworkIdentity) {
+    const active = this.#active
+    if (!active) return Promise.reject(this.#unavailable())
+    // Artwork is explicitly non-replayable. A generation that resolves after
+    // replacement/disposal must not leak bytes or success into its successor.
+    return active.client.artwork(identity).then(
+      (result) => {
+        if (this.#isCurrent(active.token)) return result
+        throw this.#unavailable()
+      },
+      (error) => {
+        if (this.#isCurrent(active.token)) throw error
+        throw this.#unavailable()
+      },
+    )
   }
   subscribeStatus(listener: Listener<ProviderStatus>) {
     const replay = this.#modify((current) =>

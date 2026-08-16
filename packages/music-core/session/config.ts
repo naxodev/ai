@@ -13,6 +13,17 @@ export const PACKAGE_VERSION = manifest.version
 
 const MACOS_UNIX_PATH_BYTES = 104
 
+/**
+ * Wire-level artwork bounds shared with protocol.ts. The overhead reserves the
+ * complete correlated response envelope (including a maximum safe request ID),
+ * rather than relying on a best-effort writer fallback.
+ */
+export const MAX_NATIVE_ARTWORK_BYTES = 192 * 1024
+export const MAX_ARTWORK_BASE64_CHARS =
+  Math.ceil(MAX_NATIVE_ARTWORK_BYTES / 3) * 4
+export const ARTWORK_RESPONSE_OVERHEAD_BYTES = 128
+const encodedArtworkBytes = (bytes: number) => Math.ceil(bytes / 3) * 4
+
 export class MusicSessionRuntimeError extends Schema.TaggedErrorClass<MusicSessionRuntimeError>()(
   "MusicSession.RuntimeError",
   {
@@ -102,6 +113,8 @@ export type MusicSessionOptions = {
   inboundChunkQueueCapacity?: number
   maxFramesPerChunk?: number
   mandatoryOutboundQueueCapacity?: number
+  nativeArtworkMaxBytes?: number
+  artworkCacheCapacity?: number
   reconciliationMs?: { transport: number; navigation: number }
   pollMs?: { playing: number; paused: number; idle: number }
   /** Grace before a selected daemon with no negotiated clients exits. */
@@ -115,6 +128,8 @@ export const defaults = {
   inboundChunkQueueCapacity: 64,
   maxFramesPerChunk: 128,
   mandatoryOutboundQueueCapacity: 64,
+  nativeArtworkMaxBytes: 1024,
+  artworkCacheCapacity: 32,
   reconciliationMs: { transport: 120, navigation: 150 },
   pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
   // Long enough for a freshly launched local client to negotiate hello.
@@ -131,6 +146,8 @@ export type ResolvedMusicSessionOptions = {
   readonly inboundChunkQueueCapacity: number
   readonly maxFramesPerChunk: number
   readonly mandatoryOutboundQueueCapacity: number
+  readonly nativeArtworkMaxBytes: number
+  readonly artworkCacheCapacity: number
   readonly reconciliationMs: {
     readonly transport: number
     readonly navigation: number
@@ -245,6 +262,55 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     options.mandatoryOutboundQueueCapacity ??
       defaults.mandatoryOutboundQueueCapacity,
   )
+  const nativeArtworkMaxBytes = yield* positiveSafeInteger(
+    "nativeArtworkMaxBytes",
+    options.nativeArtworkMaxBytes ?? defaults.nativeArtworkMaxBytes,
+  )
+  const artworkCacheCapacity = yield* positiveSafeInteger(
+    "artworkCacheCapacity",
+    options.artworkCacheCapacity ?? defaults.artworkCacheCapacity,
+  )
+  // An available payload is base64-expanded and wrapped in a correlated
+  // response. Derive the effective read bound from that exact finite budget;
+  // even the stable too-large response needs one encoded byte's worth of room.
+  if (maxFrameBytes < ARTWORK_RESPONSE_OVERHEAD_BYTES + 4)
+    return yield* Effect.fail(
+      new MusicSessionConfigError({
+        setting: "maxFrameBytes",
+        operation: "resolve",
+        message: "is too small for a correlated artwork response",
+      }),
+    )
+  const frameArtworkMaxBytes = Math.floor(
+    (maxFrameBytes - ARTWORK_RESPONSE_OVERHEAD_BYTES) * 0.75,
+  )
+  const effectiveArtworkMaxBytes = Math.min(
+    nativeArtworkMaxBytes,
+    MAX_NATIVE_ARTWORK_BYTES,
+    frameArtworkMaxBytes,
+  )
+  if (effectiveArtworkMaxBytes < 1)
+    return yield* Effect.fail(
+      new MusicSessionConfigError({
+        setting: "maxFrameBytes",
+        operation: "resolve",
+        message: "cannot contain a bounded artwork response",
+      }),
+    )
+  // Keep this assertion beside the derivation: future changes to base64
+  // arithmetic cannot silently reintroduce a writer-close path.
+  if (
+    encodedArtworkBytes(effectiveArtworkMaxBytes) +
+      ARTWORK_RESPONSE_OVERHEAD_BYTES >
+    maxFrameBytes
+  )
+    return yield* Effect.fail(
+      new MusicSessionConfigError({
+        setting: "nativeArtworkMaxBytes",
+        operation: "resolve",
+        message: "does not fit maxFrameBytes after base64 encoding",
+      }),
+    )
   const transport = yield* positiveSafeInteger(
     "reconciliationMs.transport",
     options.reconciliationMs?.transport ?? defaults.reconciliationMs.transport,
@@ -279,6 +345,8 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
     inboundChunkQueueCapacity,
     maxFramesPerChunk,
     mandatoryOutboundQueueCapacity,
+    nativeArtworkMaxBytes: effectiveArtworkMaxBytes,
+    artworkCacheCapacity,
     reconciliationMs: { transport, navigation },
     pollMs: { playing, paused, idle },
     idleGraceMs,
@@ -350,6 +418,20 @@ export const layerFromConfig = Layer.effect(
           defaults.mandatoryOutboundQueueCapacity,
         ),
       ),
+      nativeArtworkMaxBytes: number(
+        "nativeArtworkMaxBytes",
+        optionalNumber(
+          "MUSIC_SESSION_NATIVE_ARTWORK_MAX_BYTES",
+          defaults.nativeArtworkMaxBytes,
+        ),
+      ),
+      artworkCacheCapacity: number(
+        "artworkCacheCapacity",
+        optionalNumber(
+          "MUSIC_SESSION_ARTWORK_CACHE_CAPACITY",
+          defaults.artworkCacheCapacity,
+        ),
+      ),
       transport: number(
         "reconciliationMs.transport",
         optionalNumber(
@@ -412,6 +494,8 @@ export const layerFromConfig = Layer.effect(
       inboundChunkQueueCapacity: options.inboundChunkQueueCapacity,
       maxFramesPerChunk: options.maxFramesPerChunk,
       mandatoryOutboundQueueCapacity: options.mandatoryOutboundQueueCapacity,
+      nativeArtworkMaxBytes: options.nativeArtworkMaxBytes,
+      artworkCacheCapacity: options.artworkCacheCapacity,
       reconciliationMs: {
         transport: options.transport,
         navigation: options.navigation,

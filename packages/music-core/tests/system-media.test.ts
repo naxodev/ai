@@ -669,6 +669,148 @@ describe("bundleLabel / effectiveBundle", () => {
   })
 })
 
+describe("native artwork adapter boundary", () => {
+  const identity = {
+    id: "provider-id",
+    name: "Song",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 180_000,
+  }
+  const nativePayload = (overrides: Record<string, unknown> = {}) => ({
+    contentItemIdentifier: identity.id,
+    title: identity.name,
+    artist: identity.artists,
+    album: identity.album,
+    duration: 180,
+    artworkData: "AQID",
+    ...overrides,
+  })
+  const native = (payload: unknown, calls: string[][] = []) => {
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async (command) => {
+        calls.push(command)
+        return { ok: true, out: JSON.stringify(payload) }
+      },
+    })
+    if (!backend.nativeArtwork) throw new Error("expected native artwork seam")
+    return { read: backend.nativeArtwork, calls }
+  }
+
+  test("uses the artwork-only get command and accepts the exact full identity", async () => {
+    const adapter = native(nativePayload())
+    await expect(adapter.read(identity, 3)).resolves.toEqual({
+      type: "available",
+      base64: "AQID",
+    })
+    expect(adapter.calls).toEqual([["media-control", "get", "--now"]])
+  })
+
+  test("rejects every native identity mismatch as stale", async () => {
+    for (const [field, value] of [
+      ["contentItemIdentifier", "other-id"],
+      ["title", "Other"],
+      ["artist", "Other"],
+      ["album", "Other"],
+      ["duration", 181],
+    ] as const) {
+      const adapter = native(nativePayload({ [field]: value }))
+      await expect(adapter.read(identity, 3)).resolves.toEqual({
+        type: "stale",
+      })
+    }
+  })
+
+  test("contains malformed, absent, and oversized native data", async () => {
+    for (const payload of [
+      null,
+      nativePayload({ artworkData: "" }),
+      nativePayload({ artworkData: "not base64" }),
+      nativePayload({ artworkData: "AR==" }),
+    ]) {
+      const adapter = native(payload)
+      await expect(adapter.read(identity, 3)).resolves.toEqual({
+        type: "unavailable",
+      })
+    }
+    const boundary = native(nativePayload({ artworkData: "AQID" }))
+    await expect(boundary.read(identity, 3)).resolves.toEqual({
+      type: "available",
+      base64: "AQID",
+    })
+    await expect(boundary.read(identity, 2)).resolves.toEqual({
+      type: "too-large",
+    })
+    await expect(
+      native(nativePayload({ contentItemIdentifier: null })).read(identity, 3),
+    ).resolves.toEqual({ type: "stale" })
+    const malformed = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async () => ({ ok: true, out: "{" }),
+    })
+    await expect(malformed.nativeArtwork?.(identity, 3)).resolves.toEqual({
+      type: "unavailable",
+    })
+  })
+
+  test("keeps ordinary sampling and stream commands artwork-free", async () => {
+    const commands: string[][] = []
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async (command) => {
+        commands.push(command)
+        return {
+          ok: true,
+          out: JSON.stringify({
+            ...nativePayload(),
+            elapsedTimeNow: 0,
+            playing: false,
+          }),
+        }
+      },
+      startLineStream: (command) => {
+        commands.push(command)
+        return () => {}
+      },
+    })
+    await backend.player()
+    backend.subscribeAttempt?.(() => {})()
+    if (!backend.nativeArtwork) throw new Error("expected native artwork seam")
+    await backend.nativeArtwork(identity, 3)
+    expect(commands).toEqual([
+      ["media-control", "get", "--no-artwork", "--now"],
+      ["media-control", "stream", "--no-diff", "--no-artwork"],
+      ["media-control", "get", "--now"],
+    ])
+  })
+
+  test("returns unavailable off media-control and propagates command failures", async () => {
+    const fallback = createSystemMediaAdapter({
+      detectBackend: () => "nowplaying-cli",
+      hasNowPlayingCli: () => true,
+      run: async () => ({ ok: true, out: "" }),
+    })
+    expect(fallback.nativeArtwork).toBeUndefined()
+    for (const result of [
+      { ok: false as const, err: "command rejected", timed_out: false },
+      { ok: false as const, err: "command timed out", timed_out: true },
+    ]) {
+      const failing = createSystemMediaAdapter({
+        detectBackend: () => "media-control",
+        hasNowPlayingCli: () => false,
+        run: async () => result,
+      })
+      await expect(failing.nativeArtwork?.(identity, 3)).rejects.toThrow(
+        result.err,
+      )
+    }
+  })
+})
+
 describe("media command boundaries", () => {
   test("keeps the raw provider id separate from the playback clock key", async () => {
     const backend = createSystemMedia({

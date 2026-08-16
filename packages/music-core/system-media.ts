@@ -14,6 +14,7 @@ import {
   type CommandResult,
   type LineStreamStarter,
 } from "./run.ts"
+import type { ArtworkIdentity, ArtworkResult } from "./session/protocol.ts"
 import {
   emptyPlayer,
   type MusicBackend,
@@ -36,6 +37,7 @@ type MediaGet = {
   parentApplicationBundleIdentifier?: string | null
   contentItemIdentifier?: string | null
   timestamp?: string | null
+  artworkData?: string | null
 }
 
 let backendKind: "media-control" | "nowplaying-cli" | null = null
@@ -391,6 +393,10 @@ function isDataEnvelope(
 /** One raw `media-control stream` attempt. It deliberately owns no retry timer. */
 export type SystemMediaAttemptAdapter = MusicBackend & {
   subscribeAttempt?: (listener: MusicChangeListener) => MusicChangeDisposer
+  nativeArtwork?: (
+    identity: ArtworkIdentity,
+    maxBytes: number,
+  ) => Promise<ArtworkResult>
 }
 
 function subscribeMediaControlAttempt(
@@ -669,6 +675,67 @@ export function createSystemMedia(
   }
 
   if (kind === "media-control") {
+    ;(backend as SystemMediaAttemptAdapter).nativeArtwork = async (
+      identity,
+      maxBytes,
+    ) => {
+      const result = await deps.run(["media-control", "get", "--now"])
+      if (!result.ok)
+        throw new Error(result.err || "media-control artwork failed")
+      // Reject encoded output before JSON/base64 retention.
+      if (
+        Buffer.byteLength(result.out, "utf8") >
+        Math.ceil(maxBytes / 3) * 4 + 8 * 1024
+      )
+        return { type: "too-large" }
+      let data: MediaGet
+      try {
+        const parsed: unknown = JSON.parse(result.out)
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+          return { type: "unavailable" }
+        data = parsed as MediaGet
+      } catch {
+        return { type: "unavailable" }
+      }
+      if (
+        data.contentItemIdentifier === null ||
+        data.contentItemIdentifier === undefined
+      )
+        return { type: "stale" }
+      const nativeIdentity = {
+        id: String(data.contentItemIdentifier),
+        name: data.title == null ? "" : String(data.title),
+        artists: data.artist == null ? "" : String(data.artist),
+        album: data.album == null ? "" : String(data.album),
+        duration_ms:
+          typeof data.duration === "number" && Number.isFinite(data.duration)
+            ? Math.round(data.duration * 1000)
+            : 0,
+      }
+      if (
+        Object.keys(identity).some(
+          (key) =>
+            nativeIdentity[key as keyof typeof nativeIdentity] !==
+            identity[key as keyof ArtworkIdentity],
+        )
+      )
+        return { type: "stale" }
+      const base64 = data.artworkData
+      if (
+        typeof base64 !== "string" ||
+        !base64 ||
+        !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) ||
+        base64.length % 4 !== 0
+      )
+        return { type: "unavailable" }
+      const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0
+      if ((base64.length / 4) * 3 - padding > maxBytes)
+        return { type: "too-large" }
+      // The bounded decode is only for canonicality; it cannot allocate above maxBytes.
+      if (Buffer.from(base64, "base64").toString("base64") !== base64)
+        return { type: "unavailable" }
+      return { type: "available", base64 }
+    }
     backend.subscribe = (listener) =>
       subscribeToMediaControl(listener, deps, clock)
     // The daemon uses this unsupervised seam. It shares this exact backend's

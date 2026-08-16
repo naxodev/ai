@@ -2,7 +2,7 @@
   "version": 1,
   "slug": "music-session-lifecycle-slices",
   "step": "committing",
-  "phase_index": 6,
+  "phase_index": 7,
   "phase_count_hint": null,
   "rounds": {
     "plan_review": 1,
@@ -11,7 +11,8 @@
     "phase-03/code_review": 4,
     "phase-04/code_review": 7,
     "phase-05/code_review": 8,
-    "phase-06/code_review": 11
+    "phase-06/code_review": 11,
+    "phase-07/code_review": 15
   },
   "vcs": "jj",
   "allow_dirty": true,
@@ -37,12 +38,12 @@
       "label": "apnea:reviewer:msvwes9b-sebp"
     },
     "coder": {
-      "pane_id": "w2:pC0",
-      "label": "apnea:coder:msw5m36b-ellz"
+      "pane_id": "w2:pD1",
+      "label": "apnea:coder:msw6rwbf-s9x3"
     }
   },
   "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
   "reviewer_tree_fingerprint": null,
-  "current_phase_package": ".apnea/artifacts/phase-06/round-1/phase-package.md",
-  "current_code_review": ".apnea/artifacts/phase-06/round-11/code-review.md"
+  "current_phase_package": ".apnea/artifacts/phase-07/round-1/phase-package.md",
+  "current_code_review": ".apnea/artifacts/phase-07/round-15/code-review.md"
 }

@@ -86,6 +86,12 @@ type Coordinator = {
   readonly status: Stream.Stream<ProviderStatus>
   readonly states: Stream.Stream<RevisionedState>
   readonly current: () => Effect.Effect<RevisionedState>
+  readonly artwork: (
+    identity: import("./protocol.ts").ArtworkIdentity,
+  ) => Effect.Effect<
+    import("./protocol.ts").ArtworkResult,
+    import("./provider.ts").ProviderError
+  >
   readonly submit: (
     action: TransportAction,
     positionMs?: number,
@@ -796,6 +802,33 @@ const connection = (
           Effect.forkScoped,
         )
         return
+      }
+      if (request.type === "artwork") {
+        if (!session.capabilities.includes("native-artwork"))
+          return yield* reject(
+            request,
+            "UNSUPPORTED_CAPABILITY",
+            "native-artwork was not negotiated",
+          )
+        return yield* coordinator.artwork(request.identity).pipe(
+          Effect.matchEffect({
+            onSuccess: (result) =>
+              encode(response(request.requestId, result))
+                ? send(response(request.requestId, result))
+                : send(response(request.requestId, { type: "too-large" })),
+            onFailure: () =>
+              send(
+                failure(
+                  request.requestId,
+                  protocolError(
+                    "PROVIDER_FAILURE",
+                    "native artwork failed",
+                    true,
+                  ),
+                ),
+              ),
+          }),
+        )
       }
       if (request.type === "state")
         return yield* coordinator
