@@ -2,146 +2,164 @@
 status: done
 ---
 
-# Phase 1 package — accept the installed packed-core Node daemon/client smoke
+# Phase 1 package — review and commit only the existing Prettier policy edit
 
 ## Intent
 
-Finish only the dirty installed-package smoke for `@naxodev/music-core`. The current implementation already reports a passing smoke; verify it against the achievable policies in this package and accept it without source churn if it passes.
+Review the already-present root `.prettierignore` edit and make no new product or policy change. The approved edit preserves the original four entries and adds exactly one final `.apnea/` line so root Prettier ignores Apnea runtime records.
 
-This package supersedes the abandoned contradictory requirements. Keep the current package export surface, supply a unique managed runtime structure directly to the installed public client, remove owned runtime files only after termination is confirmed, and retain/report the temporary root if the harness process group cannot be confirmed dead.
+This phase exists only to validate and separately commit that existing one-line policy edit. The coder does not commit. After code review approval and a successful fresh-shell verify gate, the orchestrator must isolate only this reviewed path in the prescribed `jj squash` workflow. The existing OpenCode/Pi package-smoke corrections remain dirty and unchanged for Phase 2.
 
-Do not exercise or change OpenCode, Pi, documentation, broader core behavior, or full-repository gates in this phase.
+Apnea updates its own task, artifact, state, backup, and verify-log records while the workflow advances. Do not manually edit, format, restore, delete, rename, or hash those records. In particular, do not edit `.apnea/state.json`.
 
-## Exact steps
+## Reviewed path
 
-### 1. Preserve and inspect the dirty baseline
+- `.prettierignore` — inspect the existing edit; do not rewrite it when it already has the exact approved content.
 
-1. Run `jj status` before making any source change.
-2. Preserve all verified ancestors through `31f1c2d4`, the existing dirty packed-core implementation, all `.apnea` state/artifacts, `docs/music-session-architecture.html`, and unrelated changes.
-3. Inspect only the four phase-owned files listed below. Confirm that the dirty implementation already wires the `music-core:smoke` target to the installed-smoke mode and that the daemon's short idle-grace option continues through the existing Effect v4 configuration validation.
-4. Do not reset, clean, restore, abandon, rebase, commit, or squash. The orchestrator performs `jj squash` only after approval.
+The expected complete file is exactly five newline-terminated lines:
 
-### 2. Adopt the package export/runtime policy explicitly
-
-Treat the following as the required policy; do not attempt to satisfy the abandoned package's contradictory resolver requirement:
-
-1. Leave `packages/music-core/package.json` exports unchanged. The public root remains the existing `".": "./index.ts"`; do not add `resolveMusicSessionRuntimePaths` to the root and do not add a config subpath.
-2. In the generated Node harness, import the installed public client/protocol values using the package name `@naxodev/music-core`. Do not import workspace source or construct a source `file://` URL.
-3. Create one unique temporary smoke root and supply a structurally valid runtime object directly to the installed client:
-   - `directory` is beneath that unique root;
-   - `socketPath` and `markerPath` are beneath `directory` and use the production-compatible compact names;
-   - `uid` is the current numeric UID;
-   - no path points at the default developer runtime or outside the unique root.
-4. Do not require the harness to call the unexported installed `resolveMusicSessionRuntimePaths`. A unique structurally supplied runtime is the accepted managed-runtime boundary for this smoke.
-
-### 3. Verify the installed Node lifecycle
-
-Run the existing smoke before editing. It must demonstrate only this lifecycle:
-
-1. Build and pack core, install the tarball and declared dependencies in an isolated temporary project, and execute the lifecycle harness under Node.
-2. Resolve the public package import from that isolated install.
-3. Read the installed package manifest and select the daemon from its `naxodev-music-sessiond` bin entry. Do not use workspace source, `PATH`, or a hard-coded fallback as the executable-selection authority.
-4. Invoke that installed daemon with invalid idle-grace configuration and prove it fails through the normal configuration/status boundary without retaining its runtime files.
-5. Start the manifest-selected daemon through the installed reconnecting client's launcher and complete real hello plus state/status replay from the same daemon instance.
-6. Isolate provider discovery with the harness's controlled executable environment. A replayed provider-unavailable status is expected and sufficient; do not invoke developer-installed `media-control` or `nowplaying-cli`.
-7. Await client disposal, then await the exact daemon's status-zero idle exit under the smoke's bound.
-8. After confirmed process termination, prove successful cleanup of the owned socket, startup marker, bind reservation and temporaries, archive, install project, runtime root, and temporary smoke root.
-
-If the command passes and reports the installed package root, manifest-selected daemon, negotiated daemon/replay, status-zero idle exit, and cleanup success, make no product-code change.
-
-### 4. Preserve fail-safe cleanup semantics
-
-Apply this ordering on every success or failure path:
-
-1. Track each client, child, process group, runtime path, archive, install project, and temporary root as soon as it is acquired.
-2. Dispose an acquired client and terminate only the exact owned child/process group.
-3. Await and confirm process termination before recursively deleting runtime or temporary-root contents.
-4. On a successful smoke, termination must be confirmed and all owned temporary content must be removed.
-5. If process-group termination cannot be confirmed, fail the smoke, retain the entire unique temporary root, and print its path in the failure diagnostics. Do not delete socket/runtime/install files beneath the possibly live process and do not conceal the retained root.
-6. Never use `pkill`, `killall`, a broad process match, the default production runtime, or cleanup based only on a guessed path.
-
-### 5. Make a correction only if focused acceptance fails
-
-If the existing smoke fails one of the acceptance checks:
-
-1. Diagnose the specific failure from captured child stdout/stderr.
-2. Change only the smallest phase-owned file necessary.
-3. Preserve the existing package export and structural-runtime policies above.
-4. If `music-sessiond.ts` must change, use the repository-pinned Effect v4 configuration/error path; do not add a second timer, daemon mode, test graph, or direct environment configuration.
-5. Rerun the complete phase verification commands.
-
-Do not broaden acceptance or modify code merely to produce a new diff.
+```text
+bun.lock
+node_modules/
+.nx/
+**/dist/
+.apnea/
+```
 
 ## Files to touch
 
-No product file should be touched when the existing smoke passes. A focused correction may touch only:
+No product, policy, configuration, documentation, package, or lockfile should be edited by the coder in this phase.
 
-- `packages/music-core/package.json`
-- `packages/music-core/project.json`
-- `packages/music-core/scripts/verify-pack.ts`
-- `packages/music-core/session/music-sessiond.ts`
+The coder writes only the exact coder-result artifact required by its later dispatcher task. That required workflow output is not permission to alter any existing `.apnea` record.
 
 ## Files not to touch
 
-- `packages/music-core/index.ts`
-- `packages/music-core/session/config.ts`
-- `packages/music-core/session/client.ts`
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/session/coordinator.ts`
-- `packages/music-core/session/protocol.ts`
-- `packages/music-core/session/framing.ts`
-- `packages/music-core/tests/**`
-- `packages/opencode-music-player/**`
-- `packages/pi-music-dock/**`
-- `README.md`
-- `packages/music-core/README.md`
-- `docs/music-session-architecture.html`
-- `package.json`
-- `bun.lock`
-- `.apnea/state.json`
-- Any unrelated dirty file, generated archive, checked-in harness, lockfile, or temporary runtime/install file
+Do not edit or normalize:
+
+- `.prettierignore` itself, unless an exact validation unexpectedly proves it differs; in that case stop and report the mismatch rather than repairing it.
+- Any file under `.apnea/`, especially `.apnea/state.json`, existing tasks, artifacts, backups, or logs.
+- `packages/opencode-music-player/scripts/package-smoke.ts`.
+- `packages/pi-music-dock/scripts/package-smoke.ts`.
+- `.prettierrc.json`, `package.json`, `bun.lock`, or any `project.json`.
+- `docs/music-session-architecture.html` or any other documentation.
+- Any product source, test, manifest, verified ancestor, or unrelated dirty path.
+
+Do not create temporary evidence files in the repository or outside it. Do not use shell functions, environment variables, or content hashes/snapshots of `.apnea`.
+
+## Exact steps
+
+### 1. Confirm the current worktree without mutating it
+
+From the repository root, run:
+
+```sh
+jj status
+jj diff --summary
+jj diff -- .prettierignore
+```
+
+Inspect the output rather than cleaning it. The worktree is expected to contain dispatcher-managed `.apnea` changes, the existing `.prettierignore` edit, and both existing package-smoke corrections. The `.prettierignore` diff must show only one added final line:
+
+```diff
++.apnea/
+```
+
+If the diff shows any other `.prettierignore` change, stop and report it. Do not restore from a backup, reset the worktree, or edit another file.
+
+### 2. Compare the complete policy file to an inline static value
+
+Run this command exactly:
+
+```sh
+printf '%s\n' 'bun.lock' 'node_modules/' '.nx/' '**/dist/' '.apnea/' | cmp - .prettierignore
+```
+
+It constructs the expected bytes inline and compares them directly, including the final newline. It must be silent and exit zero. Do not replace it with a temporary file prepared in an earlier shell.
+
+### 3. Prove there is exactly one `.apnea/` entry
+
+```sh
+test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1
+```
+
+This must exit zero. The exact-file comparison from Step 2 separately proves the entry is final and that all four original lines are unchanged.
+
+### 4. Prove Prettier ignores current Apnea state
+
+Run the read-only file-information check:
+
+```sh
+bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'
+```
+
+It must exit zero. Do not run Prettier in write mode and do not inspect correctness by changing `.apnea/state.json`.
+
+### 5. Run only the phase's read-only formatting gate
+
+```sh
+bun run format:check
+```
+
+The command must exit zero. It must rely on the approved ignore entry rather than formatting Apnea records. Do not run `bun run format`, `prettier --write`, or the full `bun run check`; the unchanged complete gate belongs to Phase 2.
+
+### 6. Check the accumulated diff for whitespace errors
+
+```sh
+git diff --check
+```
+
+It must exit zero. This is a read-only check; do not stage or commit with Git.
+
+### 7. Record the result without changing scope
+
+Run `jj status`, `jj diff --summary`, and `jj diff -- .prettierignore` again for the coder-result transcript. Confirm that:
+
+- `.prettierignore` still has only the approved one-line diff.
+- Both package-smoke corrections remain present and unchanged for Phase 2.
+- Existing and dispatcher-created `.apnea` records remain preserved rather than cleaned or normalized.
+- No coder-owned product edit was introduced.
+
+Write the required coder-result artifact with the five verify commands, exit statuses, concise output tails, and any mismatch. Do not run `git commit`, `jj describe`, `jj commit`, `jj squash`, `jj split`, reset, clean, restore, abandon, rebase, push, or open a PR. The orchestrator alone performs the approved phase commit and must keep the package-smoke corrections out of this phase commit.
 
 ## Acceptance checks
 
-- The current package export surface is unchanged; no resolver export or subpath is added.
-- Installed public client/protocol code is imported by package name from the isolated install.
-- The runtime is unique, structurally supplied beneath the temporary root, and does not require the unexported resolver.
-- The daemon executable is selected from the installed manifest's bin entry.
-- Invalid daemon configuration fails through the installed executable's normal status/diagnostic boundary.
-- The installed client and daemon complete hello plus state/status replay, and client disposal is awaited.
-- Provider discovery is isolated from developer-installed tools; provider-unavailable replay is acceptable.
-- The exact daemon reaches bounded status-zero idle exit.
-- On success, owned runtime/install/archive artifacts are deleted after confirmed process termination.
-- If process-group termination cannot be confirmed, the smoke fails and reports a retained temporary root rather than deleting beneath a possibly live process.
+Phase 1 is complete only when all of the following hold:
+
+- `.prettierignore` is byte-for-byte the expected five-line file with a final newline.
+- Its diff adds exactly one final `.apnea/` line and changes nothing else.
+- Exactly one line equals `.apnea/`.
+- `bunx prettier --file-info .apnea/state.json` reports `"ignored": true`.
+- `bun run format:check` passes without any write-mode formatter.
+- `git diff --check` passes.
+- The coder makes no product/policy edit and does not manually alter any `.apnea` record.
+- The current OpenCode/Pi package-smoke corrections, `docs/music-session-architecture.html`, verified commits through `ae742b68`, and unrelated dirty work remain preserved.
+- After approval, the phase commit contains only `.prettierignore` among repository product/policy paths; the package-smoke corrections remain for Phase 2.
+- No Git commit, coder/reviewer Jujutsu mutation, push, publication, release, PR operation, or manual `.apnea/state.json` edit occurs.
 
 ## Verify commands
 
-Run from the repository root:
+These are deliberately five independent, self-contained commands. `apnea commit` may execute each in a fresh `bash -lc` shell, so none relies on temporary state, a prior command's environment, a shell function, or an `.apnea` hash:
 
 ```sh
-bunx nx run music-core:smoke --skip-nx-cache
-! find packages/music-core -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
-jj diff --summary
-jj status
+printf '%s\n' 'bun.lock' 'node_modules/' '.nx/' '**/dist/' '.apnea/' | cmp - .prettierignore
+test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1
+bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'
+bun run format:check
+git diff --check
 ```
-
-Expected successful smoke output identifies the installed package root and manifest-selected daemon, reports negotiated hello/replay evidence, and ends with status-zero idle-exit/cleanup success. A failed unconfirmed-termination path must instead identify the retained temporary root.
-
-Do not run `music-core:package:check`, broad core test matrices, OpenCode/Pi smokes, `bun run check`, or mixed-host checks as Phase 1 acceptance.
 
 ## Dependencies
 
-- The dirty packed-core implementation already present in the worktree.
-- Verified package/client/daemon behavior through `31f1c2d4`.
-- Node satisfying the engine floor in `packages/music-core/package.json`.
-- The package-declared Effect TypeScript v4 dependency.
+- Approved full plan at `.apnea/artifacts/plan.md`.
+- The already-present approved `.prettierignore` edit.
+- Root Prettier `3.9.6` and the existing `format:check` script.
+- The current dirty Jujutsu worktree and orchestrator support for isolating only the reviewed phase path while preserving other dirty work on top.
 
 ## Non-goals
 
-- Exporting `resolveMusicSessionRuntimePaths` or adding any package subpath/export.
-- Unconditional deletion after unconfirmed process-group termination.
-- Changing package contents, versions, dependencies, protocol, startup, reconnect, idle defaults, provider ownership, server topology, or shutdown design.
-- Broad package validation, unit/integration test expansion, playback commands, provider success, artwork, host rendering, or UI behavior.
-- OpenCode exact-pin smoke, Pi exact-pin smoke, docs/current architecture, full repository checks, mixed-host verification, or PR-description work.
-- Committing, squashing, pushing, publishing, opening a PR, editing `.apnea/state.json`, or cleaning unrelated worktree changes.
+- Editing `.prettierignore`, adding another ignore rule, or changing root formatting configuration.
+- Creating temporary baselines, functions, environment state, or hashes to compare mutable Apnea records.
+- Formatting, repairing, restoring, deleting, or otherwise modifying `.apnea` state/history.
+- Running or fixing the complete `bun run check`; reviewing/editing/committing either package-smoke script; changing Effect code; or performing mixed-host verification.
+- Broad formatting, dependency or pin changes, refactoring, documentation edits, cleanup of unrelated work, or rewriting verified commits.
+- Coder/reviewer commits or Jujutsu history mutation, Git mutation commands, pushing, publishing, releasing, or creating/updating a PR.

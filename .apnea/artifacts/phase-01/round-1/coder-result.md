@@ -4,52 +4,41 @@ status: done
 
 ## What changed
 
-No product-source change was needed. The existing dirty packed-core implementation satisfies this phase: the installed smoke imports `@naxodev/music-core`, selects the daemon from the installed manifest, supplies a unique structural runtime beneath its temporary root, validates invalid configuration, completes hello/replay, isolates providers, awaits disposal and bounded idle exit, and reports cleanup success. Package exports remain unchanged.
+No product or policy files were edited. The existing `.prettierignore` diff was reviewed and remains exactly one final added `.apnea/` line. The existing OpenCode and Pi package-smoke corrections remain dirty and unchanged for Phase 2.
 
 ## Files touched
 
-- `.apnea/artifacts/phase-01/round-1/coder-result.md`
+- `.apnea/artifacts/phase-01/round-1/coder-result.md` (required result artifact only)
 
-No phase-owned product files were modified.
+## Verify transcript
 
-## Verification transcript
+1. `printf '%s\n' 'bun.lock' 'node_modules/' '.nx/' '**/dist/' '.apnea/' | cmp - .prettierignore`
+   - Exit: 0
+   - Output tail: *(silent)*
+2. `test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1`
+   - Exit: 0
+   - Output tail: *(silent)*
+3. `bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'`
+   - Exit: 0
+   - Output tail: *(silent)*
+4. `bun run format:check`
+   - Exit: 0
+   - Output tail:
+     ```text
+     $ prettier --check .
+     Checking formatting...
+     All matched files use Prettier code style!
+     ```
+5. `git diff --check`
+   - Exit: 0
+   - Output tail: *(silent)*
 
-```text
-$ bunx nx run music-core:smoke --skip-nx-cache
-exit: 0
-> nx run music-core:smoke
-> bun run smoke:package
-$ bun run scripts/verify-pack.ts --installed-smoke
-installed Node v24.8.0
-installed package root: /private/tmp/music-core-installed-smoke-tvOddD/install/node_modules/@naxodev/music-core/index.ts
-manifest daemon: /private/tmp/music-core-installed-smoke-tvOddD/install/node_modules/@naxodev/music-core/dist/music-sessiond.js
-negotiated daemon: music-session-z6lwf5z2lx revision 1
-status-zero idle exit and cleanup: ok
-NX Successfully ran target smoke for project music-core
+Final `jj diff -- .prettierignore` still shows only:
 
-$ ! find packages/music-core -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
-exit: 0
-(no output; no prohibited artifacts found)
-
-$ jj diff --summary
-exit: 0
-tail:
-M packages/music-core/package.json
-M packages/music-core/project.json
-M packages/music-core/scripts/verify-pack.ts
-M packages/music-core/session/music-sessiond.ts
-
-$ jj status
-exit: 0
-tail:
-M packages/music-core/package.json
-M packages/music-core/project.json
-M packages/music-core/scripts/verify-pack.ts
-M packages/music-core/session/music-sessiond.ts
-Working copy  (@) : kyzluvzy 95deca42 (no description set)
-Parent commit (@-): luotokos 31f1c2d4 chore(music): remove per-host provider ownership
+```diff
++.apnea/
 ```
 
 ## Residual risks
 
-The verification is machine-local and depends on the installed Node/npm environment. Pre-existing unrelated worktree and `.apnea` changes were preserved; `.apnea/state.json` was not edited.
+None for this phase. Dispatcher-managed `.apnea` records and unrelated dirty work remain present; the orchestrator must isolate only `.prettierignore` for the Phase 1 commit.

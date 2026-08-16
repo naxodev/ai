@@ -5,31 +5,20 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The assigned package is Phase 5 zero-client idle shutdown and remains aligned with the approved plan. The Round 1 review was also explicitly against this Phase 5 package; it did not request singleton/startup or Phase 1–3 rework.
+The Phase 5 package remains aligned with approved Plan Phase 5. It requires the unchanged top-level gate to pass and directs unrelated/pre-existing failures to be reported rather than bypassed.
 
 ## Findings
 
-### Critical — The negotiated join/leave ownership race remains unchanged
+### High — The required full repository gate remains blocked
 
-No source changed in Round 2. A compatible hello still executes `yield* onJoin` before assigning `joined = true` in `packages/music-core/session/server.ts`. Interruption after the queue accepts the join but before the assignment causes the connection finalizer to skip `onLeave`, retaining a phantom negotiated-client count and preventing idle shutdown. Enrollment and the finalizer's leave obligation must be transferred interruption-safely, with deterministic immediate-disconnect evidence.
+The corrected-worktree rerun of `bun run check` exits 1 in root `format:check` because root Prettier includes 268 dispatcher/pre-existing `.apnea` Markdown files. Root policy and all Nx typecheck/test/parity/format/package/smoke targets therefore remain unexecuted. This fails the phase's primary acceptance criteria, so Phase 5 cannot be approved even though the formatting backlog is outside its permitted correction scope.
 
-### High — The required Phase 5 acceptance matrix remains missing
+The `.apnea` formatting/policy conflict must be resolved outside this phase without weakening or excluding required gate stages. The unchanged `bun run check` must then be rerun to completion, including the packed-core, exact OpenCode, and exact Pi smoke evidence.
 
-Round 2 adds no tests. The only focused idle test still covers initial no-client expiry, not the package's required real-client lifecycle. Evidence remains absent for:
+## Resolved Round 1 finding
 
-- grace cancellation/restart across one client, two clients, non-last departure, last departure, and rejoin;
-- raw pre-hello, malformed, and incompatible sockets not pinning the daemon;
-- exact selected-graph ordering/artifact cleanup and signal/idle/defect convergence;
-- executable startup-loss status-zero idle exit and bounded cleanup;
-- reconnect rejoining generation A before grace and adopting B after A exits;
-- bounded structural diagnostics without playback payloads.
+The missing final rerun is resolved. Round 2 reran the top-level command from the corrected worktree and confirmed that neither migration-owned smoke script remains in Prettier's warnings.
 
-The Round 2 coder result itself acknowledges that the assigned Phase 5 gaps remain.
+## Verification
 
-### High — The environment-backed idle-grace Config entry remains missing
-
-`MusicSessionConfigLive` still exposes the other runtime timings but neither reads a matching idle-grace `Config` value nor passes it into `resolve`. Production therefore remains fixed to the default instead of receiving the package-required validated environment-backed setting. Focused invalid-value coverage is also incomplete.
-
-### Medium — Round 2 verification is incomplete
-
-The coder supplied typecheck, one focused idle test, `git diff --check`, and a diff summary only. The required combined client/server suite, uncached full build/typecheck/test/format/package matrix, and raw-timer scan were not reported for this round. More importantly, passing the single existing idle test cannot satisfy the missing acceptance evidence above.
+`git diff --check` passes, the cumulative product changes remain the two Prettier-only smoke-script corrections, and Round 1 focused OpenCode/Pi smokes passed. Those results do not replace a successful full gate; there is still no policy or complete Nx evidence for this phase.

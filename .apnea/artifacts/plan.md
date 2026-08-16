@@ -2,323 +2,223 @@
 status: done
 ---
 
-# Plan: finish the machine-local Effect v4 music-session migration
+# Plan: finish the shared Effect v4 music-session migration
 
 ## Goal restatement
 
-Continue from the current dirty Jujutsu worktree without resetting, cleaning, abandoning, or replaying already verified work. Preserve the complete verified music-session chain through `31f1c2d4`, the accumulated dirty packed-core Node harness in `packages/music-core`, `docs/music-session-architecture.html`, Apnea artifacts/state already present, and every unrelated worktree change.
+Finish the migration from the current dirty Jujutsu worktree without resetting, cleaning, abandoning, or rewriting verified work. Preserve the verified commit chain through `ae742b68` (`docs(music): document shared session architecture`), `docs/music-session-architecture.html`, all current and dispatcher-generated Apnea records, unrelated changes, the approved one-line root Prettier policy edit, and the current narrow OpenCode/Pi package-smoke corrections.
 
-Only seven narrow slices remain: accept the installed packed-core smoke under achievable ownership policies, make the OpenCode smoke use its exact pin, make the Pi smoke use its exact pin, document the architecture as current, run the full repository gate, perform mixed-host verification, and write the terminus PR-description artifact. Do not reopen approved provider, coordinator, server, protocol, runtime-security, startup, reconnect, idle-exit, fan-out, artwork, or host-migration work unless one of these remaining gates exposes a focused regression.
-
-Use only the repository-pinned Effect TypeScript v4 APIs for any product-code correction. Run planner, coder, and reviewer roles through their configured Pi role profiles in regular panes. Coding and review rounds do not commit. After a phase is approved, the orchestrator alone uses the run's `jj squash` workflow for that reviewed phase before creating the next phase child. Never use Git commits, push, publish, open a PR, edit `.apnea/state.json`, or discard unrelated changes.
+The remaining work is four small slices: review and commit only the already-present `.prettierignore` policy edit; run and, only where evidence requires it, narrowly repair the unchanged complete repository gate while retaining both package-smoke corrections; verify one real mixed OpenCode/Pi session in regular panes; then write the dispatcher-requested `pr-description.md` artifact. Any Effect change must use only the repository-pinned Effect v4 (`4.0.0-beta.101`). Roles use their configured Pi profiles in regular panes. Coding/review agents do not commit; after approval the orchestrator commits only the reviewed slice through the run's prescribed `jj squash` workflow. Do not use Git commits, push, publish, release, open a PR, or manually edit `.apnea/state.json`.
 
 ## Phases
 
-### Phase 1 — Accept the installed packed-core Node daemon/client smoke
+### Phase 1 — Review and commit only the existing Prettier policy edit
 
 **Intent**
 
-Finish only the currently dirty installed-package lifecycle smoke. The existing passing implementation is acceptable if it proves the listed lifecycle behavior under the explicit policies below; do not manufacture source churn merely because the abandoned phase package demanded an unexported resolver or unsafe unconditional cleanup.
+Review the already-present `.prettierignore` change and commit it as its own phase. Do not edit it again if it already has the exact approved bytes. The approved change retains the original four lines and adds exactly one final `.apnea/` line so root Prettier ignores workflow runtime records.
+
+The commit gate must be reproducible in a fresh shell. It must not depend on coder-created temporary files, shell functions, environment variables, or hashes/snapshots of `.apnea`; Apnea necessarily updates its own records while dispatching, reviewing, verifying, and committing.
 
 **Files likely touched**
 
-No source edit is expected if the existing smoke passes. If a focused defect is exposed, limit changes to the already-owned packed-core files:
+- `.prettierignore` — already changed; review and commit this path only, with no new content edit expected.
 
-- `packages/music-core/package.json`
-- `packages/music-core/project.json`
-- `packages/music-core/scripts/verify-pack.ts`
-- `packages/music-core/session/music-sessiond.ts`
+Apnea may create or update its own task, artifact, state, backup, and verify-log records as part of normal workflow operation. No agent may edit those records manually. The existing dirty package-smoke scripts must remain uncommitted and unchanged for Phase 2.
 
 **Acceptance checks**
 
-- Keep the current package export surface unchanged: the harness imports the installed public client/protocol API by package name, and no root or subpath export is added for `resolveMusicSessionRuntimePaths`.
-- Supply a unique, structurally valid managed runtime beneath the smoke's unique temporary root. Requiring the installed but unexported resolver is explicitly not part of acceptance.
-- The harness runs under an allowed Node version, resolves `@naxodev/music-core` from the isolated install, and launches the daemon selected from the installed manifest's `naxodev-music-sessiond` entry rather than workspace source, a hard-coded fallback, or `PATH`.
-- The manifest-selected daemon rejects invalid idle-grace configuration through its normal status/diagnostic boundary without retaining runtime artifacts.
-- The installed reconnecting client completes negotiated hello plus state/status replay from the same non-empty daemon instance, then completes awaited disposal.
-- An isolated executable environment prevents selection of developer-installed provider tools; provider-unavailable replay is valid evidence that provider discovery is isolated.
-- After client disposal, the exact daemon reaches bounded, status-zero idle exit and emits the expected lifecycle diagnostics.
-- Owned socket, startup marker, bind reservation, bind temporaries, archive, install project, and temporary root are deleted only after process termination is confirmed.
-- If exact harness process-group termination cannot be confirmed on a failure path, fail the smoke, retain the temporary root, and report its path instead of deleting beneath a possibly live process. A successful run must confirm termination and report successful cleanup.
+- `.prettierignore` is byte-for-byte exactly five newline-terminated lines: `bun.lock`, `node_modules/`, `.nx/`, `**/dist/`, and `.apnea/`.
+- There is exactly one line equal to `.apnea/`, and it is the final line.
+- Prettier reports `.apnea/state.json` as ignored.
+- The read-only root format check passes, and the accumulated diff has no whitespace errors.
+- No coder-owned edit is made in this phase. In particular, neither package-smoke script, any `.apnea` file, `package.json`, `.prettierrc.json`, `bun.lock`, architecture documentation, or product source changes.
+- The approved phase commit contains only `.prettierignore` among repository policy/product paths. The two package-smoke corrections remain present for the next reviewed phase, and verified ancestors are not folded into or rewritten by this phase.
 
 **Verify commands**
 
+Each line is intentionally self-contained because `apnea commit` executes each command in a fresh `bash -lc` process:
+
 ```sh
-bunx nx run music-core:smoke --skip-nx-cache
-! find packages/music-core -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
-jj diff --summary
-jj status
+printf '%s\n' 'bun.lock' 'node_modules/' '.nx/' '**/dist/' '.apnea/' | cmp - .prettierignore
+test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1
+bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'
+bun run format:check
+git diff --check
 ```
 
 **Dependencies**
 
-- The current dirty packed-core harness and daemon CLI change.
-- The verified package surface and daemon/client lifecycle through `31f1c2d4`.
-- Node satisfying `packages/music-core/package.json` and the packed manifest's Effect v4 dependency.
+- The current approved one-line `.prettierignore` worktree edit.
+- The existing root `format:check` command and Prettier configuration.
+- Orchestrator support for isolating only the reviewed phase path while preserving the remaining dirty work on top.
 
 **Non-goals**
 
-- Exporting `resolveMusicSessionRuntimePaths`, adding a package subpath, or changing the current package file surface.
-- Deleting a retained root when its process group might still be live.
-- Package allowlist expansion, broad core tests, host smokes, host rendering, playback commands, documentation, full-repository checks, or mixed-host acceptance. Those are not Phase 1 acceptance criteria.
-- Protocol, startup, reconnect, idle, provider, server, or shutdown redesign.
+- Adding or changing the policy line, formatting `.apnea`, hashing mutable workflow records, or proving they remain static while Apnea operates.
+- Running the full `bun run check`, editing or committing the package-smoke corrections, fixing product code, or changing formatting configuration.
+- Resetting/cleaning unrelated work, rewriting verified commits, using Git mutation commands, pushing, or PR work.
 
-### Phase 2 — Certify the packed OpenCode plugin with its exact manifest pin
+### Phase 2 — Retain the package-smoke corrections and pass the unchanged full gate
 
 **Intent**
 
-Make the existing packed OpenCode smoke self-contained and prove it runs against the exact OpenCode version selected by `packages/opencode-music-player/package.json`, not an arbitrary executable found on the developer's `PATH`.
+Review the two current package-smoke corrections, run the literal root `bun run check`, and commit the corrections as their own approved phase. The expected result is no new product behavior: OpenCode diagnostics tolerate absent synchronous child output; Pi does the same and validates that its RPC child actually supplied piped stdin/stdout/stderr inside the existing termination and cleanup boundary.
+
+If the gate fails, identify the exact failing stage and owner before editing. Make only the smallest evidence-backed correction in that owner, rerun its existing focused target uncached, and then rerun the unchanged complete root gate. Do not alter the root command, omit targets, weaken a smoke, change exact host pins, or normalize Apnea records.
 
 **Files likely touched**
 
-- `packages/opencode-music-player/scripts/package-smoke.ts`
-- `packages/opencode-music-player/package.json` only if wiring is required; do not change the pin
+- `packages/opencode-music-player/scripts/package-smoke.ts` — retain the current nullable synchronous-output correction and its Prettier formatting.
+- `packages/pi-music-dock/scripts/package-smoke.ts` — retain the current nullable synchronous-output and piped-RPC-stream corrections and its package-specific Prettier formatting.
+
+No additional file is expected. Another existing owner may be touched only when the unchanged gate provides direct, reproducible evidence that it owns a migration regression.
 
 **Acceptance checks**
 
-- The smoke derives `0.0.0-next-17386` from the exact `@opencode-ai/plugin` dependency and installs/resolves the matching OpenCode CLI inside its isolated temporary project.
-- The launched `opencode2` realpath is beneath that isolated install and reports exactly the manifest-selected version; a global or unrelated `PATH` binary cannot satisfy the smoke.
-- Packed `@naxodev/opencode-music-player` and packed `@naxodev/music-core` resolve from the isolated install, with no workspace-source import fallback.
-- The real pinned host loads the packed plugin and retains the existing session-backed deterministic presentation evidence for expanded, paused, collapsed, narrow, and smallest layouts.
-- Cleanup terminates the exact host/tmux resources and removes archives and the temporary install on success and failure; no daemon, host, tmux server, socket, marker, reservation, or log is left behind.
+- Both dirty script corrections remain functionally intact; they are not reverted merely to reduce the diff.
+- OpenCode and Pi typechecks pass uncached.
+- The exact isolated OpenCode `0.0.0-next-17386` smoke and exact isolated Pi `0.84.0` smoke pass uncached, including packed-package resolution and cleanup.
+- The literal unchanged `bun run check` exits zero. Root format and policy checks run, and Nx completes every selected `typecheck`, `test`, `parity`, `format:check`, `package:check`, and `smoke` target.
+- The full gate retains packed music-core Node daemon/client lifecycle evidence plus the exact OpenCode, exact Pi, and unrelated package smokes.
+- Any new correction is limited to the demonstrated owner and uses Effect v4 only if Effect is involved. Its focused target and the final full gate both pass afterward.
+- No package pin/range, root script, lockfile, architecture document, verified commit, `.apnea` record, or unrelated dirty change is rewritten or removed.
+- No repository tarball, temporary install/config, socket, startup marker, bind reservation, log, or unintended build output remains.
+- The approved phase commit contains only the reviewed package-smoke corrections and any explicitly evidenced narrow fix among product paths; the Phase 1 policy commit and verified ancestors remain separate.
 
 **Verify commands**
 
 ```sh
+bunx nx run opencode-music-player:typecheck --skip-nx-cache
+bunx nx run pi-music-dock:typecheck --skip-nx-cache
 bunx nx run opencode-music-player:smoke --skip-nx-cache
-! find packages/opencode-music-player -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
-jj diff --summary
-jj status
-```
-
-**Dependencies**
-
-- Phase 1's accepted packed core.
-- Existing OpenCode package-smoke target, packed UI fixture, and exact manifest pin.
-- `tmux` and the platform requirements already used by the smoke.
-
-**Non-goals**
-
-- Updating the OpenCode pin, accepting a compatible range, redesigning UI, adding layout cases, exercising a live media provider, changing music-session semantics, Pi verification, or documentation.
-
-### Phase 3 — Certify the packed Pi extension with its exact manifest pin
-
-**Intent**
-
-Make the packed Pi RPC smoke select and execute the package's exact tested Pi version from its isolated install rather than resolving an arbitrary global `pi` binary.
-
-**Files likely touched**
-
-- `packages/pi-music-dock/scripts/package-smoke.ts`
-- `packages/pi-music-dock/package.json` only if smoke wiring is required; do not change pins or peer ranges
-
-**Acceptance checks**
-
-- The smoke derives the exact tested `0.84.0` versions from the package's `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` development pins and confirms they satisfy the declared peer ranges.
-- Packed `@naxodev/pi-music-dock`, packed `@naxodev/music-core`, and the exact Pi packages are installed in one isolated temporary project without workspace-source fallback.
-- The executed `pi` realpath comes from that temporary install, and installed manifest/version evidence proves it is exactly the selected pin; `Bun.which("pi")` or a global `PATH` binary is not accepted.
-- The exact Pi host loads the packed extension in RPC mode and reports `/music`, `/music-next`, and `/music-prev` as extension commands.
-- EOF/teardown exits within a bounded time without inherited client/daemon/provider handles. Exact children and owned runtime/archive/install artifacts are cleaned on success and failure.
-
-**Verify commands**
-
-```sh
 bunx nx run pi-music-dock:smoke --skip-nx-cache
-! find packages/pi-music-dock -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
-jj diff --summary
-jj status
-```
-
-**Dependencies**
-
-- Phase 1's accepted packed core.
-- Existing Pi RPC smoke and exact package pins in `packages/pi-music-dock/package.json`.
-
-**Non-goals**
-
-- Widening or narrowing Pi peer support, changing the tested pin, Pi artwork/seek, interactive rendering, live media-provider success, OpenCode verification, or product lifecycle redesign.
-
-### Phase 4 — Document the completed architecture as current
-
-**Intent**
-
-Bring the preserved architecture HTML and package documentation in line with the already-delivered machine-local session architecture. Remove language that still presents per-host provider ownership as current or the daemon as a future scale path.
-
-**Files likely touched**
-
-- `README.md`
-- `packages/music-core/README.md`
-- `packages/opencode-music-player/README.md`
-- `packages/pi-music-dock/README.md`
-- `docs/music-session-architecture.html`
-
-**Acceptance checks**
-
-- Documentation presents 20+ OpenCode/Pi clients connecting through one same-user Unix socket daemon to one provider subscription as the current architecture.
-- It accurately explains Effect v4 services/Layers/scopes, singleton startup, negotiated versions/capabilities, replay and revisions, global FIFO commands, bounded fan-out, slow-client isolation, reconnect across generations without command replay, indeterminate in-flight commands, zero-client idle exit, and owned-artifact cleanup.
-- Native artwork acquisition is daemon-owned and bounded; OpenCode retains catalog lookup, download, conversion, caching, and terminal rendering. Pi and OpenCode retain only their client lifecycle and host-local presentation/notification work.
-- Compatibility text explains that supported mixed client versions share a daemon while an incompatible client fails actionably without replacing the healthy generation.
-- Host requirements and tested-version prose agree with the exact current OpenCode and Pi manifests/smokes.
-- `docs/music-session-architecture.html` retains its skip link, labeled navigation/diagrams, source links, responsive and print behavior, reduced-motion support, and established visual language.
-
-**Verify commands**
-
-```sh
-bunx prettier --check README.md packages/music-core/README.md packages/opencode-music-player/README.md packages/pi-music-dock/README.md docs/music-session-architecture.html
-! rg -n 'Direct / current|Broker / scale path|future broker|when coordination is required' docs/music-session-architecture.html packages/music-core/README.md packages/opencode-music-player/README.md packages/pi-music-dock/README.md
-jj diff --summary
-jj status
-```
-
-**Dependencies**
-
-- The approved architecture through Phase 3 and all previously verified migration phases.
-- The preserved `docs/music-session-architecture.html` as the visual baseline.
-
-**Non-goals**
-
-- New runtime behavior, an unrelated documentation-site redesign, changing package pins, generated diagrams, changelog/release work, or publication.
-
-### Phase 5 — Run the full repository gate
-
-**Intent**
-
-Run the repository's complete automated gate against the accumulated migration and exact-pin smokes. Make only narrow fixes directly exposed by this gate, then repeat it from the repository root.
-
-**Files likely touched**
-
-No file is expected. If the gate exposes a defect, touch only the existing file that owns that defect and rerun its focused target before repeating the full gate.
-
-**Acceptance checks**
-
-- `bun run check` passes, including formatting, policy, typecheck, tests, parity, package checks, and all discovered smoke targets.
-- The packed-core Node lifecycle and both exact-pinned host smokes pass as part of the repository gate rather than only in isolation.
-- Any correction uses repository-pinned Effect v4 where Effect is involved and does not reopen unrelated architecture.
-- No generated tarball, temporary install, socket, marker, bind reservation, log, or unintended tracked build output remains.
-- Verified history, unrelated dirty content, Apnea state, and the architecture HTML remain present.
-
-**Verify commands**
-
-```sh
 bun run check
 git diff --check
-jj diff --summary
-jj status
+test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
 ```
+
+If an additional target required a correction, its exact existing Nx target with `--skip-nx-cache` must be inserted before the final `bun run check`; a focused pass never replaces the final root gate.
 
 **Dependencies**
 
-- Phases 1–4.
+- Approved and separately committed Phase 1 policy boundary.
+- Verified migration commits through `ae742b68`.
+- The two current dirty package-smoke corrections and the repository's installed Bun/Node/npm/Nx/tmux/macOS tooling.
 
 **Non-goals**
 
-- Mixed-host manual certification, feature work, opportunistic refactoring, dependency upgrades, release/version changes, publishing, or PR work.
+- Broad formatting, refactoring, dependency updates, protocol/lifecycle redesign, new acceptance behavior, documentation changes, release work, or manual mixed-host verification.
+- Editing `.apnea`, changing `bun run check`, disabling Nx targets/cache policy, relaxing pinned host versions, or accepting focused checks in place of the full gate.
+- Git commits, pushes, publication, or PR creation.
 
-### Phase 6 — Verify one real mixed OpenCode/Pi host session
+### Phase 3 — Verify one real mixed OpenCode/Pi session
 
 **Intent**
 
-Separately certify mixed-host behavior on macOS after all automated repository checks. This is an evidence phase, not another migration phase.
+After the automated gate is green, certify the real macOS host boundary with active media: one exact OpenCode host loading the current checkout plugin and one exact Pi host loading the current checkout extension in separate regular interactive panes. This is an evidence-only phase; no product edit is expected.
+
+Use temporary host configuration outside the repository. OpenCode must use the README-supported absolute path to `packages/opencode-music-player`; Pi must run the exact tested `@earendil-works/pi-coding-agent@0.84.0` and load `packages/pi-music-dock`. Do not use a different global Pi or a package-smoke fixture as a substitute for the real session.
 
 **Files likely touched**
 
-No product file is expected. If the focused automated or real-host check exposes a defect, change only its existing owner and rerun Phase 5 before repeating this phase.
+- No product, policy, documentation, or repository file.
+- Temporary host configuration only under an external `mktemp` directory, removed after the session.
+
+Normal dispatcher-owned Apnea evidence records may change. If the live session exposes a product defect, stop the evidence run, return to a narrow owner correction, rerun Phase 2's focused checks and full gate, and restart the live session from a clean runtime.
 
 **Acceptance checks**
 
-- The focused real-socket regression proves OpenCode and Pi identities share one global FIFO and one provider subscription, and Pi disposal/reload leaves OpenCode healthy.
-- With the exact-pinned OpenCode and Pi hosts and provider tooling available on macOS, both hosts display the same active track and playback state.
-- A transport action initiated from either host converges in both; commands remain globally ordered.
-- The live session has one `naxodev-music-sessiond` process, one owned socket at the configured same-user runtime, and one provider stream/poll owner. Pi reload does not duplicate any of them.
-- Closing either host leaves the other healthy. Closing the final host leads to bounded idle exit and removal of owned socket/marker/reservation artifacts; no host or provider child remains because of the extensions.
-- Missing provider tooling and protocol incompatibility remain actionable host feedback and do not trigger replacement of a healthy daemon.
+- The focused automated mixed-host regression passes before interactive testing.
+- OpenCode reports exactly `opencode2 v0.0.0-next-17386`; the launched Pi reports exactly `0.84.0`; a supported provider is installed; and real media is active.
+- Both regular-pane hosts load the current checkout integrations and show the same track and playback state.
+- A transport action initiated in OpenCode converges in Pi, and a transport action initiated in Pi converges in OpenCode.
+- While both hosts are live, there is one daemon generation, one owner-only socket at `/tmp/naxodev-music-$(id -u)/s.sock`, and one provider stream/poll owner.
+- Pi `/reload` preserves the same daemon/provider ownership and healthy OpenCode session, while leaving one Pi status/client lifecycle rather than duplicating it.
+- Closing Pi leaves OpenCode live and controllable. Closing the final OpenCode client permits the 30-second idle grace to complete, after which no daemon, socket, startup marker, or bind reservation remains.
+- Temporary configuration is removed, and the evidence phase creates no product diff or manual `.apnea` edit.
 
 **Verify commands**
 
-Run the automated mixed-host evidence first:
+Automated prerequisites and the final cleanup state are commit-gate checks; the interactive observations must also be recorded in the coder result and confirmed by review.
 
 ```sh
 bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
-bunx nx run opencode-music-player:smoke --skip-nx-cache
-bunx nx run pi-music-dock:smoke --skip-nx-cache
+test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+! pgrep -f '[m]usic-sessiond' >/dev/null
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"
+test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+git diff --check
 ```
 
-During the controlled interactive macOS check, use the exact hosts certified above and inspect the real ownership boundary with runnable commands:
+During the live run, use `lsof` on the socket and process inspection to record daemon/provider PIDs before and after Pi `/reload`; require identical ownership. Launch exact Pi in its regular pane with the current checkout package:
 
 ```sh
-test -S "/tmp/naxodev-music-$(id -u)/s.sock"
-pgrep -fl 'naxodev-music-sessiond'
-pgrep -fl 'media-control stream|nowplaying-cli'
-lsof -U "/tmp/naxodev-music-$(id -u)/s.sock"
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --no-extensions -e "$PWD/packages/pi-music-dock"
 ```
 
-After both hosts exit and the configured idle grace elapses:
-
-```sh
-for attempt in $(seq 1 40); do
-  if ! pgrep -f 'naxodev-music-sessiond' >/dev/null && \
-     test ! -e "/tmp/naxodev-music-$(id -u)/s.sock" && \
-     test ! -e "/tmp/naxodev-music-$(id -u)/start.lock" && \
-     test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"; then
-    exit 0
-  fi
-  sleep 1
-done
-exit 1
-```
+Launch OpenCode `--standalone` in the other regular pane using temporary configuration whose plugin entry is the absolute current-checkout `packages/opencode-music-player` path. Wait through the bounded idle grace after both hosts close before running the final cleanup checks.
 
 **Dependencies**
 
-- Phase 5's green full repository gate.
-- macOS, the exact host versions certified in Phases 2–3, and either `media-control` or the supported fallback for the live check.
+- Approved Phase 2 full gate and separately committed package-smoke corrections.
+- macOS, active media, exact OpenCode/Pi versions, supported provider tooling, and regular interactive panes.
+- The local-checkout loading instructions in both package READMEs.
 
 **Non-goals**
 
-- UI redesign, load testing beyond the already verified 24-client coverage, remote sockets, daemon installation as a service, new diagnostics, documentation edits, or release work.
+- New host migration, synthetic scale work, UI redesign, provider/protocol changes, remote sockets, service installation, source edits, or accepting automated/package-smoke evidence instead of real host behavior.
+- Using an unpinned global Pi, floating panes, Git commits, pushes, releases, or PR operations.
 
-### Phase 7 — Produce the terminus PR-description artifact
+### Phase 4 — Produce the terminus PR-description artifact
 
 **Intent**
 
-When the terminus dispatch supplies its exact artifact path, write only the PR description artifact. Do not create, update, or open a pull request.
+When terminus dispatch provides the exact `pr-description.md` artifact path, write only that artifact. Summarize delivered phases and actual evidence without creating, updating, or opening a pull request.
 
 **Files likely touched**
 
-- Only the dispatcher-provided PR-description artifact; no product source and no invented artifact path.
+- Only the exact PR-description artifact path supplied by the terminus dispatch. Do not guess or create a path in advance.
 
 **Acceptance checks**
 
-- Front matter contains `status: done` only.
-- The description accurately summarizes the preserved verified migration, packed-core Node lifecycle, exact-pinned OpenCode and Pi smokes, current-architecture documentation, full repository gate, and mixed-host evidence.
-- The test plan lists commands/evidence actually completed and distinguishes automated from interactive checks.
-- Residual risk is explicit, especially macOS/provider and beta-host constraints.
-- Claims match Jujutsu history and the final diff and do not claim publication, push, or an opened PR.
+- Front matter contains only `status: done`.
+- The body accurately summarizes the preserved Effect v4 migration, the separate `.apnea/` Prettier policy commit, retained package-smoke corrections, green unchanged full gate, and real mixed-host evidence.
+- The test plan distinguishes commands actually run from interactive observations actually completed.
+- Residual risk identifies the macOS/provider dependency and beta exact-host boundaries.
+- The description agrees with final Jujutsu history/status and does not claim a push, publication, release, or opened PR.
+- No product source, architecture documentation, unrelated dirty content, or `.apnea/state.json` is manually edited.
 
 **Verify commands**
 
 ```sh
 jj log -r 'ancestors(@, 30)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
-jj diff --summary
+git diff --check
 jj status
 ```
 
+Also inspect the dispatcher-supplied artifact directly to confirm its front matter and every test/evidence claim; the exact path is intentionally deferred until dispatch supplies it.
+
 **Dependencies**
 
-- Approved Phase 6 evidence.
+- Approved Phase 3 live evidence and cleanup.
 - The terminus dispatch's exact artifact path.
 
 **Non-goals**
 
-- Product edits, commits, pushes, publication, release tagging, or creating/updating a PR.
+- Product changes, release notes, new tests solely to inflate the description, commits, pushes, publication, or creating/updating a PR.
 
 ## Whole-run definition of done
 
-- Every previously verified migration change through `31f1c2d4`, the accumulated packed-core harness, unrelated worktree content, Apnea state, and `docs/music-session-architecture.html` are preserved; no reset, clean, abandonment, or unrelated rewrite occurs.
-- The packed core runs its public client under Node by package name, selects the installed manifest daemon, proves invalid configuration, isolated provider discovery, hello/replay, awaited disposal, bounded status-zero idle exit, and successful owned-artifact cleanup.
-- The core package export surface remains unchanged. A unique structurally supplied runtime is accepted, and an unconfirmed process group causes a reported retained root rather than unsafe deletion.
-- Packed OpenCode runs against exactly `0.0.0-next-17386` from its isolated install, and packed Pi runs against exactly `0.84.0` from its isolated install; neither smoke accepts an arbitrary global host binary.
-- READMEs and the preserved architecture HTML describe one machine-local daemon/provider as current while accurately separating daemon authority from host-local presentation and artwork rendering.
-- `bun run check` passes with no generated/runtime debris.
-- Focused and real macOS mixed-host evidence shows one daemon/socket/provider, shared state and FIFO commands, reload isolation, healthy remaining clients, and final idle cleanup.
-- Each approved phase follows configured Pi role profiles in regular panes and the reviewed-phase `jj squash` workflow. No Git commit, push, publish, release, PR creation, or `.apnea/state.json` edit is performed.
-- The final PR-description artifact is complete at the exact path supplied by its terminus dispatch.
+- The verified migration commit chain through `ae742b68`, `docs/music-session-architecture.html`, current and newly generated Apnea records, and unrelated work remain preserved.
+- The root `.prettierignore` has one separately reviewed/committed change: exactly one final `.apnea/` line after the unchanged original four entries. Its commit gate uses only self-contained fresh-shell checks and does not hash mutable Apnea records.
+- The current OpenCode/Pi package-smoke corrections remain intact and are reviewed/committed separately from the policy edit.
+- The literal unchanged `bun run check` passes root format/policy and all selected Nx typecheck, test, parity, format, package, and smoke targets, including packed Node music-core and exact pinned OpenCode/Pi evidence.
+- Any additional correction is narrow, evidence-backed, owned by the failure, and Effect v4-only where Effect is involved. No generated package/runtime debris remains.
+- One real regular-pane macOS session proves mixed OpenCode/Pi state and controls, singleton daemon/socket/provider ownership, Pi reload isolation, remaining-host health, and bounded final idle cleanup.
+- Configured Pi role profiles and regular panes are used. Coding/review agents do not commit; the orchestrator isolates and commits only each approved phase through the prescribed `jj squash` workflow without rewriting verified ancestors or absorbing unrelated dirty work.
+- The dispatcher-requested PR-description artifact truthfully records delivered phases, tests, interactive evidence, and residual risk.
+- No manual `.apnea/state.json` edit, reset, clean, abandon, Git commit, push, publish, release, or PR creation occurs.

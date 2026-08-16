@@ -1,0 +1,16 @@
+---
+status: done
+verdict: APPROVED
+---
+
+## Findings
+
+No blocking findings.
+
+The phase package matches approved Plan Phase 1: it limits coder-owned repository content to appending exactly `.apnea/` to the root `.prettierignore`, defers the full gate and product work to Phase 2, and explicitly preserves Apnea records, the two pre-existing package-smoke corrections, architecture documentation, and unrelated dirty work.
+
+The implementation matches the package. The current `.prettierignore` retains the original four entries and adds exactly one final `.apnea/` line; its diff contains no other change. The accumulated package-smoke diffs remain recognized pre-existing work rather than Phase 1 scope.
+
+## Verification
+
+The coder reports successful exact-file comparison, single-entry count, Prettier ignore inspection, two passing read-only root formatting checks, whitespace validation, and matching before/after SHA-256 manifests for both `.apnea` and the preserved repository tree. Final `jj` inspection retained the expected dirty baseline. Reviewer inspection also confirmed the one-line `.prettierignore` diff, `git diff --check`, and `{ "ignored": true }` for `.apnea/state.json`.

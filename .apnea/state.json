@@ -1,19 +1,16 @@
 {
   "version": 1,
-  "slug": "music-session-release-gates",
+  "slug": "music-session-final-verification",
   "step": "committing",
-  "phase_index": 4,
+  "phase_index": 1,
   "phase_count_hint": null,
   "rounds": {
     "plan_review": 1,
-    "phase-01/code_review": 1,
-    "phase-02/code_review": 2,
-    "phase-03/code_review": 3,
-    "phase-04/code_review": 1
+    "phase-01/code_review": 1
   },
   "vcs": "jj",
   "allow_dirty": true,
-  "goal": "Finish the machine-local Effect TypeScript v4 music-session migration from the current dirty worktree. Preserve every verified commit, the accumulated packed-core harness, docs/music-session-architecture.html, and unrelated changes. Do not push or open a PR. The prior run was abandoned because its packed-core phase package was contradictory. Phase 1 must cover ONLY the installed packed-core Node daemon/client smoke and must explicitly adopt these achievable policies: keep the current package export surface; use a unique structurally supplied managed runtime path rather than requiring an unexported resolver; delete owned runtime artifacts after confirmed process termination; retain and report the temporary root when process-group termination cannot be confirmed rather than deleting beneath a possibly live process. Accept the existing passing installed smoke if it proves package-name imports, manifest-selected daemon, hello/replay, invalid config, disposal, bounded idle exit, provider isolation, and successful cleanup. Do not add unrelated acceptance. Then continue only the remaining exact OpenCode pin smoke, exact Pi smoke, docs/current architecture, full repository checks, mixed-host verification, and pr-description as narrow phases. Use Effect v4 only, jj squash workflow, Pi role profiles, regular panes, and preserve unrelated worktree changes.",
+  "goal": "Finish the shared Effect v4 music-session migration from the current dirty jj worktree. Preserve all verified commits, the approved one-line .prettierignore policy edit, the narrow OpenCode/Pi package-smoke corrections, current Apnea records, docs/music-session-architecture.html, and unrelated changes. Do not push or open a PR. Phase 1 must ONLY review and commit the existing .prettierignore edit that adds exactly one final .apnea/ line. Its verify commands must be self-contained and runnable by apnea commit in a fresh shell: exact static file comparison created inline, grep count, prettier --file-info ignored true, bun run format:check, and git diff --check. Do not use temporary state prepared by the coder, shell functions, environment variables, or hashes of .apnea because Apnea necessarily updates its own records while committing. Do not alter any .apnea file manually. Phase 2 must run and narrowly fix the unchanged full bun run check, retaining the current package-smoke corrections. Then verify one real mixed OpenCode/Pi session and produce pr-description.md in narrow final phases. Use Effect v4 only, jj squash workflow, Pi profiles, regular panes, and preserve unrelated dirty work.",
   "last_error": null,
   "pending_artifact": null,
   "pending_role": null,
@@ -27,20 +24,20 @@
   "pending_extended": false,
   "role_panes": {
     "planner": {
-      "pane_id": "w2:pD8",
-      "label": "apnea:planner:mswcsxkf-zpru"
+      "pane_id": "w2:pDG",
+      "label": "apnea:planner:mswfcqex-8fue"
     },
     "reviewer": {
-      "pane_id": "w2:pDA",
-      "label": "apnea:reviewer:mswcxyhm-nn12"
+      "pane_id": "w2:pDH",
+      "label": "apnea:reviewer:mswfiy7j-v9wt"
     },
     "coder": {
-      "pane_id": "w2:pDB",
-      "label": "apnea:coder:mswd12ne-pew0"
+      "pane_id": "w2:pDJ",
+      "label": "apnea:coder:mswfl864-79bv"
     }
   },
   "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
   "reviewer_tree_fingerprint": null,
-  "current_phase_package": ".apnea/artifacts/phase-04/round-1/phase-package.md",
-  "current_code_review": ".apnea/artifacts/phase-04/round-1/code-review.md"
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": ".apnea/artifacts/phase-01/round-1/code-review.md"
 }

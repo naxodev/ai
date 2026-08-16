@@ -1,0 +1,252 @@
+---
+status: done
+---
+
+# Plan: finish the Effect v4 music-session migration from the dirty worktree
+
+## Goal restatement
+
+Finish the already-implemented shared music-session migration without resetting, cleaning, abandoning, or broadly rewriting the current Jujutsu worktree. Preserve the verified commit chain through `ae742b68` (`docs(music): document shared session architecture`), the current evidence-backed OpenCode and Pi package-smoke corrections, `docs/music-session-architecture.html`, all Apnea runtime records, and unrelated changes.
+
+Four narrow slices remain. First, make the repository formatting boundary explicit by adding `.apnea/` to the existing root `.prettierignore` and changing nothing else in the phase. Second, run the unchanged `bun run check` and make only an owning, evidence-backed correction if it fails. Third, verify one real mixed OpenCode/Pi session in regular panes. Finally, write the dispatcher-requested `pr-description.md` artifact without pushing or opening a PR.
+
+Any code correction involving Effect must use the repository-pinned Effect v4 (`4.0.0-beta.101`) only. Planner, coder, and reviewer work uses the configured Pi role profiles in regular panes. Coding and review agents do not commit or squash; after approval, only the orchestrator follows the run's reviewed-phase `jj squash` workflow. Never run a Git commit, push, publish, open a PR, manually edit `.apnea/state.json`, or run Prettier in write mode over `.apnea`.
+
+## Phases
+
+### Phase 1 — Exclude Apnea runtime records at the root formatting boundary
+
+**Intent**
+
+Fix only the policy defect that allowed root Prettier to scan workflow runtime records. Append `.apnea/` to the existing root `.prettierignore`. Apnea state, tasks, artifacts, logs, and backups are not product sources and must remain byte-for-byte outside Prettier's read/write set.
+
+**Files likely touched**
+
+- `.prettierignore` — the only file this phase may edit
+
+Do not manually edit any file below `.apnea/`, including `.apnea/state.json`. Dispatcher-owned creation of the required phase artifacts is workflow activity, not permission to normalize or rewrite existing records.
+
+**Acceptance checks**
+
+- `.prettierignore` retains the existing `bun.lock`, `node_modules/`, `.nx/`, and `**/dist/` entries unchanged and contains exactly one new `.apnea/` entry.
+- No package source, manifest, lockfile, documentation, script, or other repository policy file changes in this phase.
+- Root Prettier reports `.apnea/state.json` as ignored and the root formatting check passes without scanning or rewriting Apnea records.
+- A before/after content-hash manifest around the formatting check confirms that the check did not change any existing file under `.apnea/`.
+- The current dirty package-smoke corrections and all unrelated dirty paths remain present and unchanged.
+
+**Verify commands**
+
+Run from the repository root after adding the one ignore entry:
+
+```sh
+test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1
+bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'
+hash_apnea() {
+  find .apnea -type f -print0 | sort -z | while IFS= read -r -d '' file; do
+    shasum -a 256 "$file"
+  done
+}
+before="$(mktemp)"
+after="$(mktemp)"
+hash_apnea >"$before"
+bun run format:check
+hash_apnea >"$after"
+cmp "$before" "$after"
+rm -f "$before" "$after"
+git diff --check -- .prettierignore
+jj diff --summary
+jj status
+```
+
+**Dependencies**
+
+- The existing root `.prettierignore` and root `format:check` script.
+- The dirty worktree baseline, including dispatcher-managed `.apnea` records and the two package-smoke scripts.
+
+**Non-goals**
+
+- Formatting, repairing, reverting, deleting, renaming, or otherwise changing any existing `.apnea` record.
+- Running `prettier --write`, `bun run format`, or any workspace-wide write command.
+- Fixing package code, changing formatting configuration, changing `package.json`, or running the full repository gate.
+- Editing `.apnea/state.json`, committing, squashing during coding/review, pushing, or PR work.
+
+### Phase 2 — Run the unchanged complete repository gate
+
+**Intent**
+
+Run the repository's unchanged `bun run check` after the formatting boundary is fixed. Preserve the current evidence-backed OpenCode correction for absent synchronous child output and the Pi corrections for piped RPC stream validation and absent synchronous child output. If the gate fails, diagnose the exact failing target, make the narrowest correction in its existing owner, rerun that focused target uncached, and then rerun the unchanged full gate.
+
+**Files likely touched**
+
+No new edit is expected. The following existing dirty files must be retained and may be adjusted only if the gate exposes a defect in the same correction:
+
+- `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
+
+`.prettierignore` is carried from Phase 1 but must not be broadened further. Any other file requires direct failing-target evidence and must be the existing owner of that failure; do not perform opportunistic cleanup.
+
+**Acceptance checks**
+
+- The literal root command `bun run check` passes without changing its script or omitting targets.
+- Root format and policy checks pass, and Nx completes all selected `typecheck`, `test`, `parity`, `format:check`, `package:check`, and `smoke` targets.
+- The packed music-core Node lifecycle smoke, exact OpenCode `0.0.0-next-17386` smoke, exact Pi `0.84.0` smoke, and unrelated package smokes all pass as part of the gate.
+- The current package-smoke corrections remain: nullable synchronous output is handled in both scripts, Pi validates piped RPC streams inside its existing exact-process termination/cleanup path, and both smokes continue selecting isolated manifest-pinned hosts rather than global binaries.
+- Any focused correction is limited to the failing target's owner, uses Effect v4 only if Effect is involved, and is followed by both an uncached focused rerun and the unchanged root gate.
+- No Prettier write command is used. No `.apnea` file, architecture HTML, unrelated dirty content, verified migration content, or package pin is rewritten or removed.
+- No generated archive, socket, marker, bind reservation, temporary log, or package-smoke install remains in the repository.
+
+**Verify commands**
+
+```sh
+bun run check
+git diff --check
+! find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit | grep -q .
+bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'
+jj diff --summary
+jj status
+```
+
+If a target fails, first rerun only that existing Nx target with `--skip-nx-cache` after the narrow correction, then repeat every command above. Do not replace the final `bun run check` with a reduced or rewritten command.
+
+**Dependencies**
+
+- Approved Phase 1 formatting boundary.
+- Verified migration commits through `ae742b68`.
+- The current OpenCode and Pi package-smoke corrections and their prior focused smoke/typecheck evidence.
+
+**Non-goals**
+
+- Reformatting the workspace or Apnea backlog, broad refactoring, dependency/pin upgrades, protocol or lifecycle redesign, new features, documentation edits, release work, or mixed-host manual acceptance.
+- Reverting the current package-smoke corrections merely to reduce the dirty diff.
+- Treating valid Nx cache use as a reason to alter the unchanged root command.
+- Commits, pushes, publication, PR creation, or manual `.apnea/state.json` edits.
+
+### Phase 3 — Verify one real mixed OpenCode/Pi session
+
+**Intent**
+
+After the full automated gate is green, certify the actual macOS host boundary in two regular interactive panes: one OpenCode host loading the current checkout's plugin and one exact tested Pi host loading the current checkout's extension. This is an evidence phase. It should not change product files.
+
+**Files likely touched**
+
+- No product or repository file is expected.
+- Temporary host configuration may be created only beneath a `mktemp` directory outside the repository and must be removed after the session.
+
+If the real session exposes a product defect, stop this phase, change only the existing owner in a focused correction, rerun Phase 2's complete gate, and then restart the mixed-host check from a clean runtime.
+
+**Acceptance checks**
+
+- Before the interactive check, the focused mixed-host regression passes and confirms OpenCode/Pi identities share one global FIFO/provider subscription and survive Pi replacement.
+- OpenCode reports exactly `v0.0.0-next-17386`. Pi is launched at the package's exact tested `0.84.0` pin rather than accepting the currently installed unrelated/global version. Both hosts load the current checkout integration in regular panes, not only RPC/package-smoke fixtures.
+- A supported provider (`media-control`, with `nowplaying-cli` only as the documented fallback) is available and real media playback is active.
+- Both hosts show the same active track and playback state. A transport action from OpenCode converges in Pi, and a transport action from Pi converges in OpenCode.
+- While both hosts are live, inspection shows one `naxodev-music-sessiond`, one owner-only socket at `/tmp/naxodev-music-$(id -u)/s.sock`, and one provider stream/poll owner.
+- Running Pi `/reload` preserves the daemon generation and OpenCode health without duplicating the daemon, provider owner, socket, Pi status, or client lifecycle.
+- Closing Pi leaves OpenCode live and controllable. Closing the final OpenCode client allows the 30-second idle grace to finish, after which the daemon and its owned socket, startup marker, and bind reservation are absent.
+- Temporary host configuration is removed. No product source, `.apnea/state.json`, unrelated dirty path, or verified commit is altered by the evidence run.
+
+**Verify commands**
+
+Run the automated prerequisite and host/version checks:
+
+```sh
+bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
+test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+```
+
+Use two regular panes for the controlled session. Configure OpenCode from a temporary directory to load the absolute current-checkout `packages/opencode-music-player` path, launch it with `opencode2 --standalone`, and launch exact Pi with the current-checkout package:
+
+```sh
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --no-extensions -e "$PWD/packages/pi-music-dock"
+```
+
+During the session, after visual and transport convergence and again after Pi `/reload`, inspect ownership:
+
+```sh
+runtime="/tmp/naxodev-music-$(id -u)"
+test -S "$runtime/s.sock"
+test "$(pgrep -f '[n]axodev-music-sessiond' | wc -l | tr -d ' ')" -eq 1
+pgrep -fl '[m]edia-control stream|[n]owplaying-cli'
+lsof "$runtime/s.sock"
+```
+
+Record the daemon/provider PIDs before `/reload` and require the same ownership afterward. After both hosts exit, verify bounded final cleanup:
+
+```sh
+runtime="/tmp/naxodev-music-$(id -u)"
+for attempt in $(seq 1 40); do
+  if ! pgrep -f '[n]axodev-music-sessiond' >/dev/null && \
+     test ! -e "$runtime/s.sock" && \
+     test ! -e "$runtime/start.lock" && \
+     test ! -e "$runtime/s.sock.bind-lock"; then
+    exit 0
+  fi
+  sleep 1
+done
+exit 1
+```
+
+Finally rerun `jj diff --summary` and `jj status` to confirm the evidence phase introduced no repository edit.
+
+**Dependencies**
+
+- Approved Phase 2 full gate.
+- macOS, active media playback, the exact OpenCode and Pi versions certified by the package smokes, and supported provider tooling.
+- Existing local-development loading paths documented by the two package READMEs.
+
+**Non-goals**
+
+- Another host migration, synthetic load testing beyond the existing suite, UI redesign, provider/protocol changes, remote sockets, service installation, release publication, or source documentation edits.
+- Accepting only package-smoke/RPC evidence in place of real regular-pane host behavior.
+- Using a non-pinned global Pi binary, Herdr panes, commits, pushes, PR creation, or manual `.apnea/state.json` edits.
+
+### Phase 4 — Produce the terminus PR-description artifact
+
+**Intent**
+
+When the terminus dispatch supplies the exact artifact path for `pr-description.md`, write only that artifact. Summarize delivered work and evidence without creating, updating, or opening a pull request.
+
+**Files likely touched**
+
+- Only the exact PR-description artifact path supplied by the terminus dispatch; do not guess or create another path.
+
+**Acceptance checks**
+
+- Front matter contains `status: done` only.
+- The description accurately summarizes the preserved Effect v4 shared-session migration, root `.apnea/` Prettier exclusion, retained package-smoke corrections, green unchanged full gate, and real mixed-host evidence.
+- The test plan lists commands and interactive checks actually completed, clearly distinguishing automated and manual evidence.
+- Residual risk is explicit, especially macOS/provider dependence and the beta OpenCode/Pi host-version boundary.
+- Claims match final Jujutsu history/status and do not claim a push, publication, release, or opened PR.
+- No product source or unrelated runtime record is edited while producing the artifact.
+
+**Verify commands**
+
+```sh
+jj log -r 'ancestors(@, 30)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+jj diff --summary
+jj status
+```
+
+Also inspect the dispatcher-supplied artifact to confirm its only front-matter key is `status: done` and that every listed test/evidence claim was actually completed.
+
+**Dependencies**
+
+- Approved Phase 3 evidence.
+- The terminus dispatch's exact artifact path.
+
+**Non-goals**
+
+- Product changes, new test execution solely to inflate the description, release notes, commits, pushes, publication, or creating/updating a PR.
+
+## Whole-run definition of done
+
+- All verified migration content through `ae742b68`, the current package-smoke corrections, `docs/music-session-architecture.html`, Apnea runtime/history records, and unrelated dirty work remain preserved.
+- The root `.prettierignore` retains its prior entries and adds exactly `.apnea/`; root Prettier treats Apnea state, generated tasks, artifacts, logs, and backups as out of scope and does not rewrite them.
+- The unchanged `bun run check` passes across root format/policy plus all Nx typecheck, test, parity, format, package, and smoke targets. Exact packed OpenCode and Pi smokes retain their evidence-backed corrections and isolated pinned-host behavior.
+- No generated package/runtime debris remains, and any code correction uses repository-pinned Effect v4 only.
+- One controlled real macOS session demonstrates shared OpenCode/Pi state and controls, one daemon/socket/provider owner, Pi reload isolation, survival of the remaining host, and bounded final idle cleanup.
+- Planner/coder/reviewer roles use configured Pi profiles in regular panes. Coding/review agents do not commit; only the orchestrator performs approved-phase `jj squash` workflow steps.
+- The final dispatcher-requested `pr-description.md` artifact truthfully records the work, test plan, and residual risks.
+- No Git commit, manual `.apnea/state.json` edit, reset/clean/abandon, push, publish, release, or PR creation occurs.

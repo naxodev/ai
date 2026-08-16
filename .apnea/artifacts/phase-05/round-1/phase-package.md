@@ -2,249 +2,176 @@
 status: done
 ---
 
-# Phase 5 package: zero-client idle shutdown and lifecycle diagnostics
+# Phase 5 package — run the full repository gate
 
 ## Intent
 
-Complete daemon lifetime semantics independently of fan-out hardening.
+Run the repository's existing top-level `bun run check` exactly as declared. This is the accumulated automated release gate for the verified music-session migration, exact-pinned package smokes, documentation, and all unrelated workspace projects.
 
-The selected daemon must keep exactly one configurable Effect-owned idle grace while it has zero negotiated clients. A successfully negotiated client cancels that grace; only the departure of the last negotiated client starts a new grace. Expiry ends the daemon foreground so the existing Phase 1 graph finalizer closes coordinator work, drains connections, finalizes provider ownership, closes/unlinks the listener, and removes only owned runtime artifacts.
+No product edit is expected. If the gate passes, record the evidence and make no source change. If it fails, diagnose the exact target, make only the smallest correction owned by that failure, rerun the focused target, and then rerun the complete top-level gate.
 
-This phase also proves startup-with-no-client cleanup, reconnect interaction, signal/defect/idle convergence, exact-once finalization, and bounded lifecycle diagnostics. It does not add Phase 6 queue bounds or 24-client load.
+This phase does not perform the later interactive mixed OpenCode/Pi verification and does not add new acceptance, scripts, tests, or release behavior.
 
-Use repository-pinned Effect v4 `Config`, `Clock`/`Effect.sleep`, scopes, supervised fibers, queues/`Deferred`, and synchronization primitives. Do not use raw timers, detached Promise timers, or callback-owned daemon lifetime.
+## Exact steps
+
+### 1. Preserve and record the approved baseline
+
+1. Run `jj status` and `jj diff --summary` before the gate.
+2. Preserve approved documentation commit `ae742b68`, exact Pi commit `dee247d7`, exact OpenCode commit `6613d6d1`, packed-core commit `863c6e7b`, every earlier verified commit, `.apnea/state.json`, `docs/music-session-architecture.html`, and all unrelated changes.
+3. Confirm the current phase child has no unexpected product diff before testing. Do not reset, clean, restore, abandon, rebase, or rewrite the approved parent chain.
+4. Use the configured Pi role profile in a regular pane. Do not commit or squash; the orchestrator performs `jj squash` only after approval.
+5. Do not update dependencies or run install with a non-frozen lockfile merely to make the gate pass. The existing workspace install and `bun.lock` are the test baseline.
+
+### 2. Understand the gate before running it
+
+Treat root `package.json` as the command authority. `bun run check` runs, in order:
+
+1. root `format:check` (`prettier --check .`);
+2. root `policy:check` (`bun test scripts`);
+3. Nx `run-many` for every project that defines each requested target:
+   - `typecheck`;
+   - `test`;
+   - `parity`;
+   - `format:check`;
+   - `package:check`;
+   - `smoke`.
+
+Do not replace this command with a hand-selected music-only project list. The purpose of this phase is to prove that the accumulated migration leaves the entire workspace green, including `apnea`, `music-core`, `opencode-music-player`, `opencode-vim`, `pi-apnea`, and `pi-music-dock` targets defined by their existing `project.json` files.
+
+### 3. Run the complete gate once before editing
+
+1. Run `bun run check` from the repository root.
+2. Preserve the complete command exit status and enough output to identify each failed root stage or Nx project/target.
+3. Allow the command to finish unless a retained live process makes continued execution unsafe. Do not hide failures with shell pipelines, `|| true`, target exclusions, changed Nx parallelism, skipped tests, updated snapshots, or disabled format/policy checks.
+4. If the command exits zero, do not edit product or documentation files. Continue directly to hygiene/status verification.
+
+A cache hit is valid Nx execution evidence under the repository's configured cache policy. Do not change cache configuration as part of this phase.
+
+### 4. Diagnose a failure before changing any file
+
+If `bun run check` fails:
+
+1. Identify the first failing stage and its exact project/target from the output.
+2. Rerun only that existing command or Nx target with enough diagnostics to establish the root cause. For an Nx result that may be stale, rerun that exact target with `--skip-nx-cache`; do not disable caching globally or alter `nx.json`.
+3. Classify the failure before editing:
+   - **environment/tooling**: missing Node/npm/Bun/tmux, unavailable exact registry pin, platform mismatch, or external executable setup;
+   - **format/policy**: a concrete reported file or repository policy test;
+   - **type/test/parity**: a specific compiler/test assertion and owning module;
+   - **package/smoke**: a specific packed-file, isolated-resolution, exact-version, lifecycle, or cleanup assertion;
+   - **generated debris**: a file/process left by a failed command.
+4. Fix environment/tool availability outside the repository when the repository code is correct. Do not weaken a smoke, relax an exact pin, or change a manifest to accommodate an arbitrary local/global executable.
+5. If a smoke reports unconfirmed child/process-group termination and a retained temporary root, keep the root and report its path until termination is independently confirmed. Do not delete beneath a possibly live process.
+6. If the failure predates or is unrelated to this migration, report it as a blocker rather than cleaning up or refactoring unrelated code.
+
+### 5. Apply only an evidence-backed narrow correction
+
+A correction is allowed only after Step 4 identifies an owning file:
+
+1. Touch the minimum existing file that directly owns the failing assertion.
+2. For a formatting failure, run Prettier only on the specifically reported owned file(s); do not run a workspace-wide write that can rewrite unrelated content.
+3. For a type/test/parity failure, preserve existing contracts and add/change only what is necessary to repair the demonstrated regression. Do not delete, skip, rename, or loosen the failing test.
+4. For a package/smoke failure:
+   - keep the core root-only export surface;
+   - keep the unique structural packed-core runtime and fail-safe root-retention policy;
+   - keep exact OpenCode `0.0.0-next-17386` selection;
+   - keep exact Pi `0.84.0` selection and the unchanged supported peer ranges;
+   - keep isolated package-name resolution and confirmed-termination-before-deletion behavior.
+5. If Effect code must change, use only the repository-pinned Effect TypeScript v4 APIs and retain Layer/scope ownership, Schema/Config boundaries, bounded queues/schedules, and supervised cleanup. Do not introduce Effect v3 APIs or ad hoc ownership/timer replacements.
+6. If a correction changes a previously approved phase-owned file, rerun that phase's focused command before the full gate:
+   - packed core: `bunx nx run music-core:smoke --skip-nx-cache`;
+   - exact OpenCode: `bunx nx run opencode-music-player:smoke --skip-nx-cache`;
+   - exact Pi: `bunx nx run pi-music-dock:smoke --skip-nx-cache`;
+   - documentation: the Phase 4 Prettier/stale-wording checks.
+7. Rerun the originally failing target uncached and require it to pass.
+8. Rerun `bun run check` from the root. A focused pass without a final top-level pass is not sufficient.
+
+Do not opportunistically refactor adjacent code, upgrade versions, change package contents, or address unrelated warnings.
+
+### 6. Confirm package-smoke cleanup and repository hygiene
+
+After the successful full gate:
+
+1. Confirm the packed-core smoke completed its installed Node package-name import, manifest-selected daemon, invalid-config, hello/replay, disposal, provider-isolation, bounded idle-exit, and cleanup path.
+2. Confirm the OpenCode smoke reported exact isolated `0.0.0-next-17386`, packed plugin/core resolution, real host rendering, exact tmux termination, and cleanup.
+3. Confirm the Pi smoke reported exact isolated `0.84.0`, packed dock/core resolution, all three RPC commands, process-group exit, owned-process observation, and cleanup.
+4. Inspect `jj status` for repository tarballs, temporary projects, generated lockfiles/configs, sockets, markers, bind reservations, logs, or newly tracked build output.
+5. Treat `packages/music-core/dist/music-sessiond.js` as the package's declared ignored build output; do not add it to version control. Any other generated repository content must be attributed and removed only when this run owns it and no process can still use it.
+6. Run `git diff --check` to catch whitespace errors in the complete accumulated diff.
+7. Preserve dispatcher-created `.apnea` tasks/artifacts and the already-dirty `.apnea/state.json`; do not include them in cleanup.
+
+### 7. Report the full result without claiming mixed-host completion
+
+The coder result should include:
+
+1. the final `bun run check` exit status;
+2. a concise stage summary for root format/policy and Nx typecheck/test/parity/format/package/smoke targets;
+3. exact packed-core, OpenCode, and Pi smoke evidence visible in the run;
+4. every focused rerun/correction, if any;
+5. `git diff --check`, `jj diff --summary`, and `jj status` results;
+6. any retained external temporary root or environment limitation.
+
+Do not claim that the automated mixed-host unit test or separate host smokes replace Phase 6's controlled interactive macOS mixed-host verification.
 
 ## Files to touch
 
-Only as required:
+No product, documentation, manifest, test, or configuration file is expected to change.
 
-- `packages/music-core/session/config.ts`
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
-- `packages/music-core/session/client.ts`
-- `packages/music-core/tests/session-server.test.ts`
-- `packages/music-core/tests/session-client.test.ts`
-
-Prefer no public protocol or index change. Idle expiry is a local daemon lifecycle event, not a wire message.
+If and only if the full gate exposes a reproducible repository defect, touch the smallest existing file that owns that exact failure. There is no pre-authorized cleanup or refactor scope.
 
 ## Files not to touch
 
-- `packages/music-core/session/protocol.ts`
-- `packages/music-core/session/framing.ts`
-- `packages/music-core/session/provider.ts`
-- `packages/music-core/session/coordinator.ts`
-- `packages/music-core/system-media.ts`
-- `packages/music-core/index.ts`
-- `packages/music-core/package.json`
-- `packages/music-core/project.json`
-- `packages/music-core/tests/session-protocol.test.ts`
-- `packages/music-core/tests/session-coordinator.test.ts`
-- `packages/music-core/tests/system-media.test.ts`
-- Anything under `packages/opencode-music-player/` or `packages/pi-music-dock/`
-- `README.md`, package READMEs, and `docs/music-session-architecture.html`
-- `.apnea/state.json` and unrelated `.apnea` tasks/artifacts
+Unless a failing gate proves that a listed product file itself owns the defect, do not touch product or documentation files. In all cases, never touch:
 
-Do not create a new source or test module. Keep idle policy in the existing config/server/executable ownership boundaries.
+- `.apnea/state.json`
+- `bun.lock` for dependency/version drift
+- `package.json` or `nx.json` to remove/skip gate stages
+- Any `project.json` to remove/skip targets
+- Package versions, dependency pins, peer ranges, exports, or publish metadata to bypass a failure
+- CI/release workflows
+- Passing tests, snapshots, or package allowlists merely to weaken acceptance
+- Unrelated dirty files or verified ancestor content
+- Retained temporary roots whose process termination is unconfirmed
 
-## Exact implementation steps
-
-### 1. Preserve approved startup and reconnect behavior
-
-1. Inspect the current tree and retain approved Phase 1–4 changes, including selected shutdown ordering, process singleton evidence, Phase 3 startup/marker policy, and the scoped reconnecting client.
-2. Do not change bind reservation, socket identity, protocol negotiation, command settlement, generation fencing, or incompatibility policy to implement idle shutdown.
-3. Existing signal, server-fault, explicit close, and reconnect tests are baseline. Add only idle-specific acceptance.
-
-### 2. Add one validated idle-grace setting
-
-In `packages/music-core/session/config.ts`:
-
-1. Add `idleGraceMs` to `MusicSessionOptions`, defaults, and `ResolvedMusicSessionOptions`.
-2. Choose a finite positive production default long enough for a newly launched client to complete hello, while tests pass explicit short/virtual values.
-3. Resolve it through the existing tagged `MusicSessionConfigError` boundary using the same positive-safe-integer validation as other timings. Reject zero, negative, non-integer, non-finite, and unsafe values.
-4. If the existing environment-backed Layer exposes all runtime timings, add a matching `Config` entry there; do not read `process.env` in server/executable workflow logic.
-5. Keep `pollMs.idle` distinct: provider polling cadence and zero-client daemon grace are separate settings.
-
-Add focused config assertions for valid override/default and tagged invalid values. Do not expand general config coverage.
-
-### 3. Count only negotiated application clients
-
-In `packages/music-core/session/server.ts`:
-
-1. Do not use raw Node acceptance as client presence. A socket counts only after a valid compatible hello has been processed and the connection is enrolled as an active application client.
-2. Extend the existing `connection(...)` ownership contract with narrow internal join/leave Effects or callbacks:
-   - call join exactly once after successful negotiation and before normal post-hello work is exposed;
-   - call leave exactly once from that connection scope's finalizer only if join occurred.
-3. Pre-hello sockets, malformed clients, incompatible hello attempts, refused closing sockets, and enrollment failures never increment the negotiated-client count and therefore cannot pin the daemon alive.
-4. Preserve existing accepted/enrolled/connection-finalized hooks and semantics. Add observation-only hooks such as `onClientCount`, `onIdleStarted`, `onIdleCanceled`, and `onIdleExpired` only if needed for deterministic tests.
-5. Isolate hook exceptions so they cannot affect count/timer ownership.
-
-### 4. Own idle timing in one server-scoped supervisor
-
-In `packages/music-core/session/server.ts`:
-
-1. Add one server-scoped idle supervisor, not one timer per socket. It must be acquired after the listener/provider/coordinator graph is ready and finalized with the server scope.
-2. Use an Effect queue/state machine or equivalent serialized Effect synchronization for join/leave events. Keep these invariants:
-   - client count is never negative;
-   - at most one grace sleep is live;
-   - join while count is zero cancels the current grace before publishing the new count;
-   - leave starts a grace only on the transition from one to zero;
-   - non-last departures do not start or replace a grace;
-   - stale/canceled sleepers cannot expire a newer zero-client generation.
-3. Start an initial grace when the selected listener becomes active with zero clients. This cleans a daemon whose launcher disappears before any hello.
-4. Drive time with `Effect.sleep`/Effect `Clock`. Fork the supervisor in the server scope (`forkScoped`, server-owned `FiberSet`, or equivalent); never attach a post-departure sleeper to the departing connection scope.
-5. On grace expiry, complete one server-owned `Deferred` with an idle reason. Do not directly close provider/listener from the timer fiber.
-6. Make expiry exact-once. Once idle authority wins, later join/leave events cannot restart the server or emit duplicate shutdown.
-7. Shut down the idle event queue/supervisor during every graph exit without converting normal interruption into a server defect.
-
-Expose through `MusicSessionServerService` one scoped foreground effect equivalent to `awaitShutdown`/`awaitIdle`, carrying an idle reason if useful. Keep it internal to daemon/server ownership.
-
-### 5. Route idle expiry through the existing selected shutdown
-
-1. In `runMusicSessionDaemon`, race the scoped signal fiber, `server.awaitFailure`, and the idle-expiry effect.
-2. If signal wins, preserve current clean status and diagnostics.
-3. If idle wins, let the daemon program return normally so outer `Effect.scoped` executes the unchanged Phase 1 finalizer. Do not duplicate cleanup in the daemon runner.
-4. If server failure wins, preserve the existing tagged nonzero behavior and cleanup-failure reporting.
-5. Update `startMusicSessionServer`'s compatibility lifetime similarly: race explicit `close()`, server failure, and idle expiry. A later `close()` after automatic idle exit must be idempotent and observe the completed lifetime rather than starting cleanup again.
-6. Preserve the Phase 1 shutdown sequence on idle: stop acceptance → close coordinator → drain dependent connections → close provider → close/unlink listener.
-7. Keep explicit `--socket` and managed default behavior identical except that both now obey the configured idle grace.
-
-### 6. Add bounded lifecycle diagnostics
-
-1. Emit or expose diagnostics for negotiated client-count transitions, grace start/cancel/expiry, and shutdown reason.
-2. Keep diagnostics bounded and structural: daemon instance ID, count, operation/reason, and tagged errors only.
-3. Never log playback state, track metadata, artwork bytes, marker tokens, complete environment values, or command payloads.
-4. Preserve current startup/listening, provider degradation, reconnect, incompatibility, and cleanup diagnostics. Do not redesign logging infrastructure in this phase.
-5. Tests should use observation hooks or captured daemon diagnostics rather than parsing incidental Effect log formatting.
-
-### 7. Prove grace start, cancellation, and restart with TestClock
-
-In `packages/music-core/tests/session-server.test.ts`:
-
-1. Build the real selected server Layer in an Effect test scope with an explicit `idleGraceMs` and `TestClock`; do not test a duplicate timer helper.
-2. Prove the initial zero-client grace starts once.
-3. Advance virtual time to just before expiry and prove the graph remains live and connectable.
-4. Complete a real compatible hello before expiry and prove the grace is canceled and no idle event occurs after advancing beyond the old deadline.
-5. Connect a second negotiated client. Close only one and prove count remains one with no grace.
-6. Close the last client and prove exactly one fresh grace starts.
-7. Reconnect before that deadline, advance beyond it, and prove cancellation again.
-8. Close the last client once more, advance the full grace, and prove exactly one idle expiry.
-9. Use real Unix sockets/client hello and unconditional scope/client cleanup. Do not use `setTimeout`, `setInterval`, `Bun.sleep`, or polling.
-
-### 8. Prove non-clients cannot pin the daemon
-
-Add focused real-socket cases, preferably in the same server test:
-
-1. Hold a raw pre-hello socket open; advance the initial grace and prove idle shutdown destroys it.
-2. Send malformed or incompatible hello and prove it never increments count or cancels grace.
-3. A socket delivered after closing remains refused under existing Phase 1 behavior.
-4. Ensure every raw socket, frame reader, scope, and gate is retained immediately and released in `finally` even when setup assertions fail.
-
-Do not turn this into a protocol validation matrix; existing protocol tests remain baseline.
-
-### 9. Prove idle cleanup uses the selected graph exactly once
-
-1. Start a real selected server with an instrumented fake provider and lifecycle hooks.
-2. Complete one hello, disconnect it, and let idle expire.
-3. Assert exact-once outcomes:
-   - coordinator scope finalized;
-   - all connection/input/forwarder fibers finalized;
-   - provider event subscription and provider scope finalized;
-   - listener closed;
-   - exact bound socket unlinked;
-   - bind reservation and temporary reservation names absent.
-4. Assert ordering remains coordinator → connections → provider → listener/unlink. Do not add an idle-specific alternative finalizer.
-5. Repeat only the narrow signal-vs-idle race needed to prove one winner and one finalization; existing signal/defect cleanup tests remain regressions.
-6. If signal, idle expiry, and a server defect become ready concurrently, exactly one foreground result controls status while all resources finalize once. A genuine defect must not be silently converted to successful idle exit.
-
-### 10. Prove executable startup-loss and idle exit
-
-In `packages/music-core/tests/session-server.test.ts`:
-
-1. Use the existing child-process `runMusicSessionDaemon` pattern with a fake selected provider and a short explicit idle grace.
-2. Start the real executable runner with no clients and no signal. Require listening first, then prompt status-zero process exit caused by idle expiry.
-3. Assert diagnostics identify idle shutdown without playback payloads.
-4. Assert socket, bind lock, temporary reservation names, provider ownership, signal listeners, child process, streams, and temporary directory are cleaned on success and failure.
-5. Bound child exit/collector waits with an Effect timeout that throws into `try`/`finally`; Bun's outer test timeout is not cleanup.
-6. Do not add packed-install or Node package smoke here; Phase 12 owns that evidence.
-
-### 11. Prove reconnect interaction without broadening reconnect scope
-
-In `packages/music-core/tests/session-client.test.ts`:
-
-1. Use the approved reconnecting client and its existing connector/launcher seam with two real selected server generations.
-2. Arrange generation A's last negotiated connection to disappear, allow A's idle grace to expire, and gate replacement startup until A's socket is gone.
-3. Require the managed client to start/adopt generation B with a different daemon instance ID through the existing Phase 3 startup workflow.
-4. Assert retained state during the gap, no replay of commands, one A finalization, and one B provider/listener owner.
-5. In a separate cancellation case, reconnect before A's grace expires and prove it joins the same A generation, cancels idle, and does not launch B.
-6. Healthy incompatibility remains terminal and must not cancel/replace that healthy generation; reuse Phase 4/3 assertions rather than adding a skew matrix.
-7. Dispose managed clients and close any remaining server in `finally`; no reconnect fiber or late server may outlive the test.
-
-### 12. Keep this phase isolated
-
-1. Do not add queue capacities, outbound coalescing, slow-reader eviction, or 24-client load.
-2. Do not add artwork/caching or host behavior.
-3. Do not change public reconnect semantics except the minimum needed to observe real idle replacement; prefer no client API change.
-4. Format only touched files and inspect the exact diff.
-5. Keep work in the current reviewed Jujutsu phase child. Do not run `git commit`, `jj commit`, `jj squash`, push, or open a PR. After approval, the orchestrator may squash only this reviewed phase through the prescribed workflow.
+Do not create a new script, test fixture, package target, ignore rule, lockfile, archive, or verification artifact in the repository.
 
 ## Acceptance checks
 
-Phase 5 is complete only when:
-
-- `idleGraceMs` is finite, positive, config-owned, and distinct from provider idle polling.
-- Exactly one server-scoped Effect idle supervisor tracks negotiated clients; raw/pre-hello/incompatible sockets cannot pin the daemon.
-- Initial zero-client startup and last-client departure each start one grace; a negotiated client cancels it; non-last departures do not restart it.
-- TestClock proves no early expiry, cancellation, restart, and exact-once expiry through the real selected Layer.
-- Idle expiry ends the daemon foreground and uses the Phase 1 shutdown order with exact-once coordinator/connection/provider/listener finalization and exact-identity artifact cleanup.
-- Signal, idle, explicit close, startup-loss, and defect paths converge without duplicate finalization or masking a genuine defect.
-- The executable exits status zero after no-client idle grace and leaks no signal/process/socket/reservation/provider handle.
-- The reconnecting client can cancel grace by rejoining A or adopt B after genuine A idle exit, while retaining state and never replaying commands.
-- Lifecycle diagnostics are useful and bounded and contain no playback/artwork payload.
-- Phase 1–4 suites remain green as baseline only; no Phase 6 fan-out or later acceptance enters this phase.
-- Unrelated dirty content, verified commits, `.apnea/state.json`, and `docs/music-session-architecture.html` remain untouched.
+- Root `bun run check` exits zero without target exclusions or weakened commands.
+- Root Prettier and policy checks pass.
+- Every project target selected by root Nx `run-many` passes for `typecheck`, `test`, `parity`, `format:check`, `package:check`, and `smoke` where defined.
+- The full gate includes successful packed-core Node lifecycle, exact-pinned OpenCode, and exact-pinned Pi smoke evidence.
+- Any gate-exposed correction is minimal, owned by the failure, uses Effect v4 when applicable, passes its focused target, and is followed by a fresh successful `bun run check`.
+- `git diff --check` passes.
+- No owned tarball, temporary install/config/lockfile, socket, marker, bind reservation, log, live child, or unintended tracked build output remains.
+- Verified history, unrelated dirty content, `.apnea/state.json`, and `docs/music-session-architecture.html` remain preserved.
+- No interactive mixed-host, release, publish, push, or PR claim is made.
 
 ## Verify commands
 
 Run from the repository root:
 
 ```sh
-bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
-bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts
-# Baseline regression only; it does not enlarge Phase 5 acceptance.
-bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/session/client.ts
-jj diff --summary
-```
-
-Inspect the exact phase diff:
-
-```sh
-jj diff --git packages/music-core/session/config.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/session/client.ts packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts
+bun run check
 git diff --check
+jj diff --summary
+jj status
 ```
 
-Confirm manually:
-
-- client presence begins only after compatible hello and leaves exactly once;
-- one server-scoped supervisor owns all grace timing;
-- idle expiry signals the foreground and does not directly duplicate cleanup;
-- daemon/Promise boundaries race idle with signal/close/fault truthfully;
-- Phase 1 finalization order remains the sole cleanup path;
-- diagnostics contain lifecycle metadata only;
-- reconnect tests do not add a second reconnect/startup implementation;
-- no fan-out, backpressure, artwork, host, packaging, or docs work entered the phase;
-- `.apnea/state.json` and unrelated dirty paths were not altered.
+All four commands must exit successfully except that `jj diff --summary` and `jj status` may report the intended accumulated changes and dispatcher-owned `.apnea` files. They must not show unexplained generated/runtime debris.
 
 ## Dependencies
 
-- Approved full plan at `.apnea/artifacts/plan.md`.
-- Approved Phase 1 (`08acaab5`), Phase 2 (`73a988d6`), Phase 3 (`788473b7`), and Phase 4 (`b376a94d`) changes.
-- Existing selected server service, Phase 1 shutdown order/hooks, `runMusicSessionDaemon`, real Unix helpers, fake provider counters, and reconnecting client generation controls.
-- Repository-pinned Effect v4 `Config`, `Clock`/`TestClock`, `Effect.sleep`, scopes, supervised fibers, queues, `Deferred`, `Ref`, and synchronization APIs.
+- Approved current-architecture documentation at `ae742b68`.
+- Approved exact Pi package smoke at `dee247d7`.
+- Approved exact OpenCode package smoke at `6613d6d1`.
+- Approved packed-core Node lifecycle at `863c6e7b`.
+- The full verified music-session migration and unrelated workspace projects.
+- Existing Bun, Node, npm, Nx, tmux, and macOS environment required by repository targets.
 
 ## Non-goals
 
-- Per-client/global queue bounds, outbound state coalescing, socket write backpressure, slow-reader eviction, or 24-client fan-out.
-- Artwork protocol/cache, OpenCode or Pi migration, manifests, packed smokes, READMEs, or architecture HTML.
-- Protocol negotiation/capability changes, command replay, durable history, remote sockets, process replacement/killing, launchd/service installation, or multi-user sharing.
-- New source/test modules, unrelated cleanup, commits or squashing during coding, pushing, publishing, opening a PR, or editing `.apnea/state.json`.
+- Interactive mixed OpenCode/Pi host certification; that is Phase 6.
+- New behavior, tests, package targets, scripts, acceptance cases, docs, APIs, or architecture changes.
+- Dependency upgrades, lockfile regeneration, pin/range changes, release/version/changelog work, publishing, or tagging.
+- Opportunistic formatting/refactoring, unrelated cleanup, or fixing a pre-existing unrelated failure without user direction.
+- Git commits, manual squashes, pushes, publication, PR creation/update, or `.apnea/state.json` edits.

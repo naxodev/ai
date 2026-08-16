@@ -5,35 +5,16 @@ verdict: CHANGES_REQUIRED
 
 ## Package comparison
 
-The assigned package and this review concern only Phase 5 zero-client idle shutdown and lifecycle diagnostics. The package remains aligned with the approved plan; none of the findings below requests Phase 1–3 baseline work.
+The Phase 5 package remains aligned with approved Plan Phase 5. It permits narrowly evidenced fixes to owning migration files and environment repair outside the repository, but explicitly prohibits workspace-wide formatting of unrelated content and requires dispatcher/pre-existing `.apnea` changes to be preserved.
 
 ## Findings
 
-### Critical — The negotiated-client count can still retain a phantom join
+### High — Hundreds of unrelated `.apnea` files were reformatted inside the phase child
 
-Round 4 makes no source change. The compatible-hello path still yields the interruptible `onJoin` queue offer before setting `joined = true` in `packages/music-core/session/server.ts`. Interruption after the offer succeeds but before the assignment makes the finalizer skip `onLeave`, leaving the idle supervisor permanently above zero. Enrollment and leave ownership must transfer interruption-safely, with a deterministic immediate-close race test.
+The coder result declares only the two smoke scripts as repository files touched, but the diff from approved parent `ae742b68` contains hundreds of modified `.apnea` task/artifact files. For example, `.apnea/tasks/code_review-p1-r1-1786455897050.md` was changed solely from `1)` list markers to Prettier's `1.` form. This is the exact dispatcher/pre-existing backlog that blocked Rounds 1–3, and normalizing it in the current phase child violates the package's prohibition on workspace-wide writes and its requirement to preserve unrelated changes.
 
-### High — The Phase 5 acceptance matrix remains absent
+The now-green gate does not make that undisclosed scope expansion acceptable. The `.apnea` normalization must be attributed and handled outside the Phase 5 change/baseline (without editing `.apnea/state.json` here), after which the phase must demonstrate the unchanged full gate from a worktree whose phase-owned repository diff is limited to evidence-backed corrections. Do not discard unrelated content merely to repair this finding.
 
-Round 4 adds no tests; the focused command still runs only one initial no-client expiry case. The assigned package also requires Phase 5-specific evidence for:
+## Verification
 
-- real compatible-client cancellation, two-client counting, non-last/last departure, rejoin cancellation, and fresh expiry;
-- raw pre-hello, malformed, and incompatible peers not pinning idle shutdown;
-- idle-triggered selected-graph ordering, exact owned-artifact cleanup, and signal/idle/defect convergence;
-- executable no-client idle exit with status zero and bounded process/signal/resource cleanup;
-- reconnect staying on A before expiry and adopting B after genuine A idle exit;
-- bounded structural client-count/grace/shutdown diagnostics without playback payloads.
-
-These scenarios are stated verbatim by the Phase 5 package. They are not requests to reimplement Phase 1–3.
-
-### High — Production Config still omits `idleGraceMs`
-
-The environment-backed `MusicSessionConfigLive` layer still has no idle-grace `Config` entry and does not pass one to `resolve`, while exposing the other runtime timings. The required validated production override and focused negative/fractional/non-finite/unsafe rejection evidence remain missing.
-
-### Medium — Round 4 verification is incomplete
-
-Only the prior one-test focused output and `git diff --check` are cited. Round 4 supplies no combined client/server run, uncached full target matrix, raw-timer scan, or exact phase-diff evidence. Regardless, verification cannot replace the missing Phase 5 acceptance cases.
-
-## Coder-result discrepancy
-
-The Round 4 coder result describes a different review requesting Phase 1–3 work. The actual preceding artifact, `.apnea/artifacts/phase-05/round-3/code-review.md`, explicitly identifies the Phase 5 join/leave race, idle acceptance matrix, and idle-grace Config omission above. No requested finding was addressed.
+The two migration-owned script corrections are narrow and sound: they make synchronous diagnostics tolerant of absent output and keep Pi stream validation inside the existing exact-process cleanup path. Their uncached typechecks and focused smokes passed. The final `bun run check` also passed root format/policy and all 31 selected Nx tasks, including packed-core, exact OpenCode, and exact Pi smoke evidence; `git diff --check` passed and no generated debris was found. Approval is blocked solely by the undeclared out-of-scope `.apnea` rewrites in the phase diff.

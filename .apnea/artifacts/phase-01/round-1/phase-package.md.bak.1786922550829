@@ -1,0 +1,226 @@
+---
+status: done
+---
+
+# Phase 1 package: exclude Apnea from root Prettier
+
+## Intent
+
+Make one repository-policy edit: append `.apnea/` to the existing root `.prettierignore`.
+
+Apnea state, generated tasks, artifacts, logs, and backups are workflow runtime records, not product sources. Root Prettier must ignore the whole directory, and this phase must not format, normalize, repair, revert, or otherwise alter any existing `.apnea` file. Preserve the current dirty OpenCode/Pi package-smoke corrections, `docs/music-session-architecture.html`, verified history, and every unrelated change exactly as found.
+
+This phase does not run the full repository gate and does not fix product code. It leaves that work to Phase 2.
+
+## File to touch
+
+- `.prettierignore` — append exactly one line: `.apnea/`
+
+The expected final file is exactly:
+
+```text
+bun.lock
+node_modules/
+.nx/
+**/dist/
+.apnea/
+```
+
+## Files not to touch
+
+Do not manually edit, format, restore, delete, rename, or generate content in:
+
+- `.apnea/**`, especially `.apnea/state.json`, existing tasks, artifacts, and backups
+- `.prettierrc.json`
+- `package.json`
+- `bun.lock`
+- `docs/music-session-architecture.html`
+- `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
+- Any other package source, test, manifest, documentation, configuration, or unrelated dirty path
+
+The dispatcher will manage required Apnea task/result artifacts. That workflow activity is not permission for the coder to write below `.apnea` or run a formatter over it.
+
+## Exact steps
+
+### 1. Confirm the repository root and current policy
+
+Work from the repository root. Confirm `.prettierignore` still has only the four approved existing entries and that `.apnea/` has not already been added:
+
+```sh
+test -f package.json
+test -d .apnea
+test -f .prettierignore
+expected_before="$(mktemp)"
+printf 'bun.lock\nnode_modules/\n.nx/\n**/dist/\n' >"$expected_before"
+cmp "$expected_before" .prettierignore
+rm -f "$expected_before"
+test "$(grep -cFx '.apnea/' .prettierignore || true)" -eq 0
+```
+
+If any check fails, stop and report the mismatch. Do not rewrite the file from an assumed template and do not repair another path.
+
+### 2. Snapshot all content that this phase must preserve
+
+In the same regular shell pane, create a temporary directory outside the repository and define two deterministic content-manifest helpers. The Apnea manifest proves no existing runtime record changed. The preserved-tree manifest covers every repository file except `.prettierignore`, Apnea/runtime metadata, VCS internals, and dependency/cache directories.
+
+```sh
+PHASE1_TMP="$(mktemp -d)"
+export PHASE1_TMP
+hash_apnea() {
+  python3 - <<'PY'
+from hashlib import sha256
+from pathlib import Path
+for path in sorted(Path(".apnea").rglob("*"), key=lambda item: item.as_posix()):
+    if path.is_file():
+        print(sha256(path.read_bytes()).hexdigest(), path.as_posix())
+PY
+}
+hash_preserved_tree() {
+  python3 - <<'PY'
+from hashlib import sha256
+from pathlib import Path
+excluded_parts = {".git", ".jj", ".apnea", "node_modules", ".nx"}
+for path in sorted(Path(".").rglob("*"), key=lambda item: item.as_posix()):
+    if not path.is_file():
+        continue
+    if path.name == ".prettierignore" or excluded_parts.intersection(path.parts):
+        continue
+    print(sha256(path.read_bytes()).hexdigest(), path.as_posix())
+PY
+}
+hash_apnea >"$PHASE1_TMP/apnea.before"
+hash_preserved_tree >"$PHASE1_TMP/preserved.before"
+cp .prettierignore "$PHASE1_TMP/prettierignore.before"
+jj status >"$PHASE1_TMP/jj-status.before"
+```
+
+Do not place these snapshots in the repository or beneath `.apnea`.
+
+### 3. Make the only allowed edit
+
+Append the directory exclusion once:
+
+```sh
+printf '.apnea/\n' >> .prettierignore
+```
+
+Do not invoke an editor on another file. Do not run `prettier --write`, `bun run format`, or any formatter write command.
+
+### 4. Prove the edit is exact
+
+Check the complete final content, the one-line diff from the saved baseline, and the absence of whitespace errors:
+
+```sh
+expected_after="$PHASE1_TMP/prettierignore.expected-after"
+printf 'bun.lock\nnode_modules/\n.nx/\n**/dist/\n.apnea/\n' >"$expected_after"
+cmp "$expected_after" .prettierignore
+test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1
+diff -u "$PHASE1_TMP/prettierignore.before" .prettierignore
+git diff --check -- .prettierignore
+```
+
+The `diff -u` output must show only the added `.apnea/` line. If it shows any other change, restore only `.prettierignore` from `$PHASE1_TMP/prettierignore.before`, investigate, and do not touch another path.
+
+### 5. Prove Prettier now excludes Apnea
+
+Use Prettier's read-only file information command against the existing state file. It must report `ignored: true`:
+
+```sh
+bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'
+```
+
+Then run only the root formatting check. Hash Apnea immediately before and after the command so the evidence demonstrates that the check did not rewrite workflow records:
+
+```sh
+hash_apnea >"$PHASE1_TMP/apnea.before-format-check"
+bun run format:check
+hash_apnea >"$PHASE1_TMP/apnea.after-format-check"
+cmp "$PHASE1_TMP/apnea.before-format-check" "$PHASE1_TMP/apnea.after-format-check"
+```
+
+Do not substitute `bun run format` or `prettier --write`. If `bun run format:check` fails for a product file after `.apnea` is ignored, stop and report the exact failure; product fixes belong to Phase 2.
+
+### 6. Prove all pre-existing content was preserved
+
+Compare current Apnea and repository content to the snapshots taken before the edit:
+
+```sh
+hash_apnea >"$PHASE1_TMP/apnea.after"
+hash_preserved_tree >"$PHASE1_TMP/preserved.after"
+cmp "$PHASE1_TMP/apnea.before" "$PHASE1_TMP/apnea.after"
+cmp "$PHASE1_TMP/preserved.before" "$PHASE1_TMP/preserved.after"
+```
+
+Both comparisons must be silent and exit zero. This specifically preserves the dirty package-smoke scripts, architecture HTML, manifests, lockfile, and unrelated files while permitting only `.prettierignore` to differ.
+
+### 7. Inspect final worktree scope
+
+```sh
+git diff --check -- .prettierignore
+jj diff --summary
+jj status
+```
+
+The final status will still contain dispatcher-managed/pre-existing `.apnea` records and the two pre-existing dirty package-smoke scripts. Do not clean or revert them. Relative to the snapshots from Step 2, the only coder-owned repository content change must be `.prettierignore`.
+
+Remove only the temporary evidence directory outside the repository after recording the verification result:
+
+```sh
+rm -rf "$PHASE1_TMP"
+unset PHASE1_TMP
+```
+
+Do not run `git commit`, `jj commit`, or `jj squash`. After review approval, the orchestrator alone performs the run's prescribed reviewed-phase `jj squash` workflow.
+
+## Acceptance checks
+
+Phase 1 is complete only when all of the following are true:
+
+- Root `.prettierignore` contains its original four lines unchanged plus exactly one final `.apnea/` line.
+- `.prettierignore` is the only coder-owned repository file changed in this phase.
+- `bunx prettier --file-info .apnea/state.json` reports `"ignored": true`.
+- `bun run format:check` passes without a write-mode formatter.
+- The Apnea before/after SHA-256 manifests match around both the edit and formatting check; no existing state, task, artifact, backup, or log changed.
+- The preserved-tree before/after SHA-256 manifests match; current package-smoke corrections, `docs/music-session-architecture.html`, verified migration content, and unrelated dirty files remain byte-identical.
+- `git diff --check -- .prettierignore` passes.
+- Final `jj diff --summary` and `jj status` retain pre-existing dirty work and show the intended `.prettierignore` addition without cleanup or reset.
+- No commit, squash by the coder/reviewer, push, publication, PR operation, or manual `.apnea/state.json` edit occurred.
+
+## Verify commands
+
+The complete final verification sequence, run from the repository root in the same shell that retained the Step 2 snapshots, is:
+
+```sh
+test "$(grep -cFx '.apnea/' .prettierignore)" -eq 1
+cmp "$PHASE1_TMP/prettierignore.expected-after" .prettierignore
+bunx prettier --file-info .apnea/state.json | grep -q '"ignored": true'
+hash_apnea >"$PHASE1_TMP/apnea.before-final-format-check"
+bun run format:check
+hash_apnea >"$PHASE1_TMP/apnea.after-final-format-check"
+cmp "$PHASE1_TMP/apnea.before-final-format-check" "$PHASE1_TMP/apnea.after-final-format-check"
+hash_apnea >"$PHASE1_TMP/apnea.final"
+hash_preserved_tree >"$PHASE1_TMP/preserved.final"
+cmp "$PHASE1_TMP/apnea.before" "$PHASE1_TMP/apnea.final"
+cmp "$PHASE1_TMP/preserved.before" "$PHASE1_TMP/preserved.final"
+git diff --check -- .prettierignore
+jj diff --summary
+jj status
+```
+
+All commands must exit zero except the informational `jj` commands, whose output must be inspected for preserved pre-existing changes and the single intended policy edit.
+
+## Dependencies
+
+- Approved full plan at `.apnea/artifacts/plan.md` and approved plan review.
+- Existing root `.prettierignore` with the four known entries.
+- Current dirty Jujutsu worktree, including Apnea runtime/history records and both package-smoke corrections.
+- Root `format:check` script (`prettier --check .`).
+
+## Non-goals
+
+- Running or fixing the complete `bun run check`; that is Phase 2.
+- Editing either package-smoke script, any Effect code, tests, package manifests, lockfiles, READMEs, architecture HTML, or formatting configuration beyond `.prettierignore`.
+- Formatting, normalizing, repairing, restoring, deleting, or otherwise rewriting `.apnea` state/history.
+- Running any write-mode formatter, broad cleanup, reset, abandon, dependency update, refactor, feature work, release operation, or PR work.
+- Committing or squashing during coding/review; pushing or opening a PR; manually editing `.apnea/state.json`.

@@ -3,14 +3,18 @@ status: done
 verdict: APPROVED
 ---
 
-## Findings
+# Findings
 
 No blocking findings.
 
-The phase package matches approved Plan Phase 1 and does not add OpenCode, Pi, documentation, broad test, or mixed-host acceptance. The accumulated product diff is confined to the four phase-owned `packages/music-core` files.
+The phase package matches approved Plan Phase 1: it limits the reviewed slice to the existing one-line `.prettierignore` policy change, keeps the package-smoke corrections for Phase 2, and preserves the required fresh-shell verification commands.
 
-The implementation preserves the root-only package export, imports the installed public API by package name, resolves the daemon from the installed manifest, supplies a unique structural runtime, and isolates provider discovery with an empty executable directory. Cleanup awaits owned client/daemon termination; outer process-group failure handling retains and reports the temporary root only when termination cannot be confirmed. No prohibited generated artifacts are present.
+The reviewed diff adds only one final `.apnea/` line to `.prettierignore`. The coder result reports no product or policy edits and includes successful evidence for all five required checks. Reviewer reruns also passed:
 
-## Verification
+- exact inline byte comparison
+- exact `.apnea/` line count
+- Prettier ignored-file check for `.apnea/state.json`
+- `bun run format:check`
+- `git diff --check`
 
-The coder supplied successful evidence for every phase verify command. The uncached smoke ran under Node v24.8.0, resolved both package root and daemon beneath the isolated install, negotiated revision 1 with a non-empty daemon ID, and reported status-zero idle exit and cleanup. The artifact scan, `jj diff --summary`, and `jj status` also passed, with the product diff limited to the expected four files and parent `31f1c2d4` preserved.
+Dispatcher-managed `.apnea` changes and the two pre-existing package-smoke diffs remain outside this reviewed phase slice.

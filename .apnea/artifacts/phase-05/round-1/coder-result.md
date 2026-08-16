@@ -2,58 +2,77 @@
 status: done
 ---
 
-## Changes
+## What changed
 
-- Added config-owned `idleGraceMs` with a positive-safe-integer validation boundary and a 30-second production default, separate from provider `pollMs.idle`.
-- Added a single server-scoped serialized join/leave queue and Effect `sleep` supervisor. Only a compatible negotiated hello joins; the connection scope submits its one leave from its finalizer.
-- The supervisor starts an initial zero-client grace, cancels the live sleep on join, starts a fresh grace on the last leave, and completes a server-owned idle Deferred exactly once on expiry.
-- Exposed `awaitIdle` only through the internal server service. Both the daemon foreground and Promise compatibility lifetime race idle alongside their existing signal/close/fault paths, so normal idle exit uses the existing selected graph finalizer.
-- Added bounded lifecycle hooks for client count and idle grace state. Hook errors are isolated.
-- Added focused config coverage plus a real selected Layer/TestClock test proving initial grace, no early expiry, exact single expiry, and selected listener/provider cleanup.
+The first full gate stopped at root Prettier. It identified two migration-owned smoke scripts in addition to dispatcher-owned `.apnea` files, so I formatted only those two reported scripts and reran their required focused smokes. Both focused smokes passed. The final full gate remains blocked before policy or Nx stages by 267 pre-existing/dispatcher-owned `.apnea` Markdown files that root `prettier --check .` includes. I did not edit `.apnea` tasks/artifacts or weaken the gate.
 
 ## Files touched
 
-- `packages/music-core/session/config.ts`
-- `packages/music-core/session/server.ts`
-- `packages/music-core/session/music-sessiond.ts`
-- `packages/music-core/tests/session-client.test.ts`
-- `packages/music-core/tests/session-server.test.ts`
+- `packages/opencode-music-player/scripts/package-smoke.ts` — Prettier-only correction for root gate
+- `packages/pi-music-dock/scripts/package-smoke.ts` — Prettier-only correction for root gate
 - `.apnea/artifacts/phase-05/round-1/coder-result.md`
 
-No commit, push, `.apnea/state.json`, protocol, provider, coordinator, public index, package configuration, docs, or host changes were made.
-
-## Verification
+## Verification transcript
 
 ```text
-$ bunx nx run music-core:typecheck
-exit 0
+$ bun run check
+exit: 1
+$ bun run format:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke
+$ prettier --check .
+Checking formatting...
+[warn] .apnea/artifacts/phase-01/round-2/coder-result.md
+[warn] .apnea/artifacts/phase-04/round-1/phase-package.md
+[warn] .apnea/tasks/code_review-p1-r1-1786455897050.md
+... 264 further dispatcher-owned .apnea Markdown files ...
+[warn] Code style issues found in 267 files. Run Prettier with --write to fix.
+error: script "format:check" exited with code 1
+error: script "check" exited with code 1
+Root policy and all Nx typecheck/test/parity/format/package/smoke stages did not run because root format:check failed first.
 
-$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
-exit 0
-1 pass, 0 fail
+$ bunx prettier --write packages/opencode-music-player/scripts/package-smoke.ts packages/pi-music-dock/scripts/package-smoke.ts
+exit: 0
+packages/opencode-music-player/scripts/package-smoke.ts 69ms
+packages/pi-music-dock/scripts/package-smoke.ts 32ms
 
-$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts
-exit 0
-98 pass, 0 fail
-551 expect() calls
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit: 0
+installed OpenCode 0.0.0-next-17386: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-gowz7q/node_modules/@opencode-ai/cli/bin/opencode2.exe
+isolated packed resolutions: plugin=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-gowz7q/node_modules/@naxodev/opencode-music-player/index.tsx; core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-music-player-smoke-gowz7q/node_modules/@naxodev/music-core/index.ts
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+NX Successfully ran target smoke for project opencode-music-player
 
-$ NX_SKIP_NX_CACHE=true bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-228 pass, 0 fail
-966 expect() calls
-Verified npm package contents (21 files)
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit: 0
+installed Pi 0.84.0: /private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-qYqGjo/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+isolated packed roots: music-dock=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-qYqGjo/node_modules/@naxodev/pi-music-dock; music-core=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-music-dock-smoke-qYqGjo/node_modules/@naxodev/music-core
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+NX Successfully ran target smoke for project pi-music-dock
 
-$ ! rg -n 'setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/config.ts packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/session/client.ts
-exit 0
+$ git diff --check
+exit: 0
+(no output)
 
-$ jj diff --summary && git diff --check
-exit 0
+$ jj diff --summary
+exit: 0
+tail:
+A .apnea/tasks/code-p5-r1-1786920671859.md
+A .apnea/tasks/phase_package-p5-r1-1786920567592.md
+M packages/opencode-music-player/scripts/package-smoke.ts
+M packages/pi-music-dock/scripts/package-smoke.ts
+
+$ jj status
+exit: 0
+tail:
+A .apnea/tasks/code-p5-r1-1786920671859.md
+A .apnea/tasks/phase_package-p5-r1-1786920567592.md
+M packages/opencode-music-player/scripts/package-smoke.ts
+M packages/pi-music-dock/scripts/package-smoke.ts
+Working copy  (@) : omxssoxq 25a17e44 (no description set)
+Parent commit (@-): sqxwqytv ae742b68 docs(music): document shared session architecture
 ```
-
-The successful suites retain existing intentional injected cleanup/marker-release warnings.
 
 ## Residual risks
 
-- The package's broader real-socket matrix (pre-hello/malformed pinning, two-client last-leave/rejoin behavior, signal-versus-idle, child executable idle exit, and reconnect A-to-B idle replacement) remains unproven by focused new tests.
-- Existing reconnect behavior was not changed; no reconnect-specific idle integration test was added.
-- Pre-existing `.apnea` task/package metadata and `.apnea/state.json` remain dirty and untouched.
+**Blocker:** `bun run check` cannot reach policy or Nx targets until the dispatcher-owned `.apnea` Markdown formatting failures are addressed or excluded by repository policy. They predate this phase and are outside the permitted cleanup scope. No interactive mixed-host verification was performed. No retained smoke roots or generated runtime debris were reported by the focused smokes.

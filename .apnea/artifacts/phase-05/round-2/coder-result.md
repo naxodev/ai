@@ -2,45 +2,56 @@
 status: done
 ---
 
-## Rework assessment
+## What changed
 
-No production or test source was changed in this rework.
-
-The supplied review is not a review of the assigned Phase 5 idle-shutdown package or of the current worktree:
-
-- It describes a singleton/startup package rather than the assigned `zero-client idle shutdown and lifecycle diagnostics` package.
-- Its first finding requests Phase 1 selected-graph ownership work; its other findings request Phase 2/3 singleton, startup-scheduling, and protocol-skew acceptance.
-- It says no product change was retained and cites 73/203 tests, while the current phase diff contains the Phase 5 `idleGraceMs`, server-scoped supervisor, daemon foreground race, and TestClock regression, and the prior fresh matrix recorded 228 passing tests.
-
-Applying those requested Phase 1–3 changes would violate this task's explicit Phase 5-only package and its instruction to preserve approved baseline behavior. The review therefore needs regeneration against the current Phase 5 diff before a scoped rework can be made.
+No source change in this rework. I reran the unchanged top-level gate from the corrected worktree, as required by review. The two smoke scripts formatted in Round 1 no longer appear in Prettier output. The gate remains blocked at root `format:check` by 268 dispatcher/pre-existing `.apnea` Markdown files, so policy and Nx stages cannot start without resolving that out-of-phase repository-policy conflict.
 
 ## Files touched
 
 - `.apnea/artifacts/phase-05/round-2/coder-result.md`
 
-No source, test, `.apnea/state.json`, commit, or push changes were made.
-
-## Verification
+## Verification transcript
 
 ```text
-$ bunx nx run music-core:typecheck
-exit 0
-NX Successfully ran target typecheck for project music-core
-
-$ bun test packages/music-core/tests/session-server.test.ts packages/music-core/tests/session-client.test.ts -t 'idle|last client|grace'
-exit 0
-1 pass, 0 fail
-7 expect() calls
+$ bun run check
+exit: 1
+$ bun run format:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke
+$ prettier --check .
+Checking formatting...
+[warn] .apnea/artifacts/phase-01/round-2/coder-result.md
+[warn] .apnea/artifacts/phase-04/round-1/phase-package.md
+[warn] .apnea/tasks/code_review-p1-r1-1786455897050.md
+... 265 further .apnea Markdown files ...
+[warn] Code style issues found in 268 files. Run Prettier with --write to fix.
+error: script "format:check" exited with code 1
+error: script "check" exited with code 1
+No `packages/opencode-music-player/scripts/package-smoke.ts` or `packages/pi-music-dock/scripts/package-smoke.ts` warning was emitted. Root policy and every Nx typecheck/test/parity/format/package/smoke stage were not reached.
 
 $ git diff --check
-exit 0
+exit: 0
+(no output)
 
 $ jj diff --summary
-exit 0
+exit: 0
+tail:
+A .apnea/tasks/code-p5-r2-1786920860773.md
+A .apnea/tasks/code_review-p5-r1-1786920799862.md
+A .apnea/tasks/phase_package-p5-r1-1786920567592.md
+M packages/opencode-music-player/scripts/package-smoke.ts
+M packages/pi-music-dock/scripts/package-smoke.ts
+
+$ jj status
+exit: 0
+tail:
+A .apnea/tasks/code-p5-r2-1786920860773.md
+A .apnea/tasks/code_review-p5-r1-1786920799862.md
+A .apnea/tasks/phase_package-p5-r1-1786920567592.md
+M packages/opencode-music-player/scripts/package-smoke.ts
+M packages/pi-music-dock/scripts/package-smoke.ts
+Working copy  (@) : omxssoxq d60f0237 (no description set)
+Parent commit (@-): sqxwqytv ae742b68 docs(music): document shared session architecture
 ```
 
 ## Residual risks
 
-- The assigned Phase 5 acceptance gaps reported in round 1 remain until a Phase 5-specific review is provided.
-- The inherited review's Phase 1–3 findings were intentionally not implemented because they are outside the assigned package.
-- Existing unrelated `.apnea` metadata and `.apnea/state.json` remain dirty and untouched.
+**Blocker:** the required root gate cannot pass while root Prettier scans the dispatcher-owned `.apnea` Markdown backlog. Resolving that conflict belongs outside this phase; I did not edit `.apnea` state/tasks/artifacts or weaken the gate. No interactive mixed-host verification was performed.
