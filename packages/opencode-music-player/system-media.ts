@@ -1,11 +1,7 @@
-/**
- * OpenCode system-media facade: core sampling/transport + host artwork enrichment.
- */
+/** OpenCode session facade plus host-local artwork presentation. */
 import {
   baselineCapabilities,
   createReconnectingMusicSessionClient,
-  createSystemMedia as createSystemMediaCore,
-  run as defaultRun,
   type ArtworkIdentity as SessionArtworkIdentity,
   type ArtworkResult as SessionArtworkResult,
   type CommandResult,
@@ -13,7 +9,6 @@ import {
   type ProviderStatus,
   type ReconnectingMusicSessionClient,
   type RevisionedState,
-  type SystemMediaDependencies,
 } from "@naxodev/music-core"
 import { resolveArtworkDetails } from "./artwork.ts"
 import type {
@@ -27,15 +22,6 @@ import type {
   PlayerState,
 } from "./types.ts"
 
-type MediaGet = {
-  title?: string | null
-  artist?: string | null
-  album?: string | null
-  duration?: number | null
-  contentItemIdentifier?: string | null
-  artworkData?: string | null
-}
-
 type ArtworkCacheEntry = {
   value: Artwork | null
   duration_ms: number
@@ -43,19 +29,30 @@ type ArtworkCacheEntry = {
   pending: boolean
   attempts: number
   retry_at: number
-  /** The adapter/direct facade that last owned this entry's native work. */
   owner: PresentationHost | null
   interests: Map<PresentationHost, ArtworkIdentity>
 }
+const MAX_ARTWORK_ENTRIES = 32
 const artworkCache = new Map<string, ArtworkCacheEntry>()
 const artworkJobs = new Map<string, ArtworkCacheEntry>()
-
-type ArtworkResolver = typeof resolveArtworkDetails
-export type SystemMediaOverrides = Partial<SystemMediaDependencies> & {
-  resolveArtworkDetails?: ArtworkResolver
+type DeferredArtworkInterest = {
+  legacyKey: string
+  target: { title: string; artist: string; album: string; duration_ms: number }
+  native: () => Promise<string | null>
+  resolver: ArtworkResolver
+  host: PresentationHost
+  identity: ArtworkIdentity
+  now: () => number
 }
+type DeferredArtwork = {
+  interests: Map<PresentationHost, DeferredArtworkInterest>
+}
+// Deferred admissions are keyed by work, not host. This shares one eventual
+// native/catalog request between views and bounds retained deferred work.
+const waitingArtwork = new Map<string, DeferredArtwork>()
+type ArtworkResolver = typeof resolveArtworkDetails
 
-/** Public-contract-only seam for the Phase 8 session adapter. */
+/** Public-contract-only seam for the reconnecting session adapter. */
 export type SessionClientFactory = () => Promise<ReconnectingMusicSessionClient>
 export type SessionSystemMediaOverrides = {
   readonly createClient?: SessionClientFactory
@@ -66,7 +63,6 @@ export type SessionSystemMediaOverrides = {
 let sessionClientSequence = 0
 const createOpenCodeSessionClient: SessionClientFactory = () =>
   createReconnectingMusicSessionClient({
-    // One adapter owns one stable client ID; another adapter must not share it.
     clientId: `opencode-music-player-${++sessionClientSequence}`,
     hostKind: "opencode",
     capabilities: [...baselineCapabilities],
@@ -74,19 +70,10 @@ const createOpenCodeSessionClient: SessionClientFactory = () =>
 
 type PresentationHost = {
   publish: (event: ArtworkCompletionEvent) => void
-  /** Reject completion from an adapter generation released while work ran. */
   isActive: () => boolean
 }
 
 export type { CommandResult }
-export {
-  bundleLabel,
-  hasMediaControl,
-  hasNowPlayingCli,
-  liveFromClock,
-  run,
-  trackKey,
-} from "@naxodev/music-core"
 
 export function artworkIdentityKey(identity: ArtworkIdentity): string {
   return JSON.stringify([
@@ -98,7 +85,7 @@ export function artworkIdentityKey(identity: ArtworkIdentity): string {
   ])
 }
 
-/** Cache covers by recording metadata; provider IDs can change on pause. */
+/** Cache covers by recording metadata; volatile provider IDs remain valid. */
 export function artworkCacheKey(identity: ArtworkIdentity): string {
   return JSON.stringify([
     identity.title,
@@ -106,40 +93,6 @@ export function artworkCacheKey(identity: ArtworkIdentity): string {
     identity.album,
     identity.duration_ms,
   ])
-}
-
-function artworkIdentityFromSample(sample: MediaGet): ArtworkIdentity | null {
-  if (!sample.title) return null
-  const duration =
-    typeof sample.duration === "number" && Number.isFinite(sample.duration)
-      ? sample.duration
-      : 0
-  return {
-    uid:
-      sample.contentItemIdentifier != null
-        ? String(sample.contentItemIdentifier)
-        : "",
-    title: String(sample.title),
-    artist: sample.artist != null ? String(sample.artist) : "",
-    album: sample.album != null ? String(sample.album) : "",
-    duration_ms: Math.round(duration * 1_000),
-  }
-}
-
-export function artworkDataForIdentity(
-  expected: ArtworkIdentity,
-  sample: MediaGet,
-): string | null {
-  const actual = artworkIdentityFromSample(sample)
-  if (
-    !actual ||
-    artworkIdentityKey(actual) !== artworkIdentityKey(expected) ||
-    typeof sample.artworkData !== "string" ||
-    !sample.artworkData
-  ) {
-    return null
-  }
-  return sample.artworkData
 }
 
 function identityFromTrack(track: {
@@ -158,16 +111,103 @@ function identityFromTrack(track: {
   }
 }
 
+function removeWaitingInterest(host: PresentationHost) {
+  for (const [key, deferred] of waitingArtwork) {
+    deferred.interests.delete(host)
+    if (deferred.interests.size === 0) waitingArtwork.delete(key)
+  }
+}
+
+function admitDeferredArtwork() {
+  const next = waitingArtwork.entries().next().value as
+    [string, DeferredArtwork] | undefined
+  if (!next) return
+  const [key, deferred] = next
+  waitingArtwork.delete(key)
+  for (const host of deferred.interests.keys()) {
+    if (!host.isActive()) deferred.interests.delete(host)
+  }
+  const leader = deferred.interests.values().next().value as
+    DeferredArtworkInterest | undefined
+  if (!leader) {
+    admitDeferredArtwork()
+    return
+  }
+  artworkForTrack(
+    key,
+    leader.legacyKey,
+    leader.target,
+    leader.native,
+    leader.resolver,
+    leader.host,
+    leader.identity,
+    leader.now,
+  )
+  const admitted = artworkJobs.get(key)
+  if (!admitted) return
+  for (const interest of deferred.interests.values()) {
+    if (interest.host.isActive())
+      admitted.interests.set(interest.host, interest.identity)
+  }
+}
+
+function releaseArtworkSlot(key: string, entry?: ArtworkCacheEntry) {
+  artworkJobs.delete(key)
+  if (entry) {
+    artworkCache.set(key, entry)
+    if (artworkCache.size > MAX_ARTWORK_ENTRIES) {
+      const oldest = artworkCache.keys().next().value
+      if (oldest) artworkCache.delete(oldest)
+    }
+  }
+  admitDeferredArtwork()
+}
+
+function settleArtworkEntry(key: string, entry: ArtworkCacheEntry) {
+  releaseArtworkSlot(key, entry)
+}
+
+function publishArtworkCompletion(
+  entry: ArtworkCacheEntry,
+  artwork: Artwork | null,
+) {
+  for (const [host, identity] of entry.interests) {
+    host.publish({
+      type: "artwork-completion",
+      identity,
+      artwork,
+      duration_ms: entry.duration_ms,
+    })
+  }
+  entry.interests.clear()
+}
+
+function removeArtworkInterests(host: PresentationHost) {
+  removeWaitingInterest(host)
+  for (const [key, entry] of artworkCache) {
+    entry.interests.delete(host)
+    if (entry.owner !== host || entry.pending) continue
+    if (entry.value === null) artworkCache.delete(key)
+    else entry.owner = null
+  }
+  for (const [key, entry] of artworkJobs) {
+    entry.interests.delete(host)
+    if (entry.owner !== host) continue
+    entry.pending = false
+    entry.owner = null
+    if (artworkCache.get(key) === entry && entry.value === null)
+      artworkCache.delete(key)
+    // Disposal/cancellation frees a slot too. A deferred current identity
+    // must be admitted even when its predecessor never resolves.
+    releaseArtworkSlot(key)
+  }
+}
+
 function artworkForTrack(
   key: string,
   legacyKey: string,
-  target: {
-    title: string
-    artist: string
-    album: string
-    duration_ms: number
-  },
-  native: (() => Promise<string | null>) | null,
+  target: { title: string; artist: string; album: string; duration_ms: number },
+  native: () => Promise<string | null>,
   resolver: ArtworkResolver,
   host: PresentationHost,
   identity: ArtworkIdentity,
@@ -175,6 +215,32 @@ function artworkForTrack(
 ): { artwork: Artwork | null; duration_ms: number; loading: boolean } {
   let entry = artworkCache.get(key) ?? artworkJobs.get(key)
   if (!entry) {
+    if (artworkJobs.size >= MAX_ARTWORK_ENTRIES) {
+      removeWaitingInterest(host)
+      let deferred = waitingArtwork.get(key)
+      if (!deferred && waitingArtwork.size < MAX_ARTWORK_ENTRIES) {
+        deferred = { interests: new Map() }
+        waitingArtwork.set(key, deferred)
+      }
+      if (deferred && deferred.interests.size < MAX_ARTWORK_ENTRIES)
+        deferred.interests.set(host, {
+          legacyKey,
+          target,
+          native,
+          resolver,
+          host,
+          identity,
+          now,
+        })
+      // Overflow is deliberately stable: no additional host/job is retained
+      // and the unchanged track renders as a settled no-artwork result rather
+      // than a permanent loading indicator in the no-poll session model.
+      return {
+        artwork: null,
+        duration_ms: target.duration_ms,
+        loading: !!deferred && deferred.interests.has(host),
+      }
+    }
     entry = {
       value: null,
       duration_ms: target.duration_ms,
@@ -186,15 +252,14 @@ function artworkForTrack(
       interests: new Map(),
     }
   }
-
-  // A released session adapter cannot own a cache mutation. A current host
-  // replacing it starts its own request instead of inheriting stale bytes.
+  // A state change that reached admission supersedes any older deferred
+  // identity owned by this adapter generation.
+  removeWaitingInterest(host)
   if (entry.pending && entry.owner && !entry.owner.isActive()) {
     entry.pending = false
     entry.owner = null
     artworkJobs.delete(key)
   }
-
   if (
     !entry.pending &&
     entry.attempts < 3 &&
@@ -208,20 +273,15 @@ function artworkForTrack(
     const activeHost = host
     activeEntry.owner = activeHost
     void (async () => {
-      // A session disconnect/artwork rejection is transient host artwork
-      // failure: retain the catalog fallback rather than caching the error.
-      let data: string | null | undefined
+      let data: string | null = null
       try {
-        data = await native?.()
+        data = await native()
       } catch {
-        data = null
+        // Session artwork failure is transient; host catalog fallback remains.
       }
-      // Do not start host-local fallback work after this adapter generation
-      // released the native request.
-      if (!activeHost.isActive() || activeEntry.owner !== activeHost) {
+      if (!activeHost.isActive() || activeEntry.owner !== activeHost)
         return { artwork: null, duration_ms: activeEntry.duration_ms }
-      }
-      return resolver(key, target, data ?? null, legacyKey)
+      return resolver(key, target, data, legacyKey)
     })().then(
       (resolution) => {
         if (!activeHost.isActive() || activeEntry.owner !== activeHost) return
@@ -229,9 +289,8 @@ function artworkForTrack(
         activeEntry.duration_ms = resolution.duration_ms
         activeEntry.resolved = true
         activeEntry.pending = false
-        if (!resolution.artwork) {
+        if (!resolution.artwork)
           activeEntry.retry_at = now() + 2_000 * 2 ** (activeEntry.attempts - 1)
-        }
         settleArtworkEntry(key, activeEntry)
         publishArtworkCompletion(activeEntry, resolution.artwork)
       },
@@ -254,164 +313,9 @@ function artworkForTrack(
   }
 }
 
-function settleArtworkEntry(key: string, entry: ArtworkCacheEntry) {
-  artworkJobs.delete(key)
-  artworkCache.set(key, entry)
-  if (artworkCache.size > 32) {
-    const oldest = artworkCache.keys().next().value
-    if (oldest) artworkCache.delete(oldest)
-  }
-}
-
-function removeArtworkInterests(host: PresentationHost) {
-  for (const [key, entry] of artworkCache) {
-    entry.interests.delete(host)
-    if (entry.owner !== host || entry.pending) continue
-    // Successful covers are shared presentation data. A released worker must
-    // not evict a later controller's cache hit; null/failure retry state is
-    // generation-owned and must start fresh for a replacement.
-    if (entry.value === null) artworkCache.delete(key)
-    else entry.owner = null
-  }
-  for (const [key, entry] of artworkJobs) {
-    entry.interests.delete(host)
-    if (entry.owner !== host) continue
-    // A released session generation cannot retain a pending job or its retry
-    // budget for a later adapter generation.
-    entry.pending = false
-    entry.owner = null
-    artworkJobs.delete(key)
-    if (artworkCache.get(key) === entry && entry.value === null)
-      artworkCache.delete(key)
-  }
-}
-
-function publishArtworkCompletion(
-  entry: ArtworkCacheEntry,
-  artwork: Artwork | null,
-) {
-  for (const [host, identity] of entry.interests) {
-    host.publish({
-      type: "artwork-completion",
-      identity,
-      artwork,
-      duration_ms: entry.duration_ms,
-    })
-  }
-  entry.interests.clear()
-}
-
-export function createSystemMedia(
-  overrides: SystemMediaOverrides = {},
-): MusicBackend {
-  const {
-    resolveArtworkDetails: resolver = resolveArtworkDetails,
-    ...coreOverrides
-  } = overrides
-  const core = createSystemMediaCore(coreOverrides)
-  const { subscribe: coreSubscribe, ...coreBackend } = core
-  const runCmd = overrides.run ?? defaultRun
-  const now = overrides.now ?? Date.now
-  const presentationListeners = new Set<ArtworkPresentationListener>()
-  const host: PresentationHost = {
-    publish(event) {
-      for (const listener of presentationListeners) listener(event)
-    },
-    isActive: () => true,
-  }
-
-  const projectPlayer = (state: Awaited<ReturnType<typeof core.player>>) => {
-    if (!state?.track) return state as PlayerState | null
-
-    const track = state.track
-    const identity = identityFromTrack(track)
-    const artworkState = artworkForTrack(
-      artworkCacheKey(identity),
-      artworkIdentityKey(identity),
-      {
-        title: track.name,
-        artist: track.artists,
-        album: track.album,
-        duration_ms: track.duration_ms,
-      },
-      async () => {
-        const result = await runCmd(["media-control", "get", "--now"])
-        if (!result.ok) return null
-        try {
-          const sample = JSON.parse(result.out) as MediaGet | null
-          return sample ? artworkDataForIdentity(identity, sample) : null
-        } catch {
-          return null
-        }
-      },
-      resolver,
-      host,
-      identity,
-      now,
-    )
-    return {
-      ...state,
-      track: {
-        ...track,
-        duration_ms:
-          track.duration_ms > 0 ? track.duration_ms : artworkState.duration_ms,
-        artwork: artworkState.artwork,
-        artwork_loading: artworkState.loading,
-      },
-    } satisfies PlayerState
-  }
-
-  const backend: MusicBackend = {
-    ...coreBackend,
-    async player(): Promise<PlayerState | null> {
-      return projectPlayer(await core.player())
-    },
-
-    async searchTracks(): Promise<never> {
-      throw {
-        status: 501,
-        message: "Search in the app that's playing",
-      } satisfies MusicError
-    },
-  }
-  if (coreSubscribe) {
-    backend.subscribe = (listener) => {
-      let disposed = false
-      const disposeCore = coreSubscribe((event) => {
-        if (disposed || !event) {
-          if (!disposed) listener()
-          return
-        }
-        if (event.type === "invalidation") {
-          if (!disposed && event?.type === "invalidation") {
-            listener({ type: "invalidation", reason: event.reason })
-          }
-          return
-        }
-        listener({ type: "snapshot", state: projectPlayer(event.state)! })
-      })
-      return () => {
-        if (disposed) return
-        disposed = true
-        disposeCore()
-      }
-    }
-  }
-  backend.subscribePresentation = (listener) => {
-    let disposed = false
-    presentationListeners.add(listener)
-    return () => {
-      if (disposed) return
-      disposed = true
-      presentationListeners.delete(listener)
-    }
-  }
-  return backend
-}
-
 /**
- * OpenCode projection over one reconnecting core client. It deliberately owns
- * no provider probing, polling, playback clock, or command queue.
+ * OpenCode projection over one reconnecting core client. It owns no provider
+ * probing, native process execution, polling, playback clock, or command queue.
  */
 export function createSessionSystemMedia(
   overrides: SessionSystemMediaOverrides = {},
@@ -428,23 +332,23 @@ export function createSessionSystemMedia(
   let latestStatus: ProviderStatus | undefined
   let latestConnection: MusicSessionConnectionLifecycle | undefined
   let acquisitionError: string | undefined
-  let publishedLifecycle: string | null | undefined
+  let publishedLifecycle: string | undefined
   let unsubscribers: Array<() => void> = []
   let clientReleased = false
   let disposal: Promise<void> | undefined
+
   const releaseClient = (next: ReconnectingMusicSessionClient) => {
     if (clientReleased) return Promise.resolve()
     clientReleased = true
     return Promise.resolve(next.dispose()).catch(() => {})
   }
-
   const emit = (event?: MusicChangeEvent) => {
     if (disposed) return
     for (const listener of [...listeners]) {
       try {
         listener(event)
       } catch {
-        // A host observer cannot prevent another observer from receiving state.
+        // One host observer cannot block another.
       }
     }
   }
@@ -455,33 +359,49 @@ export function createSessionSystemMedia(
         try {
           listener(event)
         } catch {
-          // Presentation observers are isolated like state observers.
+          // One presentation observer cannot block another.
         }
       }
     },
     isActive: () => !disposed,
   }
-  const lifecycleMessage = () => {
-    // A connection loss/terminal is actionable and takes precedence over a
-    // concurrently replayed ready provider. Once reconnected, provider status
-    // again owns the message (for example, a degraded fallback).
+  const lifecycle = (): Extract<MusicChangeEvent, { type: "lifecycle" }> => {
     if (
       latestConnection?.type === "reconnecting" ||
       latestConnection?.type === "terminal"
     )
-      return latestConnection.error.message
+      return {
+        type: "lifecycle",
+        message: latestConnection.error.message,
+        source: "connection",
+      }
     if (latestConnection?.type === "disposed")
-      return "music session is disposed"
-    if (acquisitionError) return acquisitionError
-    return latestStatus && latestStatus.kind !== "ready"
-      ? latestStatus.message
-      : null
+      return {
+        type: "lifecycle",
+        message: "music session is disposed",
+        source: "connection",
+      }
+    if (acquisitionError)
+      return {
+        type: "lifecycle",
+        message: acquisitionError,
+        source: "acquisition",
+      }
+    return {
+      type: "lifecycle",
+      message:
+        latestStatus && latestStatus.kind !== "ready"
+          ? latestStatus.message
+          : null,
+      source: "provider",
+    }
   }
-  const publishLifecycle = (force = false) => {
-    const message = lifecycleMessage()
-    if (!force && publishedLifecycle === message) return
-    publishedLifecycle = message
-    emit({ type: "lifecycle", message })
+  const publishLifecycle = () => {
+    const event = lifecycle()
+    const key = `${event.source}:${event.message}`
+    if (publishedLifecycle === key) return
+    publishedLifecycle = key
+    emit(event)
   }
   const project = (state: RevisionedState | undefined): PlayerState | null => {
     if (!state) return null
@@ -562,8 +482,6 @@ export function createSessionSystemMedia(
       install(next)
       return next
     })
-  // Observe acquisition once at adapter ownership; individual subscribers
-  // must not turn one rejected factory into N broadcasts.
   void clientPromise.catch((error) => {
     if (disposed) return
     acquisitionError = error instanceof Error ? error.message : String(error)
@@ -610,14 +528,11 @@ export function createSessionSystemMedia(
       if (disposed) return () => {}
       let closed = false
       listeners.add(listener)
-      // Public-client replay may have occurred before this backend observer
-      // subscribed. Replay the retained host projection exactly once.
       try {
         if (latest) listener({ type: "snapshot", state: project(latest)! })
-        if (installed || acquisitionError)
-          listener({ type: "lifecycle", message: lifecycleMessage() })
+        if (installed || acquisitionError) listener(lifecycle())
       } catch {
-        // A replay observer is isolated like a live observer.
+        // Replay is observer-isolated too.
       }
       return () => {
         if (closed) return

@@ -59,7 +59,12 @@ export type MusicChangeEvent =
     })
   | Exclude<CoreMusicChangeEvent, { type: "snapshot" }>
   /** Host-local projection of session provider/connection lifecycle. */
-  | { type: "lifecycle"; message: string | null }
+  | {
+      type: "lifecycle"
+      message: string | null
+      /** Distinguishes terminal/reconnect authority from provider feedback. */
+      source?: "connection" | "provider" | "acquisition"
+    }
 
 export type MusicChangeListener = (event?: MusicChangeEvent) => void
 

@@ -1,1282 +1,414 @@
-import { describe, expect, test } from "bun:test"
-import type {
-  ArtworkCompletionEvent,
-  MusicBackend,
-  MusicChangeEvent,
-  PlayerState,
-} from "../types.ts"
-import { createSessionSystemMedia, createSystemMedia } from "../system-media.ts"
+import { expect, test } from "bun:test"
 import {
   createController,
   optimisticPlayerState,
   optimisticSeekPlayerState,
 } from "../index.tsx"
+import { createSessionSystemMedia } from "../system-media.ts"
+import type { PlayerState } from "../types.ts"
 
-type Deferred<T> = {
-  promise: Promise<T>
-  resolve: (value: T) => void
-  reject: (reason: unknown) => void
-}
-
-function deferred<T>(): Deferred<T> {
+const deferred = <T>() => {
   let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
   })
   return { promise, resolve, reject }
 }
+const flush = () => Promise.resolve().then(() => Promise.resolve())
 
-function player(isPlaying = true, track = true): PlayerState {
-  return {
-    is_playing: isPlaying,
-    progress_ms: 0,
-    shuffle: false,
-    repeat: "off",
-    device: null,
-    track: track
-      ? {
-          id: "song",
-          uri: "system:song",
-          name: "Song",
+const player = (name: string, playing = false): PlayerState => ({
+  is_playing: playing,
+  progress_ms: 12_000,
+  shuffle: false,
+  repeat: "off",
+  device: null,
+  fetched_at: 42,
+  track:
+    name === "idle"
+      ? null
+      : {
+          id: name,
+          uri: `system:${name}`,
+          name,
           artists: "Artist",
           album: "Album",
           duration_ms: 180_000,
           artwork: null,
-        }
-      : null,
-    fetched_at: Date.now(),
-  }
-}
-
-function flush() {
-  return Promise.resolve().then(() => Promise.resolve())
-}
-
-function createHarness(
-  options: {
-    subscribe?: boolean
-    samples?: PlayerState[]
-    play?: () => Promise<void>
-    pause?: () => Promise<void>
-    next?: () => Promise<void>
-    previous?: () => Promise<void>
-    seek?: (positionMs: number) => Promise<void>
-    includeSeek?: boolean
-    delay?: (ms: number) => Promise<void>
-    backend?: MusicBackend
-  } = {},
-) {
-  const timers: Array<{
-    callback: () => void
-    delay: number
-    active: boolean
-  }> = []
-  const samples = options.samples ?? [player()]
-  const requests: Array<Deferred<PlayerState | null>> = []
-  let listener: ((event?: MusicChangeEvent) => void) | null = null
-  let presentationListener: ((event: ArtworkCompletionEvent) => void) | null =
-    null
-  let subscriptions = 0
-  let subscriptionDisposals = 0
-  let presentationDisposals = 0
-  const backend =
-    options.backend ??
-    (() => {
-      const fake: MusicBackend = {
-        id: "fake",
-        label: "Fake",
-        remoteControl: true,
-        authenticated: () => true,
-        player: () => {
-          const next = samples.shift()
-          if (next) return Promise.resolve(next)
-          const request = deferred<PlayerState | null>()
-          requests.push(request)
-          return request.promise
         },
-        searchTracks: async () => [],
-        play: options.play ?? (async () => {}),
-      }
-      if (options.pause) fake.pause = options.pause
-      if (options.next) fake.next = options.next
-      if (options.previous) fake.previous = options.previous
-      if (options.includeSeek !== false)
-        fake.seek = options.seek ?? (async () => {})
-      if (options.subscribe !== false) {
-        fake.subscribe = (nextListener) => {
-          subscriptions++
-          listener = nextListener
-          return () => {
-            subscriptionDisposals++
-          }
-        }
-      }
-      fake.subscribePresentation = (nextListener) => {
-        presentationListener = nextListener
-        return () => {
-          presentationDisposals++
-          presentationListener = null
-        }
-      }
-      return fake
-    })()
-  const mutations: Array<{
-    loading: boolean
-    error: string | null
-    player: PlayerState | null
-  }> = []
-  const state = {
+})
+
+function createClient(initial = player("A")) {
+  const stateListeners = new Set<(value: any) => void>()
+  const statusListeners = new Set<(value: any) => void>()
+  const connectionListeners = new Set<(value: any) => void>()
+  const calls: string[] = []
+  const client: any = {
+    daemonInstanceId: "daemon-a",
+    selectedRevision: 4,
+    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
+    state: { daemonInstanceId: "daemon-a", revision: 4, state: initial },
+    status: { kind: "ready", provider: "media", message: "ready" },
+    connection: { type: "connected", daemonInstanceId: "daemon-a" },
+    gate: undefined as Promise<void> | undefined,
+    failure: undefined as Error | undefined,
+    artworkResult: { type: "unavailable" as const },
+    disposeCalls: 0,
+    subscribeState(listener: (value: any) => void) {
+      stateListeners.add(listener)
+      listener(this.state)
+      return () => stateListeners.delete(listener)
+    },
+    subscribeStatus(listener: (value: any) => void) {
+      statusListeners.add(listener)
+      listener(this.status)
+      return () => statusListeners.delete(listener)
+    },
+    subscribeConnection(listener: (value: any) => void) {
+      connectionListeners.add(listener)
+      listener(this.connection)
+      return () => connectionListeners.delete(listener)
+    },
+    emitState(
+      this: any,
+      next: PlayerState,
+      revision = ++this.selectedRevision,
+      daemonInstanceId = this.daemonInstanceId,
+    ) {
+      this.state = { daemonInstanceId, revision, state: next }
+      this.daemonInstanceId = daemonInstanceId
+      for (const listener of [...stateListeners]) listener(this.state)
+    },
+    emitStatus(next: any) {
+      this.status = next
+      for (const listener of [...statusListeners]) listener(next)
+    },
+    emitConnection(next: any) {
+      this.connection = next
+      for (const listener of [...connectionListeners]) listener(next)
+    },
+    async toggle() {
+      return { action: "toggle" as const }
+    },
+    async command(name: string) {
+      calls.push(name)
+      await this.gate
+      if (this.failure) throw this.failure
+      return { action: name }
+    },
+    play() {
+      return this.command("play")
+    },
+    pause() {
+      return this.command("pause")
+    },
+    next() {
+      return this.command("next")
+    },
+    previous() {
+      return this.command("previous")
+    },
+    seek(position: number) {
+      return this.command(`seek:${position}`)
+    },
+    async artwork() {
+      return this.artworkResult
+    },
+    async dispose() {
+      this.disposeCalls++
+    },
+  }
+  return { client, calls, stateListeners, statusListeners, connectionListeners }
+}
+
+function harness(
+  client: any,
+  resolveArtworkDetails: any = async (_key: string, target: any) => ({
+    artwork: null,
+    duration_ms: target.duration_ms,
+  }),
+) {
+  const session = {
     loading: false,
     error: null as string | null,
     player: null as PlayerState | null,
   }
   const toasts: unknown[] = []
+  let timerCalls = 0
   const context = {
     storage: {
       memory: () => [
-        state,
-        (mutate: (draft: typeof state) => void) => {
-          mutate(state)
-          mutations.push({ ...state })
-        },
+        session,
+        (update: (draft: typeof session) => void) => update(session),
       ],
     },
     ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
   }
-  const controller = createController(context as never, {
-    createBackend: () => backend,
-    scheduleTimeout: ((callback: () => void, delay: number) => {
-      const timer = { callback, delay, active: true }
-      timers.push(timer)
-      return timer as unknown as ReturnType<typeof setTimeout>
-    }) as any,
-    clearScheduledTimeout: ((timer: ReturnType<typeof setTimeout>) => {
-      ;(timer as unknown as { active: boolean }).active = false
-    }) as any,
-    delay: options.delay ?? (async () => {}),
-  })
-  return {
-    controller,
-    emit: (event?: MusicChangeEvent) => listener?.(event),
-    emitPresentation: (event: ArtworkCompletionEvent) =>
-      presentationListener?.(event),
-    mutations,
-    requests,
-    subscriptions: () => subscriptions,
-    subscriptionDisposals: () => subscriptionDisposals,
-    presentationDisposals: () => presentationDisposals,
-    timers,
-    activeTimers: () => timers.filter((timer) => timer.active),
-    fire(timer: (typeof timers)[number]) {
-      timer.active = false
-      timer.callback()
-    },
-    toasts,
-  }
-}
-
-describe("OpenCode music controller", () => {
-  test("subscribes, samples initially, and schedules from the sampled state", async () => {
-    const harness = createHarness()
-    await flush()
-
-    expect(harness.subscriptions()).toBe(1)
-    expect(harness.activeTimers()).toHaveLength(1)
-    expect(harness.activeTimers()[0]?.delay).toBe(3000)
-  })
-
-  test("refreshes for a standalone event before the poll deadline", async () => {
-    const harness = createHarness({ samples: [player()] })
-    await flush()
-
-    harness.emit()
-    expect(harness.requests).toHaveLength(1)
-    expect(harness.activeTimers()).toHaveLength(0)
-
-    harness.requests[0]!.resolve(player())
-    await flush()
-    expect(harness.activeTimers()[0]?.delay).toBe(3000)
-  })
-
-  test("a snapshot cancels an invalidation queued behind an older sample", async () => {
-    const harness = createHarness({ samples: [] })
-    const held = harness.requests[0]!
-    const paused = player(false)
-
-    harness.emit({ type: "invalidation", reason: "stream-terminated" })
-    harness.emit({ type: "snapshot", state: paused })
-    expect(harness.controller.session.player?.is_playing).toBe(false)
-    held.resolve(player(true))
-    await flush()
-
-    expect(harness.controller.session.player?.is_playing).toBe(false)
-    expect(harness.requests).toHaveLength(1)
-    expect(harness.activeTimers()).toHaveLength(1)
-    expect(harness.activeTimers()[0]?.delay).toBe(5000)
-  })
-
-  test("samples immediately after stream termination and restores one recovery poll", async () => {
-    const harness = createHarness({ samples: [player()] })
-    await flush()
-
-    harness.emit({ type: "invalidation", reason: "stream-terminated" })
-    expect(harness.requests).toHaveLength(1)
-    harness.requests[0]!.resolve(player(false))
-    await flush()
-
-    expect(harness.activeTimers()).toHaveLength(1)
-    expect(harness.activeTimers()[0]?.delay).toBe(5000)
-
-    harness.fire(harness.activeTimers()[0]!)
-    expect(harness.requests).toHaveLength(2)
-    harness.requests[1]!.resolve(player(false))
-    await flush()
-    expect(harness.activeTimers()).toHaveLength(1)
-  })
-
-  test("serializes captured transport intents while sampling is unresolved", async () => {
-    const calls: string[] = []
-    const play = deferred<void>()
-    const pause = deferred<void>()
-    const next = deferred<void>()
-    const previous = deferred<void>()
-    const harness = createHarness({
-      samples: [],
-      play: () => {
-        calls.push("play")
-        return play.promise
-      },
-      pause: () => {
-        calls.push("pause")
-        return pause.promise
-      },
-      next: () => {
-        calls.push("next")
-        return next.promise
-      },
-      previous: () => {
-        calls.push("previous")
-        return previous.promise
-      },
-    })
-
-    const commands = [
-      harness.controller.playPause(),
-      harness.controller.playPause(),
-      harness.controller.next(),
-      harness.controller.prev(),
-    ]
-    await flush()
-    expect(calls).toEqual(["play"])
-    play.resolve()
-    await flush()
-    await flush()
-    expect(calls).toEqual(["play", "pause"])
-    pause.resolve()
-    await flush()
-    await flush()
-    expect(calls).toEqual(["play", "pause", "next"])
-    next.resolve()
-    await flush()
-    await flush()
-    expect(calls).toEqual(["play", "pause", "next", "previous"])
-    previous.resolve()
-    await Promise.all(commands)
-
-    expect(harness.requests).toHaveLength(1)
-  })
-
-  test("coalesces only adjacent pending seeks and settles every seek caller", async () => {
-    const gate = deferred<void>()
-    const seek = deferred<void>()
-    const calls: Array<string | number> = []
-    const harness = createHarness({
-      samples: [player(false)],
-      play: () => {
-        calls.push("play")
-        return gate.promise
-      },
-      seek: (positionMs) => {
-        calls.push(positionMs)
-        return seek.promise
-      },
-    })
-    await flush()
-
-    const playing = harness.controller.playPause()
-    const firstSeek = harness.controller.seek(10_000)
-    const latestSeek = harness.controller.seek(20_000)
-    let firstSettled = false
-    let latestSettled = false
-    void firstSeek.then(() => (firstSettled = true))
-    void latestSeek.then(() => (latestSettled = true))
-    gate.resolve()
-    await flush()
-    await flush()
-
-    expect(calls).toEqual(["play", 20_000])
-    expect(firstSettled).toBe(false)
-    expect(latestSettled).toBe(false)
-    seek.resolve()
-    await Promise.all([playing, firstSeek, latestSeek])
-    expect(firstSettled).toBe(true)
-    expect(latestSettled).toBe(true)
-  })
-
-  test("does not coalesce seeks separated by a discrete intent", async () => {
-    const gate = deferred<void>()
-    const calls: Array<string | number> = []
-    const harness = createHarness({
-      samples: [player(false)],
-      play: () => gate.promise,
-      next: async () => {
-        calls.push("next")
-      },
-      seek: async (positionMs) => {
-        calls.push(positionMs)
-      },
-    })
-    await flush()
-
-    const commands = [
-      harness.controller.playPause(),
-      harness.controller.seek(10_000),
-      harness.controller.next(),
-      harness.controller.seek(20_000),
-    ]
-    gate.resolve()
-    await Promise.all(commands)
-
-    expect(calls).toEqual([10_000, "next", 20_000])
-  })
-
-  test("continues queued work and clears transport failure after a later success", async () => {
-    const calls: string[] = []
-    const harness = createHarness({
-      samples: [player(false)],
-      play: async () => {
-        calls.push("play")
-        throw new Error("play failed")
-      },
-      pause: async () => {
-        calls.push("pause")
-      },
-    })
-    await flush()
-
-    // UI callbacks discard this promise, so a command failure must remain handled.
-    void harness.controller.playPause()
-    const pause = harness.controller.playPause()
-    await pause
-
-    expect(calls).toEqual(["play", "pause"])
-    expect(harness.controller.session.error).toBeNull()
-    expect(harness.toasts).toHaveLength(1)
-  })
-
-  test("does not queue an unsupported captured pause", async () => {
-    const harness = createHarness({ samples: [player(true)] })
-    await flush()
-
-    await harness.controller.playPause()
-    expect(harness.controller.session.loading).toBe(false)
-    expect(harness.toasts).toHaveLength(0)
-  })
-
-  test("applies facade snapshots and artwork completions without resampling", async () => {
-    const artwork = deferred<{
-      artwork: { id: string; png_base64: string; accent: string; cells: [] }
-      duration_ms: number
-    }>()
-    const playback = deferred<{ ok: true; out: string }>()
-    const stream = {
-      listener: null as ((line: string) => void) | null,
-      disposals: 0,
-    }
-    let playbackSamples = 0
-    const basePayload = {
-      contentItemIdentifier: "controller-artwork-lane",
-      title: "Controller Artwork Lane",
-      artist: "Artist",
-      album: "Album",
-      duration: 180,
-      elapsedTimeNow: 12,
-      bundleIdentifier: "com.Spotify.client",
-    }
-    const backend = createSystemMedia({
-      detectBackend: () => "media-control",
-      hasNowPlayingCli: () => false,
-      run: async (command) => {
-        if (command.includes("--no-artwork")) {
-          playbackSamples++
-          return playback.promise
-        }
-        return {
-          ok: true,
-          out: JSON.stringify({
-            ...basePayload,
-            playing: true,
-            artworkData: command.includes("--no-artwork") ? undefined : "cover",
-          }),
-        }
-      },
-      resolveArtworkDetails: () => artwork.promise,
-      startLineStream: (_command, callbacks) => {
-        stream.listener = callbacks.onLine
-        return () => stream.disposals++
-      },
-      setRetryTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
-      clearRetryTimer: () => {},
-    })
-    const harness = createHarness({ backend })
-    await flush()
-
-    expect(harness.controller.session.player).toBeNull()
-    expect(playbackSamples).toBe(1)
-
-    stream.listener?.(
-      JSON.stringify({
-        type: "data",
-        payload: { ...basePayload, elapsedTimeNow: 0, playing: true },
+  const controller = createController(context as any, {
+    createBackend: () =>
+      createSessionSystemMedia({
+        createClient: async () => client,
+        resolveArtworkDetails,
       }),
-    )
-    expect(harness.controller.session.player).toMatchObject({
-      is_playing: true,
-      progress_ms: 0,
-      track: { artwork: null, artwork_loading: true },
-    })
-    expect(playbackSamples).toBe(1)
-
-    artwork.resolve({
-      artwork: { id: "cover", png_base64: "png", accent: "blue", cells: [] },
-      duration_ms: 180_000,
-    })
-    await flush()
-    await flush()
-
-    expect(harness.controller.session.player).toMatchObject({
-      is_playing: true,
-      track: { artwork_loading: false, artwork: { id: "cover" } },
-    })
-    expect(playbackSamples).toBe(1)
-
-    const mutations = harness.mutations.length
-    harness.controller.dispose()
-    playback.resolve({
-      ok: true,
-      out: JSON.stringify({ ...basePayload, playing: false }),
-    })
-    await flush()
-
-    expect(stream.disposals).toBe(1)
-    expect(harness.mutations).toHaveLength(mutations)
-    expect(playbackSamples).toBe(1)
-    expect(harness.toasts).toHaveLength(0)
+    scheduleTimeout: (() => ++timerCalls) as any,
+    clearScheduledTimeout: (() => {}) as any,
+    delay: async () => {
+      timerCalls++
+    },
   })
-
-  test("merges artwork completion without sampling or changing playback", async () => {
-    const initial = player(false)
-    initial.track!.artwork_loading = true
-    const harness = createHarness({ samples: [initial] })
-    await flush()
-
-    harness.emitPresentation({
-      type: "artwork-completion",
-      identity: {
-        uid: "previous-provider-id",
-        title: "Song",
-        artist: "Artist",
-        album: "Album",
-        duration_ms: 180_000,
-      },
-      artwork: { id: "cover", png_base64: "png", accent: "blue", cells: [] },
-      duration_ms: 180_000,
-    })
-
-    expect(harness.requests).toHaveLength(0)
-    expect(harness.controller.session.player).toMatchObject({
-      is_playing: false,
-      track: { artwork_loading: false, artwork: { id: "cover" } },
-    })
-  })
-
-  test("rejects replaced artwork and drops it after controller disposal", async () => {
-    const trackA = player(false)
-    trackA.track!.artwork_loading = true
-    const trackB = player(true)
-    trackB.track = { ...trackB.track!, id: "b", name: "Replacement" }
-    const harness = createHarness({ samples: [trackA, trackB] })
-    await flush()
-    await harness.controller.refreshAll()
-
-    const event: ArtworkCompletionEvent = {
-      type: "artwork-completion",
-      identity: {
-        uid: "a",
-        title: "Song",
-        artist: "Artist",
-        album: "Album",
-        duration_ms: 180_000,
-      },
-      artwork: { id: "cover", png_base64: "png", accent: "blue", cells: [] },
-      duration_ms: 180_000,
-    }
-    harness.emitPresentation(event)
-    expect(harness.controller.session.player?.track).toMatchObject({
-      name: "Replacement",
-      artwork: null,
-    })
-
-    const mutations = harness.mutations.length
-    harness.controller.dispose()
-    harness.controller.dispose()
-    harness.emitPresentation(event)
-    expect(harness.mutations).toHaveLength(mutations)
-    expect(harness.presentationDisposals()).toBe(1)
-    expect(harness.toasts).toHaveLength(0)
-  })
-
-  test("serializes event refreshes into one catch-up sample", async () => {
-    const harness = createHarness({ samples: [] })
-    const first = harness.requests[0]!
-
-    harness.emit()
-    harness.emit()
-    expect(harness.requests).toHaveLength(1)
-    first.resolve(player())
-    await flush()
-    expect(harness.requests).toHaveLength(2)
-    const second = harness.requests[1]!
-    second.resolve(player(false))
-    await flush()
-
-    expect(harness.activeTimers()).toHaveLength(1)
-    expect(harness.activeTimers()[0]?.delay).toBe(5000)
-  })
-
-  test("keeps bounded polling for subscribed backends", async () => {
-    const subscribed = createHarness({
-      samples: [player(), player(false), player(false, false)],
-    })
-    await flush()
-    subscribed.fire(subscribed.activeTimers()[0]!)
-    await flush()
-    expect(subscribed.activeTimers()[0]?.delay).toBe(5000)
-    subscribed.fire(subscribed.activeTimers()[0]!)
-    await flush()
-    expect(subscribed.activeTimers()[0]?.delay).toBe(8000)
-  })
-
-  test("uses 3/5/8-second poll bounds without a subscription", async () => {
-    const harness = createHarness({
-      subscribe: false,
-      samples: [player(), player(false), player(false, false)],
-    })
-    await flush()
-
-    expect(harness.subscriptions()).toBe(0)
-    expect(harness.activeTimers()[0]?.delay).toBe(3000)
-    harness.fire(harness.activeTimers()[0]!)
-    await flush()
-    expect(harness.activeTimers()[0]?.delay).toBe(5000)
-    harness.fire(harness.activeTimers()[0]!)
-    await flush()
-    expect(harness.activeTimers()[0]?.delay).toBe(8000)
-  })
-
-  test("replaces the poll deadline after event-driven state changes", async () => {
-    const harness = createHarness({
-      samples: [player(), player(false), player(false, false)],
-    })
-    await flush()
-    const playingPoll = harness.activeTimers()[0]!
-
-    harness.emit()
-    await flush()
-    expect(playingPoll.active).toBe(false)
-    expect(harness.activeTimers()).toHaveLength(1)
-    expect(harness.activeTimers()[0]?.delay).toBe(5000)
-
-    const pausedPoll = harness.activeTimers()[0]!
-    harness.emit()
-    await flush()
-    expect(pausedPoll.active).toBe(false)
-    expect(harness.activeTimers()).toHaveLength(1)
-    expect(harness.activeTimers()[0]?.delay).toBe(8000)
-  })
-
-  test("does not let a pre-transport sample undo optimistic playback", async () => {
-    const transport = deferred<void>()
-    const harness = createHarness({
-      samples: [player(false)],
-      play: () => transport.promise,
-    })
-    await flush()
-
-    harness.emit()
-    const stale = harness.requests[0]!
-    const command = harness.controller.playPause()
-    transport.resolve()
-    await flush()
-    expect(harness.mutations.at(-1)?.player?.is_playing).toBe(true)
-
-    stale.resolve(player(false))
-    await flush()
-    expect(harness.mutations.at(-1)?.player?.is_playing).toBe(true)
-
-    harness.requests[1]!.resolve(player(true))
-    await command
-    expect(harness.mutations.at(-1)?.player?.is_playing).toBe(true)
-  })
-
-  test("seeks optimistically and reconciles with the provider", async () => {
-    const command = deferred<void>()
-    const calls: number[] = []
-    const initial = { ...player(false), progress_ms: 30_000, fetched_at: 1_000 }
-    const confirmed = {
-      ...player(false),
-      progress_ms: 89_750,
-      fetched_at: 2_000,
-    }
-    const harness = createHarness({
-      samples: [initial],
-      seek: (positionMs) => {
-        calls.push(positionMs)
-        return command.promise
-      },
-    })
-    await flush()
-
-    const seeking = harness.controller.seek(90_000)
-    await flush()
-    expect(calls).toEqual([90_000])
-    expect(harness.controller.session.player?.progress_ms).toBe(30_000)
-
-    command.resolve()
-    await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
-    harness.requests[0]!.resolve(confirmed)
-    await seeking
-    expect(harness.controller.session.player).toMatchObject({
-      progress_ms: 89_750,
-      fetched_at: 2_000,
-    })
-  })
-
-  test("restores progress and reports a provider seek failure", async () => {
-    const command = deferred<void>()
-    const initial = { ...player(false), progress_ms: 30_000, fetched_at: 1_000 }
-    const harness = createHarness({
-      samples: [initial],
-      seek: () => command.promise,
-    })
-    await flush()
-
-    const seeking = harness.controller.seek(90_000)
-    await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(30_000)
-    command.reject(new Error("seek failed"))
-    await flush()
-    expect(harness.controller.session.player).toMatchObject({
-      progress_ms: 30_000,
-      fetched_at: 1_000,
-    })
-    harness.requests[0]!.resolve(initial)
-    await seeking
-
-    expect(harness.controller.session.player).toMatchObject({
-      progress_ms: 30_000,
-      fetched_at: 1_000,
-    })
-    expect(harness.controller.session.error).toBe("seek failed")
-    expect(harness.toasts).toHaveLength(1)
-    expect(harness.requests).toHaveLength(1)
-  })
-
-  test("ignores seeks without a track, duration, or backend support", async () => {
-    const noTrack = createHarness({ samples: [player(false, false)] })
-    await flush()
-    await noTrack.controller.seek(10_000)
-    expect(noTrack.mutations.at(-1)?.loading).toBe(false)
-
-    const noDuration = player(false)
-    noDuration.track!.duration_ms = 0
-    const invalidDuration = createHarness({ samples: [noDuration] })
-    await flush()
-    await invalidDuration.controller.seek(10_000)
-    expect(invalidDuration.mutations.at(-1)?.loading).toBe(false)
-
-    const unsupported = createHarness({
-      samples: [player(false)],
-      includeSeek: false,
-    })
-    await flush()
-    await unsupported.controller.seek(10_000)
-    expect(unsupported.mutations.at(-1)?.loading).toBe(false)
-    expect(unsupported.toasts).toHaveLength(0)
-
-    const invalidPositionCalls: number[] = []
-    const invalidPosition = createHarness({
-      samples: [player(false)],
-      seek: async (position) => {
-        invalidPositionCalls.push(position)
-      },
-    })
-    await flush()
-    await invalidPosition.controller.seek(Number.NaN)
-    expect(invalidPositionCalls).toHaveLength(0)
-  })
-
-  test("does not let an overlapping sample undo an optimistic seek", async () => {
-    const transport = deferred<void>()
-    const harness = createHarness({
-      samples: [player(false)],
-      seek: () => transport.promise,
-    })
-    await flush()
-
-    harness.emit()
-    const stale = harness.requests[0]!
-    const seeking = harness.controller.seek(90_000)
-    await flush()
-    stale.resolve({ ...player(false), progress_ms: 5_000 })
-    await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(5_000)
-
-    transport.resolve()
-    await flush()
-    harness.requests[1]!.resolve({ ...player(false), progress_ms: 89_500 })
-    await seeking
-    expect(harness.controller.session.player?.progress_ms).toBe(89_500)
-  })
-
-  test("blocks stale samples through settling without blocking transport", async () => {
-    const settling = deferred<void>()
-    let plays = 0
-    let delays = 0
-    const harness = createHarness({
-      samples: [player(false)],
-      play: async () => {
-        plays++
-      },
-      seek: async () => {},
-      delay: () => (++delays === 1 ? settling.promise : Promise.resolve()),
-    })
-    await flush()
-
-    const seeking = harness.controller.seek(90_000)
-    await flush()
-    harness.emit()
-    harness.requests[0]!.resolve({ ...player(false), progress_ms: 5_000 })
-    await flush()
-    expect(harness.controller.session.player?.progress_ms).toBe(5_000)
-
-    const playing = harness.controller.playPause()
-    await flush()
-    expect(plays).toBe(1)
-    expect(harness.controller.session.player?.is_playing).toBe(true)
-    await flush()
-    expect(harness.requests).toHaveLength(2)
-    harness.requests[1]!.resolve({
-      ...player(true),
-      progress_ms: 90_000,
-    })
-    await playing
-    expect(harness.controller.session.player?.progress_ms).toBe(90_000)
-
-    settling.resolve()
-    await flush()
-    expect(harness.requests).toHaveLength(3)
-    harness.requests[2]!.resolve({
-      ...player(true),
-      progress_ms: 90_000,
-    })
-    await seeking
-    expect(harness.controller.session.player).toMatchObject({
-      is_playing: true,
-      progress_ms: 90_000,
-    })
-  })
-
-  test("retries failures and suppresses late completions after disposal", async () => {
-    const harness = createHarness({ samples: [] })
-    const pending = harness.requests[0]!
-    harness.controller.dispose()
-    harness.controller.dispose()
-    pending.reject(new Error("late failure"))
-    await flush()
-
-    expect(harness.subscriptionDisposals()).toBe(1)
-    expect(harness.activeTimers()).toHaveLength(0)
-    expect(harness.mutations).toHaveLength(0)
-    expect(harness.toasts).toHaveLength(0)
-  })
-
-  test("schedules a retry after an active sample failure", async () => {
-    const harness = createHarness({ samples: [] })
-    const failure = harness.requests[0]!
-    failure.reject(new Error("temporary failure"))
-    await flush()
-
-    expect(harness.activeTimers()[0]?.delay).toBe(8000)
-    expect(harness.mutations.at(-1)?.error).toBe("temporary failure")
-  })
-
-  test("clears a sampling error after a successful retry", async () => {
-    const harness = createHarness({ samples: [] })
-    harness.requests[0]!.reject(new Error("temporary failure"))
-    await flush()
-
-    harness.fire(harness.activeTimers()[0]!)
-    expect(harness.requests).toHaveLength(2)
-    harness.requests[1]!.resolve(player())
-    await flush()
-
-    expect(harness.mutations.at(-1)?.error).toBeNull()
-    expect(harness.mutations.at(-1)?.player?.track?.id).toBe("song")
-  })
-
-  test("serializes a manual refresh that overlaps an event", async () => {
-    const harness = createHarness({ samples: [player()] })
-    await flush()
-
-    const manualRefresh = harness.controller.refreshAll()
-    expect(harness.requests).toHaveLength(1)
-    harness.emit()
-    expect(harness.requests).toHaveLength(1)
-
-    harness.requests[0]!.resolve(player(false))
-    await flush()
-    expect(harness.requests).toHaveLength(2)
-    harness.requests[1]!.resolve(player(false))
-    await manualRefresh
-
-    expect(harness.activeTimers()).toHaveLength(1)
-    expect(harness.activeTimers()[0]?.delay).toBe(5000)
-  })
-
-  test("suppresses late successful samples after disposal", async () => {
-    const harness = createHarness({ samples: [] })
-    const pending = harness.requests[0]!
-    harness.controller.dispose()
-    pending.resolve(player())
-    await flush()
-
-    expect(harness.mutations).toHaveLength(0)
-    expect(harness.toasts).toHaveLength(0)
-    expect(harness.activeTimers()).toHaveLength(0)
-  })
-
-  test("disposal drops pending catch-up work", async () => {
-    const harness = createHarness({ samples: [] })
-    const pending = harness.requests[0]!
-    harness.emit()
-    harness.controller.dispose()
-    pending.resolve(player())
-    await flush()
-
-    expect(harness.requests).toHaveLength(1)
-    expect(harness.activeTimers()).toHaveLength(0)
-    expect(harness.mutations).toHaveLength(0)
-  })
-})
-
-const paused: PlayerState = {
-  is_playing: false,
-  progress_ms: 4_000,
-  shuffle: false,
-  repeat: "off",
-  device: null,
-  track: {
-    id: "track",
-    uri: "track",
-    name: "Track",
-    artists: "Artist",
-    album: "Album",
-    duration_ms: 10_000,
-    artwork: null,
-  },
-  fetched_at: 1_000,
+  return { controller, session, toasts, timers: () => timerCalls }
 }
 
-test("controller accepts adapter replay/replacement and retains lifecycle feedback across cached polls", async () => {
-  const stateListeners = new Set<(state: any) => void>()
-  const statusListeners = new Set<(status: any) => void>()
-  const connectionListeners = new Set<(connection: any) => void>()
-  const state = (name: string, revision: number, daemonInstanceId: string) => ({
-    revision,
-    daemonInstanceId,
-    state: {
-      ...player(false),
-      track: {
-        id: name,
-        uri: `system:${name}`,
-        name,
-        artists: "Artist",
-        album: "Album",
-        duration_ms: 180_000,
-      },
-    },
-  })
-  let failPlay = false
-  const client: any = {
-    daemonInstanceId: "daemon-a",
-    selectedRevision: 1,
-    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
-    state: state("A", 4, "daemon-a"),
-    status: { kind: "ready", provider: "media-control", message: "ready" },
-    connection: { type: "connected", daemonInstanceId: "daemon-a" },
-    subscribeState(listener: (value: any) => void) {
-      stateListeners.add(listener)
-      listener(this.state)
-      return () => stateListeners.delete(listener)
-    },
-    subscribeStatus(listener: (value: any) => void) {
-      statusListeners.add(listener)
-      listener(this.status)
-      return () => statusListeners.delete(listener)
-    },
-    subscribeConnection(listener: (value: any) => void) {
-      connectionListeners.add(listener)
-      listener(this.connection)
-      return () => connectionListeners.delete(listener)
-    },
-    async toggle() {
-      return { action: "toggle" as const }
-    },
-    async play() {
-      if (failPlay) throw new Error("command failed")
-      return { action: "play" as const }
-    },
-    async pause() {
-      return { action: "pause" as const }
-    },
-    async next() {
-      return { action: "next" as const }
-    },
-    async previous() {
-      return { action: "previous" as const }
-    },
-    async seek() {
-      return { action: "seek" as const }
-    },
-    async artwork() {
-      return { type: "unavailable" as const }
-    },
-    async dispose() {},
-  }
-  const harness = createHarness({
-    backend: createSessionSystemMedia({
-      createClient: async () => client as any,
-    }),
-  })
+test("production session controller receives replay/live/replacement state without host polling", async () => {
+  const { client } = createClient(player("A", true))
+  const view = harness(client)
   await flush()
-  expect(harness.controller.session.player?.track?.name).toBe("A")
-  client.connection = {
+  expect(view.session.player).toMatchObject({
+    is_playing: true,
+    progress_ms: 12_000,
+    fetched_at: 42,
+    track: { id: "A" },
+  })
+  expect(view.timers()).toBe(0)
+
+  client.emitState(player("paused"))
+  client.emitState(player("idle"))
+  client.emitConnection({
     type: "reconnecting",
     error: { message: "lost", retryable: true },
-  }
-  for (const listener of connectionListeners) listener(client.connection)
-  await harness.controller.refreshAll()
-  expect(harness.controller.session.error).toBe("lost")
-  failPlay = true
-  await harness.controller.playPause()
-  expect(harness.controller.session.error).toBe("command failed")
-  client.connection = { type: "connected", daemonInstanceId: "daemon-b" }
-  for (const listener of connectionListeners) listener(client.connection)
-  // Connected clears only connection-owned feedback, not the newer command
-  // failure. A subsequent authoritative snapshot remains free to reconcile it.
-  expect(harness.controller.session.error).toBe("command failed")
-  failPlay = false
-  client.state = state("B", 1, "daemon-b")
-  for (const listener of stateListeners) listener(client.state)
-  expect(harness.controller.session.player?.track?.name).toBe("B")
-  expect(harness.controller.session.error).toBeNull()
-  harness.controller.dispose()
+  })
+  expect(view.session.player?.track).toBeNull()
+  expect(view.session.error).toBe("lost")
+  client.emitConnection({ type: "connected", daemonInstanceId: "daemon-b" })
+  client.emitState(player("B", true), 1, "daemon-b")
+  expect(view.session.player).toMatchObject({
+    is_playing: true,
+    track: { id: "B" },
+  })
+  expect(view.timers()).toBe(0)
+  view.controller.dispose()
 })
 
-test("session adapter preserves controller transport, lifecycle, and replacement semantics", async () => {
-  const stateListeners = new Set<(state: any) => void>()
-  const statusListeners = new Set<(status: any) => void>()
-  const connectionListeners = new Set<(connection: any) => void>()
+test("commands delegate immediately, retain narrow latest seek, and preserve loading", async () => {
+  const { client, calls } = createClient()
+  const gate = deferred<void>()
+  client.gate = gate.promise
+  const view = harness(client)
+  await flush()
+  const play = view.controller.playPause()
+  const next = view.controller.next()
+  const firstSeek = view.controller.seek(10_000)
+  const latestSeek = view.controller.seek(20_000)
+  await flush()
+  expect(calls).toEqual(["play", "next", "seek:10000"])
+  expect(view.session.loading).toBeTrue()
+  gate.resolve()
+  await Promise.all([play, next, firstSeek, latestSeek])
+  expect(calls).toEqual(["play", "next", "seek:10000", "seek:20000"])
+  expect(view.session.loading).toBeFalse()
+  expect(view.session.player).toMatchObject({
+    is_playing: true,
+    progress_ms: 20_000,
+  })
+  expect(view.timers()).toBe(0)
+  view.controller.dispose()
+})
+
+test("session artwork completion merges through the controller without replacing playback", async () => {
+  const { client } = createClient(player("artwork", true))
+  client.artworkResult = { type: "available", base64: "cover" }
+  const cover = { id: "cover", png_base64: "", accent: "", cells: [] }
+  const view = harness(client, async (_key: string, target: any) => ({
+    artwork: cover,
+    duration_ms: target.duration_ms,
+  }))
+  await flush()
+  await flush()
+  await flush()
+  await flush()
+  expect(view.session.player).toMatchObject({
+    is_playing: true,
+    progress_ms: 12_000,
+    track: { id: "artwork", artwork: cover, artwork_loading: false },
+  })
+  view.controller.dispose()
+})
+
+test("a newer daemon snapshot wins over late play and seek optimism", async () => {
+  const { client } = createClient()
   const playGate = deferred<void>()
+  client.gate = playGate.promise
+  const view = harness(client)
+  await flush()
+  const playing = view.controller.playPause()
+  await flush()
+  client.emitState(player("daemon-paused", false))
+  playGate.resolve()
+  await playing
+  expect(view.session.player).toMatchObject({
+    is_playing: false,
+    track: { id: "daemon-paused" },
+  })
+
   const seekGate = deferred<void>()
-  const reconcile = deferred<void>()
-  const calls: string[] = []
-  const state = (
-    id: string,
-    revision: number,
-    daemonInstanceId: string,
-    playing = false,
-  ) => ({
-    revision,
-    daemonInstanceId,
-    state: {
-      ...player(playing, id !== "idle"),
-      progress_ms: 12_345,
-      fetched_at: 678,
-      track:
-        id === "idle"
-          ? null
-          : {
-              id,
-              uri: `system:${id}`,
-              name: id,
-              artists: "Artist",
-              album: "Album",
-              duration_ms: 180_000,
-            },
-    },
+  client.gate = seekGate.promise
+  const seeking = view.controller.seek(90_000)
+  await flush()
+  client.emitState({ ...player("daemon-seek", false), progress_ms: 45_000 })
+  seekGate.resolve()
+  await seeking
+  expect(view.session.player).toMatchObject({
+    progress_ms: 45_000,
+    track: { id: "daemon-seek" },
   })
-  const client: any = {
-    daemonInstanceId: "daemon-a",
-    selectedRevision: 4,
-    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
-    state: state("A", 4, "daemon-a"),
-    status: { kind: "ready", provider: "media-control", message: "ready" },
-    connection: { type: "connected", daemonInstanceId: "daemon-a" },
-    subscribeState(listener: (value: any) => void) {
-      stateListeners.add(listener)
-      listener(this.state)
-      return () => stateListeners.delete(listener)
-    },
-    subscribeStatus(listener: (value: any) => void) {
-      statusListeners.add(listener)
-      listener(this.status)
-      return () => statusListeners.delete(listener)
-    },
-    subscribeConnection(listener: (value: any) => void) {
-      connectionListeners.add(listener)
-      listener(this.connection)
-      return () => connectionListeners.delete(listener)
-    },
-    async toggle() {
-      return { action: "toggle" as const }
-    },
-    play() {
-      calls.push("play")
-      return playGate.promise
-    },
-    async pause() {
-      calls.push("pause")
-      return { action: "pause" as const }
-    },
-    async next() {
-      calls.push("next")
-      throw new Error("next failed")
-    },
-    async previous() {
-      return { action: "previous" as const }
-    },
-    seek(position: number) {
-      calls.push(`seek:${position}`)
-      return seekGate.promise
-    },
-    async artwork() {
-      return { type: "unavailable" as const }
-    },
-    async dispose() {},
-  }
-  const harness = createHarness({
-    backend: createSessionSystemMedia({ createClient: async () => client }),
-    delay: () => reconcile.promise,
-  })
-
-  try {
-    await flush()
-    expect(harness.controller.session.player).toMatchObject({
-      is_playing: false,
-      progress_ms: 12_345,
-      fetched_at: 678,
-      track: { id: "A", duration_ms: 180_000 },
-    })
-
-    client.status = {
-      kind: "degraded",
-      provider: "fallback",
-      message: "fallback",
-    }
-    for (const listener of statusListeners) listener(client.status)
-    expect(harness.controller.session.error).toBe("fallback")
-    client.connection = {
-      type: "reconnecting",
-      error: { message: "lost", retryable: true },
-    }
-    for (const listener of connectionListeners) listener(client.connection)
-    expect(harness.controller.session.error).toBe("lost")
-    client.connection = { type: "connected", daemonInstanceId: "daemon-b" }
-    for (const listener of connectionListeners) listener(client.connection)
-    client.state = state("B", 1, "daemon-b", true)
-    for (const listener of stateListeners) listener(client.state)
-    expect(harness.controller.session.player).toMatchObject({
-      is_playing: true,
-      progress_ms: 12_345,
-      fetched_at: 678,
-      track: { id: "B" },
-    })
-
-    client.state = state("idle", 2, "daemon-b")
-    for (const listener of stateListeners) listener(client.state)
-    expect(harness.controller.session.player?.track).toBeNull()
-    client.state = state("B", 3, "daemon-b")
-    for (const listener of stateListeners) listener(client.state)
-
-    const play = harness.controller.playPause()
-    const firstSeek = harness.controller.seek(10_000)
-    const latestSeek = harness.controller.seek(20_000)
-    await flush()
-    expect(calls).toEqual(["play"])
-    playGate.resolve()
-    await flush()
-    await flush()
-    expect(harness.controller.session.player?.is_playing).toBe(true)
-    expect(calls).toEqual(["play", "seek:20000"])
-    seekGate.resolve()
-    await Promise.all([play, firstSeek, latestSeek])
-    expect(harness.controller.session.player?.progress_ms).toBe(20_000)
-
-    await harness.controller.next()
-    expect(harness.controller.session.error).toBe("next failed")
-    expect(harness.toasts).toHaveLength(1)
-    client.connection = { type: "terminal", error: { message: "incompatible" } }
-    for (const listener of connectionListeners) listener(client.connection)
-    expect(harness.controller.session.error).toBe("incompatible")
-  } finally {
-    reconcile.resolve()
-    playGate.resolve()
-    seekGate.resolve()
-    harness.controller.dispose()
-  }
+  view.controller.dispose()
 })
 
-test("session artwork completion requires the current full recording identity", async () => {
-  const stateListeners = new Set<(state: any) => void>()
-  const nativeA = deferred<any>()
-  const resolverA = deferred<any>()
-  const coverB = { id: "cover-b", png_base64: "", accent: "", cells: [] }
-  const state = (id: string) => ({
-    revision: 1,
-    daemonInstanceId: "daemon",
-    state: {
-      ...player(false),
-      track: {
-        id,
-        uri: `system:${id}`,
-        name: id === "B" ? "Replacement" : "Shared",
-        artists: "Artist",
-        album: "Album",
-        duration_ms: 180_000,
-      },
-    },
+test("lifecycle and transport errors do not erase one another or reconcile", async () => {
+  const { client, calls } = createClient()
+  const view = harness(client)
+  await flush()
+  client.emitStatus({
+    kind: "degraded",
+    provider: "fallback",
+    message: "fallback",
   })
-  const client: any = {
-    daemonInstanceId: "daemon",
-    selectedRevision: 1,
-    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
-    state: state("A"),
-    status: { kind: "ready", provider: "media-control", message: "ready" },
-    connection: { type: "connected", daemonInstanceId: "daemon" },
-    subscribeState(listener: (value: any) => void) {
-      stateListeners.add(listener)
-      listener(this.state)
-      return () => stateListeners.delete(listener)
-    },
-    subscribeStatus() {
-      return () => {}
-    },
-    subscribeConnection() {
-      return () => {}
-    },
-    async toggle() {
-      return { action: "toggle" as const }
-    },
-    async play() {
-      return { action: "play" as const }
-    },
-    async pause() {
-      return { action: "pause" as const }
-    },
-    async next() {
-      return { action: "next" as const }
-    },
-    async previous() {
-      return { action: "previous" as const }
-    },
-    async seek() {
-      return { action: "seek" as const }
-    },
-    artwork(identity: { id: string }) {
-      return identity.id === "A"
-        ? nativeA.promise
-        : Promise.resolve({ type: "available", base64: "B" })
-    },
-    async dispose() {},
-  }
-  const harness = createHarness({
-    backend: createSessionSystemMedia({
-      createClient: async () => client,
-      resolveArtworkDetails: (_key, _target, data) =>
-        data === "A"
-          ? resolverA.promise
-          : Promise.resolve({ artwork: coverB, duration_ms: 180_000 }),
-    }),
+  expect(view.session.error).toBe("fallback")
+  client.emitConnection({
+    type: "reconnecting",
+    error: { message: "reconnecting", retryable: true },
   })
-
-  try {
-    await flush()
-    client.state = state("B")
-    for (const listener of stateListeners) listener(client.state)
-    await flush()
-    await flush()
-    expect(harness.controller.session.player?.track?.artwork).toBe(coverB)
-
-    nativeA.resolve({ type: "available", base64: "A" })
-    await flush()
-    resolverA.resolve({
-      artwork: { id: "cover-a", png_base64: "", accent: "", cells: [] },
-      duration_ms: 180_000,
-    })
-    await flush()
-    await flush()
-    expect(harness.controller.session.player?.track).toMatchObject({
-      id: "B",
-      artwork: coverB,
-    })
-  } finally {
-    nativeA.resolve({ type: "available", base64: "A" })
-    resolverA.resolve({ artwork: null, duration_ms: 180_000 })
-    harness.controller.dispose()
-  }
+  expect(view.session.error).toBe("reconnecting")
+  client.failure = new Error("command failed")
+  await view.controller.next()
+  expect(calls).toEqual(["next"])
+  expect(view.session.error).toBe("reconnecting")
+  expect(view.toasts).toHaveLength(1)
+  client.emitConnection({ type: "connected", daemonInstanceId: "daemon-a" })
+  expect(view.session.error).toBe("command failed")
+  client.emitConnection({
+    type: "terminal",
+    error: { message: "incompatible" },
+  })
+  expect(view.session.error).toBe("incompatible")
+  await view.controller.refreshAll()
+  expect(view.session.error).toBe("incompatible")
+  expect(view.timers()).toBe(0)
+  view.controller.dispose()
 })
 
-test("optimistic resume updates playback state at command completion", () => {
+test("overlapping controls keep loading until every command settles", async () => {
+  const { client, calls } = createClient()
+  const next = deferred<void>()
+  const previous = deferred<void>()
+  client.next = () => {
+    calls.push("next")
+    return next.promise
+  }
+  client.previous = () => {
+    calls.push("previous")
+    return previous.promise
+  }
+  const view = harness(client)
+  await flush()
+  const nextCommand = view.controller.next()
+  const previousCommand = view.controller.prev()
+  expect(view.session.loading).toBeTrue()
+  next.reject(new Error("next failed"))
+  await flush()
+  expect(view.session.loading).toBeTrue()
+  expect(view.session.error).toBe("next failed")
+  previous.resolve()
+  await Promise.all([nextCommand, previousCommand])
+  expect(calls).toEqual(["next", "previous"])
+  expect(view.session.loading).toBeFalse()
+  view.controller.dispose()
+})
+
+test("reconnect cancels an unissued latest seek without replaying it", async () => {
+  const { client, calls } = createClient()
+  const gate = deferred<void>()
+  client.gate = gate.promise
+  const view = harness(client)
+  await flush()
+  const active = view.controller.seek(10_000)
+  const latest = view.controller.seek(20_000)
+  await flush()
+  expect(calls).toEqual(["seek:10000"])
+  client.emitConnection({
+    type: "reconnecting",
+    error: { message: "lost", retryable: true },
+  })
+  await latest
+  gate.resolve()
+  await active
+  expect(calls).toEqual(["seek:10000"])
+  view.controller.dispose()
+})
+
+test("transport recovery restores retained provider lifecycle feedback", async () => {
+  const { client } = createClient()
+  const view = harness(client)
+  await flush()
+
+  client.emitStatus({
+    kind: "degraded",
+    provider: "fallback",
+    message: "degraded",
+  })
+  client.failure = new Error("failed")
+  await view.controller.next()
+  expect(view.session.error).toBe("failed")
+  client.failure = undefined
+  await view.controller.next()
+  expect(view.session.error).toBe("degraded")
+
+  client.failure = new Error("failed again")
+  await view.controller.next()
+  client.emitStatus({
+    kind: "unavailable",
+    provider: "fallback",
+    message: "unavailable",
+  })
+  expect(view.session.error).toBe("failed again")
+  client.failure = undefined
+  await view.controller.next()
+  expect(view.session.error).toBe("unavailable")
+  view.controller.dispose()
+})
+
+test("disposal settles callers and fences held command and late state", async () => {
+  const { client, calls } = createClient()
+  const gate = deferred<void>()
+  client.gate = gate.promise
+  const view = harness(client)
+  await flush()
+  const playing = view.controller.playPause()
+  await flush()
+  expect(view.session.loading).toBeTrue()
+  const before = view.session.player
+  view.controller.dispose()
+  await playing
+  client.emitState(player("late", true))
+  gate.resolve()
+  await flush()
+  expect(calls).toEqual(["play"])
+  expect(client.disposeCalls).toBe(1)
+  expect(view.session.player).toBe(before)
+  expect(view.session.loading).toBeFalse()
+  expect(view.timers()).toBe(0)
+})
+
+const paused = player("track")
+test("optimistic helpers retain waveform-compatible fields", () => {
   expect(optimisticPlayerState(paused, true, 8_000)).toMatchObject({
     is_playing: true,
-    progress_ms: 4_000,
+    progress_ms: 12_000,
     fetched_at: 8_000,
   })
-})
-
-test("optimistic pause freezes live progress before provider reconciliation", () => {
-  expect(
-    optimisticPlayerState({ ...paused, is_playing: true }, false, 2_500),
-  ).toMatchObject({
-    is_playing: false,
-    progress_ms: 5_500,
-    fetched_at: 2_500,
-  })
-})
-
-test("optimistic seek clamps and preserves playback state", () => {
   expect(optimisticSeekPlayerState(paused, 20_000, 8_000)).toMatchObject({
-    is_playing: false,
-    progress_ms: 10_000,
+    progress_ms: 20_000,
     fetched_at: 8_000,
-  })
-  expect(optimisticSeekPlayerState({ ...paused, track: null }, 5_000)).toEqual({
-    ...paused,
-    track: null,
   })
 })

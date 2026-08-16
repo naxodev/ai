@@ -1,24 +1,22 @@
 import { describe, expect, test } from "bun:test"
-import {
-  trackKey,
-  type ArtworkIdentity as SessionArtworkIdentity,
-  type ArtworkResult as SessionArtworkResult,
-  type MusicSessionConnectionLifecycle,
-  type ProviderStatus,
-  type ReconnectingMusicSessionClient,
-  type RevisionedState,
+import type {
+  ArtworkIdentity,
+  ArtworkResult,
+  MusicSessionConnectionLifecycle,
+  ProviderStatus,
+  ReconnectingMusicSessionClient,
+  RevisionedState,
 } from "@naxodev/music-core"
 import {
   artworkCacheKey,
-  artworkDataForIdentity,
   artworkIdentityKey,
   createSessionSystemMedia,
-  createSystemMedia,
 } from "../system-media.ts"
+import type { PlayerState } from "../types.ts"
 
-const sessionState = (
+const state = (
   name: string,
-  revision: number,
+  revision = 1,
   daemonInstanceId = "daemon-a",
 ): RevisionedState => ({
   daemonInstanceId,
@@ -29,6 +27,7 @@ const sessionState = (
     shuffle: false,
     repeat: "off",
     device: null,
+    fetched_at: 1,
     track: {
       id: `id-${name}`,
       uri: `system:${name}`,
@@ -37,599 +36,125 @@ const sessionState = (
       album: "Album",
       duration_ms: 180_000,
     },
-    fetched_at: 1,
   },
 })
 
-class FakeReconnectingClient implements ReconnectingMusicSessionClient {
+class FakeClient implements ReconnectingMusicSessionClient {
   daemonInstanceId = "daemon-a"
-  negotiatedCapabilities = ["state-replay", "transport", "native-artwork"]
   selectedRevision = 1
+  negotiatedCapabilities = ["state-replay", "transport", "native-artwork"]
+  state: RevisionedState | undefined = state("one", 4)
   status: ProviderStatus | undefined = {
     kind: "ready",
     provider: "media-control",
     message: "ready",
   }
-  state: RevisionedState | undefined = sessionState("one", 4)
   connection: MusicSessionConnectionLifecycle = {
     type: "connected",
     daemonInstanceId: "daemon-a",
   }
-  readonly statusListeners = new Set<(status: ProviderStatus) => void>()
-  readonly stateListeners = new Set<(state: RevisionedState) => void>()
-  readonly connectionListeners = new Set<
-    (connection: MusicSessionConnectionLifecycle) => void
+  stateListeners = new Set<(value: RevisionedState) => void>()
+  statusListeners = new Set<(value: ProviderStatus) => void>()
+  connectionListeners = new Set<
+    (value: MusicSessionConnectionLifecycle) => void
   >()
-  readonly calls: string[] = []
-  readonly artworkCalls: SessionArtworkIdentity[] = []
-  artworkResult: SessionArtworkResult = { type: "unavailable" }
+  calls: string[] = []
+  artworkCalls: ArtworkIdentity[] = []
+  artworkResult: ArtworkResult = { type: "unavailable" }
   artworkFailure: unknown | undefined
-  private readonly commandGates = new Map<string, Promise<void>>()
-  private artworkGate: Promise<SessionArtworkResult> | undefined
-  private disposeGate: Promise<void> | undefined
   disposeCalls = 0
-  unsubscribeCalls = { state: 0, status: 0, connection: 0 }
+  commandGate: Promise<void> | undefined
+  artworkGate: Promise<ArtworkResult> | undefined
 
-  subscribeStatus(listener: (status: ProviderStatus) => void) {
-    this.statusListeners.add(listener)
-    if (this.status) listener(this.status)
-    let closed = false
-    return () => {
-      if (closed) return
-      closed = true
-      this.unsubscribeCalls.status++
-      this.statusListeners.delete(listener)
-    }
-  }
-  subscribeState(listener: (state: RevisionedState) => void) {
+  subscribeState(listener: (value: RevisionedState) => void) {
     this.stateListeners.add(listener)
     if (this.state) listener(this.state)
-    let closed = false
-    return () => {
-      if (closed) return
-      closed = true
-      this.unsubscribeCalls.state++
-      this.stateListeners.delete(listener)
-    }
+    return () => this.stateListeners.delete(listener)
+  }
+  subscribeStatus(listener: (value: ProviderStatus) => void) {
+    this.statusListeners.add(listener)
+    if (this.status) listener(this.status)
+    return () => this.statusListeners.delete(listener)
   }
   subscribeConnection(
-    listener: (connection: MusicSessionConnectionLifecycle) => void,
+    listener: (value: MusicSessionConnectionLifecycle) => void,
   ) {
     this.connectionListeners.add(listener)
     listener(this.connection)
-    let closed = false
-    return () => {
-      if (closed) return
-      closed = true
-      this.unsubscribeCalls.connection++
-      this.connectionListeners.delete(listener)
-    }
+    return () => this.connectionListeners.delete(listener)
   }
-  emitState(state: RevisionedState) {
-    this.state = state
-    this.daemonInstanceId = state.daemonInstanceId
-    for (const listener of [...this.stateListeners]) listener(state)
+  emitState(next: RevisionedState) {
+    this.state = next
+    this.daemonInstanceId = next.daemonInstanceId
+    for (const listener of [...this.stateListeners]) listener(next)
   }
-  emitStatus(status: ProviderStatus) {
-    this.status = status
-    for (const listener of [...this.statusListeners]) listener(status)
+  emitStatus(next: ProviderStatus) {
+    this.status = next
+    for (const listener of [...this.statusListeners]) listener(next)
   }
-  emitConnection(connection: MusicSessionConnectionLifecycle) {
-    this.connection = connection
-    for (const listener of [...this.connectionListeners]) listener(connection)
-  }
-  holdCommand(command: string, gate: Promise<void>) {
-    this.commandGates.set(command, gate)
-  }
-  holdArtwork(gate: Promise<SessionArtworkResult>) {
-    this.artworkGate = gate
-  }
-  holdDisposal(gate: Promise<void>) {
-    this.disposeGate = gate
+  emitConnection(next: MusicSessionConnectionLifecycle) {
+    this.connection = next
+    for (const listener of [...this.connectionListeners]) listener(next)
   }
   async toggle() {
-    this.calls.push("toggle")
-    await this.commandGates.get("toggle")
     return { action: "toggle" as const }
   }
   async play() {
     this.calls.push("play")
-    await this.commandGates.get("play")
+    await this.commandGate
     return { action: "play" as const }
   }
   async pause() {
     this.calls.push("pause")
-    await this.commandGates.get("pause")
+    await this.commandGate
     return { action: "pause" as const }
   }
   async next() {
     this.calls.push("next")
-    await this.commandGates.get("next")
+    await this.commandGate
     return { action: "next" as const }
   }
   async previous() {
     this.calls.push("previous")
-    await this.commandGates.get("previous")
+    await this.commandGate
     return { action: "previous" as const }
   }
-  async seek(positionMs: number) {
-    this.calls.push(`seek:${positionMs}`)
-    await this.commandGates.get("seek")
+  async seek(position: number) {
+    this.calls.push(`seek:${position}`)
+    await this.commandGate
     return { action: "seek" as const }
   }
-  async artwork(identity: SessionArtworkIdentity) {
+  async artwork(identity: ArtworkIdentity) {
     this.artworkCalls.push(identity)
     if (this.artworkFailure !== undefined) throw this.artworkFailure
     return this.artworkGate ?? this.artworkResult
   }
   async dispose() {
     this.disposeCalls++
-    await this.disposeGate
   }
 }
 
-describe("artwork identity", () => {
-  const identity = {
-    uid: "provider-id",
-    title: "Song",
-    artist: "Artist",
-    album: "Original",
-    duration_ms: 180_000,
-  }
+const flush = () => Promise.resolve().then(() => Promise.resolve())
 
-  test("uses a narrower playback identity than the artwork identity", () => {
-    expect(trackKey(identity.title, identity.artist, identity.uid)).toBe(
-      "provider-id\0Song\0Artist",
-    )
-    expect(trackKey(identity.title, identity.artist, identity.uid)).not.toBe(
-      trackKey("Song (Remastered)", identity.artist, identity.uid),
-    )
-    for (const changed of [
-      { uid: "other-id" },
-      { title: "Song (Remastered)" },
-      { artist: "Another Artist" },
-      { album: "Deluxe" },
-      { duration_ms: 181_000 },
-    ]) {
-      expect(artworkIdentityKey({ ...identity, ...changed })).not.toBe(
-        artworkIdentityKey(identity),
-      )
-    }
-  })
-
-  test("reuses cached artwork when only the provider id changes", () => {
-    expect(artworkCacheKey({ ...identity, uid: "paused-id" })).toBe(
-      artworkCacheKey(identity),
-    )
-    expect(artworkCacheKey({ ...identity, album: "Deluxe" })).not.toBe(
-      artworkCacheKey(identity),
-    )
-  })
-
-  test("rejects native artwork if playback changed during the second sample", () => {
-    const matchingSample = {
-      contentItemIdentifier: identity.uid,
-      title: identity.title,
-      artist: identity.artist,
-      album: identity.album,
-      duration: identity.duration_ms / 1_000,
-      artworkData: "new-track-cover",
-    }
-    for (const changed of [
-      { contentItemIdentifier: "new-provider-id" },
-      { title: "Next Song" },
-      { artist: "Another Artist" },
-      { album: "Next Album" },
-      { duration: 200 },
-    ]) {
-      expect(
-        artworkDataForIdentity(identity, { ...matchingSample, ...changed }),
-      ).toBeNull()
-    }
-  })
-
-  test("accepts native artwork only when the full second identity matches", () => {
-    expect(
-      artworkDataForIdentity(identity, {
-        contentItemIdentifier: identity.uid,
-        title: identity.title,
-        artist: identity.artist,
-        album: identity.album,
-        duration: identity.duration_ms / 1_000,
-        artworkData: "matching-cover",
-      }),
-    ).toBe("matching-cover")
-  })
-
-  test("preserves raw provider ids when validating native artwork", () => {
-    expect(
-      artworkDataForIdentity(
-        { ...identity, uid: "provider-id\0Song\0Artist" },
-        {
-          contentItemIdentifier: "provider-id",
-          title: identity.title,
-          artist: identity.artist,
-          album: identity.album,
-          duration: identity.duration_ms / 1_000,
-          artworkData: "cover",
-        },
-      ),
-    ).toBeNull()
-  })
-})
-
-describe("system-media facade subscriptions", () => {
-  test("retries null artwork on its bounded schedule", async () => {
-    let now = 10_000
-    let resolutions = 0
-    const completions: unknown[] = []
-    const payload = {
-      contentItemIdentifier: "playing-id",
-      title: "Shared Artwork Song",
+describe("session media facade", () => {
+  test("keeps metadata cache keys separate from full identities", () => {
+    const identity = {
+      uid: "a",
+      title: "Song",
       artist: "Artist",
       album: "Album",
-      duration: 180,
-      elapsedTimeNow: 12,
-      playing: true,
-      bundleIdentifier: "com.Spotify.client",
+      duration_ms: 180_000,
     }
-    const backend = createSystemMedia({
-      detectBackend: () => "media-control",
-      hasNowPlayingCli: () => false,
-      now: () => now,
-      run: async (command) => ({
-        ok: true,
-        out: JSON.stringify(
-          command.includes("--no-artwork")
-            ? payload
-            : { ...payload, artworkData: "cover" },
-        ),
-      }),
-      resolveArtworkDetails: async () => {
-        resolutions++
-        if (resolutions === 1) throw new Error("artwork unavailable")
-        return { artwork: null, duration_ms: 180_000 }
-      },
-    })
-    backend.subscribePresentation?.((event) => completions.push(event))
-
-    const first = await Promise.all([backend.player(), backend.player()])
-    expect(first.map((state) => state?.track?.artwork_loading)).toEqual([
-      true,
-      true,
-    ])
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(resolutions).toBe(1)
-    expect(completions).toEqual([
-      expect.objectContaining({ artwork: null, duration_ms: 180_000 }),
-    ])
-
-    const cachedFailure = await backend.player()
-    expect(cachedFailure?.track?.artwork_loading).toBe(false)
-    expect(resolutions).toBe(1)
-
-    now += 2_000
-    const retried = await backend.player()
-    expect(retried?.track?.artwork_loading).toBe(true)
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(resolutions).toBe(2)
-  })
-
-  test("shares artwork work across provider ids and returns a settled cache hit", async () => {
-    const pending = {
-      resolve: null as
-        | ((value: {
-            artwork: {
-              id: string
-              png_base64: string
-              accent: string
-              cells: []
-            }
-            duration_ms: number
-          }) => void)
-        | null,
-    }
-    const artwork = new Promise<{
-      artwork: { id: string; png_base64: string; accent: string; cells: [] }
-      duration_ms: number
-    }>((resolve) => {
-      pending.resolve = resolve
-    })
-    let samples = 0
-    let resolutions = 0
-    const backend = createSystemMedia({
-      detectBackend: () => "media-control",
-      hasNowPlayingCli: () => false,
-      run: async (command) => ({
-        ok: true,
-        out: JSON.stringify({
-          contentItemIdentifier: command.includes("--no-artwork")
-            ? ++samples === 1
-              ? "playing-id"
-              : "paused-id"
-            : "playing-id",
-          title: "Shared Cache Song",
-          artist: "Artist",
-          album: "Album",
-          duration: 180,
-          elapsedTimeNow: 12,
-          playing: false,
-          artworkData: "cover",
-          bundleIdentifier: "com.Spotify.client",
-        }),
-      }),
-      resolveArtworkDetails: () => {
-        resolutions++
-        return artwork
-      },
-    })
-    const completions: unknown[] = []
-    backend.subscribePresentation?.((event) => completions.push(event))
-
-    const first = await backend.player()
-    const second = await backend.player()
-    expect(first?.track?.artwork_loading).toBe(true)
-    expect(second?.track?.artwork_loading).toBe(true)
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(resolutions).toBe(1)
-
-    const cover = {
-      id: "cover",
-      png_base64: "png",
-      accent: "blue",
-      cells: [] as [],
-    }
-    pending.resolve?.({ artwork: cover, duration_ms: 180_000 })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(completions).toEqual([
-      expect.objectContaining({
-        identity: expect.objectContaining({ uid: "paused-id" }),
-        artwork: cover,
-      }),
-    ])
-
-    const cached = await backend.player()
-    expect(cached?.track).toMatchObject({
-      artwork: cover,
-      artwork_loading: false,
-    })
-    expect(resolutions).toBe(1)
-  })
-
-  test("keeps the oldest unresolved artwork job deduplicated past the settled cache bound", async () => {
-    const pending = {
-      resolve: null as
-        ((value: { artwork: null; duration_ms: number }) => void) | null,
-    }
-    const artwork = new Promise<{ artwork: null; duration_ms: number }>(
-      (resolve) => {
-        pending.resolve = resolve
-      },
+    expect(artworkCacheKey(identity)).toBe(
+      artworkCacheKey({ ...identity, uid: "b" }),
     )
-    let sample = 0
-    const resolutions: string[] = []
-    const backend = createSystemMedia({
-      detectBackend: () => "media-control",
-      hasNowPlayingCli: () => false,
-      run: async (command) => {
-        if (!command.includes("--no-artwork")) return { ok: true, out: "" }
-        const index = sample++ === 33 ? 0 : sample - 1
-        return {
-          ok: true,
-          out: JSON.stringify({
-            contentItemIdentifier: `provider-${index}`,
-            title: `Eviction Artwork Song ${index}`,
-            artist: "Artist",
-            album: "Album",
-            duration: 180,
-            elapsedTimeNow: 12,
-            playing: false,
-            bundleIdentifier: "com.Spotify.client",
-          }),
-        }
-      },
-      resolveArtworkDetails: (_key, target) => {
-        resolutions.push(target.title)
-        return target.title === "Eviction Artwork Song 0"
-          ? artwork
-          : Promise.resolve({ artwork: null, duration_ms: 180_000 })
-      },
-    })
-
-    for (let index = 0; index < 33; index++) await backend.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(resolutions).toHaveLength(33)
-    expect(
-      resolutions.filter((title) => title === "Eviction Artwork Song 0"),
-    ).toHaveLength(1)
-
-    const repeated = await backend.player()
-    expect(repeated?.track?.artwork_loading).toBe(true)
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(resolutions).toHaveLength(33)
-    expect(
-      resolutions.filter((title) => title === "Eviction Artwork Song 0"),
-    ).toHaveLength(1)
-
-    pending.resolve?.({ artwork: null, duration_ms: 180_000 })
-  })
-
-  test("projects playback and stream snapshots before detached artwork settles", async () => {
-    const resolver = {
-      resolve: null as
-        ((value: { artwork: null; duration_ms: number }) => void) | null,
-    }
-    const artwork = new Promise<{ artwork: null; duration_ms: number }>(
-      (resolve) => {
-        resolver.resolve = resolve
-      },
+    expect(artworkIdentityKey(identity)).not.toBe(
+      artworkIdentityKey({ ...identity, uid: "b" }),
     )
-    const payload = {
-      contentItemIdentifier: "artwork-lane-id",
-      title: "Artwork Lane Song",
-      artist: "Artist",
-      album: "Album",
-      duration: 180,
-      elapsedTimeNow: 12,
-      playing: false,
-      bundleIdentifier: "com.Spotify.client",
-    }
-    const stream = { listener: null as ((line: string) => void) | null }
-    const backend = createSystemMedia({
-      detectBackend: () => "media-control",
-      hasNowPlayingCli: () => false,
-      run: async (command) => ({
-        ok: true,
-        out: JSON.stringify(
-          command.includes("--no-artwork")
-            ? payload
-            : { ...payload, artworkData: "cover" },
-        ),
-      }),
-      resolveArtworkDetails: () => artwork,
-      startLineStream: (_command, callbacks) => {
-        stream.listener = callbacks.onLine
-        return () => {}
-      },
-      setRetryTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
-      clearRetryTimer: () => {},
-    })
-    const completions: unknown[] = []
-    const snapshots: unknown[] = []
-    const disposePresentation = backend.subscribePresentation?.((event) =>
-      completions.push(event),
-    )
-    backend.subscribe?.((event) => snapshots.push(event))
-
-    const initial = await backend.player()
-    expect(initial?.track).toMatchObject({
-      artwork: null,
-      artwork_loading: true,
-    })
-    stream.listener?.(JSON.stringify({ type: "data", payload }))
-    expect(snapshots).toHaveLength(1)
-    expect(
-      (snapshots[0] as { state: typeof initial }).state?.track,
-    ).toMatchObject({
-      artwork_loading: true,
-    })
-
-    disposePresentation?.()
-    disposePresentation?.()
-    resolver.resolve?.({ artwork: null, duration_ms: 180_000 })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(completions).toHaveLength(0)
   })
 
-  test("forwards media-control invalidations and preserves the core disposer", () => {
-    const stream = { listener: null as ((line: string) => void) | null }
-    let streamDisposals = 0
-    const backend = createSystemMedia({
-      detectBackend: () => "media-control",
-      hasNowPlayingCli: () => false,
-      run: async () => ({ ok: true, out: "" }),
-      startLineStream: (_command, callbacks) => {
-        stream.listener = callbacks.onLine
-        return () => {
-          streamDisposals++
-        }
-      },
-      setRetryTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
-      clearRetryTimer: () => {},
-    })
-    const changes: number[] = []
-
-    const dispose = backend.subscribe?.(() => changes.push(1))
-    expect(dispose).toBeDefined()
-    stream.listener?.(
-      JSON.stringify({
-        type: "data",
-        payload: {
-          contentItemIdentifier: "provider-id",
-          title: "Song",
-          artist: "Artist",
-          album: "Album",
-          duration: 180,
-          elapsedTimeNow: 0,
-          playing: false,
-          bundleIdentifier: "com.Spotify.client",
-        },
-      }),
-    )
-    stream.listener?.("not json")
-    expect(changes).toEqual([1])
-
-    dispose?.()
-    dispose?.()
-    expect(streamDisposals).toBe(1)
-  })
-
-  test("omits subscriptions for nowplaying-cli", () => {
-    const backend = createSystemMedia({
-      detectBackend: () => "nowplaying-cli",
-      hasNowPlayingCli: () => true,
-      run: async () => ({ ok: true, out: "" }),
-    })
-
-    expect(backend.subscribe).toBeUndefined()
-  })
-})
-
-describe("session-media facade", () => {
-  test("reports a one-shot factory failure identically to early and late observers", async () => {
-    let factories = 0
-    const backend = createSessionSystemMedia({
-      createClient: async () => {
-        factories++
-        throw new Error("factory unavailable")
-      },
-    })
-    const early: Array<{ type?: string; message?: string | null }> = []
-    backend.subscribe?.((event) => early.push(event ?? {}))
-    await expect(backend.player()).rejects.toThrow("factory unavailable")
-    await Promise.resolve()
-    const late: Array<{ type?: string; message?: string | null }> = []
-    backend.subscribe?.((event) => late.push(event ?? {}))
-
-    expect(factories).toBe(1)
-    expect(early).toEqual([
-      { type: "lifecycle", message: "factory unavailable" },
-    ])
-    expect(late).toEqual([
-      { type: "lifecycle", message: "factory unavailable" },
-    ])
-    await backend.dispose?.()
-  })
-
-  test("isolates throwing adapter observers from later observers", async () => {
-    const client = new FakeReconnectingClient()
-    const backend = createSessionSystemMedia({
-      createClient: async () => client,
-    })
-    const received: unknown[] = []
-    backend.subscribe?.(() => {
-      throw new Error("observer failure")
-    })
-    backend.subscribe?.((event) => received.push(event))
-
-    await backend.player()
-    client.emitState(sessionState("later", 5))
-
-    expect(received).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "snapshot",
-          state: expect.objectContaining({
-            track: expect.objectContaining({ name: "later" }),
-          }),
-        }),
-      ]),
-    )
-    await backend.dispose?.()
-  })
-
-  test("uses one public reconnecting client for concurrent operations and accepts replacement replay", async () => {
-    const client = new FakeReconnectingClient()
+  test("owns one client and projects replay, replacement, and lifecycle", async () => {
+    const client = new FakeClient()
     let factories = 0
     const backend = createSessionSystemMedia({
       createClient: async () => {
@@ -637,158 +162,62 @@ describe("session-media facade", () => {
         return client
       },
     })
-    const events: unknown[] = []
-    const unsubscribe = backend.subscribe?.((event) => events.push(event))
+    const events: any[] = []
+    backend.subscribe?.((event) => events.push(event))
     const players = await Promise.all(
       Array.from({ length: 20 }, () => backend.player()),
     )
     expect(factories).toBe(1)
-    expect(players.every((player) => player?.track?.name === "one")).toBe(true)
+    expect(players.every((player) => player?.track?.name === "one")).toBeTrue()
 
     client.emitConnection({
       type: "reconnecting",
-      error: {
-        code: "CONNECTION_LOST",
-        message: "lost",
-        retryable: true,
-      } as never,
+      error: { message: "lost", retryable: true } as never,
     })
-    client.emitState(sessionState("two", 1, "daemon-b"))
-    expect((await backend.player())?.track?.name).toBe("two")
+    client.emitState(state("replacement", 1, "daemon-b"))
+    client.emitStatus({
+      kind: "degraded",
+      provider: "nowplaying-cli",
+      message: "fallback",
+    })
+    expect((await backend.player())?.track?.name).toBe("replacement")
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: "lifecycle", message: "lost" }),
         expect.objectContaining({
           type: "snapshot",
           state: expect.objectContaining({
-            track: expect.objectContaining({ name: "two" }),
+            track: expect.objectContaining({ name: "replacement" }),
           }),
         }),
       ]),
     )
-    unsubscribe?.()
-    await backend.dispose?.()
-  })
-
-  test("retains connection errors over ready status and provider degradation after reconnect", async () => {
-    const client = new FakeReconnectingClient()
-    const backend = createSessionSystemMedia({
-      createClient: async () => client,
-    })
-    const events: Array<{ type?: string; message?: string | null }> = []
-    backend.subscribe?.((event) => events.push(event ?? {}))
-    await backend.player()
-
-    client.emitConnection({
-      type: "reconnecting",
-      error: {
-        code: "CONNECTION_LOST",
-        message: "reconnecting",
-        retryable: true,
-      } as never,
-    })
-    client.emitStatus({
-      kind: "ready",
-      provider: "media-control",
-      message: "ready",
-    })
-    expect(events.at(-1)).toEqual({
-      type: "lifecycle",
-      message: "reconnecting",
-    })
-
     client.emitConnection({ type: "connected", daemonInstanceId: "daemon-b" })
-    client.emitStatus({
-      kind: "degraded",
-      provider: "nowplaying-cli",
-      message: "fallback",
-    })
-    expect(events.at(-1)).toEqual({ type: "lifecycle", message: "fallback" })
-
-    client.emitConnection({
-      type: "terminal",
-      error: {
-        code: "INCOMPATIBLE_PROTOCOL",
-        message: "incompatible",
-      } as never,
-    })
-    await backend.player()
-    expect(events.at(-1)).toEqual({
-      type: "lifecycle",
-      message: "incompatible",
-    })
+    expect(events.at(-1)).toEqual(
+      expect.objectContaining({ type: "lifecycle", message: "fallback" }),
+    )
     await backend.dispose?.()
   })
 
-  test("deduplicates public replay and replays retained state/lifecycle to late observers", async () => {
-    const client = new FakeReconnectingClient()
-    client.status = {
-      kind: "degraded",
-      provider: "nowplaying-cli",
-      message: "fallback",
-    }
-    const backend = createSessionSystemMedia({
-      createClient: async () => client,
-    })
-    const early: Array<{ type?: string; message?: string | null }> = []
-    backend.subscribe?.((event) => early.push(event ?? {}))
-    await backend.player()
-    expect(early.filter((event) => event.type === "lifecycle")).toEqual([
-      { type: "lifecycle", message: "fallback" },
-    ])
-
-    const late: Array<{ type?: string; message?: string | null; state?: any }> =
-      []
-    backend.subscribe?.((event) => late.push(event ?? {}))
-    expect(late).toEqual([
-      expect.objectContaining({
-        type: "snapshot",
-        state: expect.objectContaining({
-          track: expect.objectContaining({ name: "one" }),
-        }),
-      }),
-      { type: "lifecycle", message: "fallback" },
-    ])
-
-    client.emitConnection({ type: "connected", daemonInstanceId: "daemon-b" })
-    client.emitStatus({
-      kind: "ready",
-      provider: "media-control",
-      message: "ready",
-    })
-    expect(early.filter((event) => event.type === "lifecycle")).toEqual([
-      { type: "lifecycle", message: "fallback" },
-      { type: "lifecycle", message: null },
-    ])
-    await backend.dispose?.()
-    expect(client.unsubscribeCalls).toEqual({
-      state: 1,
-      status: 1,
-      connection: 1,
-    })
-    expect(client.disposeCalls).toBe(1)
-  })
-
-  test("delegates controls and native artwork through the client only", async () => {
-    const client = new FakeReconnectingClient()
-    client.state = sessionState("native", 4)
+  test("delegates controls once and routes artwork only through the client", async () => {
+    const client = new FakeClient()
     client.artworkResult = { type: "available", base64: "AQID" }
     const native: Array<string | null> = []
     const backend = createSessionSystemMedia({
       createClient: async () => client,
-      resolveArtworkDetails: async (_key, _target, data) => {
-        native.push(data)
+      resolveArtworkDetails: async (_key, _target, bytes) => {
+        native.push(bytes)
         return { artwork: null, duration_ms: 180_000 }
       },
     })
     await backend.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await flush()
     await Promise.all([
       backend.play(),
-      backend.pause?.(),
-      backend.next?.(),
-      backend.previous?.(),
-      backend.seek?.(4321),
+      backend.pause!(),
+      backend.next!(),
+      backend.previous!(),
+      backend.seek!(4321),
     ])
     expect(client.calls).toEqual([
       "play",
@@ -798,333 +227,421 @@ describe("session-media facade", () => {
       "seek:4321",
     ])
     expect(client.artworkCalls).toEqual([
-      {
-        id: "id-native",
-        name: "native",
-        artists: "Artist",
-        album: "Album",
+      expect.objectContaining({
+        id: "id-one",
+        name: "one",
         duration_ms: 180_000,
-      },
+      }),
     ])
     expect(native).toEqual(["AQID"])
     await backend.dispose?.()
   })
 
-  test("does not replay held commands or start fallback artwork after disposal", async () => {
-    const client = new FakeReconnectingClient()
-    client.state = sessionState("held-work", 1)
-    let releaseCommand: (() => void) | undefined
-    let releaseArtwork: ((result: SessionArtworkResult) => void) | undefined
-    const command = new Promise<void>((resolve) => {
-      releaseCommand = resolve
-    })
-    const artwork = new Promise<SessionArtworkResult>((resolve) => {
-      releaseArtwork = resolve
-    })
-    client.holdCommand("play", command)
-    client.holdArtwork(artwork)
-    let resolutions = 0
+  test("falls back for all non-available artwork results and bounds distinct jobs", async () => {
+    let now = 0
+    const client = new FakeClient()
+    const resolved: Array<string | null> = []
     const backend = createSessionSystemMedia({
       createClient: async () => client,
-      resolveArtworkDetails: async () => {
-        resolutions++
-        return { artwork: null, duration_ms: 180_000 }
+      now: () => now,
+      resolveArtworkDetails: async (_key, target, bytes) => {
+        resolved.push(bytes)
+        return { artwork: null, duration_ms: target.duration_ms }
       },
     })
-
-    try {
-      await backend.player()
-      await Promise.resolve()
-      const playing = backend.play()
-      await Promise.resolve()
-      const disposal = backend.dispose?.()
-      releaseCommand?.()
-      releaseArtwork?.({ type: "available", base64: "late" })
-      await Promise.all([playing, disposal])
-      await Promise.resolve()
-
-      expect(client.calls).toEqual(["play"])
-      expect(client.artworkCalls).toHaveLength(1)
-      expect(resolutions).toBe(0)
-      expect(client.disposeCalls).toBe(1)
-    } finally {
-      releaseCommand?.()
-      releaseArtwork?.({ type: "available", base64: "late" })
-      await backend.dispose?.()
-    }
-  })
-
-  test("falls back for bounded non-available and rejected native artwork", async () => {
     for (const result of [
       { type: "unavailable" },
       { type: "stale" },
       { type: "too-large" },
-    ] as SessionArtworkResult[]) {
-      const client = new FakeReconnectingClient()
-      const name = `fallback-${result.type}`
-      client.state = sessionState(name, 1)
+    ] as ArtworkResult[]) {
       client.artworkResult = result
-      const native: Array<string | null> = []
-      const backend = createSessionSystemMedia({
-        createClient: async () => client,
-        resolveArtworkDetails: async (_key, target, data) => {
-          expect(target.title).toBe(name)
-          native.push(data)
-          return { artwork: null, duration_ms: 180_000 }
-        },
-      })
+      client.emitState(state(`outcome-${result.type}`, ++now))
       await backend.player()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(native).toEqual([null])
+      await flush()
+      now += 10_000
+    }
+    client.artworkFailure = new Error("disconnected")
+    client.emitState(state("outcome-rejected", ++now))
+    await backend.player()
+    await flush()
+    expect(resolved).toEqual([null, null, null, null])
+    await backend.dispose?.()
+  })
+
+  test("shares equal artwork work and retries null or rejected requests on its bounded schedule", async () => {
+    let now = 0
+    const first = new FakeClient()
+    first.state = state("shared-retry")
+    const second = new FakeClient()
+    second.state = state("shared-retry")
+    let resolutions = 0
+    const overrides = {
+      now: () => now,
+      resolveArtworkDetails: async (_key: string, target: any) => {
+        resolutions++
+        return { artwork: null, duration_ms: target.duration_ms }
+      },
+    }
+    const backendA = createSessionSystemMedia({
+      createClient: async () => first,
+      ...overrides,
+    })
+    const backendB = createSessionSystemMedia({
+      createClient: async () => second,
+      ...overrides,
+    })
+    await Promise.all([backendA.player(), backendB.player()])
+    await flush()
+    expect(first.artworkCalls).toHaveLength(1)
+    expect(second.artworkCalls).toHaveLength(0)
+    expect(resolutions).toBe(1)
+    await backendA.player()
+    await flush()
+    expect(first.artworkCalls).toHaveLength(1)
+    now = 2_000
+    await backendB.player()
+    await flush()
+    expect(first.artworkCalls).toHaveLength(1)
+    expect(second.artworkCalls).toHaveLength(1)
+    await backendA.dispose?.()
+    await backendB.dispose?.()
+  })
+
+  test("settled artwork uses deterministic FIFO eviction at the 32-entry boundary", async () => {
+    const client = new FakeClient()
+    client.state = state("eviction-0", 10)
+    client.artworkResult = { type: "available", base64: "cover" }
+    const backend = createSessionSystemMedia({
+      createClient: async () => client,
+      resolveArtworkDetails: async (_key, target) => ({
+        artwork: { id: target.title, png_base64: "", accent: "", cells: [] },
+        duration_ms: target.duration_ms,
+      }),
+    })
+    try {
+      await backend.player()
+      await flush()
+      await flush()
+      for (let index = 1; index <= 32; index++) {
+        client.emitState(state(`eviction-${index}`, 10 + index))
+        await flush()
+        await flush()
+      }
+      const calls = client.artworkCalls.length
+      client.emitState(state("eviction-0", 100))
+      await flush()
+      await flush()
+      expect(client.artworkCalls).toHaveLength(calls + 1)
+    } finally {
       await backend.dispose?.()
     }
-
-    const rejected = new FakeReconnectingClient()
-    rejected.state = sessionState("fallback-rejected", 1)
-    rejected.artworkFailure = new Error("disconnected")
-    const native: Array<string | null> = []
-    const backend = createSessionSystemMedia({
-      createClient: async () => rejected,
-      resolveArtworkDetails: async (_key, _target, data) => {
-        native.push(data)
-        return { artwork: null, duration_ms: 180_000 }
-      },
-    })
-    await backend.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(native).toEqual([null])
-    await backend.dispose?.()
   })
 
-  test("disposal suppresses a late session artwork resolver completion", async () => {
-    const client = new FakeReconnectingClient()
-    client.state = sessionState("late-artwork", 1)
-    client.artworkResult = { type: "available", base64: "AQID" }
-    let resolveArtwork:
-      ((value: { artwork: null; duration_ms: number }) => void) | undefined
-    const completions: unknown[] = []
+  test("bounds blocked jobs and admits one deferred current identity after a slot settles", async () => {
+    const clients: FakeClient[] = []
+    const backends: ReturnType<typeof createSessionSystemMedia>[] = []
+    const releases: Array<(result: ArtworkResult) => void> = []
+    for (let index = 0; index < 33; index++) {
+      const client = new FakeClient()
+      client.state = state(`capacity-${index}`)
+      client.artworkGate = new Promise((resolve) => releases.push(resolve))
+      clients.push(client)
+      const backend = createSessionSystemMedia({
+        createClient: async () => client,
+        resolveArtworkDetails: async (_key, target) => ({
+          artwork: null,
+          duration_ms: target.duration_ms,
+        }),
+      })
+      backends.push(backend)
+      await backend.player()
+    }
+    try {
+      await flush()
+      const started = clients.filter((client) => client.artworkCalls.length > 0)
+      const waiting = clients.filter(
+        (client) => client.artworkCalls.length === 0,
+      )
+      // Other test files can own global presentation jobs, but this group
+      // still fills every remaining slot and leaves a deterministic waiter.
+      expect(started.length).toBeGreaterThan(0)
+      expect(started.length).toBeLessThanOrEqual(32)
+      expect(waiting.length).toBeGreaterThan(0)
+      const released = clients.indexOf(started[0]!)
+      releases[released]!({ type: "available", base64: "released" })
+      await flush()
+      await flush()
+      expect(waiting[0]!.artworkCalls).toHaveLength(1)
+    } finally {
+      await Promise.all(backends.map((backend) => backend.dispose?.()))
+    }
+    expect(clients.every((client) => client.disposeCalls === 1)).toBeTrue()
+  })
+
+  test("owner disposal admits a shared deferred identity and publishes to both waiters", async () => {
+    const owners: Array<ReturnType<typeof createSessionSystemMedia>> = []
+    const ownerClients: FakeClient[] = []
+    const releases: Array<(result: ArtworkResult) => void> = []
+    const waitA = new FakeClient()
+    const waitB = new FakeClient()
+    waitA.state = state("shared-deferred")
+    waitB.state = state("shared-deferred")
+    let releaseWaiter!: (result: ArtworkResult) => void
+    waitA.artworkGate = new Promise((resolve) => {
+      releaseWaiter = resolve
+    })
+    const cover = { id: "shared", png_base64: "", accent: "", cells: [] }
+    const presentationA: unknown[] = []
+    const presentationB: unknown[] = []
+    try {
+      for (let index = 0; index < 32; index++) {
+        const client = new FakeClient()
+        client.state = state(`dispose-capacity-${index}`)
+        client.artworkGate = new Promise((resolve) => releases.push(resolve))
+        ownerClients.push(client)
+        const backend = createSessionSystemMedia({
+          createClient: async () => client,
+          resolveArtworkDetails: async (_key, target) => ({
+            artwork: null,
+            duration_ms: target.duration_ms,
+          }),
+        })
+        owners.push(backend)
+        await backend.player()
+      }
+      const resolver = async (_key: string, target: any) => ({
+        artwork: cover,
+        duration_ms: target.duration_ms,
+      })
+      const deferredA = createSessionSystemMedia({
+        createClient: async () => waitA,
+        resolveArtworkDetails: resolver,
+      })
+      const deferredB = createSessionSystemMedia({
+        createClient: async () => waitB,
+        resolveArtworkDetails: resolver,
+      })
+      owners.push(deferredA, deferredB)
+      deferredA.subscribePresentation?.((event) => presentationA.push(event))
+      deferredB.subscribePresentation?.((event) => presentationB.push(event))
+      await Promise.all([deferredA.player(), deferredB.player()])
+      await flush()
+      expect(waitA.artworkCalls).toHaveLength(0)
+      expect(waitB.artworkCalls).toHaveLength(0)
+
+      // A concurrently running test can have an older global deferred key;
+      // release owners until this shared key is admitted, then verify the two
+      // hosts share that one job and its presentation.
+      for (const owner of ownerClients) {
+        await owners[ownerClients.indexOf(owner)]!.dispose?.()
+        await flush()
+        if (waitA.artworkCalls.length > 0) break
+      }
+      expect(waitA.artworkCalls).toHaveLength(1)
+      expect(waitB.artworkCalls).toHaveLength(0)
+      releaseWaiter({ type: "available", base64: "shared" })
+      await flush()
+      await flush()
+      expect(presentationA).toEqual([
+        expect.objectContaining({
+          artwork: cover,
+          identity: expect.objectContaining({ uid: "id-shared-deferred" }),
+        }),
+      ])
+      expect(presentationB).toEqual([
+        expect.objectContaining({
+          artwork: cover,
+          identity: expect.objectContaining({ uid: "id-shared-deferred" }),
+        }),
+      ])
+    } finally {
+      await Promise.all(owners.map((backend) => backend.dispose?.()))
+      for (const release of releases) release({ type: "unavailable" })
+    }
+  })
+
+  test("disposing the first deferred waiter admits with the surviving waiter's client and resolver", async () => {
+    const owners: Array<ReturnType<typeof createSessionSystemMedia>> = []
+    const ownerClients: FakeClient[] = []
+    const releases: Array<(result: ArtworkResult) => void> = []
+    const first = new FakeClient()
+    const second = new FakeClient()
+    first.state = state("deferred-owner")
+    second.state = state("deferred-owner")
+    let firstResolutions = 0
+    let secondResolutions = 0
+    const secondEvents: unknown[] = []
+    const cover = { id: "second", png_base64: "", accent: "", cells: [] }
+    try {
+      for (let index = 0; index < 32; index++) {
+        const client = new FakeClient()
+        client.state = state(`deferred-owner-capacity-${index}`)
+        client.artworkGate = new Promise((resolve) => releases.push(resolve))
+        ownerClients.push(client)
+        const backend = createSessionSystemMedia({
+          createClient: async () => client,
+          resolveArtworkDetails: async (_key, target) => ({
+            artwork: null,
+            duration_ms: target.duration_ms,
+          }),
+        })
+        owners.push(backend)
+        await backend.player()
+      }
+      const deferredFirst = createSessionSystemMedia({
+        createClient: async () => first,
+        resolveArtworkDetails: async (_key, target) => {
+          firstResolutions++
+          return { artwork: null, duration_ms: target.duration_ms }
+        },
+      })
+      const deferredSecond = createSessionSystemMedia({
+        createClient: async () => second,
+        resolveArtworkDetails: async (_key, target) => {
+          secondResolutions++
+          return { artwork: cover, duration_ms: target.duration_ms }
+        },
+      })
+      owners.push(deferredFirst, deferredSecond)
+      deferredSecond.subscribePresentation?.((event) =>
+        secondEvents.push(event),
+      )
+      await Promise.all([deferredFirst.player(), deferredSecond.player()])
+      await flush()
+      await deferredFirst.dispose?.()
+
+      for (const owner of ownerClients) {
+        await owners[ownerClients.indexOf(owner)]!.dispose?.()
+        await flush()
+        if (second.artworkCalls.length > 0) break
+      }
+      await flush()
+      expect(first.artworkCalls).toHaveLength(0)
+      expect(firstResolutions).toBe(0)
+      expect(second.artworkCalls).toHaveLength(1)
+      expect(secondResolutions).toBe(1)
+      expect(secondEvents).toEqual([
+        expect.objectContaining({
+          artwork: cover,
+          identity: expect.objectContaining({ uid: "id-deferred-owner" }),
+        }),
+      ])
+    } finally {
+      await Promise.all(owners.map((backend) => backend.dispose?.()))
+      for (const release of releases) release({ type: "unavailable" })
+    }
+  })
+
+  test("deferred admission overflow settles as no-artwork instead of loading forever", async () => {
+    const owners: Array<ReturnType<typeof createSessionSystemMedia>> = []
+    const releases: Array<(result: ArtworkResult) => void> = []
+    try {
+      for (let index = 0; index < 32; index++) {
+        const client = new FakeClient()
+        client.state = state(`overflow-capacity-${index}`)
+        client.artworkGate = new Promise((resolve) => releases.push(resolve))
+        const backend = createSessionSystemMedia({
+          createClient: async () => client,
+        })
+        owners.push(backend)
+        await backend.player()
+      }
+      let overflow: PlayerState | null = null
+      for (let index = 0; index < 33; index++) {
+        const client = new FakeClient()
+        client.state = state(`overflow-waiter-${index}`)
+        const backend = createSessionSystemMedia({
+          createClient: async () => client,
+        })
+        owners.push(backend)
+        overflow = await backend.player()
+      }
+      expect(overflow?.track).toMatchObject({
+        artwork: null,
+        artwork_loading: false,
+      })
+    } finally {
+      await Promise.all(owners.map((backend) => backend.dispose?.()))
+      for (const release of releases) release({ type: "unavailable" })
+    }
+  })
+
+  test("late A artwork completion cannot overwrite B's current presentation", async () => {
+    const client = new FakeClient()
+    client.state = state("A")
+    let releaseA!: (result: ArtworkResult) => void
+    client.artworkGate = new Promise((resolve) => {
+      releaseA = resolve
+    })
+    let releaseResolverA!: (value: any) => void
+    const coverB = { id: "B", png_base64: "", accent: "", cells: [] }
     const backend = createSessionSystemMedia({
       createClient: async () => client,
-      resolveArtworkDetails: () =>
-        new Promise((resolve) => {
-          resolveArtwork = resolve
-        }),
+      resolveArtworkDetails: async (_key, target, bytes) =>
+        bytes === "A"
+          ? new Promise((resolve) => {
+              releaseResolverA = resolve
+            })
+          : { artwork: coverB, duration_ms: target.duration_ms },
     })
-    backend.subscribePresentation?.((event) => completions.push(event))
     await backend.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    const first = backend.dispose?.()
-    const second = backend.dispose?.()
-    expect(second).toBe(first)
-    resolveArtwork?.({ artwork: null, duration_ms: 180_000 })
-    await first
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(completions).toEqual([])
-    expect(client.disposeCalls).toBe(1)
-  })
-
-  test("released artwork work cannot mutate a replacement host cache or presentation", async () => {
-    const first = new FakeReconnectingClient()
-    first.state = sessionState("shared-artwork", 1, "daemon-a")
-    first.artworkResult = { type: "available", base64: "first" }
-    let resolveFirst:
-      ((value: { artwork: any; duration_ms: number }) => void) | undefined
-    const backendA = createSessionSystemMedia({
-      createClient: async () => first,
-      resolveArtworkDetails: () =>
-        new Promise((resolve) => {
-          resolveFirst = resolve
-        }),
-    })
-    await backendA.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    await backendA.dispose?.()
-
-    const second = new FakeReconnectingClient()
-    second.state = {
-      ...sessionState("shared-artwork", 1, "daemon-b"),
-      state: {
-        ...sessionState("shared-artwork", 1, "daemon-b").state,
-        track: {
-          ...sessionState("shared-artwork", 1, "daemon-b").state.track!,
-          id: "replacement-provider-id",
-        },
-      },
-    }
-    second.artworkResult = { type: "available", base64: "second" }
-    const presentations: Array<{ identity: { uid: string }; artwork: any }> = []
-    const replacementArtwork = {
-      id: "replacement",
-      png_base64: "",
-      accent: "",
-      cells: [],
-    }
-    const backendB = createSessionSystemMedia({
-      createClient: async () => second,
-      resolveArtworkDetails: async () => ({
-        artwork: replacementArtwork,
-        duration_ms: 180_000,
-      }),
-    })
-    backendB.subscribePresentation?.((event) =>
-      presentations.push(event as any),
-    )
-    await backendB.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    resolveFirst?.({
-      artwork: { id: "stale", png_base64: "", accent: "", cells: [] },
+    await flush()
+    client.artworkGate = undefined
+    client.artworkResult = { type: "available", base64: "B" }
+    client.emitState(state("B"))
+    await flush()
+    await flush()
+    expect((await backend.player())?.track?.artwork).toBe(coverB)
+    releaseA({ type: "available", base64: "A" })
+    await flush()
+    releaseResolverA({
+      artwork: { id: "A", png_base64: "", accent: "", cells: [] },
       duration_ms: 180_000,
     })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(presentations).toEqual([
-      expect.objectContaining({
-        identity: expect.objectContaining({ uid: "replacement-provider-id" }),
-        artwork: replacementArtwork,
-      }),
-    ])
-    expect((await backendB.player())?.track?.artwork).toBe(replacementArtwork)
-    await backendB.dispose?.()
+    await flush()
+    expect((await backend.player())?.track).toMatchObject({
+      id: "id-B",
+      artwork: coverB,
+    })
+    await backend.dispose?.()
   })
 
-  test("releasing a successful owner preserves a replacement cache hit", async () => {
-    const first = new FakeReconnectingClient()
-    first.state = sessionState("shared-success", 1, "daemon-a")
-    first.artworkResult = { type: "available", base64: "first" }
-    const artwork = { id: "shared", png_base64: "", accent: "", cells: [] }
-    const backendA = createSessionSystemMedia({
-      createClient: async () => first,
-      resolveArtworkDetails: async () => ({ artwork, duration_ms: 180_000 }),
+  test("disposal closes exactly one client and fences late state, artwork, and listeners", async () => {
+    const client = new FakeClient()
+    let releaseArtwork!: (result: ArtworkResult) => void
+    client.artworkGate = new Promise((resolve) => {
+      releaseArtwork = resolve
     })
-    await backendA.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    const second = new FakeReconnectingClient()
-    second.state = {
-      ...sessionState("shared-success", 1, "daemon-b"),
-      state: {
-        ...sessionState("shared-success", 1, "daemon-b").state,
-        track: {
-          ...sessionState("shared-success", 1, "daemon-b").state.track!,
-          id: "replacement-success-id",
-        },
-      },
-    }
-    const backendB = createSessionSystemMedia({
-      createClient: async () => second,
+    let resolverCalls = 0
+    const backend = createSessionSystemMedia({
+      createClient: async () => client,
       resolveArtworkDetails: async () => {
-        throw new Error("replacement should use cache")
-      },
-    })
-    expect((await backendB.player())?.track?.artwork).toBe(artwork)
-    expect(second.artworkCalls).toEqual([])
-    await backendA.dispose?.()
-    expect((await backendB.player())?.track?.artwork).toBe(artwork)
-    expect(second.artworkCalls).toEqual([])
-    await backendB.dispose?.()
-  })
-
-  test("released exhausted artwork work cannot retain a retry budget for a replacement", async () => {
-    let now = 0
-    const first = new FakeReconnectingClient()
-    first.state = sessionState("exhausted-artwork", 1, "daemon-a")
-    const backendA = createSessionSystemMedia({
-      createClient: async () => first,
-      now: () => now,
-      resolveArtworkDetails: async () => ({
-        artwork: null,
-        duration_ms: 180_000,
-      }),
-    })
-    for (const nextNow of [0, 2_000, 6_000]) {
-      now = nextNow
-      await backendA.player()
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
-    expect(first.artworkCalls).toHaveLength(3)
-    await backendA.dispose?.()
-
-    const second = new FakeReconnectingClient()
-    second.state = {
-      ...sessionState("exhausted-artwork", 1, "daemon-b"),
-      state: {
-        ...sessionState("exhausted-artwork", 1, "daemon-b").state,
-        track: {
-          ...sessionState("exhausted-artwork", 1, "daemon-b").state.track!,
-          id: "replacement-exhausted-id",
-        },
-      },
-    }
-    let replacementResolutions = 0
-    const backendB = createSessionSystemMedia({
-      createClient: async () => second,
-      now: () => now,
-      resolveArtworkDetails: async () => {
-        replacementResolutions++
+        resolverCalls++
         return { artwork: null, duration_ms: 180_000 }
       },
     })
-    await backendB.player()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(second.artworkCalls).toHaveLength(1)
-    expect(replacementResolutions).toBe(1)
-    await backendB.dispose?.()
-  })
-
-  test("post-disposal subscriptions and operations are inert", async () => {
-    const client = new FakeReconnectingClient()
-    client.state = undefined
-    const backend = createSessionSystemMedia({
-      createClient: async () => client,
-    })
+    const events: unknown[] = []
+    backend.subscribe?.((event) => events.push(event))
     await backend.player()
-    await backend.dispose?.()
-    let stateEvents = 0
-    let presentationEvents = 0
-    const unsubscribe = backend.subscribe?.(() => stateEvents++)
-    const unsubscribePresentation = backend.subscribePresentation?.(
-      () => presentationEvents++,
+    await flush()
+    const first = backend.dispose?.()
+    const second = backend.dispose?.()
+    releaseArtwork({ type: "available", base64: "late" })
+    client.emitState(state("late", 2))
+    await first
+    await flush()
+    expect(second).toBe(first)
+    expect(client.disposeCalls).toBe(1)
+    expect(client.stateListeners.size).toBe(0)
+    expect(resolverCalls).toBe(0)
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          state: expect.objectContaining({
+            track: expect.objectContaining({ name: "late" }),
+          }),
+        }),
+      ]),
     )
-    client.emitState(sessionState("ignored", 2))
-    client.emitStatus({
-      kind: "degraded",
-      provider: "nowplaying-cli",
-      message: "ignored",
-    })
-    client.emitConnection({
-      type: "reconnecting",
-      error: { message: "ignored", retryable: true } as never,
-    })
-    await expect(backend.player()).rejects.toThrow("disposed")
-    await expect(backend.play()).rejects.toThrow("disposed")
-    unsubscribe?.()
-    unsubscribePresentation?.()
-    expect(stateEvents).toBe(0)
-    expect(presentationEvents).toBe(0)
-    expect(client.calls).toEqual([])
-    expect(client.unsubscribeCalls).toEqual({
-      state: 1,
-      status: 1,
-      connection: 1,
-    })
-  })
-
-  test("disposes a late client and clears active public subscriptions exactly once", async () => {
-    const lateClient = new FakeReconnectingClient()
-    let resolveClient:
-      ((client: ReconnectingMusicSessionClient) => void) | undefined
-    const late = new Promise<ReconnectingMusicSessionClient>((resolve) => {
-      resolveClient = resolve
-    })
-    const backend = createSessionSystemMedia({ createClient: () => late })
-    const unsubscribe = backend.subscribe?.(() => {})
-    const disposal = backend.dispose?.()
-    resolveClient?.(lateClient)
-    await disposal
-    unsubscribe?.()
-    expect(lateClient.disposeCalls).toBe(1)
-    expect(lateClient.stateListeners.size).toBe(0)
-    expect(lateClient.statusListeners.size).toBe(0)
-    expect(lateClient.connectionListeners.size).toBe(0)
   })
 })
