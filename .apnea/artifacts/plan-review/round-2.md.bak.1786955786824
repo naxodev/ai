@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — Required OpenCode shutdown remains unimplemented
+
+The round-1 blocker is unchanged. The dispatch requires sending `escape` and then `ctrl+d` exactly once after canonical media restoration, and explicitly says not to use `/exit` or command-palette Exit. The plan contains no `ctrl+d` operation and still requires `/exit` in the run-wide constraints, Phase 1 step 12, acceptance checks, `send_opencode_exit_once`, recovery, and the normal shutdown call.
+
+Update both the narrative and executable harness. A guarded shutdown helper must send `escape` followed by `ctrl+d` exactly once, never submit `/exit`, and preserve the dedicated polling for saved shell foreground PID, host PID absence, and process-group emptiness. Recovery must honor the same guard: after the shortcut has been sent it may only poll, and before submission it must not use `/exit` as a fallback.

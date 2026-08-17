@@ -1,0 +1,8 @@
+---
+status: done
+verdict: APPROVED
+---
+
+# Findings
+
+No blocking findings. The revised plan records exact group-leader host PIDs, polls socket ownership by exact PID, and implements the required one-shot `/exit` flow with an independent 60-second shell/host/group poll and mandatory final sample. Both phases have coherent scope, acceptance checks, and bounded verification commands.

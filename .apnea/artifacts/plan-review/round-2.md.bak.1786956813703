@@ -1,0 +1,16 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Critical
+
+1. **The executable verification body still performs the forbidden `/exit` shutdown.** Although the prose was updated, `send_opencode_exit_once` still logs and submits `/exit`, and both the normal path and recovery call it. Replace that helper with the guarded `escape` then `ctrl+d` sequence, exactly once, without inspecting visible shortcut/help/exit text. Update the stale recovery comment as well. The executable body must match the dispatch and its own acceptance checks.
+
+## Major
+
+2. **The OpenCode exit poll still aborts on the first transient process-info/JSON failure.** `sample_opencode_exit` returns `2`, and `wait_opencode_exit` immediately returns for that result. Retry such sampling failures through the 60-second deadline, recording them, and retain the mandatory final fresh sample before timeout failure.
+
+3. **The Pi host-classification command does not implement the revised acceptance contract.** The prose now requires the leader to have PID=PGID, `argv0=pi`, `name=node`, and repository `cwd`, with the resolved CLI path retained as separate provenance. The `pi` branch of `wait_exact_host_group` instead still requires the resolved CLI path to appear in `argv` and never checks `argv0`, `name`, or `cwd`. Make the runnable classifier enforce the stated stable signature and keep the exact root/version/profile/resolved-CLI/launch-command evidence separately.

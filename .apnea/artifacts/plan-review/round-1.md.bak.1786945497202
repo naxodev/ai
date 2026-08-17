@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Blocker
+
+1. **The plan incorrectly makes VLC's `contentItemIdentifier` part of playback identity and restoration equality.** The dispatch explicitly says to record the raw identifier but exclude it from identity/restoration because VLC regenerates it across play/pause. Instead, `media_snapshot` renames it to `contentIdentity`, `same_identity` removes only `playing`, and numerous gates require byte equality with `chosen_original` (`certify_current_media`, `restore_original_directly`, host checks, post-control restoration, and final restoration). A valid VLC toggle can therefore fail certification solely because this unstable identifier changed.
+
+   Revise the evidence model so each observation retains the raw `contentItemIdentifier`, while playback identity compares only `bundleIdentifier`, `processIdentifier`, `title`, `artist`, `album`, and `duration`. Restoration equality must compare those stable fields plus the original `playing` value, never `contentItemIdentifier`. Apply that distinction consistently to transition polling, stability checks, recovery, host assertions, final restoration, acceptance language, and the Phase 2 evidence claims.

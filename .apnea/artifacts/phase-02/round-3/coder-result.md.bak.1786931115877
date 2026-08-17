@@ -1,0 +1,102 @@
+---
+status: done
+---
+
+# Phase 2 live-certification rework result — blocked by live host failure
+
+## What changed
+
+No product, policy, test, configuration, or documentation file was changed.
+
+Per the rework direction, I created a Herdr-owned regular-shell tab with three regular panes and performed the live run. The run exposed a host-initialization defect before either UI could display the active track or issue a transport action, so I stopped Stage B as required by the package rather than substituting synthetic evidence.
+
+- OpenCode loaded the checkout path but its real UI displayed **`1 plugin failed`**.
+- Pi loaded the checkout `music-dock` extension, then displayed **`Error: music session endpoint is occupied by an unclassifiable peer`**.
+- The immediate inspection sample found no `music-session*` process and no production `s.sock`; therefore the required one-daemon/socket ownership assertions could not be made.
+
+## Files touched
+
+- `.apnea/artifacts/phase-02/round-3/coder-result.md` (this required artifact only)
+
+## Regular-pane setup and live observations
+
+Created and later closed Herdr tab `w2:t8` (`mixed-host-certification`) with only these owned regular shell panes:
+
+- `w2:pDS` (`mixed-opencode`), 82×71 cells
+- `w2:pDT` (`mixed-pi`), 41×71 cells
+- `w2:pDV` (`mixed-inspection`), 41×71 cells
+
+Stage A at `2026-08-16T23:59:06Z` used real `media-control` at `/opt/homebrew/bin/media-control`. It started the active Kaset track **Kiasmos — Wrecked**; the observed provider JSON recorded `"playing":true`. The initial production daemon/socket/lock baseline was absent.
+
+OpenCode launch at `2026-08-16T23:59:43Z` used the packaged isolated shell with checkout plugin path `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player`, temporary config `/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-mixed.peuDX0`, and host PID `5758` (shell PID `5097`). Its rendered UI showed `1 plugin failed`.
+
+Pi launch at `2026-08-16T23:59:52Z` used exact `0.84.0`, `--no-extensions`, checkout extension path `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock`, temporary profile `/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-mixed.8zHFpv`, and host PID `5833` (shell PID `5218`). Pi rendered `[Extensions] music-dock`, then the error quoted above.
+
+Both hosts were exited normally (`ctrl+c` OpenCode, `ctrl+d` Pi); each pane returned to its original zsh shell. At `2026-08-17T00:01:11Z`, both ownership-checked temporary roots were confirmed removed. Playback was returned to its original paused state; the provider reported `Kiasmos — Wrecked` with `"playing":false`.
+
+## Verification transcript
+
+```text
+$ [inspection pane] bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
+exit: 0
+✓ mixed-host Pi and OpenCode clients share FIFO and survive Pi reload [45.03ms]
+1 pass, 50 filtered out, 0 fail
+
+$ test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'
+exit: 0
+opencode=opencode2 v0.0.0-next-17386
+
+$ bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+exit: 0
+pi=0.84.0
+
+$ command -v media-control; realpath packages/opencode-music-player; realpath packages/pi-music-dock
+exit: 0
+provider=media-control path=/opt/homebrew/bin/media-control
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock
+
+$ ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"; media-control play; sleep 1; media-control get --no-artwork
+exit: 0
+{"artist":"Kiasmos","contentItemIdentifier":"F092650B-9962-42E6-A3B9-E46333DF45C3","title":"Wrecked","bundleIdentifier":"com.sertacozercan.Kaset","playing":true,"processIdentifier":22072,"timestamp":"2026-08-16T22:12:23Z","playbackRate":1}
+stage_a=pass
+
+$ [OpenCode UI observation]
+exit: 0
+1 plugin failed
+OpenCode PID 5758: /Users/nachovazquez/.bun/bin/opencode2 --auto --standalone --log-level error /Users/nachovazquez/work/1-projects/naxodev/ai
+
+$ [Pi UI observation]
+exit: 0
+[Extensions]
+  music-dock
+Error: music session endpoint is occupied by an unclassifiable peer
+Pi PID 5833: pi
+
+$ pgrep -alf 'music-session|music_session' || true; socket="/tmp/naxodev-music-$(id -u)/s.sock"; ls -ld "$(dirname "$socket")"; ls -l "$socket" 2>&1; stat -f 'socket uid:mode=%u:%Lp type=%HT' "$socket" 2>&1; lsof -n "$socket" 2>&1
+exit: 0 (diagnostic command permits absent results)
+music_session_processes:
+socket_path=/tmp/naxodev-music-501/s.sock
+drwx------@ - nachovazquez ... /tmp/naxodev-music-501
+"/tmp/naxodev-music-501/s.sock": No such file or directory (os error 2)
+stat: /tmp/naxodev-music-501/s.sock: stat: No such file or directory
+lsof: status error on /private/tmp/naxodev-music-501/s.sock: No such file or directory
+
+$ test ! -e .../opencode-mixed.peuDX0; test ! -e .../pi-mixed.8zHFpv; media-control pause; sleep 1; media-control get --no-artwork; sleep 35; ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+exit: 0
+post_failure_cleanup_timestamp=2026-08-17T00:01:11Z
+temporary_roots=removed
+{"artist":"Kiasmos","contentItemIdentifier":"35CD9DBB-6A9F-4FDD-BB1F-5C3F946CAB0B","title":"Wrecked","bundleIdentifier":"com.sertacozercan.Kaset","playing":false,"processIdentifier":22072,"timestamp":"2026-08-17T00:00:03Z","playbackRate":1}
+stage_c_post_close=pass timestamp=2026-08-17T00:01:48Z
+
+$ bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'; test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'; bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'; command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null; ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"; git diff --check; test -z "$(jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+exit: 0
+stage_d_timestamp=2026-08-17T00:02:06Z
+✓ mixed-host Pi and OpenCode clients share FIFO and survive Pi reload [49.70ms]
+1 pass, 50 filtered out, 0 fail
+stage_d=pass
+```
+
+## Residual risks
+
+Phase 2 is not certified. No same-track convergence, OpenCode-to-Pi control, Pi-to-OpenCode control, live daemon/socket/provider ownership, Pi `/reload` generation check, or Pi-exit isolation could be attempted after the observed initialization failures. The exact real-host errors and clean post-close evidence above require a narrow defect investigation/replan; no source fix was made in this phase.

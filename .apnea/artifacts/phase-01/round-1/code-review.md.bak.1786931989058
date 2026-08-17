@@ -1,0 +1,20 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+The phase package matches the approved Phase 1 scope; the findings below are against its implementation and acceptance evidence.
+
+## High — Required exact OpenCode attachment evidence is missing
+
+The coder result explicitly reports that the isolated `@opencode-ai/cli@0.0.0-next-17386` install failed the required binary-containment check and aborted before OpenCode launched. Consequently there is no current-checkout OpenCode UI/plugin observation and no before/during/after attachment evidence for that host. Exact isolated OpenCode attachment is a Phase 1 acceptance requirement, so the phase cannot be approved from package-smoke evidence or the successful Pi run alone. Resolve the isolated-install blocker without using the mutable global binary or weakening containment, then retain the required healthy UI and unchanged PID/generation/socket checkpoints.
+
+## High — Reset classification does not prove that the marker generation stayed unchanged
+
+`packages/music-core/session/config.ts:775-797` snapshots only marker filesystem identity (`dev`, `ino`, `uid`, and `mode`). `ManagedRuntimeProbe.starting()` later compares only that identity through `sameProof`; it does not snapshot and compare the marker's `attemptToken`, PID, or parsed validity/liveness from before the hello. A marker can therefore be rewritten in place on the same inode during the hello-reset window and the new live marker can authorize `starting`, even though it is a different startup generation. This violates the package's requirement for an independently proven live, unchanged marker/generation and its marker-token constraint. Snapshot a valid live marker generation before hello, revalidate the same token/PID and artifact afterward, and add a deterministic same-inode content-replacement test that remains terminal and grants no cleanup.
+
+## Medium — The required launcher-to-acquisition regression is still not present
+
+The launcher test at `packages/music-core/tests/session-client.test.ts:1332` verifies split diagnostics only by reading `launch.earlyFailure()` directly. The acquisition test at `:2178` uses a fabricated launcher whose `earlyFailure()` already returns a completed error and whose `ready()` returns `true`; it neither drives `launchManagedMusicSessionDaemon` nor emits split stderr and a pre-readiness child exit through `connectOrStartMusicSessionEffect`. Thus the explicit coordinator-boundary requirement remains untested, and the claimed host-boundary propagation evidence can pass even if the real launcher and coordinator are not wired together correctly. Add the required managed-child seam test that emits split diagnostics, exits before readiness, and asserts the acquisition call receives the bounded `operation: "exit"` error rather than timeout or occupied.

@@ -1,0 +1,14 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — Media preflight can still abandon changed playback instead of restoring it
+
+Block B remains under `set -e` with unguarded `media-control toggle-play-pause` and `wait_media_state` commands. A nonzero toggle or timeout exits the persistent shell immediately, before the post-operation checkpoint and, after the first toggle, potentially before playback restoration. The prose after the block cannot provide the required fail-closed recovery once that shell has exited. Guard each operation explicitly, retain failure-boundary evidence, and attempt and verify restoration whenever the candidate may have changed before rejecting it or selecting another source.
+
+### High — Phase 1's core verification is still deferred to placeholders
+
+Block C still omits executable setup and assertions for returned-ID pane creation, isolated roots and launches, process capture, simultaneous UI markers, exact reload identity/inventory comparison, ownership-checked root deletion, and returned-tab cleanup. Essential checks remain comments such as “assert both rendered UIs,” “compare exact pre/post,” and “assert the tab.” The palette helper also only proves that group/title text appears somewhere in the rendered output, not that the required row is visibly selected. Deferring these items to a future phase package leaves the plan without self-contained verify commands for its central acceptance criteria. Add the concrete fail-closed operator sequence and assertions before approval.

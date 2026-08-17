@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Critical
+
+1. **The plan still uses the explicitly forbidden OpenCode `/exit` flow.** Its constraints, ordered work, acceptance checks, normal harness, and recovery all retain `/exit` and reject command-palette Exit. Replace this with the dispatch-required sequence: Escape, `ctrl+p`, prove a clean search, type exact `Exit`, capture text and ANSI containing `System` and `Exit`, set a pre-Enter submission guard, press Enter exactly once, then poll the saved shell PID, host PID, and process group.
+
+2. **Pi launch classification still tests the obsolete `dist/cli.js` argv signature.** The stable integrated leader must be accepted only when PID equals PGID, `argv0` is exactly `pi`, `name` is exactly `node`, and `cwd` is exactly the repository. Transient wrappers must continue to be retried. Keep exact version/root/profile validation before launch and exact-leader-PID socket-peer validation afterward rather than substituting either for the required runtime signature.
+
+## High
+
+3. **Recovery remains unsafe relative to the required Exit action.** It still calls the `/exit` helper when the old guard is unset. Recovery must neither use `/exit` nor submit palette Enter a second time. If failure occurs before a safe palette submission can be established, preserve the uncertain OpenCode resource; after submission, only poll using the saved identities.
+
+The same blocking defects remain in the executable verify commands, so the otherwise structured phases and acceptance checks cannot be approved.

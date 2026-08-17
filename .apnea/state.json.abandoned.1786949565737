@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "slug": "music-session-vlc-product-hygiene",
+  "step": "code_review",
+  "phase_index": 1,
+  "phase_count_hint": null,
+  "rounds": {
+    "plan_review": 2,
+    "phase-01/code_review": 1
+  },
+  "vcs": "jj",
+  "allow_dirty": true,
+  "goal": "Complete final live certification and pr-description.md. Phase 1 uses selected VLC; stable identity excludes raw contentItemIdentifier; rendered host UI requires state marker, Pi waveform, and title only. Use exact hosts, command query plus observed transition, Pi reload polling, normal exits/cleanup, protected daemon continuity, and no product diff. Product whitespace checks must exclude .apnea because generated transcript backups contain ANSI/trailing whitespace; use git diff --check -- . \":(exclude).apnea\" while separately preserving Apnea records through the package manifest. Parse Herdr tab root_pane. No Music.app/AppleScript. Allow unrelated peer churn. Coder may operate regular panes. Phase 2 writes pr-description.md. Preserve verified commits/Apnea records. Do not push/open PR. Use self-contained checks, jj, Effect v4, never edit state manually.",
+  "last_error": null,
+  "pending_artifact": null,
+  "pending_role": null,
+  "pending_pane_id": null,
+  "pending_pane_label": null,
+  "pending_floating_exit": null,
+  "pending_started_at": null,
+  "pending_deadline_ms": null,
+  "pending_nudged_at": null,
+  "pending_final_grace": false,
+  "pending_extended": false,
+  "role_panes": {
+    "planner": {
+      "pane_id": "w2:pJN",
+      "label": "apnea:planner:mswvavpo-6b0z"
+    },
+    "reviewer": {
+      "pane_id": "w2:pJM",
+      "label": "apnea:reviewer:mswv6mzf-wrj1"
+    },
+    "coder": {
+      "pane_id": "w2:pJP",
+      "label": "apnea:coder:mswveebu-chhk"
+    }
+  },
+  "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
+  "reviewer_tree_fingerprint": null,
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": null
+}

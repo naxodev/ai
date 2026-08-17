@@ -1,0 +1,17 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## High — Exact-host launch classification is still absent
+
+The required round-1 change is not reflected in the plan. Phase 1 still defines `wait_non_shell_group` with a 30-second deadline, accepts the first foreground group differing from the shell, and may immediately fail on an incomplete sample. Neither that function nor the OpenCode/Pi call sites validates the group leader's argv/path against the owned installation.
+
+The launch poll must continue for up to 60 seconds when it observes `zsh`, `env`, Bun, a wrapper, a missing/incomplete leader sample, or any other nonmatching command. It may classify only:
+
+- OpenCode when the group leader's argv/path equals the owned exact `opencode2.exe` binary.
+- Pi when the group leader's argv command contains the owned Pi root path `node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
+
+Only after this host-specific match may the plan mark the group recovery-owned and begin the separate exact-PID `lsof` peer poll. Add these exact predicates and the 60-second transient-tolerant behavior to the ordered work, acceptance checks, and executable verify harness.

@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — The handoff/history verification is already unsatisfiable in the current checkout
+
+Phase 1 blocks on `@ & 978593ca`, and Phase 2 later requires `978593ca & ancestors(@)`. In the current checkout, `@` is `4e17cb63` (the rewritten `twlqknws` change), its parent is `bd952919`, and both expressions for `978593ca` are empty. Thus verify blocks A and D fail before certification, while the plan still claims that `978593ca` is current/preserved. Reconcile the plan with the actual immutable history and the requirement not to rewrite unrelated Apnea records: either establish a truthful approved boundary that can be verified from the present checkout or explicitly treat the missing ancestry as an external blocker. Do not present the current commands as a runnable completion path.
+
+### High — Media preflight can abandon changed playback instead of restoring it
+
+Block B runs under `set -e` and executes both `media-control` calls and `wait_media_state` as unguarded commands. A nonzero toggle or timeout exits the persistent shell immediately, before the post-operation checkpoint and, after a successful first toggle, potentially before restoration. The prose saying to restore/select another source cannot execute under that control flow and does not meet the dispatch's fail-closed restoration requirement. Guard each operation explicitly, retain the failed boundary evidence, attempt verified restoration whenever state may have changed, and only then reject the candidate or continue with a recorded replacement source.
+
+### High — Phase 1's core verify sequence remains placeholders rather than runnable verification
+
+Block C omits the exact install/configuration, returned-ID pane creation, host launch, process capture, UI/state assertions, reload comparisons, ownership-checked root deletion, and returned-tab cleanup. Several essential checks are only comments such as “assert both rendered UIs,” “compare exact pre/post,” and “assert the tab.” Deferring these to a future phase package does not give this plan self-contained verify commands for its acceptance criteria. Supply the concrete fail-closed operator sequence, including assertions that the rendered palette item is actually selected (not merely present somewhere in ANSI output), before approval.

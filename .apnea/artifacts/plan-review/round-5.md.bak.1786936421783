@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — Round 4’s executable-verification finding remains unresolved
+
+The harness still defines the process-verification helpers without invoking them. In the Pi reload sequence, it only compares `foreground_process_group_id`; there are no assignments or assertions using `foreground_identity`, `foreground_commands`, or `process_group_inventory`. In both exit sequences, it still uses only the old `ps -axo pgid=` test; it never invokes `assert_recorded_foreground_gone` or `assert_process_group_empty`, and it never captures OpenCode’s foreground identity before `/quit`.
+
+Therefore the verify commands still do not prove the plan’s exact PID/command continuity and termination acceptance criteria. Add the actual before/after captures and equality assertions to the executable sequence, and call the recorded-PID and process-group assertions after each normal shell return and before cleanup.

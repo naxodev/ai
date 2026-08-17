@@ -1,0 +1,36 @@
+---
+status: done
+---
+
+# Phase 1 certification result
+
+No product files were changed. I generated and ran the approved A/B/C supervisor outside the repository; Gate A failed before the live harness, so no VLC control, host launch, Herdr pane, reload, or cleanup operation was performed.
+
+## Verification transcript
+
+Command:
+
+```sh
+/tmp/vlc-final-cert-runner.sh > /tmp/vlc-final-cert-output.log 2>&1
+```
+
+Exit: `2`
+
+Tail of output:
+
+```text
+.apnea/artifacts/phase-01/round-1/coder-result.md.bak.1786948612447:1962: trailing whitespace.
++2026-08-17T06:27:01Z owned-peer=pi row=38527	17u	->0x70ce8d3d735c58d2	pi      
+.apnea/artifacts/phase-01/round-1/coder-result.md.bak.1786948612447:1965: trailing whitespace.
++38527	17u	->0x70ce8d3d735c58d2	pi      
+.apnea/artifacts/phase-01/round-1/coder-result.md.bak.1786948612447:1968: trailing whitespace.
++2026-08-17T06:27:02Z host=pi shell-pid=37140 pgid=38527 process-info=... foreground-commands=38527	pi       group-inventory=38527	37140	38527	pi       owned-peer=38527	17u	->0x70ce8d3d735c58d2	pi      
+.apnea/artifacts/phase-01/round-1/coder-result.md.bak.1786948612447:2682: trailing whitespace.
++38527	17u	->0x70ce8d3d735c58d2	pi      
+.apnea/artifacts/phase-01/round-1/coder-result.md.bak.1786948612447:2879: trailing whitespace.
++<ANSI evidence with trailing whitespace>
+```
+
+## Residual risk
+
+The required Gate A `git diff --check` is blocked by pre-existing trailing whitespace in the non-allowlisted `.apnea/artifacts/phase-01/round-1/coder-result.md.bak.1786948612447`. The phase package prohibits changing that path, and its manifest requires all non-allowlisted Apnea records to remain unchanged. Certification cannot proceed fail-closed until the orchestrator resolves this conflicting repository state.

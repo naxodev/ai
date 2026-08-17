@@ -1,0 +1,37 @@
+---
+status: done
+---
+
+## Result
+
+Live certification did **not** pass. I ran gate A and the persistent gate-B harness once from the approved package; gate A completed and B reached the exact OpenCode launch. B exited 1 before OpenCode classification/peer ownership was recorded, so gate C was not run (as required).
+
+No product source, tests, configuration, manifests, lockfiles, commits, or `.apnea/state.json` were edited.
+
+## Verify transcript
+
+Command: approved supervisor setup, then the exact package A/B/C blocks sourced in one persistent Bash process (C conditioned on B success).
+
+- Gate A: exit 0 (B began after its repository/prerequisite checks).
+- Gate B: exit 1.
+- Gate C: not run because B was nonzero.
+- Full captured transcript: `/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/vlc-certification.log.VfoMdZ` (197748 bytes).
+
+Tail/evidence:
+
+```text
+2026-08-17T07:16:28Z checkpoint=pre-opencode-launch endpoint=16777231:1237478212:501:600 generation=music-session-zqg8kksdwec unrelated-peer-churn-allowed=true
+2026-08-17T07:16:28Z recovery-start rc=1 oc-live=0 pi-live=0 oc-submitted=1 pi-submitted=0 tab=w2:tS oc-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.ZbVjhq pi-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-vlc-cert.8jxmbC
+2026-08-17T07:16:29Z media=recovery-before-restore raw-contentItemIdentifier="F12E2506-1A5A-4267-85D0-4818BC13761A" canonical={"album":"","artist":"","bundleIdentifier":"org.videolan.vlc","duration":1454,"playing":true,"processIdentifier":68175,"title":"The Well of Ascension_ Mistborn, Book 2 (Unabridged)- Track 18.mp3"}
+2026-08-17T07:16:31Z recovery-preserved-uncertain-resources=true
+```
+
+Fresh process evidence after the failure shows the submitted host is still foreground, but B never reached the point that marks it recovery-owned:
+
+```json
+{"foreground_process_group_id":78390,"foreground_processes":[{"pid":78390,"name":"opencode2.exe","cmdline":"/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.ZbVjhq/node_modules/@opencode-ai/cli/bin/opencode2.exe --standalone --log-level error /Users/nachovazquez/work/1-projects/naxodev/ai"}],"shell_pid":78022}
+```
+
+## Residual risks
+
+The package's fail-closed recovery intentionally retained uncertain resources. Do not treat this as certified: tab `w2:tS`, panes `w2:pK5`/`w2:pK6`, OpenCode PID/group `78390`, and the two reported temporary roots remain for review. The selected VLC canonical state was restored to its original playing state; protected endpoint/generation were still the recorded values during recovery. Because B failed, the required final cleanup, final topology checks, Apnea comparison, and gate C have no passing evidence.

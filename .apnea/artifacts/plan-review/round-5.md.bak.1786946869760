@@ -1,0 +1,8 @@
+---
+status: done
+verdict: APPROVED
+---
+
+# Findings
+
+No blocking findings. The plan now separates raw VLC observations from canonical playback identity/state equality and directly verifies media-state continuity immediately after Pi exits. Both phases have coherent acceptance checks and concrete, bounded verify commands.

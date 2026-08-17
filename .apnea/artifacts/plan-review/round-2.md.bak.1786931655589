@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## High — The protected-daemon safety issue from round 1 remains unresolved
+
+The Phase 1, Phase 2, and Phase 3 `generation()` helpers still use `createReconnectingMusicSessionClient`, whose production connector is the connect-or-start coordinator. If PID `45621` disappears or the endpoint changes before one of these calls, the verification command can acquire the startup lease, clean stale state, and launch a replacement daemon. Phase 2 and Phase 3 even perform their initial `generation()` call before asserting that PID `45621` is still present. This violates the explicit requirement that a missing or changed production baseline must block the run and must never grant authority to start, clean, or replace the unrelated daemon.
+
+Replace every live generation probe with a strictly attachment-only client operation against the already-validated socket, such as `createMusicSessionClient`, or another one-shot API guaranteed never to start or clean a daemon. Surround each observation with fail-closed checks of PID/command and socket identity/ownership, and compare the returned generation to the retained baseline. Apply the correction consistently to the Phase 1 host checkpoint, Phase 2 pre/post gate, and all Phase 3 baseline/reload/exit checks.

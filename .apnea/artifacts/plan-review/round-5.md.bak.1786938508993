@@ -1,0 +1,14 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — Media certification can still ignore protected-checkpoint failures
+
+The revised loop captures the candidate return code correctly, but `prove_media_candidate` is invoked as an `if` condition. Bash disables `errexit` throughout a function whose status is tested by `if`, so the function's unguarded pre/post `checkpoint` calls can fail without stopping it. If playback transitions successfully, the final assignments still return `0` and host launch proceeds despite failed PID/socket/generation/peer evidence. `restore_candidate_if_needed` has the same problem when invoked through `if !`: its unguarded checkpoints can fail while its final restoration tests return success. Explicitly propagate every checkpoint failure as the hard-blocker status (`2`), rather than relying on `set -e` inside conditionally invoked functions.
+
+### High — UI verification still does not prove one coherent music status
+
+`assert_ui` independently searches the entire viewport for a truncated title prefix, truncated artist prefix, and a play/pause glyph. These can come from different UI regions. Its Pi uniqueness test merely counts title-prefix occurrences, not music status components. Consequently the commands cannot establish that each host renders the same identity and state together or that Pi has exactly one music status after launch and `/reload`. Assert the complete extension-specific status row/region with identity and marker together, and count that representation exactly once for Pi.

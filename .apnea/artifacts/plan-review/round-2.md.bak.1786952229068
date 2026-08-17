@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+1. **High — The required launch polling behavior remains unimplemented.** `.apnea/artifacts/plan.md:341` still gives `wait_non_shell_group` only 30 seconds and immediately fails on a transient `process-info` error, an unparsable/missing foreground PGID, or a non-shell sample without exactly one matching group-leader process. It must continue sampling through Herdr failures, empty foreground lists, shell-only samples, and temporarily missing group leaders until a 60-second deadline, succeeding only when the non-shell PGID has exactly its group-leader host PID.
+
+2. **High — Launch deadline failure still lacks the mandatory final process-info and pane capture.** `wait_non_shell_group` still returns directly when its loop expires. Generic `ERR` recovery does not satisfy the explicit requirement for a labeled final fresh process-info attempt and pane text/ANSI capture before the launch poll reports failure.
+
+3. **Medium — The separately ordered exact-host peer poll remains fail-fast.** `.apnea/artifacts/plan.md:445` still aborts immediately when one `peer_inventory` sample fails. Continue bounded independent `lsof` polling across transient inventory failures, while succeeding only when the classified exact host PID owns exactly one daemon peer and ignoring unrelated-peer churn.

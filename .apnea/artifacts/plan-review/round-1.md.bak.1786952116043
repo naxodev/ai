@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+1. **High — Launch classification polling does not meet the required transient-tolerance contract.** In `.apnea/artifacts/plan.md:341`, `wait_non_shell_group` uses a 30-second deadline and immediately returns failure when `herdr pane process-info` fails, its foreground PGID cannot be parsed, or a non-shell sample temporarily lacks exactly one group-leader process. The dispatch requires every such transient sample—including Herdr failures, empty foreground lists, shell-only observations, and a temporarily missing group leader—to be retried until a 60-second deadline. Success must occur only when a non-shell PGID has exactly its group-leader host PID. Revise the function and both launch paths to retain/emit sample diagnostics while continuing on individual invalid samples.
+
+2. **High — Launch timeout does not explicitly take the mandatory final process-info and pane capture.** `wait_non_shell_group` simply returns after its loop. The later generic `ERR` recovery is not an adequate substitute: it runs only after the polling function has failed, does not identify a mandatory final launch sample, and its `process_info` call may itself fail without a preserved structured result. On the 60-second deadline, the launch path must make and emit a final fresh process-info attempt plus pane text/ANSI capture before returning failure.
+
+3. **Medium — The separate exact-peer poll is still fail-fast on a transient inventory error.** `.apnea/artifacts/plan.md:438` correctly begins only after host classification and checks the exact host PID, but `peer_inventory || return 1` aborts the bounded poll on one transient `lsof`/inventory failure. Make individual inventory failures non-terminal and continue bounded polling; still succeed only when that exact host PID owns exactly one peer, with unrelated peers ignored.

@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — The peer assertions directly contradict the dispatch
+
+The dispatch explicitly says not to require baseline unrelated peer rows to remain equal because unrelated clients may exit naturally. The plan nevertheless makes baseline equality a release gate in several places:
+
+- `assert_peer_shape` requires every baseline row to remain present and requires the total row count to equal `baseline_peer_count + owned peers`.
+- Ordered work step 15, the Phase 1 acceptance checks, and the whole-run definition of done require final peers to equal baseline exactly and describe unrelated peers as unchanged.
+- The final harness runs `test "$(stable_peers)" = "$baseline_peers"`.
+
+This can fail a valid certification when an unrelated client exits, and it expands the gate beyond ownership of the two launched hosts.
+
+Revise the plan and harness so baseline peers are recorded for context only. At each checkpoint, strictly validate the protected daemon PID, generation, command, socket tuple/owner/mode, plus exactly one socket row attributable to each currently live owned host PID/process group. After each normal host exit, prove that host's owned row is absent; at the end, prove no rows attributable to either owned process group remain. Do not require unrelated baseline rows or total peer counts to remain unchanged, and retain the prohibition on signaling or cleaning unrelated clients.

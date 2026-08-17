@@ -1,0 +1,10 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+1. **Critical — The verify commands still do not create the scripts they later source.** Supervisor setup ends with comments naming the three destinations, while supervisor execution assumes those files already exist. An instruction to manually copy Markdown fences is not a self-contained verify command. Add concrete materialization commands for the exact A/B/C bodies under `$RUNNER_DIR`, followed by the existing ownership/mode validation and ordered sourcing. Phase 1’s “Files likely touched” must also list this external runner directory and its scripts.
+
+2. **High — The harness still does not prove title-only UI output.** `assert_ui_text` collapses the entire pane to one line and uses an unanchored marker/title prefix expression. It accepts `marker + title + artist/album/other suffix`, contrary to the required title-only rendering. Match a bounded complete status row and reject metadata/suffix content while preserving the rule that backend `artist` and `album` may be empty.

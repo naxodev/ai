@@ -1,0 +1,126 @@
+---
+status: done
+---
+
+# Phase 1 live-certification result
+
+## Conclusion
+
+The approved package cannot pass its retained-resource preflight as written, so no live hosts, controls, reload, exits, or cleanup were run. Block B was run twice from a verbatim temporary extraction of the approved package and failed identically before any mutation at `herdr pane process-info`.
+
+The preflight loop constructs `w2:pGF:22787` and then uses `${prior_pane_shell%%:*}`. Because Herdr pane IDs themselves contain `:`, this resolves to `w2`, not `w2:pGF`; the package consequently invokes `herdr pane process-info --pane w2`, which correctly returns `pane_not_found`. The same defect would affect the Pi pane. Altering the phase package or substituting a corrected harness is outside the package's allowed repository files, so I did neither.
+
+No retained tab, pane, root, daemon, peer, or unrelated client was modified. The protected daemon and retained resources remain available for a corrected approved package.
+
+## Files touched
+
+- `.apnea/artifacts/phase-01/round-1/coder-result.md` only.
+
+## Verify transcript
+
+### Block A — self-contained handoff and prerequisites
+
+Command: approved package Block A, executed verbatim.
+Exit: 0
+
+```text
+Saved lockfile
+BLOCK_A_EXIT=0
+```
+
+### Block B — complete persistent live harness, attempt 1
+
+Command: approved package Block B, extracted verbatim to a temporary file and run in one persistent operator shell with source label `Music.app source: P1-C2 — Brandon Sanderson — Mistborn 3: The Hero of Ages`.
+Exit: 1
+
+```text
+2026-08-17T04:27:58Z prior-group-inspection-command=ps -axww -o pid=,ppid=,pgid=,command= | awk -v wanted=23136 '$3 == wanted'
+2026-08-17T04:27:58Z prior-group=23136 rows=
+2026-08-17T04:27:58Z prior-group-inspection-command=ps -axww -o pid=,ppid=,pgid=,command= | awk -v wanted=23635 '$3 == wanted'
+2026-08-17T04:27:58Z prior-group=23635 rows=
+2026-08-17T04:27:58Z prior-tab-inspection-command=herdr pane list --workspace w2 | jq -r --arg tab 'w2:tH' '.result.panes[] | select(.tab_id==$tab) | [.pane_id,.label] | @tsv' | LC_ALL=C sort
+2026-08-17T04:27:58Z prior-tab=w2:tH rows=w2:pGF	exact OpenCode
+w2:pGG	exact Pi
+{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:process_info"}
+BLOCK_B_EXIT=1
+```
+
+### Block B — complete persistent live harness, attempt 2
+
+Command: same verbatim approved Block B and source label, rerun after independently confirming both recorded panes exist and each accepts its exact `herdr pane process-info --pane w2:pG*` command.
+Exit: 1
+
+```text
+2026-08-17T04:28:15Z prior-group-inspection-command=ps -axww -o pid=,ppid=,pgid=,command= | awk -v wanted=23136 '$3 == wanted'
+2026-08-17T04:28:15Z prior-group=23136 rows=
+2026-08-17T04:28:15Z prior-group-inspection-command=ps -axww -o pid=,ppid=,pgid=,command= | awk -v wanted=23635 '$3 == wanted'
+2026-08-17T04:28:15Z prior-group=23635 rows=
+2026-08-17T04:28:15Z prior-tab-inspection-command=herdr pane list --workspace w2 | jq -r --arg tab 'w2:tH' '.result.panes[] | select(.tab_id==$tab) | [.pane_id,.label] | @tsv' | LC_ALL=C sort
+2026-08-17T04:28:15Z prior-tab=w2:tH rows=w2:pGF	exact OpenCode
+w2:pGG	exact Pi
+{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:process_info"}
+BLOCK_B_RERUN_EXIT=1
+```
+
+### Required Music.app source and direct inspection evidence
+
+Before source selection, `media-control` selected VLC. The required direct inspection commands were retained:
+
+```text
+$ media-control get --no-artwork | jq -Sc .
+{"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"org.videolan.vlc","contentItemIdentifier":"F353D286-957E-4683-8DD7-9B376B1E8420","duration":660,"elapsedTime":305,"playbackRate":1,"playing":true,"processIdentifier":91740,"timestamp":"2026-08-17T04:27:13Z","title":"P1-C2","trackNumber":3}
+$ ps -axww -o pid=,command= | grep '[M]usic.app/Contents/MacOS/Music'
+90211 /System/Applications/Music.app/Contents/MacOS/Music
+$ osascript -e 'tell application id "com.apple.Music"' -e 'set t to current track' -e 'return {player state as text, player position, database ID of t, name of t, artist of t, album of t}' -e 'end tell'
+47:60: execution error: Music got an error: Can’t get current track. (-1728)
+```
+
+As authorized operator, I selected Music.app library item database ID 325 before Block B:
+
+```text
+$ osascript -e 'tell application id "com.apple.Music" to play (some file track of library playlist 1 whose database ID is 325)'
+$ media-control get --no-artwork | jq -Sc .
+{"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"com.apple.Music","composer":"","contentItemIdentifier":"1480::1482","duration":660.45387755102035,"elapsedTime":0,"genre":"Audiobook","isMusicApp":true,"mediaType":"MRMediaRemoteMediaTypeMusic","playbackRate":1,"playing":true,"processIdentifier":90211,"timestamp":"2026-08-17T04:27:42Z","title":"P1-C2","trackNumber":3,"uniqueIdentifier":4932441134837361028}
+$ ps -axww -o pid=,command= | grep '[M]usic.app/Contents/MacOS/Music'
+90211 /System/Applications/Music.app/Contents/MacOS/Music
+$ osascript -e 'tell application id "com.apple.Music"' -e 'set t to current track' -e 'return {player state as text, player position, database ID of t, name of t, artist of t, album of t}' -e 'end tell'
+playing, 1.233000040054, 325, P1-C2, Brandon Sanderson, Mistborn 3: The Hero of Ages
+```
+
+### Final preservation capture
+
+Command: non-mutating checks of retained resources, Music.app, and protected daemon.
+Exit: 0
+
+```text
+$ herdr pane process-info --pane w2:pGF
+foreground_process_group_id=22787; shell_pid=22787; foreground pid=22787 name=zsh
+$ herdr pane process-info --pane w2:pGG
+foreground_process_group_id=22799; shell_pid=22799; foreground pid=22799 name=zsh
+$ ls -ld retained roots
+drwx------@ 7 nachovazquez staff 224 Aug 17 01:09 .../opencode-next-17386.wj6FfV
+drwx------@ 5 nachovazquez staff 160 Aug 17 01:09 .../pi-mixed.kWZwUU
+$ media-control get --no-artwork | jq -Sc .
+{"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"com.apple.Music","contentItemIdentifier":"1480::1482","duration":660.45387755102035,"playing":true,"processIdentifier":90211,"title":"P1-C2"}
+$ osascript ... direct Music.app current-track inspection
+playing, 73.677001953125, 325, P1-C2, Brandon Sanderson, Mistborn 3: The Hero of Ages
+$ ps -p 45621 -o pid=,uid=,command=
+45621 501 node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js
+$ stat -f '%d:%i:%u:%Lp' /tmp/naxodev-music-501/s.sock
+16777231:1237478212:501:600
+```
+
+### Block C — final self-contained repository assertion
+
+Command: approved package Block C, executed verbatim.
+Exit: 0
+
+```text
+Working copy (@) : twlqknws d23fed93 test(release): verify full repository gate
+Parent commit (@-): vqkwurqv bd952919 fix(music): tolerate daemon hello reset window
+BLOCK_C_EXIT=0
+```
+
+## Residual risks / blocker
+
+Phase 1 remains uncertified. The approved package needs a corrected unambiguous pane/shell pairing representation for the prior-resource loop (for example, separate pane and shell fields rather than colon splitting) before it can safely prove the old pane shells, perform allowed cleanup, and reach the bounded `/reload` polling fix under review. I did not change the package, product source, history, or `.apnea/state.json`.

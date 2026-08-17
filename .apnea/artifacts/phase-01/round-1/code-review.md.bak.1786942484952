@@ -1,0 +1,16 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — Phase 1 did not complete its required live-certification boundary
+
+Block B exited 1 when the Pi `/reload` completion wait timed out. The later recovery capture visibly contains the reload message, but recovery evidence cannot substitute for the package's required successful wait, immediate post-reload checkpoint, and exact pre/post identity/command/group comparison. The normal success path consequently never completed the remaining required checks: Pi reload continuity, normal Pi exit and root cleanup, both post-Pi OpenCode controls, normal OpenCode exit and root cleanup, final owned-peer/playback/protected-daemon checks, and owned-tab/pane cleanup.
+
+The result correctly declines to claim certification and retains the owned tab/roots, but this phase cannot be approved with `BLOCK_B_EXIT=1`. Prepare an approved rework package for the wait-output mismatch and rerun the complete acceptance sequence; do not promote the recovery transcript into passing evidence.
+
+### Medium — The final Music.app inspection claim has no retained command evidence
+
+The conclusion says that, after `media-control` selected VLC, “direct Music.app inspection still showed the certified P1-C2 source playing.” The final preservation transcript only records the VLC `media-control` payload; it includes no direct Music.app inspection command or output supporting that statement. Retain the exact inspection evidence in the next result or remove the claim. This does not repair the failed certification, but all reported evidence statements must remain traceable.

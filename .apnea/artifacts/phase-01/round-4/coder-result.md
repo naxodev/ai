@@ -2,51 +2,46 @@
 status: done
 ---
 
-## Changed
+# Phase 1 rework result — reset authority and bounded diagnostics
 
-- Scoped the successful signal-wait test’s fiber and joins it through `Fiber.join`, so assertion failures close the scope instead of depending on a particular signal listener being registered.
-- Raced closing-refusal callback observation against client closure/error and opens both test latches in `finally`; a connection failure now fails immediately and still releases server finalization.
+## Changes
 
-Files touched:
+- `packages/music-core/session/config.ts`: added an opaque `ManagedRuntimeProbe.starting()` authority check. It returns `starting` only for a valid, live marker and never exposes cleanup.
+- `packages/music-core/session/client.ts`: retryable reset errors consult that authority; malformed or unmarked peers remain occupied. Stderr framing now retains a byte-bounded prefix of an overlong daemon-prefixed line across chunks while discarding the remainder.
+- `packages/music-core/tests/session-client.test.ts`: added a real Unix reset endpoint plus an acquired live marker regression, asserting `starting`, no cleanup, and preserved socket; extended stderr coverage for split readiness/error lines and a multichunk over-limit daemon diagnostic.
 
-- `packages/music-core/tests/session-server.test.ts`
-
-## Verify transcript
+## Verification
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts -t 'executable.*cleanup failure|closing.*refus'
-exit 0
-2 pass, 0 fail
+$ bun test packages/music-core/tests/session-client.test.ts
+exit: 0
+74 pass, 0 fail
 
-$ bun test packages/music-core/tests/session-server.test.ts
-exit 0
-25 pass, 0 fail
-112 expect() calls
+$ bunx nx run music-core:typecheck --skip-nx-cache
+exit: 0
+Successfully ran target typecheck for project music-core
 
-$ bun test packages/music-core/tests/session-coordinator.test.ts packages/music-core/tests/system-media.test.ts
-exit 0
-65 pass, 0 fail
-241 expect() calls
+$ bunx nx run music-core:test --skip-nx-cache
+exit: 0
+265 pass, 0 fail (Round 3 run after the same production logic; focused suite was rerun after this test-only extension)
 
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit 0
-152 pass, 0 fail
+$ bunx nx run music-core:package:check --skip-nx-cache
+exit: 0
 Verified npm package contents (21 files)
-NX   Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
 
-$ ! rg -n "Effect\.runSync|setTimeout\(|setInterval\(" packages/music-core/session/coordinator.ts packages/music-core/session/provider.ts packages/music-core/session/server.ts
-exit 0
-(no matches)
+$ bunx nx run music-core:smoke --skip-nx-cache
+exit: 0
+status-zero idle exit and cleanup: ok
 
-$ jj diff --summary
-exit 0
-M packages/music-core/session/music-sessiond.ts
-M packages/music-core/session/server.ts
-M packages/music-core/tests/session-server.test.ts
-(existing unrelated .apnea artifacts/state/task changes remain preserved)
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit: 0
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit: 0
+Pi registered extension commands: /music, /music-next, /music-prev
 ```
 
 ## Residual risks
 
-- The expected multiple-cleanup-failure scenario continues to emit its warning during the full server suite.
-- No commit, squash, push, or `.apnea/state.json` edit was performed.
+An existing OpenCode-supervised daemon was present during final cleanup inspection and is owned by an active `opencode2 --auto -c` parent, so I did not terminate or unlink its endpoint. The direct reset/marker branch and bounded diagnostic behavior are now deterministic; current-code regular-pane host observations remain required before phase approval.

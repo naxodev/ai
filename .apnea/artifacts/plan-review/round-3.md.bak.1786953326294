@@ -1,0 +1,17 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## High — The launch verifier still accepts an unclassified transient process
+
+The plan remains unchanged at the blocking launch-classification point. `wait_non_shell_group` still has a 30-second deadline, accepts the first foreground group different from the shell, and returns an error rather than continuing when the group-leader sample is incomplete. Its callers still perform no host-specific argv/path validation.
+
+Replace this with a 60-second transient-tolerant poll. Samples led by `zsh`, `env`, Bun, wrappers, missing leaders, or any nonmatching command must be ignored and retried. Success is permitted only when the process-group leader itself satisfies the dispatch predicate:
+
+- OpenCode leader argv/path equals the owned exact `opencode2.exe` binary.
+- Pi leader argv command contains the owned Pi root's `node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
+
+Only then may the group be marked recovery-owned and the separate exact-leader-PID `lsof` poll start. The ordered work, acceptance checks, and verify harness must all encode this behavior.

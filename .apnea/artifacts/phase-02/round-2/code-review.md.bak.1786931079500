@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — Round 1's live-certification blocker remains unresolved
+
+The phase package remains aligned with the approved Phase 2 scope, but this result again performs only preflight and stable closed-state checks. It explicitly provides no real regular-pane host session and therefore no evidence for checkout-loaded host processes, shared UI state, bidirectional controls, single live daemon/socket/provider ownership, Pi `/reload` generation preservation, Pi-exit isolation, temporary-root cleanup, or final-client idle cleanup.
+
+The automated regression and Stage A/Stage D results do not satisfy or replace the required Stage B and Stage C evidence. Phase 2 still requires an operator with access to the regular panes and permission to interact with real media to execute the packaged live flow and retain its complete transcripts and precise UI observations. No source change is requested.

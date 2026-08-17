@@ -1,0 +1,672 @@
+---
+status: done
+---
+
+# Plan: final mixed-host certification and PR description
+
+## Goal restatement
+
+Finish the two remaining release gates for the verified shared Effect v4 music-session migration without changing product code or verified history:
+
+1. Live-certify exact OpenCode `0.0.0-next-17386` and Pi `0.84.0` together against the legitimately existing daemon PID `45621`. Correct the failed harness by configuring OpenCode with the absolute checkout **entry file** `packages/opencode-music-player/index.tsx`, not the package directory.
+2. Create the dispatched `pr-description.md` artifact from approved evidence only.
+
+The approved product parent is `bd952919` (`fix(music): tolerate daemon hello reset window`). The literal `bun run check` has already passed with protected-daemon evidence and is not repeated. Preserve every verified commit and unrelated Apnea record. Do not push or open a PR.
+
+## Run-wide constraints
+
+- PID `45621`, exact command `node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js`, and `/tmp/naxodev-music-$(id -u)/s.sock` are protected pre-existing resources.
+- A protected PID, command, socket identity, owner, mode, generation, or baseline-peer mismatch is a blocker. It never authorizes signaling, restart, unlinking, discovery cleanup, replacement, or daemon startup.
+- Probe generation only with `createMusicSessionClient` attached to the already validated explicit socket. Never use `connectOrStartMusicSession`, a reconnecting probe, startup leases, or discovery cleanup.
+- Never signal, exit, clean, or close unrelated hosts, clients, roots, panes, or tabs. Exit only this run's Pi and OpenCode through their built-in `/quit` commands. Never use `ctrl+c`.
+- Use only regular Herdr panes and IDs returned by Herdr. No floating panes or modal-vim Pi profile.
+- Do not require final idle cleanup while unrelated clients remain. Approved deterministic and packed checks already cover startup/idle lifecycle.
+- Product code stays on repository-pinned Effect v4 (`effect@4.0.0-beta.101`). Do not introduce Effect v3 or another effect system.
+- No product history operation is expected. If orchestration requires one, use a selective `jj squash` only for the run-owned artifact; never amend `bd952919`, fold Apnea records into it, or rewrite verified/unrelated history. Coder and reviewer rounds do not commit.
+- Never manually edit `.apnea/state.json`, reset/clean the worktree, use `git commit`, push, publish, release, or create/update a PR.
+
+## Phases
+
+### Phase 1 — Certify exact OpenCode and Pi against the protected shared daemon
+
+#### Intent
+
+Use a single fail-closed operator sequence from the current Herdr-managed controller pane. Create a regular owned tab with OpenCode and Pi panes, prepare fresh isolated roots, launch both exact hosts, and gather executable evidence at every boundary. Prove simultaneous UI/state, controls both ways, Pi reload lifecycle, normal host exits, post-Pi OpenCode control, original-state restoration, owned cleanup, preserved unrelated peers, unchanged daemon identity, and no product diff.
+
+#### Files likely touched
+
+In the repository:
+
+- Only the exact coder-result artifact supplied by the Phase 1 dispatch.
+
+Outside the repository, temporarily:
+
+- One canonical ownership-checked OpenCode install/config/XDG root.
+- One canonical ownership-checked Pi profile root.
+- One regular Herdr tab and its two returned host panes.
+
+Do not touch product, tests, manifests, lockfiles, policies, docs, existing configuration, prior Apnea records, `.apnea/state.json`, or history.
+
+#### Ordered work
+
+1. Assert `bd952919` is the current product parent, has parent `c78b5b93`, contains exactly the three approved music-core paths, and the child has no non-Apnea diff. Confirm Herdr, exact Pi, `media-control`, active controllable media, `jq`, `lsof`, and canonical checkout paths.
+2. In one persistent operator shell, record the current controller pane and pre-existing pane inventory. Create one background regular tab; parse its root pane and tab ID from returned JSON, split only that pane once, and parse the Pi pane ID. Rename both. Never infer IDs.
+3. Establish the protected endpoint and generation baseline. Build a Unix-peer inventory by matching every client-side `lsof -U` endpoint to the daemon-side socket object IDs—not by filtering only to PID `45621`. Capture each peer PID, FD, daemon endpoint token, and full process command after the short-lived generation probe has disposed.
+4. Prepare exact OpenCode in a canonical direct child of the temporary base. Put `@opencode-ai/cli@0.0.0-next-17386` in `dependencies` and `trustedDependencies` before ordinary `bun install`, allowing its required postinstall. Prove the binary remains under canonical `node_modules` and reports the exact version.
+5. Create isolated XDG config/state/data/cache and `OPENCODE_CONFIG_DIR` trees. Write one `plugins` item: `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player/index.tsx`. Assert it is a file and is not the package-directory path. Disable project config, auto-update, and model fetch; launch only the owned binary with `--standalone`.
+6. Create a canonical owned `PI_CODING_AGENT_DIR`, verify exact Pi `0.84.0`, and write that fresh profile's only package entry as the absolute checkout directory `packages/pi-music-dock`. Set `PI_OFFLINE=1`, reject project-local trust, and disable unrelated resource discovery. Use profile package discovery rather than `-e` so Pi's documented `/reload` flow actually tears down and reloads the package extension.
+7. After each launch, wait for a host process group distinct from its pane shell, capture exact process-info JSON, and assert peer shape. With OpenCode only, baseline peers plus exactly one OpenCode-group peer must exist. With both hosts, baseline peers plus exactly one OpenCode-group and one Pi-group peer must exist. Every baseline row must still be present.
+8. Capture `media-control get --no-artwork` as canonical track/state evidence. Zoom only the owned pane being inspected, capture text and ANSI, and require both UIs to contain the track/artist probes and correct `▶`/`⏸` marker with no startup/plugin error. Require exactly one Pi status occurrence. Record the full media identity and original playback state.
+9. Checkpoint daemon identity/generation/peer shape immediately before and after every action. Toggle once through OpenCode and require canonical media plus both UIs to converge to the opposite state on the same identity. Invoke Pi `/music` and require both to converge back to the original state.
+10. Before Pi `/reload`, capture its process group, exact sorted `foreground_processes` identity set, each foreground PID's full `ps` command, complete process-group inventory, one-Pi-peer shape, one Pi status occurrence, both UIs, and daemon checkpoint. Invoke `/reload`, wait for the explicit Pi reload-complete status and healthy settled UI, then require the same process group, identical foreground PID/name/argv/cwd set, identical foreground PID/full-command set, exactly one Pi peer, exactly one Pi music status, unchanged shared state, and unchanged baseline/OpenCode peers. This proves the same Pi host process—not merely the same process group—survived reload without an accumulating connection.
+11. Invoke Pi `/quit`, wait until the pane's original shell is foreground again, and explicitly require every recorded foreground PID to be absent plus an empty inventory for the recorded Pi host process group before cleanup. Require its peer to be absent, then remove only its strictly validated root. Assert OpenCode still has exactly one peer and displays the original state.
+12. Toggle OpenCode once after Pi exit and require the opposite state; toggle once more and require exact restoration to the original state. Before invoking OpenCode `/quit`, capture its exact foreground PID identities/commands and process-group inventory. After normal shell return, explicitly require every recorded foreground PID absent and the recorded OpenCode host process group empty before removing its validated root.
+13. Require final peer inventory to equal the pre-host baseline exactly, and recheck PID, command, socket tuple, ownership, and generation. Do not wait for idle shutdown. Confirm the owned tab still contains exactly the two returned panes, close only that tab, and prove those pane IDs no longer exist.
+14. Run the final history/product/debris assertion. Copy every command status, returned ID, timestamped checkpoint, media snapshot, ANSI UI read, process-info record, peer inventory, normal-shell return, cleanup result, and conclusion into only the dispatched coder-result artifact. A failed assertion triggers normal `/quit` attempts and a truthful blocker report; it does not authorize signals, source edits, or cleanup of a still-running host.
+
+#### Acceptance checks
+
+- OpenCode is a fresh exact `0.0.0-next-17386` trusted install, and its binary/config/four XDG roots are contained in the owned root.
+- `cli.json` contains only the absolute checkout `packages/opencode-music-player/index.tsx` entry file, never the package directory; no `1 plugin failed` or music startup error appears.
+- Pi is exact `0.84.0`, uses an owned profile whose only package is the checkout `packages/pi-music-dock`, ignores project-local resources, and loads that profile package through the reloadable package-discovery path.
+- Both hosts are healthy simultaneously in regular returned Herdr panes and show the same real media identity and state.
+- One OpenCode control converges in Pi and one Pi `/music` control converges in OpenCode.
+- Pi `/reload` preserves daemon PID/command/generation/socket, the exact Pi foreground PID/identity/full-command set, the Pi host process group, one Pi status line, one Pi peer connection, and healthy OpenCode; no process replacement or Pi connection accumulation occurs.
+- Normal Pi `/quit` returns its pane shell; every recorded Pi foreground PID is absent and the full recorded host process group is empty before profile cleanup. OpenCode remains healthy with one connection, post-Pi control works, and the second toggle restores the exact original state.
+- Normal OpenCode `/quit` returns its pane shell; every recorded OpenCode foreground PID is absent and its full recorded host process group is empty before root cleanup. Neither host uses `ctrl+c` or a direct signal.
+- Strictly validated cleanup uses `find -depth -delete`, not broad recursive removal. Only the two owned roots and returned tab/panes disappear.
+- Final Unix-peer inventory exactly equals baseline, proving baseline unrelated attachments remain and owned host peers are gone. PID `45621`, command, socket tuple/ownership, and generation remain unchanged; no idle cleanup is claimed.
+- `bd952919` retains exactly its three approved paths and the working-copy child has no non-Apnea diff.
+
+#### Verify commands
+
+##### A. Self-contained handoff and prerequisites
+
+```sh
+set -euo pipefail
+repo='/Users/nachovazquez/work/1-projects/naxodev/ai'
+cd "$repo"
+test "$(jj log -r '@- & bd952919' --no-graph -T 'commit_id.short(8)')" = bd952919
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = c78b5b93
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+test "${HERDR_ENV:-}" = 1
+command -v jq >/dev/null
+command -v lsof >/dev/null
+command -v media-control >/dev/null
+herdr --help >/dev/null
+herdr pane || true
+herdr tab || true
+test "$(bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version)" = 0.84.0
+test "$(realpath packages/opencode-music-player/index.tsx)" = \
+  "$repo/packages/opencode-music-player/index.tsx"
+test "$(realpath packages/pi-music-dock)" = "$repo/packages/pi-music-dock"
+media-control test
+media-control get --no-artwork | jq -e \
+  '(.title | type == "string" and length > 0) and
+   (.artist | type == "string" and length > 0) and
+   (.playing | type == "boolean")' >/dev/null
+```
+
+##### B. One persistent operator harness
+
+Run the following definitions and sequence in one shell so IDs, roots, process groups, state, and baselines cannot be reconstructed after the fact.
+
+```sh
+set -euo pipefail
+repo='/Users/nachovazquez/work/1-projects/naxodev/ai'
+cd "$repo"
+daemon_pid=45621
+daemon_command='node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js'
+socket="/tmp/naxodev-music-$(id -u)/s.sock"
+tmp_base="$(realpath "${TMPDIR:-/tmp}")"
+controller_pane="$(herdr pane current --current | jq -er '.result.pane.pane_id')"
+controller_tab="$(herdr pane current --current | jq -er '.result.pane.tab_id')"
+printf 'controller pane=%s tab=%s workspace=%s\n' \
+  "$controller_pane" "$controller_tab" "$HERDR_WORKSPACE_ID"
+
+assert_endpoint() {
+  test "$(ps -p "$daemon_pid" -o command=)" = "$daemon_command"
+  test -S "$socket"
+  test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"
+  test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"
+  lsof -n -a -p "$daemon_pid" "$socket" >/dev/null
+  stat -f '%d:%i:%u:%Lp' "$socket"
+}
+direct_generation() {
+  local before observed after
+  before="$(assert_endpoint)"
+  observed="$(MUSIC_SESSION_SOCKET="$socket" bun -e '
+    import { baselineCapabilities, createMusicSessionClient } from "./packages/music-core/index.ts"
+    const socketPath = process.env.MUSIC_SESSION_SOCKET
+    if (!socketPath) throw new Error("missing validated socket")
+    const client = await createMusicSessionClient({
+      socketPath,
+      clientId: `mixed-cert-${process.pid}`,
+      hostKind: "test",
+      capabilities: [...baselineCapabilities],
+    })
+    try { console.log(client.daemonInstanceId) } finally { client.dispose() }
+  ')"
+  after="$(assert_endpoint)"
+  test "$after" = "$before"
+  test -n "$observed"
+  printf '%s\n' "$observed"
+}
+peer_inventory_once() {
+  local tokens all token pid fd command
+  tokens="$(lsof -n -a -U -p "$daemon_pid" | awk -v path="$socket" '$NF == path { print $6 }' | LC_ALL=C sort -u)"
+  test -n "$tokens"
+  all="$(lsof -n -U)"
+  for token in $tokens; do
+    while read -r pid fd; do
+      test -n "$pid" || continue
+      command="$(ps -p "$pid" -o command=)"
+      test -n "$command"
+      printf '%s\t%s\t%s\t%s\n' "$pid" "$fd" "->$token" "$command"
+    done < <(printf '%s\n' "$all" | awk -v target="->$token" -v daemon="$daemon_pid" \
+      '$NF == target && $2 != daemon { print $2, $4 }')
+  done | LC_ALL=C sort
+}
+stable_peers() {
+  local first second
+  first="$(peer_inventory_once)"
+  sleep 0.2
+  second="$(peer_inventory_once)"
+  test "$second" = "$first"
+  printf '%s\n' "$first"
+}
+row_count() {
+  if test -z "$1"; then printf '0\n'; else printf '%s\n' "$1" | awk 'END { print NR }'; fi
+}
+rows_for_pgid() {
+  local inventory="$1" wanted="$2" pid fd endpoint command pgid
+  test "$wanted" != -1 || return 0
+  while IFS=$'\t' read -r pid fd endpoint command; do
+    test -n "$pid" || continue
+    pgid="$(ps -p "$pid" -o pgid= | tr -d ' ')"
+    if test "$pgid" = "$wanted"; then
+      printf '%s\t%s\t%s\t%s\n' "$pid" "$fd" "$endpoint" "$command"
+    fi
+  done <<<"$inventory"
+}
+require_baseline_rows() {
+  local current="$1" row
+  while IFS= read -r row; do
+    test -z "$row" || grep -Fqx -- "$row" <<<"$current"
+  done <<<"$baseline_peers"
+}
+assert_peer_shape() {
+  local want_oc="$1" want_pi="$2" current oc_rows pi_rows
+  current="$(stable_peers)"
+  require_baseline_rows "$current"
+  oc_rows="$(rows_for_pgid "$current" "$oc_pgid")"
+  pi_rows="$(rows_for_pgid "$current" "$pi_pgid")"
+  test "$(row_count "$oc_rows")" -eq "$want_oc"
+  test "$(row_count "$pi_rows")" -eq "$want_pi"
+  test "$(row_count "$current")" -eq "$((baseline_peer_count + want_oc + want_pi))"
+  printf '%s\n' "$current"
+}
+checkpoint() {
+  local label="$1" want_oc="$2" want_pi="$3" endpoint generation peers
+  endpoint="$(assert_endpoint)"
+  test "$endpoint" = "$baseline_socket"
+  generation="$(direct_generation)"
+  test "$generation" = "$baseline_generation"
+  test "$(assert_endpoint)" = "$baseline_socket"
+  peers="$(assert_peer_shape "$want_oc" "$want_pi")"
+  printf '%s checkpoint=%s pid=%s generation=%s socket=%s\n%s\n' \
+    "$(date -u +%FT%TZ)" "$label" "$daemon_pid" "$generation" "$endpoint" "$peers"
+}
+process_info() { herdr pane process-info --pane "$1"; }
+foreground_identity() {
+  jq -c '[.result.process_info.foreground_processes[]
+    | { pid, name, argv0, cwd }] | sort_by(.pid)' <<<"$1"
+}
+foreground_commands() {
+  local info="$1" pid command
+  while read -r pid; do
+    test -n "$pid" || continue
+    command="$(ps -p "$pid" -o command=)"
+    test -n "$command"
+    printf '%s\t%s\n' "$pid" "$command"
+  done < <(jq -r '.result.process_info.foreground_processes[].pid' <<<"$info") | LC_ALL=C sort
+}
+process_group_inventory() {
+  ps -axww -o pid=,ppid=,pgid=,command= | awk -v wanted="$1" '
+    $3 == wanted {
+      pid=$1; ppid=$2; pgid=$3
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
+      printf "%s\\t%s\\t%s\\t%s\\n", pid, ppid, pgid, $0
+    }' | LC_ALL=C sort
+}
+assert_recorded_foreground_gone() {
+  local info="$1" pid
+  while read -r pid; do
+    test -n "$pid" || continue
+    test -z "$(ps -p "$pid" -o command=)"
+  done < <(jq -r '.result.process_info.foreground_processes[].pid' <<<"$info")
+}
+assert_process_group_empty() {
+  local pgid="$1" remaining
+  remaining="$(process_group_inventory "$pgid")"
+  test -z "$remaining"
+  printf 'process_group_empty=%s\n' "$pgid"
+}
+wait_host_group() {
+  local pane="$1" shell_pid="$2" deadline=$((SECONDS + 30)) info pgid
+  while test "$SECONDS" -lt "$deadline"; do
+    info="$(process_info "$pane")"
+    pgid="$(jq -er '.result.process_info.foreground_process_group_id' <<<"$info")"
+    if test "$pgid" != "$shell_pid"; then printf '%s\n' "$info"; return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+wait_shell_return() {
+  local pane="$1" shell_pid="$2" deadline=$((SECONDS + 30)) info pgid
+  while test "$SECONDS" -lt "$deadline"; do
+    info="$(process_info "$pane")"
+    pgid="$(jq -er '.result.process_info.foreground_process_group_id' <<<"$info")"
+    if test "$pgid" = "$shell_pid"; then printf '%s\n' "$info"; return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+media_snapshot() {
+  media-control get --no-artwork | jq -ce '
+    { id: (.contentItemIdentifier // .title), title, artist, playing }
+    | select((.id | type == "string" and length > 0)
+      and (.title | type == "string" and length > 0)
+      and (.artist | type == "string" and length > 0)
+      and (.playing | type == "boolean"))'
+}
+same_identity() {
+  test "$(jq -r '[.id,.title,.artist] | @tsv' <<<"$1")" = \
+       "$(jq -r '[.id,.title,.artist] | @tsv' <<<"$2")"
+}
+wait_media_state() {
+  local identity="$1" wanted="$2" deadline=$((SECONDS + 15)) current
+  while test "$SECONDS" -lt "$deadline"; do
+    current="$(media_snapshot)"
+    if same_identity "$identity" "$current" &&
+       test "$(jq -r '.playing' <<<"$current")" = "$wanted"; then
+      printf '%s\n' "$current"; return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+assert_ui() {
+  local pane="$1" host="$2" state="$3" text ansi title_probe artist_probe marker count
+  herdr pane zoom --pane "$pane" --on >/dev/null
+  text="$(herdr pane read "$pane" --source visible --format text)"
+  ansi="$(herdr pane read "$pane" --source visible --format ansi)"
+  herdr pane zoom --pane "$pane" --off >/dev/null
+  title_probe="$(jq -r '.title | split(" ")[:3] | join(" ")' <<<"$state")"
+  artist_probe="$(jq -r '.artist | split(" ")[:2] | join(" ")' <<<"$state")"
+  if test "$(jq -r '.playing' <<<"$state")" = true; then marker='⏸'; else marker='▶'; fi
+  grep -Fq -- "$title_probe" <<<"$text"
+  grep -Fq -- "$artist_probe" <<<"$text"
+  grep -Fq -- "$marker" <<<"$text"
+  ! grep -Eqi '1 plugin failed|music session endpoint is occupied|unclassifiable peer|extension.*failed|Error:' <<<"$text"
+  if test "$host" = pi; then
+    count="$(grep -Fo -- "$title_probe" <<<"$text" | wc -l | tr -d ' ')"
+    test "$count" -eq 1
+  fi
+  printf '%s ui=%s state=%s\n%s\n' "$(date -u +%FT%TZ)" "$host" "$state" "$ansi"
+}
+cleanup_owned_root() {
+  local root="$1" prefix="$2" processes
+  test -d "$root" && test ! -L "$root"
+  test "$(stat -f '%u' "$root")" = "$(id -u)"
+  test "$(realpath "$(dirname "$root")")" = "$tmp_base"
+  case "$(basename "$root")" in "$prefix".*) ;; *) return 1 ;; esac
+  processes="$(ps -axww -o command=)"
+  ! grep -Fq -- "$root" <<<"$processes"
+  find "$root" -depth -delete
+  test ! -e "$root"
+}
+
+# Baseline is captured only after the attachment-only probe has disposed.
+baseline_socket="$(assert_endpoint)"
+baseline_generation="$(direct_generation)"
+test "$(assert_endpoint)" = "$baseline_socket"
+baseline_peers="$(stable_peers)"
+baseline_peer_count="$(row_count "$baseline_peers")"
+oc_pgid=-1
+pi_pgid=-1
+checkpoint baseline 0 0
+
+# Prepare exact OpenCode with trusted postinstall and isolated config/XDG roots.
+oc_root="$(realpath "$(mktemp -d "$tmp_base/opencode-next-17386.XXXXXX")")"
+cat >"$oc_root/package.json" <<'JSON'
+{"private":true,"dependencies":{"@opencode-ai/cli":"0.0.0-next-17386"},"trustedDependencies":["@opencode-ai/cli"]}
+JSON
+(cd "$oc_root" && bun install)
+oc_boundary="$(realpath "$oc_root/node_modules")"
+oc_bin="$(realpath "$oc_root/node_modules/.bin/opencode2")"
+case "$oc_bin" in "$oc_boundary"/*) ;; *) exit 1 ;; esac
+test -x "$oc_bin"
+test "$("$oc_bin" --version)" = 'opencode2 v0.0.0-next-17386'
+printf 'opencode-root=%s\nopencode-binary=%s\nopencode-version=%s\n' \
+  "$oc_root" "$oc_bin" "$("$oc_bin" --version)"
+plugin_entry="$(realpath "$repo/packages/opencode-music-player/index.tsx")"
+test -f "$plugin_entry"
+test "$plugin_entry" = "$repo/packages/opencode-music-player/index.tsx"
+test "$plugin_entry" != "$(realpath "$repo/packages/opencode-music-player")"
+mkdir -p "$oc_root/config" "$oc_root/xdg/config" "$oc_root/xdg/state" \
+  "$oc_root/xdg/data" "$oc_root/xdg/cache"
+printf '{"plugins":["%s"]}\n' "$plugin_entry" >"$oc_root/config/cli.json"
+test "$(cat "$oc_root/config/cli.json")" = "{\"plugins\":[\"$plugin_entry\"]}"
+printf 'opencode-config=%s\nopencode-plugin-entry=%s\n' \
+  "$oc_root/config/cli.json" "$plugin_entry"
+
+# Prepare an owned Pi profile whose only package is the checkout package.
+pi_root="$(realpath "$(mktemp -d "$tmp_base/pi-mixed.XXXXXX")")"
+test "$(stat -f '%u' "$pi_root")" = "$(id -u)"
+test "$(realpath "$(dirname "$pi_root")")" = "$tmp_base"
+pi_extension="$(realpath "$repo/packages/pi-music-dock")"
+test "$pi_extension" = "$repo/packages/pi-music-dock"
+test "$(bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version)" = 0.84.0
+jq -n --arg package "$pi_extension" '{packages: [$package]}' >"$pi_root/settings.json"
+test "$(jq -r '.packages | length' "$pi_root/settings.json")" -eq 1
+test "$(jq -r '.packages[0]' "$pi_root/settings.json")" = "$pi_extension"
+printf 'pi-root=%s\npi-settings=%s\npi-version=%s\npi-package=%s\n' \
+  "$pi_root" "$pi_root/settings.json" \
+  "$(bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version)" \
+  "$pi_extension"
+
+# Create exactly two owned regular host panes and parse every opaque ID.
+tab_json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$repo" \
+  --label 'music mixed certification' --no-focus)"
+oc_pane="$(jq -er '.result.root_pane.pane_id' <<<"$tab_json")"
+tab_id="$(herdr pane get "$oc_pane" | jq -er '.result.pane.tab_id')"
+pi_json="$(herdr pane split "$oc_pane" --direction down --cwd "$repo" --no-focus)"
+pi_pane="$(jq -er '.result.pane.pane_id' <<<"$pi_json")"
+herdr pane rename "$oc_pane" 'exact OpenCode' >/dev/null
+herdr pane rename "$pi_pane" 'exact Pi' >/dev/null
+owned_ids="$(printf '%s\n%s\n' "$oc_pane" "$pi_pane" | LC_ALL=C sort)"
+test "$(herdr pane list --workspace "$HERDR_WORKSPACE_ID" | jq -r \
+  --arg tab "$tab_id" '.result.panes[] | select(.tab_id == $tab) | .pane_id' | LC_ALL=C sort)" = "$owned_ids"
+oc_shell_pid="$(process_info "$oc_pane" | jq -er '.result.process_info.shell_pid')"
+pi_shell_pid="$(process_info "$pi_pane" | jq -er '.result.process_info.shell_pid')"
+printf 'owned tab=%s opencode_pane=%s pi_pane=%s\n' "$tab_id" "$oc_pane" "$pi_pane"
+
+# Launch exact OpenCode; all four XDG roots and config are isolated.
+printf -v oc_launch \
+  'env XDG_CONFIG_HOME=%q XDG_STATE_HOME=%q XDG_DATA_HOME=%q XDG_CACHE_HOME=%q OPENCODE_CONFIG_DIR=%q OPENCODE_CONFIG_PROJECT_DISABLE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 %q --standalone --log-level error %q' \
+  "$oc_root/xdg/config" "$oc_root/xdg/state" "$oc_root/xdg/data" \
+  "$oc_root/xdg/cache" "$oc_root/config" "$oc_bin" "$repo"
+checkpoint pre-opencode-launch 0 0
+herdr pane run "$oc_pane" "$oc_launch" >/dev/null
+oc_info="$(wait_host_group "$oc_pane" "$oc_shell_pid")"
+oc_pgid="$(jq -er '.result.process_info.foreground_process_group_id' <<<"$oc_info")"
+printf '%s\n' "$oc_info"
+oc_state="$(media_snapshot)"
+herdr pane wait-output "$oc_pane" --match "$(jq -r '.title | split(" ")[:3] | join(" ")' <<<"$oc_state")" \
+  --source visible --timeout 30000 >/dev/null
+sleep 0.5
+assert_ui "$oc_pane" opencode "$oc_state"
+checkpoint post-opencode-launch 1 0
+
+# Launch exact Pi from the checkout package configured in its owned profile.
+printf -v pi_launch \
+  'env PI_CODING_AGENT_DIR=%q PI_OFFLINE=1 bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --no-session --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve' \
+  "$pi_root"
+checkpoint pre-pi-launch 1 0
+herdr pane run "$pi_pane" "$pi_launch" >/dev/null
+pi_info="$(wait_host_group "$pi_pane" "$pi_shell_pid")"
+pi_pgid="$(jq -er '.result.process_info.foreground_process_group_id' <<<"$pi_info")"
+printf '%s\n' "$pi_info"
+original_state="$(media_snapshot)"
+same_identity "$oc_state" "$original_state"
+herdr pane wait-output "$pi_pane" --match "$(jq -r '.title | split(" ")[:3] | join(" ")' <<<"$original_state")" \
+  --source visible --timeout 30000 >/dev/null
+sleep 0.5
+assert_ui "$oc_pane" opencode "$original_state"
+assert_ui "$pi_pane" pi "$original_state"
+checkpoint simultaneous-original 1 1
+original_playing="$(jq -r '.playing' <<<"$original_state")"
+if test "$original_playing" = true; then opposite=false; else opposite=true; fi
+
+# OpenCode -> Pi convergence.
+checkpoint pre-opencode-control 1 1
+herdr pane send-keys "$oc_pane" ctrl+shift+p >/dev/null
+after_oc="$(wait_media_state "$original_state" "$opposite")"
+sleep 0.5
+assert_ui "$oc_pane" opencode "$after_oc"
+assert_ui "$pi_pane" pi "$after_oc"
+checkpoint post-opencode-control 1 1
+
+# Pi -> OpenCode convergence back to original.
+checkpoint pre-pi-control 1 1
+herdr pane run "$pi_pane" '/music' >/dev/null
+after_pi="$(wait_media_state "$original_state" "$original_playing")"
+sleep 0.5
+assert_ui "$pi_pane" pi "$after_pi"
+assert_ui "$oc_pane" opencode "$after_pi"
+checkpoint post-pi-control 1 1
+
+# Pi reload: prove the exact foreground identities, full commands, process group,
+# one status, and one daemon peer are unchanged after the UI has settled.
+pi_info_before_reload="$(process_info "$pi_pane")"
+test "$(jq -er '.result.process_info.foreground_process_group_id' <<<"$pi_info_before_reload")" = "$pi_pgid"
+pi_identity_before_reload="$(foreground_identity "$pi_info_before_reload")"
+pi_commands_before_reload="$(foreground_commands "$pi_info_before_reload")"
+pi_group_before_reload="$(process_group_inventory "$pi_pgid")"
+test "$(jq 'length' <<<"$pi_identity_before_reload")" -gt 0
+test -n "$pi_commands_before_reload"
+test -n "$pi_group_before_reload"
+printf 'pi-info-before-reload=%s\npi-identity-before-reload=%s\npi-commands-before-reload=%s\npi-group-before-reload=%s\n' \
+  "$pi_info_before_reload" "$pi_identity_before_reload" \
+  "$pi_commands_before_reload" "$pi_group_before_reload"
+assert_ui "$pi_pane" pi "$original_state"
+checkpoint pre-pi-reload 1 1
+herdr pane run "$pi_pane" '/reload' >/dev/null
+herdr pane wait-output "$pi_pane" --match 'Reloaded keybindings, extensions, skills, prompts, themes, and context files' \
+  --source recent-unwrapped --timeout 30000 >/dev/null
+sleep 0.5
+assert_ui "$pi_pane" pi "$original_state"
+assert_ui "$oc_pane" opencode "$original_state"
+checkpoint post-pi-reload 1 1
+pi_info_after_reload="$(process_info "$pi_pane")"
+test "$(jq -er '.result.process_info.foreground_process_group_id' <<<"$pi_info_after_reload")" = "$pi_pgid"
+pi_identity_after_reload="$(foreground_identity "$pi_info_after_reload")"
+pi_commands_after_reload="$(foreground_commands "$pi_info_after_reload")"
+pi_group_after_reload="$(process_group_inventory "$pi_pgid")"
+test "$pi_identity_after_reload" = "$pi_identity_before_reload"
+test "$pi_commands_after_reload" = "$pi_commands_before_reload"
+test "$pi_group_after_reload" = "$pi_group_before_reload"
+printf 'pi-info-after-reload=%s\npi-identity-after-reload=%s\npi-commands-after-reload=%s\npi-group-after-reload=%s\n' \
+  "$pi_info_after_reload" "$pi_identity_after_reload" \
+  "$pi_commands_after_reload" "$pi_group_after_reload"
+
+# Normal Pi exit: retain exact foreground and group evidence, then prove every
+# recorded foreground PID and every member of the recorded host PGID is gone.
+pi_exit_info="$(process_info "$pi_pane")"
+test "$(jq -er '.result.process_info.foreground_process_group_id' <<<"$pi_exit_info")" = "$pi_pgid"
+pi_exit_identity="$(foreground_identity "$pi_exit_info")"
+pi_exit_commands="$(foreground_commands "$pi_exit_info")"
+pi_exit_group="$(process_group_inventory "$pi_pgid")"
+test "$(jq 'length' <<<"$pi_exit_identity")" -gt 0
+test -n "$pi_exit_commands"
+test -n "$pi_exit_group"
+printf 'pi-exit-info=%s\npi-exit-identity=%s\npi-exit-commands=%s\npi-exit-group=%s\n' \
+  "$pi_exit_info" "$pi_exit_identity" "$pi_exit_commands" "$pi_exit_group"
+checkpoint pre-pi-quit 1 1
+herdr pane run "$pi_pane" '/quit' >/dev/null
+pi_shell_return="$(wait_shell_return "$pi_pane" "$pi_shell_pid")"
+printf '%s\n' "$pi_shell_return"
+assert_recorded_foreground_gone "$pi_exit_info"
+assert_process_group_empty "$pi_pgid"
+checkpoint post-pi-quit 1 0
+cleanup_owned_root "$pi_root" pi-mixed
+assert_ui "$oc_pane" opencode "$original_state"
+
+# Post-Pi OpenCode control and exact restoration.
+checkpoint pre-post-pi-opencode-control 1 0
+herdr pane send-keys "$oc_pane" ctrl+shift+p >/dev/null
+post_pi_opposite="$(wait_media_state "$original_state" "$opposite")"
+sleep 0.5
+assert_ui "$oc_pane" opencode "$post_pi_opposite"
+checkpoint post-pi-opencode-opposite 1 0
+herdr pane send-keys "$oc_pane" ctrl+shift+p >/dev/null
+restored="$(wait_media_state "$original_state" "$original_playing")"
+test "$restored" = "$original_state"
+sleep 0.5
+assert_ui "$oc_pane" opencode "$restored"
+checkpoint post-pi-opencode-restored 1 0
+
+# Normal OpenCode exit: capture exact foreground/group evidence, prove all
+# recorded PIDs and the complete host PGID are gone, then clean the owned root.
+oc_exit_info="$(process_info "$oc_pane")"
+test "$(jq -er '.result.process_info.foreground_process_group_id' <<<"$oc_exit_info")" = "$oc_pgid"
+oc_exit_identity="$(foreground_identity "$oc_exit_info")"
+oc_exit_commands="$(foreground_commands "$oc_exit_info")"
+oc_exit_group="$(process_group_inventory "$oc_pgid")"
+test "$(jq 'length' <<<"$oc_exit_identity")" -gt 0
+test -n "$oc_exit_commands"
+test -n "$oc_exit_group"
+printf 'opencode-exit-info=%s\nopencode-exit-identity=%s\nopencode-exit-commands=%s\nopencode-exit-group=%s\n' \
+  "$oc_exit_info" "$oc_exit_identity" "$oc_exit_commands" "$oc_exit_group"
+checkpoint pre-opencode-quit 1 0
+herdr pane run "$oc_pane" '/quit' >/dev/null
+oc_shell_return="$(wait_shell_return "$oc_pane" "$oc_shell_pid")"
+printf '%s\n' "$oc_shell_return"
+assert_recorded_foreground_gone "$oc_exit_info"
+assert_process_group_empty "$oc_pgid"
+checkpoint post-opencode-quit 0 0
+cleanup_owned_root "$oc_root" opencode-next-17386
+oc_pgid=-1
+final_peers="$(stable_peers)"
+test "$final_peers" = "$baseline_peers"
+test "$(assert_endpoint)" = "$baseline_socket"
+test "$(direct_generation)" = "$baseline_generation"
+test "$(assert_endpoint)" = "$baseline_socket"
+test "$(media_snapshot)" = "$original_state"
+
+# Close only the owned returned tab after both normal exits and root cleanup.
+test "$(herdr pane list --workspace "$HERDR_WORKSPACE_ID" | jq -r \
+  --arg tab "$tab_id" '.result.panes[] | select(.tab_id == $tab) | .pane_id' | LC_ALL=C sort)" = "$owned_ids"
+herdr tab close "$tab_id" >/dev/null
+! herdr pane get "$oc_pane" >/dev/null 2>&1
+! herdr pane get "$pi_pane" >/dev/null 2>&1
+printf 'certified original=%s baseline_peers=%s controller=%s owned_tab=%s\n' \
+  "$original_state" "$baseline_peer_count" "$controller_pane" "$tab_id"
+```
+
+If an assertion fails while a host is live, retain the evidence, submit `/quit` to each responsive owned host, wait for shell return, and run `cleanup_owned_root` only after its exact host group has exited. Never substitute a signal or tab close for normal exit. If normal exit cannot be proved, leave that owned root/tab identified for rework rather than deleting under a live process.
+
+##### C. Final self-contained repository assertion
+
+```sh
+set -euo pipefail
+cd /Users/nachovazquez/work/1-projects/naxodev/ai
+test "$(jj log -r 'bd952919 & ancestors(@)' --no-graph -T 'commit_id.short(8)')" = bd952919
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = c78b5b93
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+git diff --check
+test -z "$(find packages \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+jj status
+```
+
+#### Dependencies
+
+- Approved green `bun run check` result and protected-daemon review for `bd952919`.
+- `HERDR_ENV=1`, installed regular-pane Herdr controls, `jq`, and `lsof`.
+- Registry access for exact OpenCode installation and Pi resolution.
+- Active controllable macOS media through `media-control`; no unsupported prerequisite fallback is advertised.
+- Existing PID `45621`, generation, socket, and baseline unrelated peers remain healthy throughout.
+
+#### Non-goals
+
+- Product, tests, docs, manifests, lockfiles, configuration, or history changes.
+- Re-running `bun run check`.
+- Synthetic/RPC/headless evidence in place of both rendered live UIs.
+- Global host installation/configuration, next/previous actions, or provider switching.
+- Daemon startup/restart/signaling/unlinking/discovery cleanup/replacement/final idle shutdown.
+- Floating panes, modal profiles, inferred Herdr IDs, or closing unrelated resources.
+- Commits, pushes, publication, release, or PR creation/update.
+
+### Phase 2 — Create the terminus PR description artifact
+
+#### Intent
+
+Create `pr-description.md` only at the exact artifact path supplied by the Phase 2 dispatch. Summarize the verified three-file reset-window fix and approved release evidence for reviewer attention. This writes description content only; it does not create or update a pull request.
+
+#### Files likely touched
+
+- Only the exact `pr-description.md` artifact path supplied by the Phase 2 dispatch.
+
+Do not guess the path before dispatch. Do not touch product files, prior artifacts, `.apnea/state.json`, or history.
+
+#### Ordered work
+
+1. Read the `new-pr` skill, actual `bd952919` diff, and approved results/reviews. Never infer a pass from this plan.
+2. Write front matter containing `status: done` only.
+3. Explain the concrete hello-reset symptom and narrow fix, identify the exact three paths, and describe bounded diagnostics/attachment behavior and preserved Effect v4 boundary without narrating the diff.
+4. Report only approved tests: deterministic/focused coverage, package smokes, literal `bun run check`, protected-daemon evidence, and final exact mixed-host observations. Include the corrected OpenCode `index.tsx` entry-file fact because it distinguishes the bad harness from valid certification.
+5. State residual risk truthfully: beta host versions, macOS/provider variability, and certification against an already-running shared generation; destructive final live idle cleanup is intentionally replaced by deterministic/packed lifecycle checks.
+6. Do not claim push, PR creation/update, daemon replacement, final idle cleanup, or evidence absent from approved results.
+7. Verify the exact artifact, history, non-Apnea scope, and whitespace. Do not invoke `gh pr create/edit`.
+
+#### Acceptance checks
+
+- The exact dispatched artifact has `status: done` front matter and a concise reviewer-oriented scope, test plan, and residual-risk section.
+- Every test/live claim is traceable to an approved result/review.
+- The description contains no AI/assistant attribution and no unnecessary diff narration.
+- It claims no push, opened/updated PR, daemon replacement, or final idle shutdown.
+- `bd952919`, its exact three paths, unrelated Apnea history, and the non-Apnea-clean child remain preserved.
+
+#### Verify commands
+
+At Phase 2 dispatch, replace the required environment value with the exact literal artifact path from that dispatch; the guard prevents accidental path invention:
+
+```sh
+set -euo pipefail
+artifact="${APNEA_PR_DESCRIPTION_ARTIFACT:?set to exact Phase 2 dispatch artifact path}"
+test -f "$artifact"
+test "$(head -n 3 "$artifact")" = "$(printf '%s\n' '---' 'status: done' '---')"
+test "$(jj log -r 'bd952919 & ancestors(@)' --no-graph -T 'commit_id.short(8)')" = bd952919
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = c78b5b93
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+git diff --check
+jj log -r 'c78b5b93::@' --no-graph \
+  -T 'commit_id.short(8) ++ " " ++ description.first_line() ++ "\n"'
+jj status
+```
+
+Review must open the exact artifact and compare every verification claim against approved results rather than keywords alone.
+
+#### Dependencies
+
+- Approved Phase 1 coder result/review and previously approved full-gate evidence.
+- Phase 2 dispatch supplying the exact artifact path.
+
+#### Non-goals
+
+- Product/docs changes, release notes, new tests, commits, pushes, publication, release, or actual PR creation/update.
+
+## Whole-run definition of done
+
+- `bd952919` remains in current ancestry with exactly the three approved music-core paths, repository-pinned Effect v4, no unrelated history rewrite, and no non-Apnea child diff.
+- The already-approved literal `bun run check` remains accepted and is not needlessly rerun.
+- Fresh exact OpenCode `0.0.0-next-17386`, using the absolute checkout `index.tsx` entry and isolated config/XDG roots, and exact Pi `0.84.0`, using the checkout package as the sole reloadable package in an owned profile, run together in regular returned Herdr panes.
+- Approved executable evidence proves healthy same-track/state UI, controls both directions, unchanged daemon PID/generation/socket, preserved baseline unrelated peers, the same exact Pi PID/command process set plus one connection/status across `/reload`, empty owned host process groups after normal exits, Pi-exit isolation, post-Pi OpenCode control, exact playback restoration, and normal OpenCode `/quit`.
+- Both validated roots and only the returned Herdr tab/panes are removed after normal host exits. No `ctrl+c`, direct signal, protected cleanup/replacement, or final idle assertion occurs.
+- The exact dispatched `pr-description.md` truthfully summarizes scope, approved tests, and residual risk. Nothing is committed directly, pushed, published, released, or opened/updated as a PR, and `.apnea/state.json` is never manually edited.

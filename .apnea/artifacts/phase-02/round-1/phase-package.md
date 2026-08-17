@@ -2,203 +2,455 @@
 status: done
 ---
 
-# Phase 2 package — retain package-smoke corrections and pass the unchanged full gate
+# Phase 2 package — mixed exact-host live certification
 
 ## Intent
 
-Run the repository's existing complete `bun run check` without changing the root command or omitting any target. Retain the narrow OpenCode and Pi package-smoke corrections already present in the current parent:
+Certify exact OpenCode `0.0.0-next-17386` and Pi `0.84.0` simultaneously against the legitimately existing shared music daemon. Use regular Herdr panes as the operator surface. Prove:
 
-- OpenCode synchronous process diagnostics tolerate absent `stdout`/`stderr`.
-- Pi synchronous process diagnostics tolerate absent `stdout`/`stderr`.
-- Pi validates that the RPC child supplied piped stdin/stdout/stderr before consuming them, while keeping validation failure inside the existing exact process-group termination and cleanup path.
+- both checkout integrations attach successfully and render the same real track and playback state;
+- an OpenCode play/pause action converges in Pi;
+- a Pi play/pause action converges in OpenCode;
+- Pi `/reload` preserves the existing daemon generation and leaves one healthy Pi music lifecycle;
+- normal Pi exit leaves OpenCode attached and able to control playback;
+- the user's original playback state is restored;
+- after both owned hosts exit, the protected daemon and unrelated clients remain undisturbed.
 
-At this phase dispatch, those corrections no longer appear as a working-copy diff because they are present in the approved parent together with the Phase 1 policy result. Do not mistake their absence from `jj status` for removal, and do not rewrite the approved parent to move them. This phase verifies the retained behavior. No new product edit is expected.
+This is live certification only. Do not change source or history to repair a failure. Do not require final idle shutdown: unrelated clients remain, while the approved Phase 1 `bun run check` already passed deterministic and packed idle-lifecycle smokes.
 
-If a check fails, diagnose the exact stage and owning file before editing. Make only the smallest evidence-backed correction, rerun the exact focused owner target uncached, and then rerun the literal complete root gate. Any Effect change must use only the repository-pinned Effect v4 (`4.0.0-beta.101`).
+## Protected resources and fail-closed rules
 
-Use the configured Pi role profile in a regular pane. The coder and reviewer do not commit or mutate Jujutsu history. After approval, the orchestrator handles the prescribed `jj squash` workflow. Do not push or open a PR.
+Treat all of these as pre-existing and protected:
+
+- daemon PID `45621`;
+- exact command `node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js`;
+- socket `/tmp/naxodev-music-$(id -u)/s.sock`;
+- every OpenCode/Pi process, socket client, pane, tab, and runtime root not created by this phase.
+
+Any PID, command, generation, socket identity, UID, or mode mismatch is a blocker. It is never authority to restart, signal, unlink, discover-clean, replace, or start a daemon. Read generation only with `createMusicSessionClient` against an already validated explicit socket. Never use `connectOrStartMusicSession`, a reconnecting probe, startup leases, discovery cleanup, or another API capable of starting or cleaning a daemon.
+
+The coder is explicitly authorized to operate Herdr for this phase, but only through regular panes. Do not create floating panes, use a modal-vim Pi profile, infer Herdr IDs, or close any Herdr resource not created by this phase.
 
 ## Files to touch
 
-No product file is expected to change.
+Only:
 
-Only if a reproducible failure directly demonstrates a defect in one of these existing owners may the coder make a narrow correction:
+- the exact coder-result artifact path supplied by the Phase 2 coder dispatch.
 
-- `packages/opencode-music-player/scripts/package-smoke.ts`
-- `packages/pi-music-dock/scripts/package-smoke.ts`
+Outside the repository, this phase may create and later remove:
 
-A different existing file may be touched only when output from the unchanged gate and an uncached focused rerun directly prove that file owns a migration regression. Record that evidence before editing.
-
-The coder writes only the exact coder-result artifact supplied by its dispatcher task. That required workflow output is not permission to manually alter existing Apnea records.
+- one fresh, ownership-validated temporary OpenCode install/config root;
+- one fresh, ownership-validated temporary `PI_CODING_AGENT_DIR`;
+- regular Herdr panes or a tab created by this phase.
 
 ## Files not to touch
 
-Do not edit, restore, normalize, delete, or regenerate:
+Do not edit, create, delete, restore, or rewrite:
 
-- `.apnea/**`, especially `.apnea/state.json`, existing tasks, artifacts, backups, and verify logs.
-- `.prettierignore`; the approved final `.apnea/` entry is Phase 1 baseline.
-- `package.json`, `nx.json`, any `project.json`, or scripts to skip/alter gate stages.
-- `bun.lock`, dependency versions, exact OpenCode/Pi pins, Pi peer ranges, exports, package file lists, or publish metadata.
-- `docs/music-session-architecture.html` or any other documentation.
-- Passing tests, fixtures, snapshots, or package assertions merely to weaken acceptance.
-- Verified commits through `ae742b68`, the approved parent, or unrelated dirty work.
+- anything under `packages/**`;
+- `package.json`, `bun.lock`, `nx.json`, scripts, manifests, policy, or tool configuration;
+- any documentation or changelog;
+- `.apnea/state.json`;
+- any prior `.apnea` task, artifact, backup, or history record;
+- commit `bd952919`, its ancestors, or unrelated working-copy state;
+- global OpenCode or Pi configuration;
+- the protected socket, runtime directory, startup marker, bind reservation, daemon process, or unrelated client processes.
 
-Do not run a workspace-wide formatter in write mode. Do not manually edit any `.apnea` file. Do not use Git mutation commands, reset, clean, restore, abandon, rebase, `jj describe`, `jj commit`, `jj squash`, or `jj split`.
+Do not create repository-local profiles, installs, logs, screenshots, sockets, archives, or debug scripts. Do not reset or clean the worktree. Do not commit, squash, push, publish, release, or create/update a PR.
 
 ## Exact steps
 
-### 1. Inspect and preserve the current baseline
+Run repository commands from `/Users/nachovazquez/work/1-projects/naxodev/ai`.
 
-From the repository root, run read-only inspections:
+### 1. Confirm the approved Phase 1 handoff and live prerequisites
+
+Phase 1 is approved: the literal `bun run check` exited `0`, and PID `45621`, socket tuple `16777231:1237478212:501:600`, and generation `music-session-zqg8kksdwec` were unchanged during that gate. Do not assume those live values still hold; establish a fresh fail-closed baseline below.
+
+First run this self-contained source/history assertion:
 
 ```sh
-jj status
-jj diff --summary
-jj log -r 'ancestors(@, 5)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+set -eu
+test "$(jj log -r '@- & bd952919' --no-graph -T 'commit_id.short(8)')" = 'bd952919'
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = 'c78b5b93'
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+printf 'approved=%s parent=%s\n%s\n' \
+  "$(jj log -r bd952919 --no-graph -T 'commit_id.short(8) ++ " " ++ description.first_line()')" \
+  "$(jj log -r 'parents(bd952919)' --no-graph -T 'commit_id.short(8)')" \
+  "$expected"
 ```
 
-Expected baseline:
+Use only revset identity checks or `commit_id.short(8)` in history assertions. Never compare default 12-character `short()` output to an eight-character literal.
 
-- The current parent is the approved `chore(format): exclude Apnea runtime records` phase result.
-- The current working copy has no product diff; dispatcher-owned `.apnea` activity is expected.
-- `docs/music-session-architecture.html` and verified migration history remain present.
-
-Do not clean the worktree. If an unexplained product diff is present, identify and report it before running any writer.
-
-### 2. Review the retained package-smoke behavior
-
-Read both scripts and confirm the intended corrections are still present:
-
-1. In `packages/opencode-music-player/scripts/package-smoke.ts`, the synchronous `output` helper safely renders missing `stdout` and `stderr` as empty strings.
-2. In `packages/pi-music-dock/scripts/package-smoke.ts`, the same synchronous diagnostic behavior is retained.
-3. The Pi RPC launch checks stdin/stdout/stderr are real piped streams before capture or writes.
-4. That Pi check remains inside the existing `try` whose failure path terminates the exact detached process group, captures available diagnostics, confirms owned music-core processes are absent, and removes the temporary root only after cleanup succeeds.
-5. OpenCode remains manifest-pinned to `0.0.0-next-17386`; Pi remains manifest-pinned to `0.84.0` with its existing supported peer ranges. Neither smoke falls back to an arbitrary global host.
-
-This is review only. Do not edit either script when the behavior is already correct.
-
-### 3. Run focused uncached typechecks
+Then run the host/operator prerequisites:
 
 ```sh
-bunx nx run opencode-music-player:typecheck --skip-nx-cache
-bunx nx run pi-music-dock:typecheck --skip-nx-cache
+set -eu
+test "${HERDR_ENV:-}" = 1
+herdr --help >/dev/null
+herdr pane || true
+herdr tab || true
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+realpath packages/opencode-music-player
+realpath packages/pi-music-dock
 ```
 
-Both must exit zero. A type failure must be traced to its exact diagnostic before any edit. Do not suppress the error with assertions that weaken stream validation or by changing TypeScript configuration.
+`herdr pane` and `herdr tab` print their installed command groups and may return a nonzero usage status; the `|| true` is only for those help-group calls. The installed CLI output is authoritative for syntax.
 
-### 4. Run focused uncached package smokes
+If `HERDR_ENV=1`, exact Pi resolution, a supported media provider, registry access, or active controllable macOS media is unavailable, stop and report the blocker. Do not substitute headless or synthetic evidence.
+
+### 2. Create only owned regular Herdr resources
+
+Record the caller's IDs before creating anything:
 
 ```sh
-bunx nx run opencode-music-player:smoke --skip-nx-cache
-bunx nx run pi-music-dock:smoke --skip-nx-cache
+printf 'caller workspace=%s tab=%s pane=%s\n' "$HERDR_WORKSPACE_ID" "$HERDR_TAB_ID" "$HERDR_PANE_ID"
+herdr pane current --current
+herdr pane list --workspace "$HERDR_WORKSPACE_ID"
 ```
 
-Require the output to demonstrate:
+Create a new regular tab in the current workspace with `--no-focus`, repository root as its cwd, and a descriptive label. Read the returned tab and initial-pane IDs from the JSON; do not derive them from display order or examples. Use the initial pane as the persistent inspector. Split only that owned pane to create an OpenCode pane, then split an owned pane again to create a Pi pane. Read each new `pane_id` from its split response.
 
-- OpenCode installed and launched exact `0.0.0-next-17386`, resolved packed OpenCode/music-core paths inside the isolated install, rendered the real host slots, and cleaned its exact tmux server/root.
-- Pi installed and launched exact `0.84.0`, resolved packed dock/music-core paths inside the isolated install, returned all three extension commands over RPC, exited status zero, left no owned core process, and cleaned its temporary root.
-
-If a smoke cannot confirm child/process-group termination, preserve and report its external temporary root until termination is independently confirmed. Do not delete beneath a possibly live process and do not weaken cleanup assertions.
-
-### 5. Run the unchanged complete repository gate
-
-From the repository root, run exactly:
+Representative topology commands, with every placeholder replaced only by an ID returned by Herdr:
 
 ```sh
-bun run check
+herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$PWD" --label 'music mixed certification' --no-focus
+herdr pane rename <returned-initial-pane-id> 'music inspector'
+herdr pane split <returned-initial-pane-id> --direction right --cwd "$PWD" --no-focus
+herdr pane rename <returned-opencode-pane-id> 'exact OpenCode'
+herdr pane split <returned-opencode-pane-id> --direction down --cwd "$PWD" --no-focus
+herdr pane rename <returned-pi-pane-id> 'exact Pi'
+herdr pane list --workspace "$HERDR_WORKSPACE_ID"
 ```
 
-Do not substitute a reduced project list. As declared in root `package.json`, this must run:
+Keep a list of the exact owned tab/pane IDs in the coder result. Inspect layout and resize only owned panes if needed so both host UIs render title, artist, and playback marker without relying on truncated text. Do not create floating panes or alter unrelated panes.
 
-1. root `format:check`;
-2. root `policy:check`;
-3. Nx `run-many` for every defined `typecheck`, `test`, `parity`, `format:check`, `package:check`, and `smoke` target.
+### 3. Establish the protected baseline in the persistent inspector
 
-A valid Nx cache hit is acceptable under the repository's configured cache policy; the two corrected package targets were already exercised uncached in Steps 3 and 4. Preserve enough output in the coder result to show root format/policy success, the Nx target summary, packed music-core Node lifecycle evidence, exact OpenCode evidence, exact Pi evidence, and unrelated package smoke success.
-
-### 6. Diagnose narrowly if any command fails
-
-Do not edit immediately. First:
-
-1. Identify the first failed root stage or exact `project:target`.
-2. Rerun that existing command or target with diagnostics. For Nx, use the exact `project:target` with `--skip-nx-cache`.
-3. Classify the cause as environment/tooling, formatting/policy, type/test/parity, package/smoke, or generated debris.
-4. For an environment mismatch, repair the external environment when repository code is correct. Do not change a manifest or pin to match an arbitrary local/global executable.
-5. For a repository regression, edit only the minimum existing owner. If formatting alone fails, run Prettier only on the specifically reported owned file; never use root `bun run format` or format `.apnea`.
-6. If Effect code is unavoidably involved, use Effect v4 only and preserve existing Layer/scope, Schema/Config, bounded concurrency, and supervised cleanup ownership.
-7. Rerun the exact failing owner target uncached.
-8. Rerun all final verify commands, including the literal `bun run check`. A focused pass never substitutes for the final complete gate.
-
-If the failure is unrelated/pre-existing and cannot be repaired within this narrow migration scope, report it as a blocker rather than expanding scope.
-
-### 7. Check whitespace and repository hygiene
-
-After the successful full gate, run:
+Run the following definitions and baseline in the owned inspector pane. Keep this shell alive for the entire certification.
 
 ```sh
+set -eu
+daemon_pid=45621
+daemon_command='node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js'
+socket="/tmp/naxodev-music-$(id -u)/s.sock"
+assert_protected_endpoint() {
+  test "$(ps -p "$daemon_pid" -o command=)" = "$daemon_command"
+  test -S "$socket"
+  test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"
+  test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"
+  lsof -n -a -p "$daemon_pid" "$socket" >/dev/null
+  stat -f '%d:%i:%u:%Lp' "$socket"
+}
+direct_generation() {
+  before="$(assert_protected_endpoint)" || return
+  observed="$(MUSIC_SESSION_SOCKET="$socket" bun -e 'import { baselineCapabilities, createMusicSessionClient } from "./packages/music-core/index.ts"; const socketPath = process.env.MUSIC_SESSION_SOCKET; if (!socketPath) throw new Error("missing validated socket"); const client = await createMusicSessionClient({ socketPath, clientId: `mixed-cert-${process.pid}`, hostKind: "test", capabilities: [...baselineCapabilities] }); try { console.log(client.daemonInstanceId) } finally { client.dispose() }')" || return
+  after="$(assert_protected_endpoint)" || return
+  test "$after" = "$before"
+  test -n "$observed"
+  printf '%s\n' "$observed"
+}
+baseline_socket="$(assert_protected_endpoint)"
+baseline_generation="$(direct_generation)"
+test "$(assert_protected_endpoint)" = "$baseline_socket"
+check_attachment() {
+  test "$(assert_protected_endpoint)" = "$baseline_socket"
+  test "$(direct_generation)" = "$baseline_generation"
+  test "$(assert_protected_endpoint)" = "$baseline_socket"
+}
+check_attachment
+printf 'protected: pid=%s generation=%s socket=%s\n' \
+  "$daemon_pid" "$baseline_generation" "$baseline_socket"
+baseline_lsof="$(lsof -n -a -p "$daemon_pid" "$socket")"
+printf '%s\n' "$baseline_lsof"
+```
+
+Record the fresh baseline PID, exact command, socket tuple, socket/runtime-directory ownership and modes, generation, and complete `lsof` rows. If they differ from the expected protected identity or any helper call fails, stop without launching either host and without cleanup/startup actions.
+
+Run `check_attachment` immediately before and after every host launch, transport action, reload, and host exit below. A failed checkpoint ends the certification; it does not authorize recovery actions against the daemon.
+
+### 4. Install and launch exact isolated OpenCode
+
+In the owned OpenCode pane, run this block. It creates a fresh direct child of the canonical temporary base, installs the exact beta CLI with its trusted lifecycle hook, proves the binary resolves beneath that install, writes only isolated config, and launches the local checkout plugin. Do not use the mutable global `opencode2` binary or global config.
+
+```sh
+set -eu
+tmp_base="${TMPDIR:-/tmp}"; tmp_base="$(realpath "$tmp_base")"
+oc_root="$(realpath "$(mktemp -d "$tmp_base/opencode-next-17386.XXXXXX")")"
+cleanup_oc() {
+  test -e "$oc_root" || return 0
+  test -d "$oc_root" && test ! -L "$oc_root"
+  test "$(stat -f '%u' "$oc_root")" = "$(id -u)"
+  test "$(realpath "$(dirname "$oc_root")")" = "$tmp_base"
+  case "$(basename "$oc_root")" in opencode-next-17386.*) ;; *) return 1 ;; esac
+  rm -rf -- "$oc_root"
+}
+trap cleanup_oc EXIT
+cat >"$oc_root/package.json" <<'JSON'
+{"private":true,"dependencies":{"@opencode-ai/cli":"0.0.0-next-17386"},"trustedDependencies":["@opencode-ai/cli"]}
+JSON
+(cd "$oc_root" && bun install)
+oc_boundary="$(realpath "$oc_root/node_modules")"
+oc_bin="$(realpath "$oc_root/node_modules/.bin/opencode2")"
+case "$oc_bin" in "$oc_boundary"/*) ;; *) echo 'temporary OpenCode binary escaped install root' >&2; exit 1 ;; esac
+test -x "$oc_bin"
+test "$("$oc_bin" --version)" = 'opencode2 v0.0.0-next-17386'
+mkdir "$oc_root/config"
+plugin="$(realpath packages/opencode-music-player)"
+printf '{"plugins":["%s"]}\n' "$plugin" >"$oc_root/config/cli.json"
+test "$(cat "$oc_root/config/cli.json")" = "{\"plugins\":[\"$plugin\"]}"
+printf 'oc_root=%s oc_bin=%s plugin=%s\n' "$oc_root" "$oc_bin" "$plugin"
+OPENCODE_CONFIG_DIR="$oc_root/config" \
+OPENCODE_CONFIG_PROJECT_DISABLE=1 \
+OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+OPENCODE_DISABLE_AUTOUPDATE=1 \
+OPENCODE_DISABLE_MODELS_FETCH=1 \
+"$oc_bin" --standalone --log-level error "$PWD"
+```
+
+Run `check_attachment` immediately before sending this block and again only after OpenCode displays a stable UI. Record:
+
+- returned OpenCode pane ID;
+- canonical `oc_root`, exact `oc_bin`, exact version, and absolute checkout plugin path;
+- no `1 plugin failed`, resolution error, or music startup error;
+- the rendered compact/sidebar music marker, title, artist, and play/pause state;
+- `herdr pane process-info <opencode-pane-id>` and an ANSI-preserving visible read:
+
+```sh
+herdr pane process-info <opencode-pane-id>
+herdr pane read <opencode-pane-id> --source visible --format ansi
+```
+
+Do not issue a transport action yet.
+
+### 5. Launch exact Pi with an isolated profile
+
+In the owned Pi pane, run this block:
+
+```sh
+set -eu
+tmp_base="${TMPDIR:-/tmp}"; tmp_base="${tmp_base%/}"
+pi_root="$(mktemp -d "$tmp_base/pi-mixed.XXXXXX")"
+cleanup_pi() {
+  test -e "$pi_root" || return 0
+  test -d "$pi_root" && test ! -L "$pi_root"
+  test "$(stat -f '%u' "$pi_root")" = "$(id -u)"
+  test "$(realpath "$(dirname "$pi_root")")" = "$(realpath "$tmp_base")"
+  case "$(basename "$pi_root")" in pi-mixed.*) ;; *) return 1 ;; esac
+  rm -rf -- "$pi_root"
+}
+trap cleanup_pi EXIT
+extension="$(realpath packages/pi-music-dock)"
+test "$(bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version)" = '0.84.0'
+printf 'pi_root=%s extension=%s\n' "$pi_root" "$extension"
+PI_CODING_AGENT_DIR="$pi_root" PI_OFFLINE=1 \
+  bunx --package @earendil-works/pi-coding-agent@0.84.0 pi \
+  --no-extensions -e "$extension"
+```
+
+This uses an empty profile, offline startup, disabled extension discovery, and only the absolute checkout extension. Do not add a modal editor or another profile.
+
+Run `check_attachment` immediately before launch and after Pi displays a stable UI. Record:
+
+- returned Pi pane ID;
+- exact Pi version, canonical profile path, and absolute checkout extension path;
+- no unclassifiable-peer, extension-load, provider, or reconnect error;
+- exactly one rendered music status line with marker, title, artist, and play/pause state;
+- `herdr pane process-info <pi-pane-id>` and the ANSI-preserving visible read:
+
+```sh
+herdr pane process-info <pi-pane-id>
+herdr pane read <pi-pane-id> --source visible --format ansi
+```
+
+### 6. Prove simultaneous shared state
+
+With both host processes alive, run `check_attachment`, read both visible panes, and record one timestamped checkpoint. Require the same real title, artist, track identity, and play/pause state in both UIs. The playback marker means the next action: `⏸` while currently playing and `▶` while paused.
+
+Record the user's original playback state as `original_state` and the stable track identity as at least the exact title/artist pair shown by both hosts. Do not proceed unless active media is controllable and the two UIs agree. If the track, provider, or state changes externally during a step, stop and report the environmental interference rather than blindly issuing another action.
+
+Also record steady-state daemon `lsof` output with both owned hosts attached. This is comparison evidence for reload and exit lifecycle; do not signal any listed process.
+
+### 7. Prove controls in both directions
+
+For every action below:
+
+1. run `check_attachment` immediately before it;
+2. record both panes and the current track/state;
+3. send exactly one action;
+4. wait for both UIs to converge on the expected opposite state without issuing another action;
+5. reread both panes, timestamp the observation, and run `check_attachment` again.
+
+First send OpenCode's play/pause shortcut to only the owned OpenCode pane:
+
+```sh
+herdr pane send-keys <opencode-pane-id> ctrl+shift+p
+```
+
+Require Pi to converge from `original_state` to the opposite state on the same track. Then send Pi's reliable slash command to only the owned Pi pane:
+
+```sh
+herdr pane run <pi-pane-id> '/music'
+```
+
+Require OpenCode to converge back to `original_state` on the same track. Do not use next/previous controls in this phase.
+
+### 8. Prove Pi `/reload` preserves generation and one lifecycle
+
+At stable `original_state`:
+
+1. run `check_attachment` and capture both panes;
+2. record `herdr pane process-info <pi-pane-id>` and daemon `lsof` output;
+3. send exactly one reload command:
+
+   ```sh
+   herdr pane run <pi-pane-id> '/reload'
+   ```
+
+4. wait until Pi returns to a healthy, settled UI;
+5. rerun `herdr pane process-info`, read both panes, run `check_attachment`, and record daemon `lsof` again.
+
+Acceptance at this checkpoint requires:
+
+- the same daemon PID, exact command, socket tuple, and `daemonInstanceId`;
+- the same one Pi host process in the owned pane;
+- one, not duplicated, rendered Pi music status/client lifecycle;
+- the same track and playback state in Pi and OpenCode;
+- OpenCode remains healthy throughout;
+- steady daemon socket-client count returns to the same value seen immediately before reload, with no accumulating Pi connection.
+
+Do not interpret the expected Pi client disposal/recreation during reload as authority to touch the daemon.
+
+### 9. Prove Pi-exit isolation and restore playback
+
+Run `check_attachment`, record both UIs, then exit Pi normally by submitting its built-in command:
+
+```sh
+herdr pane run <pi-pane-id> '/quit'
+```
+
+Do not signal Pi or close its pane as a substitute for normal exit. Wait for the exact Pi process to return to its owned shell. Run the ownership-checking cleanup function in that pane and disable its fallback trap:
+
+```sh
+cleanup_pi
+trap - EXIT
+```
+
+Confirm `pi_root` no longer exists, then run `check_attachment`. Record that OpenCode still renders the same track and `original_state`, along with OpenCode process info and daemon `lsof` output.
+
+Now prove OpenCode can still control playback without Pi:
+
+1. run `check_attachment`;
+2. send one OpenCode `ctrl+shift+p` and observe the same track reach the opposite of `original_state` in OpenCode;
+3. run `check_attachment`;
+4. send one corresponding OpenCode `ctrl+shift+p` and observe exact restoration to `original_state`;
+5. run `check_attachment` again.
+
+Do not exit OpenCode unless the original playback state has been restored. If external playback changes make exact restoration ambiguous, stop and report rather than guessing.
+
+### 10. Exit owned OpenCode and prove the original daemon remains
+
+Exit only this run's OpenCode through its built-in `/quit` command and wait for the exact process to return to its owned shell:
+
+```sh
+herdr pane run <opencode-pane-id> '/quit'
+```
+
+Do not signal it and do not close its pane as a substitute. Then run in the returned OpenCode shell:
+
+```sh
+cleanup_oc
+trap - EXIT
+```
+
+Confirm `oc_root` no longer exists. In the persistent inspector, run:
+
+```sh
+check_attachment
+final_lsof="$(lsof -n -a -p "$daemon_pid" "$socket")"
+printf 'final: pid=%s generation=%s socket=%s\n' \
+  "$daemon_pid" "$baseline_generation" "$baseline_socket"
+printf '%s\n' "$final_lsof"
+test "$final_lsof" = "$baseline_lsof"
+```
+
+The final `lsof` equality is against the pre-host baseline captured after the short-lived generation probe had disposed. It proves the protected daemon's original socket rows/unrelated attachments were not replaced by this phase. If unrelated clients naturally change during certification, report the mismatch as a blocker; do not clean or recreate anything.
+
+Do not wait for or claim idle shutdown. PID `45621`, its exact command, socket identity/ownership, and generation must remain present.
+
+### 11. Close only owned Herdr resources and report
+
+After both host processes have exited normally, both validated temporary roots are gone, and the final inspector checkpoint has passed, close only the panes/tab whose IDs were returned by this phase. Never close the caller's pane or another user's resource. Record the close commands and statuses.
+
+In the exact dispatched coder-result artifact, include:
+
+- all returned Herdr tab/pane IDs and confirmation they were regular and owned;
+- exact OpenCode install root, binary path/version, config path, and checkout plugin path;
+- exact Pi version, isolated profile, and checkout extension path;
+- timestamped before/after values for every `check_attachment` checkpoint;
+- title, artist/track identity, and playback marker/state from both UIs at simultaneous startup, each control, reload, Pi exit, post-Pi OpenCode controls, and final restoration;
+- OpenCode and Pi process info before/after reload and exit;
+- daemon `lsof` observations before hosts, with both hosts, around reload, after Pi exit, and after OpenCode exit;
+- normal host exit and ownership-validated root cleanup evidence;
+- every command's status and any blocker or residual risk.
+
+Do not overclaim visual evidence that was truncated or not observed.
+
+## Final verify command
+
+After all live work and cleanup, run this self-contained repository assertion from the repository root:
+
+```sh
+set -eu
+test "$(jj log -r 'bd952919 & ancestors(@)' --no-graph -T 'commit_id.short(8)')" = 'bd952919'
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = 'c78b5b93'
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
 git diff --check
-test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
-jj diff --summary
 jj status
 ```
-
-`git diff --check` and the debris check must exit zero. Inspect Jujutsu output for only expected dispatcher activity and any explicitly evidenced correction. Do not remove declared ignored build output or dispatcher-created records merely to make status shorter.
-
-### 8. Report without claiming later evidence
-
-The coder result must include:
-
-- Each final verify command, exit status, and a concise output tail.
-- Root format/policy and Nx completion summary from `bun run check`.
-- Exact packed-core Node, OpenCode, and Pi smoke evidence.
-- Any failed attempt, diagnosis, edited owner, and focused uncached rerun.
-- Final hygiene/status observations and any retained external temporary root.
-
-Do not claim that automated mixed-host tests or separate package smokes satisfy Phase 3's real regular-pane OpenCode/Pi session.
 
 ## Acceptance checks
 
-Phase 2 is complete only when all of the following hold:
+Phase 2 is accepted only when all of the following are true:
 
-- The OpenCode and Pi nullable synchronous-output corrections remain intact.
-- Pi's piped-stream validation remains inside the exact termination/cleanup boundary and does not weaken RPC lifecycle checks.
-- Uncached OpenCode and Pi typechecks pass.
-- Uncached exact OpenCode `0.0.0-next-17386` and exact Pi `0.84.0` package smokes pass with isolated packed resolution and confirmed cleanup.
-- The literal unchanged `bun run check` exits zero after running root format/policy and all selected Nx typecheck, test, parity, format, package, and smoke targets.
-- The complete gate includes successful packed music-core Node daemon/client lifecycle, exact OpenCode, exact Pi, and unrelated package smoke evidence.
-- Any new correction is minimal, directly owned by a demonstrated failure, passes its exact uncached focused target, and is followed by a successful final full gate.
-- Any Effect edit uses only repository-pinned Effect v4.
-- `git diff --check` passes and no owned archive/socket/marker/log/temp debris remains under `packages`.
-- `.prettierignore`, all Apnea records, architecture documentation, package pins/ranges, verified history, the approved parent, and unrelated work remain preserved.
-- No real mixed-host claim, release, publication, push, PR creation, Git commit, coder/reviewer Jujutsu mutation, or manual `.apnea/state.json` edit occurs.
+- OpenCode evidence comes from a fresh isolated exact `0.0.0-next-17386` install with `trustedDependencies`; neither mutable global binary nor global config is used.
+- Pi is exact `0.84.0`, offline, and uses a fresh isolated profile with only the absolute checkout extension loaded.
+- Both integrations are healthy simultaneously in regular owned Herdr panes and display the same real track and playback state from the protected daemon.
+- One OpenCode play/pause action converges in Pi, and one Pi `/music` action converges in OpenCode.
+- Pi `/reload` preserves daemon PID, command, generation, and socket identity, while leaving one healthy Pi process/status/client lifecycle and healthy OpenCode.
+- Normal Pi exit leaves OpenCode healthy and able to toggle playback twice, with the exact original state restored.
+- Both owned hosts exit normally; only ownership-validated temporary roots and owned Herdr resources are removed.
+- Final PID `45621`, exact command, socket identity/ownership, runtime-directory ownership, `daemonInstanceId`, and baseline unrelated socket rows are unchanged.
+- No unrelated process is signaled or cleaned, and no final idle-shutdown claim is made.
+- Approved commit `bd952919` and its exact three-path content remain in history; the working-copy child remains free of non-Apnea changes.
+- Only the exact dispatched coder-result artifact is written in the repository.
 
-## Verify commands
-
-Run these commands from the repository root. They are independent and runnable by the commit gate:
-
-```sh
-bunx nx run opencode-music-player:typecheck --skip-nx-cache
-bunx nx run pi-music-dock:typecheck --skip-nx-cache
-bunx nx run opencode-music-player:smoke --skip-nx-cache
-bunx nx run pi-music-dock:smoke --skip-nx-cache
-bun run check
-git diff --check
-test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
-```
+A certification failure is evidence for rework, not permission to edit source, weaken checks, restart the daemon, or disturb unrelated clients.
 
 ## Dependencies
 
-- Approved full plan at `.apnea/artifacts/plan.md`.
-- Approved Phase 1 parent with root `.apnea/` Prettier exclusion.
-- Retained OpenCode/Pi package-smoke corrections in the current parent.
-- Verified music-session migration commits through `ae742b68`.
-- Existing Bun, Node, npm, Nx, tmux, macOS, and registry access required by repository targets.
+- Approved green Phase 1 result and review.
+- `HERDR_ENV=1` and installed Herdr regular-pane controls.
+- Registry access for the fresh exact OpenCode install and exact Pi resolution.
+- Active controllable macOS media through `media-control` or supported `nowplaying-cli` fallback.
+- Existing protected PID `45621`, generation, socket, and unrelated clients remain healthy throughout.
 
 ## Non-goals
 
-- Reworking Phase 1 history or moving retained corrections between verified commits.
-- New product behavior, protocol/lifecycle redesign, acceptance expansion, broad refactoring, or workspace-wide formatting.
-- Dependency/lockfile updates, host pin or peer-range changes, manifest/export/package-list changes, test weakening, or cache-policy changes.
-- Editing/normalizing `.apnea`, architecture documentation, unrelated files, verified commits, or root gate definitions.
-- Real mixed OpenCode/Pi interactive certification; that is Phase 3.
-- Commits or Jujutsu mutations by coder/reviewer, Git mutation commands, reset/clean/abandon, push, publication, release, or creating/updating a PR.
+- Source, test, docs, package, lockfile, configuration, or history changes.
+- Synthetic, RPC, print, JSON, or other headless substitution for live rendered host evidence.
+- Global OpenCode/Pi installation or configuration.
+- Next/previous track actions or provider switching.
+- Daemon startup, restart, signaling, unlinking, discovery cleanup, replacement, or final idle shutdown.
+- Floating panes, modal-vim profiles, inferred Herdr IDs, or closing unrelated panes/tabs.
+- Commits, squashes, pushes, publication, releases, or PR creation/update.

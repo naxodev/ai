@@ -1,0 +1,14 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+The Phase 2 package remains aligned with the approved plan, and the coder correctly stopped without modifying history or weakening the prerequisite.
+
+## High — The Phase 1 isolation failure remains unchanged
+
+Phase 1 commit `b0775a281a79` still contains 98 paths: 95 `.apnea/**` records plus the three approved music-core paths. The plan requires the Phase 1 commit itself to contain exactly those three product paths, with Apnea records preserved in the working-copy descendant. The unchanged handoff assertion therefore correctly fails.
+
+As a consequence, the literal `bun run check` and protected-daemon before/after evidence remain absent, so Phase 2 cannot pass. Only the orchestrator may re-isolate the Phase 1 product slice while preserving all Apnea records and verified parent `c78b5b93`; after that correction, Phase 2 must be redispatched with the existing assertion and full gate unchanged.

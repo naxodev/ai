@@ -1,16 +1,14 @@
 ---
 status: done
-verdict: APPROVED
+verdict: CHANGES_REQUIRED
 ---
 
-## Package comparison
+# Findings
 
-The Phase 1 package remains aligned with the approved plan. The cumulative product diff is limited to `server.ts` and `session-server.test.ts`, retains one shared provider-selected graph, and contains no Phase 2 process-contender or Phase 3 startup-matrix work.
+The phase package remains aligned with the approved Phase 1 plan. The prior marker-generation, coordinator-boundary, and exact OpenCode blockers are addressed, but one implementation issue remains.
 
-## Findings
+## Medium — UTF-8 truncation can exceed the 512-byte diagnostic limit
 
-No blocking findings. The rework resolves the prior readiness regression: the selected provider event stream is acquired in the coordinator scope before activation, its in-flight first pull is handed to the fixed coordinator rather than discarded or duplicated, and the original exact-once event-disposal assertions are restored. Listener, coordinator, and provider ownership remain distinct, and shutdown still follows coordinator → dependent connections → provider → listener/unlink ordering through the real blocked-command socket topology.
+`packages/music-core/session/client.ts:975` caps the retained `Buffer` at 512 bytes and then converts it with `diagnostic.toString("utf8")`. If the cap splits a valid multibyte character, Node replaces the incomplete suffix with U+FFFD; re-encoding the exposed diagnostic can therefore exceed 512 bytes. For example, a daemon-prefixed line whose 512-byte boundary contains the first two bytes of an emoji produces a 513-byte returned string. The test at `packages/music-core/tests/session-client.test.ts:1376` uses ASCII only, so it does not cover this case.
 
-## Verification
-
-The coder supplied complete passing evidence: the focused selected-topology test, all 35 server tests, all `music-core` build/typecheck/test/format/package targets with 203 tests, the prohibited-timer scan, exact diff inspection, and `git diff --check`.
+The phase contract bounds the host-visible diagnostic to at most 512 bytes while explicitly treating stderr as bytes. Truncate on a valid UTF-8 boundary or apply a final encoded-byte bound after decoding, and add a multibyte boundary regression asserting the returned diagnostic remains daemon-prefixed, valid, and no more than 512 bytes.

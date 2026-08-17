@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — Recovery can close a tab containing an untracked live host
+
+`oc_live`/`pi_live` are set only after `wait_host_group` succeeds. If `herdr pane run` starts a host but that wait or the following process-info parsing fails, the ERR trap sees the corresponding flag as `0`. It may then run an empty-group check against PGID `-1` and, once both flags are `0`, close the tab without proving the launched process returned to its shell or its real process group is empty. That is exactly the prohibited forced tab termination path. Track “launch submitted” separately immediately after `pane run`, and never delete a root or close the tab unless each launched pane has independently returned to its recorded shell and its discovered/recorded processes are proven gone. An unclassified launch must leave the pane/root/tab for rework, not be treated as inactive.
+
+### High — Rejected media candidates terminate block B successfully
+
+The candidate loop uses `while ! certify_media_candidate ...; do rc=$?`. Inside the body, `$?` is the status of the negation, so it is `0` whenever certification returned `1` or `2`. The subsequent check executes `exit 0`, ending the persistent harness successfully before any host launch. It also loses the intended distinction between safely rejected and unrestored/unknown candidates. Capture the function's un-negated status and ensure only `0` continues, `1` prompts for a replacement, and `2` fails the phase.
+
+### High — UI verification still does not prove one coherent music status
+
+`assert_ui` still searches the entire viewport independently for truncated title text, truncated artist text, and a play/pause glyph. Those values may come from different UI regions. Its Pi uniqueness check only counts occurrences of the title prefix, not music status components. Therefore it cannot support the acceptance claims that each host renders the same identity/state together or that Pi has exactly one status after `/reload`. Assert the complete extension-specific music status row/region with identity and state together, and count that representation exactly once for Pi.

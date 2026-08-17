@@ -1,0 +1,261 @@
+---
+status: done
+---
+
+# Phase 2 package: verify one real mixed OpenCode/Pi session against one daemon
+
+## Intent
+
+Perform one evidence-only, real macOS certification after approved Phase 1. Run exact OpenCode and exact Pi in separate regular interactive panes, load both integrations from this checkout, and use active real media. Prove that both hosts share state and bidirectional controls through one production `music-sessiond`, that Pi reload and Pi exit do not replace or stop the shared daemon, and that closing the final OpenCode client triggers complete idle cleanup.
+
+This phase must not change product code. Package/RPC smokes and synthetic fixtures do not replace the real interactive session. If the live run exposes a defect, stop, retain the evidence, and report it for a narrow replan.
+
+## Files to touch
+
+- No repository product, policy, test, package, lock, configuration, or documentation file.
+- Write the staged transcripts and manual observations only to the exact coder-result artifact supplied by the subsequent Phase 2 coder dispatch. Do not guess that path in advance.
+- Create temporary OpenCode and Pi configuration only outside the repository using the bounded `mktemp` launch shells below. Their ownership-checking traps must remove them after their respective hosts exit.
+
+Dispatcher-owned Apnea records may advance normally. Do not manually edit, restore, normalize, rewrite, or delete `.apnea/**`, especially `.apnea/state.json`.
+
+## Files and state not to touch
+
+Do not change:
+
+- any file under `packages/**`, `docs/**`, or root/Nx configuration;
+- `docs/music-session-architecture.html`, `package.json`, `bun.lock`, or `.prettierignore`;
+- user-global OpenCode or Pi configuration;
+- verified commits, approved parent/history, unrelated dirty work, or existing Apnea records.
+
+Do not reset or clean the worktree. Do not commit, squash, push, publish, release, or open a PR. Do not kill a daemon or provider belonging to another live client.
+
+## Pane and evidence setup
+
+Use three **regular** panes:
+
+1. OpenCode host pane.
+2. Pi host pane, using exact Pi `0.84.0` and a temporary isolated Pi profile.
+3. Inspection pane for staged commands and process/socket evidence.
+
+Do not use floating panes. Keep a transcript for every command, including command text, timestamps, stdout/stderr, and exit status. Copy those transcripts and the required UI observations into the exact dispatched coder-result artifact before review. Avoid private artwork and unnecessary playback metadata; a track title/artist and playback state sufficient to prove convergence are required.
+
+## Exact steps
+
+### 1. Confirm Phase 1 and prepare real media
+
+- Start only after Phase 1 is approved and its complete gate is green.
+- Use macOS with workspace dependencies installed.
+- Start playback in a real supported application and ensure the active track can be safely identified in retained evidence.
+- Prefer `media-control`; `nowplaying-cli` is an accepted fallback. Record which backend is observed because provider process behavior differs:
+  - `media-control` may keep a persistent event-stream child beneath the daemon.
+  - polling fallback work may be transient, so take repeated process-tree samples sufficient to show it originates beneath the daemon and not either host.
+- If a pre-existing production daemon, socket, startup marker, or bind lock exists, determine whether another client owns it. Stop rather than killing unrelated work.
+
+Run and retain all Stage A preflight output:
+
+```sh
+bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
+test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+realpath packages/opencode-music-player
+realpath packages/pi-music-dock
+! pgrep -f '[m]usic-sessiond' >/dev/null
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"
+test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+```
+
+The transcript must explicitly retain:
+
+- exact OpenCode and Pi versions;
+- repository working directory and both absolute `realpath` results;
+- provider command selected and confirmation that real media is active;
+- clean production daemon/runtime baseline.
+
+### 2. Launch exact OpenCode from the checkout
+
+In the OpenCode regular pane, from the repository root, run this shell as one block. It creates isolated external configuration that references the absolute checkout plugin path. The cleanup trap resolves and validates the exact current-user temporary directory before removing it.
+
+```sh
+tmp_base="${TMPDIR:-/tmp}"; tmp_base="${tmp_base%/}"; config="$(mktemp -d "$tmp_base/opencode-mixed.XXXXXX")"; cleanup() { MIXED_CLEANUP_ROOT="$config" MIXED_CLEANUP_BASE="$tmp_base" bun -e 'import { lstat, realpath, rm } from "node:fs/promises"; import { basename, dirname } from "node:path"; const root = process.env.MIXED_CLEANUP_ROOT; const rawBase = process.env.MIXED_CLEANUP_BASE; if (!root || !rawBase) throw new Error("missing cleanup boundary"); const info = await lstat(root); const [target, base] = await Promise.all([realpath(root), realpath(rawBase)]); if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || dirname(target) !== base || !basename(target).startsWith("opencode-mixed.")) throw new Error(`refusing cleanup outside owned OpenCode root: ${target}`); await rm(target, { recursive: true })'; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; printf '{"plugins":["%s"]}\n' "$(realpath packages/opencode-music-player)" > "$config/cli.json"; OPENCODE_CONFIG_DIR="$config" OPENCODE_CONFIG_PROJECT_DISABLE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 opencode2 --standalone --log-level error "$PWD"
+```
+
+Record the launch command, temporary-root boundary, absolute plugin path, OpenCode PID, and eventual host exit. Do not install or reference a global plugin configuration.
+
+### 3. Launch exact Pi from the checkout
+
+In the Pi regular pane, from the repository root, run this shell as one block. It uses exact Pi `0.84.0`, disables globally configured extensions, explicitly loads only the current checkout extension, and removes only its validated temporary current-user profile on exit.
+
+```sh
+tmp_base="${TMPDIR:-/tmp}"; tmp_base="${tmp_base%/}"; pi_home="$(mktemp -d "$tmp_base/pi-mixed.XXXXXX")"; cleanup() { MIXED_CLEANUP_ROOT="$pi_home" MIXED_CLEANUP_BASE="$tmp_base" bun -e 'import { lstat, realpath, rm } from "node:fs/promises"; import { basename, dirname } from "node:path"; const root = process.env.MIXED_CLEANUP_ROOT; const rawBase = process.env.MIXED_CLEANUP_BASE; if (!root || !rawBase) throw new Error("missing cleanup boundary"); const info = await lstat(root); const [target, base] = await Promise.all([realpath(root), realpath(rawBase)]); if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || dirname(target) !== base || !basename(target).startsWith("pi-mixed.")) throw new Error(`refusing cleanup outside owned Pi root: ${target}`); await rm(target, { recursive: true })'; }; trap cleanup EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; PI_CODING_AGENT_DIR="$pi_home" PI_OFFLINE=1 bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --no-extensions -e "$(realpath packages/pi-music-dock)"
+```
+
+Record the launch command, temporary-profile boundary, absolute extension path, Pi PID, and eventual host exit. Do not substitute an unpinned or globally installed Pi.
+
+### 4. Prove one live daemon and owner-only runtime
+
+Wait until both UIs display the active track. In the inspection pane, retain the output of:
+
+```sh
+daemon_pid="$(pgrep -f '[m]usic-sessiond')"; test -n "$daemon_pid"; test "$(printf '%s\n' "$daemon_pid" | grep -c .)" -eq 1; socket="/tmp/naxodev-music-$(id -u)/s.sock"; test -S "$socket"; test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"; test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"; printf 'daemon_pid=%s socket=%s\n' "$daemon_pid" "$socket"; lsof -n -a -p "$daemon_pid" "$socket"
+```
+
+This must prove:
+
+- exactly one `music-sessiond` PID;
+- socket `/tmp/naxodev-music-$(id -u)/s.sock` exists and is a socket;
+- the socket is owned by the current UID with mode `0600`;
+- its runtime directory is owned by the current UID with mode `0700`;
+- `lsof` shows that daemon PID owns the open socket.
+
+Capture provider ownership while both clients remain live:
+
+```sh
+daemon_pid="$(pgrep -f '[m]usic-sessiond')"; printf 'daemon_pid=%s\n' "$daemon_pid"; ps -axww -o pid=,ppid=,command= | awk -v daemon="$daemon_pid" '$1 == daemon || $2 == daemon || /[m]edia-control|[n]owplaying-cli/'
+```
+
+Retain enough samples to characterize persistent streaming or transient polling. Provider work must be beneath the daemon, not beneath OpenCode or Pi. Record both host PIDs so review can compare them with the process tree.
+
+### 5. Prove shared state and controls in both directions
+
+While both hosts remain live:
+
+1. Record the same track identity, playback state, and observation timestamp from the OpenCode UI and Pi status.
+2. Trigger one OpenCode transport action, such as play/pause or next. Record the action and observe the resulting state converge in Pi; also record OpenCode's resulting state.
+3. Trigger one Pi transport action using `/music`, `/music-next`, or `/music-prev`. Record the action and observe the resulting state converge in OpenCode; also record Pi's resulting status.
+4. Allow enough time to distinguish real convergence from an optimistic local update.
+
+The coder-result must state exactly what was pressed/run, the before/after state, which opposite host reflected it, and the observation time. Do not merely state “controls worked.”
+
+### 6. Prove Pi reload preserves the daemon generation
+
+With both hosts still open, run the following checkpoint in the inspection pane. The helper creates a short-lived checkout client only to read `daemonInstanceId` and disposes it immediately. Capture `before_reload`, then run `/reload` in Pi, wait until its status returns, confirm exactly one Pi status/client lifecycle remains, and only then press Enter in the checkpoint shell.
+
+```sh
+generation() { bun -e 'import { baselineCapabilities, createReconnectingMusicSessionClient } from "./packages/music-core/index.ts"; const client = await createReconnectingMusicSessionClient({ clientId: `mixed-evidence-${process.pid}`, hostKind: "test", capabilities: [...baselineCapabilities] }); console.log(client.daemonInstanceId); await client.dispose()'; }; before_pid="$(pgrep -f '[m]usic-sessiond')"; test -n "$before_pid"; before_generation="$(generation)"; printf 'before_reload pid=%s generation=%s\nRun /reload in Pi, confirm one status, then press Enter here.\n' "$before_pid" "$before_generation"; read -r _; after_pid="$(pgrep -f '[m]usic-sessiond')"; after_generation="$(generation)"; test "$after_pid" = "$before_pid"; test "$after_generation" = "$before_generation"; printf 'after_reload pid=%s generation=%s\n' "$after_pid" "$after_generation"
+```
+
+After `/reload`, also retain:
+
+- one Pi music status and one current Pi client lifecycle, with no duplicate status/waveform behavior;
+- healthy OpenCode state and controls;
+- a fresh socket/provider process sample showing unchanged ownership;
+- the checkpoint's identical daemon PID and protocol generation.
+
+Stop and report if the PID or generation changes, Pi duplicates its lifecycle, or OpenCode becomes unhealthy.
+
+### 7. Prove Pi exit does not stop OpenCode or the daemon
+
+Start this checkpoint while both hosts are still live:
+
+```sh
+before_pid="$(pgrep -f '[m]usic-sessiond')"; printf 'Close Pi, verify a transport action still works in OpenCode, then press Enter here.\n'; read -r _; test "$(pgrep -f '[m]usic-sessiond')" = "$before_pid"; test -S "/tmp/naxodev-music-$(id -u)/s.sock"; printf 'post_pi_exit daemon_pid=%s\n' "$before_pid"
+```
+
+Then:
+
+1. Exit Pi normally and wait for its launch shell/cleanup trap to finish.
+2. Confirm and record that the Pi process exited and the bounded temporary Pi profile was removed.
+3. In OpenCode, perform and record another transport action to prove it remains controllable.
+4. Press Enter in the checkpoint shell only after that observation.
+5. Retain the unchanged daemon PID/socket result and another provider/socket ownership sample.
+
+Do not close OpenCode until this checkpoint and its transcript are complete.
+
+### 8. Close the final client and prove idle cleanup
+
+- Exit OpenCode normally and wait for its launch shell/cleanup trap to finish.
+- Confirm and record the OpenCode process exit and bounded temporary configuration cleanup.
+- Run this complete post-close checkpoint. The 35-second wait exceeds the configured 30-second idle grace:
+
+```sh
+sleep 35; ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+```
+
+Retain its timestamp and successful exit status. Confirm provider work observed for this daemon is also gone. Do not run the stable commit gate while either host is open.
+
+### 9. Complete the exact dispatched coder-result artifact
+
+Before review, place all evidence into the exact path supplied by the Phase 2 coder dispatch. Include:
+
+- repository root and both absolute checkout integration paths;
+- exact OpenCode/Pi versions and launch commands;
+- the temporary configuration/profile boundaries and successful ownership-checked cleanup;
+- host PIDs and confirmed exits;
+- active media application/backend and exact shared track/playback observations;
+- OpenCode-to-Pi and Pi-to-OpenCode actions with before/after convergence;
+- live daemon PID/count, socket path/UID/mode, runtime-directory UID/mode, `lsof` ownership, and provider process-tree samples;
+- daemon PID and protocol generation before/after Pi `/reload`;
+- one Pi status/client lifecycle and healthy OpenCode after reload;
+- unchanged daemon/socket and successful OpenCode control after Pi exit;
+- final 35-second cleanup evidence for daemon, provider, socket, `start.lock`, and `s.sock.bind-lock`;
+- command timestamps, complete relevant stdout/stderr, and exit statuses.
+
+Review must compare summaries with raw transcript excerpts and manual UI observations. Do not create a guessed evidence file and do not manually edit Apnea state.
+
+### 10. Run the coherent post-close gate
+
+Only after both hosts are closed, temporary profiles are removed, final idle cleanup passes, and retained evidence is ready for review, run the stable Stage D checks below. These intentionally verify post-close prerequisites and final state; they do not attempt mutually exclusive live assertions.
+
+```sh
+bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
+test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'
+bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+! pgrep -f '[m]usic-sessiond' >/dev/null
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"
+test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"
+test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+git diff --check
+```
+
+Finally confirm that this phase introduced no non-Apnea working-copy path:
+
+```sh
+test -z "$(jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+```
+
+If unrelated dirty work already existed at the phase boundary and makes that last command unsuitable, do not alter it; instead retain a before/after path comparison proving this phase added no non-Apnea diff.
+
+## Acceptance checks
+
+- Phase 1 is approved and green before the live run.
+- The focused mixed-host regression passes, host versions are exactly OpenCode `opencode2 v0.0.0-next-17386` and Pi `0.84.0`, a supported provider is installed, active real media is used, and the production runtime is absent at baseline.
+- Both hosts run in separate regular panes and load the absolute current-checkout package paths through isolated temporary configuration/profile roots.
+- Both UIs show the same recorded track and playback state.
+- One OpenCode action converges in Pi, and one Pi action converges in OpenCode.
+- Live evidence proves exactly one daemon, current-UID socket mode `0600`, current-UID runtime-directory mode `0700`, daemon socket ownership, and daemon-owned rather than host-owned provider activity.
+- Pi `/reload` preserves daemon PID and protocol generation, leaves one Pi status/client lifecycle, and leaves OpenCode healthy.
+- Pi exit removes Pi only; the same daemon/socket remains and OpenCode is still controllable.
+- Final OpenCode exit is followed by a wait beyond the 30-second idle grace and complete removal of daemon, provider, socket, startup marker, and bind reservation.
+- Temporary OpenCode and Pi configuration roots are removed by their ownership-checking traps.
+- The exact dispatched coder-result artifact retains complete staged transcripts, exit statuses, process/socket evidence, and precise manual observations, and review approves that evidence.
+- The post-close gate passes without attempting live-state assertions.
+- No product/configuration/documentation diff is introduced; verified history, unrelated work, `docs/music-session-architecture.html`, and Apnea records are preserved.
+
+## Verify commands
+
+The runnable commands are staged above because live checks and final closed-state checks are mutually exclusive:
+
+- **Stage A:** preflight, exact versions, absolute checkout paths, provider presence, and clean runtime.
+- **Stage B:** live daemon/socket/provider ownership, UI convergence, Pi reload, and Pi-exit checkpoints while hosts are open.
+- **Stage C:** final 35-second idle cleanup after both hosts close.
+- **Stage D:** stable post-close regression/version/provider/final-state checks and `git diff --check`.
+
+For `apnea commit`, use only the Stage D command list plus the final no-new-product-diff check. Live Stage B evidence must already be retained and approved; it cannot be rerun coherently after host closure.
+
+## Dependencies
+
+- Approved Phase 1 script slice and complete green repository gate.
+- macOS, active real media, a supported provider, installed workspace dependencies, exact host versions, and three regular panes.
+- Local checkout loading behavior documented in `packages/opencode-music-player/README.md` and `packages/pi-music-dock/README.md`.
+- The subsequent Phase 2 coder dispatch supplying the exact coder-result artifact path.
+
+## Non-goals
+
+- Product/source fixes, refactoring, new tests, protocol or lifecycle changes, UI redesign, service installation, remote sockets, or synthetic scale testing.
+- Using package/RPC smokes as a substitute for the real hosts, or using final cleanup as a substitute for retained live evidence.
+- Floating panes, unpinned/global Pi substitution, persistent user-global configuration changes, killing unrelated clients, or broad shell deletion.
+- Editing Effect code; if an unexpected defect requires Effect work, stop for replan, and any later work must remain on repository-pinned Effect v4.
+- Commits or squashes by coder/reviewer, pushes, publication, releases, or PR creation.

@@ -1,0 +1,309 @@
+---
+status: done
+---
+
+# Plan: finish the real-host shared music-session startup fix
+
+## Goal restatement
+
+Finish the already-started narrow Effect v4 fix from the dirty Jujutsu working copy above verified parent `c78b5b93` (`test(release): harden packed host smokes`). Preserve the current work in exactly:
+
+- `packages/music-core/session/client.ts`
+- `packages/music-core/session/config.ts`
+- `packages/music-core/tests/session-client.test.ts`
+
+Review and amend only those three product paths as needed, prove the startup-window classification and bounded daemon diagnostics deterministically, attach exact real OpenCode and Pi hosts to the already-running shared production daemon without disrupting it, and isolate only the approved three-file product change as the Phase 1 commit through the run's Jujutsu squash workflow. Then run the literal full repository check, certify a mixed exact-host session against that same pre-existing daemon, and write the dispatched PR-description artifact without pushing or opening a PR.
+
+The retained real-host transcript is sufficient historical failure evidence: OpenCode showed `1 plugin failed`, Pi reported an unclassifiable peer, and inspection caught the hello-reset startup window. Do not require a fabricated or retroactive red transcript, and do not reject evidence merely because an old command contains ellipses.
+
+## Run-wide constraints
+
+- Production daemon PID `45621` and its endpoint are legitimately owned by an unrelated active OpenCode client. Never signal, replace, unlink, clean, or otherwise take ownership of that daemon, its clients, or its runtime artifacts.
+- Live checks must attach to PID `45621`, snapshot its `daemonInstanceId`, prove PID and generation remain unchanged, and exit only this run's hosts and ownership-checked temporary roots. A naturally changed or missing baseline is a blocker to investigate, not authority to start or clean the production daemon.
+- Every evidence-only generation read must use `createMusicSessionClient` with the already-validated explicit socket path. Never use reconnecting/connect-or-start clients or invoke discovery cleanup in live evidence: those APIs can acquire a startup lease, clean an endpoint, or launch a daemon if the protected peer disappears.
+- Do not require final idle cleanup while unrelated clients remain. Deterministic lifecycle tests and the packed smokes remain the idle-cleanup evidence.
+- Product code remains on repository-pinned `effect@4.0.0-beta.101`; do not add Effect v3 APIs, ad hoc timer loops, or another effect system.
+- Preserve every verified ancestor, `docs/music-session-architecture.html`, documentation, existing Apnea records, and unrelated work. Never reset/clean the worktree, manually edit `.apnea/state.json`, rewrite unrelated `.apnea` history, use `git commit`, push, publish, release, or open a PR.
+- Coder and reviewer rounds do not commit. After approval, the orchestrator uses the prescribed `jj squash` workflow to create a descendant phase commit containing only the three approved product paths; it must not fold the fix into or rewrite `c78b5b93`.
+- Role work uses the configured Pi profiles and regular panes. No floating panes or modal-vim profile is introduced.
+
+## Phases
+
+### Phase 1 — Review, complete, verify, and isolate the three-file fix
+
+**Intent**
+
+Review the current three-file diff rather than restarting the implementation. Keep the correction narrow: distinguish a connection reset during a separately proven live startup generation from terminal peers; wait for daemon-owned readiness; retain bounded, allowlisted, split-stream startup diagnostics; and propagate an early daemon exit through host acquisition instead of collapsing it into timeout or occupied-peer errors.
+
+The real production endpoint is not a clean-start test surface. Exercise startup behavior through deterministic direct tests and isolated package smokes, then use real hosts only to prove that the current clients attach safely to the existing daemon.
+
+**Files likely touched**
+
+- `packages/music-core/session/client.ts`
+- `packages/music-core/session/config.ts`
+- `packages/music-core/tests/session-client.test.ts`
+
+No other product, test, package, lock, documentation, policy, or configuration path may enter the Phase 1 product commit. Dispatcher-owned Apnea artifacts may advance normally but remain outside that commit.
+
+**Implementation/review steps**
+
+1. Snapshot `jj status`, `jj diff --summary`, and the full diff of the three paths. Confirm that `c78b5b93` is still the verified product parent and that every non-Apnea working-copy path is one of the three allowed files.
+2. Review runtime selection and daemon launch behavior. A normal Node or Bun CLI may run the daemon directly; an embedded executable such as `opencode2` must not be assumed to be a general JavaScript runtime. Keep shell execution disabled and pass only the bounded environment already required by the daemon.
+3. Make the startup classification tests direct and deterministic:
+   - a reset from the same endpoint while an independently proven, unchanged, live startup marker exists returns `starting`, grants no cleanup, and leaves socket/marker intact;
+   - malformed peers remain terminal even if marker evidence is present;
+   - reset peers with no marker or a deterministically dead marker remain terminal and untouched;
+   - endpoint or marker replacement during the probe is terminal/fail-closed, never `starting`, and never gains cleanup authority;
+   - an incompatible generation remains preserved.
+4. Test daemon stderr as a byte stream, including readiness and `music-sessiond:` diagnostics split across arbitrary chunks, CRLF/newline boundaries, a long unterminated eligible line, and unrelated output containing playback/artwork/environment sentinels. Retain at most 512 bytes and only daemon-prefixed diagnostics.
+5. Add or retain a coordinator-boundary test that uses the managed launcher seam, emits split diagnostics, exits before readiness, and proves host acquisition receives `MusicSessionStartupError` with operation `exit`, exit/signal data, and bounded sanitized diagnostics—not a timeout or generic occupied result. Keep synchronous spawn failure distinct.
+6. Run the focused and package gates below. Do not add sleeps to production code or weaken secure endpoint checks to make tests pass.
+7. Obtain current-host attachment evidence in regular panes. For OpenCode, create a fresh temporary install with this exact manifest shape so Bun trusts and runs `@opencode-ai/cli`'s required installation hook:
+
+   ```json
+   {
+     "private": true,
+     "dependencies": {
+       "@opencode-ai/cli": "0.0.0-next-17386"
+     },
+     "trustedDependencies": ["@opencode-ai/cli"]
+   }
+   ```
+
+   Run `bun install` inside that temporary root, resolve `node_modules/.bin/opencode2`, prove the resolved binary stays beneath that root and reports exactly `opencode2 v0.0.0-next-17386`, and run that binary—not mutable global `opencode2`. Use an isolated `OPENCODE_CONFIG_DIR` whose `cli.json` is exactly `{"plugins":["<absolute checkout packages/opencode-music-player path>"]}`, plus `OPENCODE_CONFIG_PROJECT_DISABLE=1`, `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, and `OPENCODE_DISABLE_MODELS_FETCH=1`.
+8. Launch exact Pi `0.84.0` separately with an ownership-checked temporary `PI_CODING_AGENT_DIR`, `PI_OFFLINE=1`, `--no-extensions`, and `-e "$(realpath packages/pi-music-dock)"`. For each host, record a healthy checkout-loaded UI/client, absence of plugin/extension startup errors, the same real media state exposed by PID `45621`, and before/after PID/generation. Exit only that host and remove only its validated temporary root.
+9. After review approval, have only the orchestrator isolate the reviewed product slice through the run's `jj squash` workflow. The resulting Phase 1 commit must be a descendant of `c78b5b93`, contain exactly the three allowed paths, and leave Apnea records and all other dirty state in the working-copy descendant.
+
+**Acceptance checks**
+
+- Direct tests cover live-marker reset as retryable-starting and malformed, unmarked, dead-marker, replaced-marker, and replaced-endpoint peers as terminal/fail-closed. Terminal cases retain the peer and expose no cleanup capability.
+- Readiness and daemon diagnostics survive arbitrary stderr chunking; diagnostics are daemon-prefixed, no more than 512 bytes, and exclude playback metadata, artwork, environment sentinels, and unrelated child output.
+- Early child exit is propagated through `connectOrStartMusicSessionEffect` as the causal startup error before retries can become timeout; synchronous spawn errors and post-readiness occupied peers remain distinct.
+- The complete focused test file, music-core typecheck/test/package checks, and all three relevant package smokes pass.
+- Exact temporary OpenCode and exact Pi attach to existing PID `45621`, show healthy current-checkout UI/client behavior, and leave both daemon PID and generation unchanged after their own exits.
+- No global OpenCode/Pi configuration or mutable global OpenCode binary is used. Temporary installs/profiles are current-UID direct children of the chosen temporary base and are removed only after their owned host exits.
+- No retroactive red transcript is required. The retained real-host failure plus deterministic direct coverage is sufficient.
+- The approved commit contains only the three listed product paths, remains on Effect v4, and preserves `c78b5b93`, Apnea records, docs, and unrelated work.
+
+**Verify commands**
+
+```sh
+jj log -r 'c78b5b93 & ancestors(@)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'; jj diff --summary; jj diff --git -- packages/music-core/session/client.ts packages/music-core/session/config.ts packages/music-core/tests/session-client.test.ts
+```
+
+```sh
+bun test packages/music-core/tests/session-client.test.ts
+```
+
+```sh
+bunx nx run music-core:typecheck --skip-nx-cache
+```
+
+```sh
+bunx nx run music-core:test --skip-nx-cache
+```
+
+```sh
+bunx nx run music-core:format:check --skip-nx-cache
+```
+
+```sh
+bunx nx run music-core:package:check --skip-nx-cache
+```
+
+```sh
+bunx nx run music-core:smoke --skip-nx-cache
+```
+
+```sh
+bunx nx run opencode-music-player:smoke --skip-nx-cache
+```
+
+```sh
+bunx nx run pi-music-dock:smoke --skip-nx-cache
+```
+
+```sh
+! rg -n '\[DEBUG-[^]]+\]' packages/music-core packages/opencode-music-player packages/pi-music-dock; git diff --check; test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+```
+
+Use one persistent inspection shell for the following attachment-only checkpoint. It validates PID, exact command, socket identity/ownership, and daemon ownership both before and after a direct hello. `createMusicSessionClient` cannot start or clean a daemon. Capture the baseline first, then run `check_attachment` before launch, while each healthy UI is visible, and after each owned host exits; any mismatch stops the phase.
+
+```sh
+daemon_pid=45621; daemon_command='node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js'; socket="/tmp/naxodev-music-$(id -u)/s.sock"; assert_protected_endpoint() { test "$(ps -p "$daemon_pid" -o command=)" = "$daemon_command"; test -S "$socket"; test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"; test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"; lsof -n -a -p "$daemon_pid" "$socket" >/dev/null; stat -f '%d:%i:%u:%Lp' "$socket"; }; direct_generation() { before="$(assert_protected_endpoint)" || return; observed="$(MUSIC_SESSION_SOCKET="$socket" bun -e 'import { baselineCapabilities, createMusicSessionClient } from "./packages/music-core/index.ts"; const socketPath = process.env.MUSIC_SESSION_SOCKET; if (!socketPath) throw new Error("missing validated socket"); const client = await createMusicSessionClient({ socketPath, clientId: `attachment-evidence-${process.pid}`, hostKind: "test", capabilities: [...baselineCapabilities] }); try { console.log(client.daemonInstanceId) } finally { client.dispose() }')" || return; after="$(assert_protected_endpoint)" || return; test "$after" = "$before"; test -n "$observed"; printf '%s\n' "$observed"; }; baseline_socket="$(assert_protected_endpoint)"; baseline_generation="$(direct_generation)"; test "$(assert_protected_endpoint)" = "$baseline_socket"; check_attachment() { test "$(assert_protected_endpoint)" = "$baseline_socket"; test "$(direct_generation)" = "$baseline_generation"; test "$(assert_protected_endpoint)" = "$baseline_socket"; }; check_attachment; printf 'daemon_pid=%s generation=%s socket=%s\n' "$daemon_pid" "$baseline_generation" "$baseline_socket"; lsof -n -a -p "$daemon_pid" "$socket"
+```
+
+After the orchestrated squash, verify the isolated commit and remaining working copy:
+
+```sh
+expected="$(printf '%s\n' 'M packages/music-core/session/client.ts' 'M packages/music-core/session/config.ts' 'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"; actual="$(jj diff -r @- --summary | LC_ALL=C sort)"; test "$actual" = "$expected"; test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"; jj log -r 'c78b5b93::@' -n 3 --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+```
+
+**Dependencies**
+
+- Current dirty working copy and verified parent `c78b5b93`.
+- Existing healthy production daemon PID `45621`, its unrelated active client, macOS real media, Node, Bun, workspace dependencies, and registry access for isolated exact-host installation.
+- Exact Pi `0.84.0` resolution and a supported media provider.
+
+**Non-goals**
+
+- Reproducing the historical failure by disturbing the production endpoint, demanding a retroactive red transcript, redesigning the protocol/provider/UI, changing idle policy, broad retries, dependency updates, documentation edits, or touching host package code.
+
+### Phase 2 — Run the literal full repository gate
+
+**Intent**
+
+With the approved three-file commit isolated, run the unchanged root `bun run check`. This phase is evidence-only. Snapshot PID `45621` and its generation before the gate and prove both remain unchanged afterward; do not mistake the unrelated live daemon for test debris.
+
+**Files likely touched**
+
+- No product, test, lock, policy, config, or documentation file.
+- Only the exact coder-result artifact supplied by the Phase 2 dispatch records evidence.
+
+**Acceptance checks**
+
+- The literal `bun run check` exits zero, including root format/policy checks and all Nx typecheck, test, parity, format, package, and smoke targets.
+- `git diff --check` is clean and no generated archive/socket/lock/log/tmp file remains under `packages`.
+- The production endpoint still belongs to unchanged PID `45621` with the same generation and socket identity after the complete gate.
+- No non-Apnea working-copy change is introduced; the Phase 1 commit and verified ancestry remain intact.
+
+**Verify commands**
+
+```sh
+daemon_pid=45621; daemon_command='node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js'; socket="/tmp/naxodev-music-$(id -u)/s.sock"; assert_protected_endpoint() { test "$(ps -p "$daemon_pid" -o command=)" = "$daemon_command"; test -S "$socket"; test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"; test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"; lsof -n -a -p "$daemon_pid" "$socket" >/dev/null; stat -f '%d:%i:%u:%Lp' "$socket"; }; direct_generation() { before="$(assert_protected_endpoint)" || return; observed="$(MUSIC_SESSION_SOCKET="$socket" bun -e 'import { baselineCapabilities, createMusicSessionClient } from "./packages/music-core/index.ts"; const socketPath = process.env.MUSIC_SESSION_SOCKET; if (!socketPath) throw new Error("missing validated socket"); const client = await createMusicSessionClient({ socketPath, clientId: `full-gate-${process.pid}`, hostKind: "test", capabilities: [...baselineCapabilities] }); try { console.log(client.daemonInstanceId) } finally { client.dispose() }')" || return; after="$(assert_protected_endpoint)" || return; test "$after" = "$before"; test -n "$observed"; printf '%s\n' "$observed"; }; before_socket="$(assert_protected_endpoint)"; before_generation="$(direct_generation)"; test "$(assert_protected_endpoint)" = "$before_socket"; bun run check; test "$(assert_protected_endpoint)" = "$before_socket"; test "$(direct_generation)" = "$before_generation"; test "$(assert_protected_endpoint)" = "$before_socket"; printf 'daemon_pid=%s generation=%s socket=%s\n' "$daemon_pid" "$before_generation" "$before_socket"
+```
+
+```sh
+git diff --check; test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"; test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"; jj status
+```
+
+**Dependencies**
+
+- Approved and isolated Phase 1 commit.
+- Workspace dependencies and toolchains required by the existing root check.
+- Existing PID `45621` and generation still available for non-destructive attachment.
+
+**Non-goals**
+
+- Product changes, gate suppression, cache/policy changes, formatting writes, daemon cleanup, or opportunistic refactoring.
+
+### Phase 3 — Certify exact OpenCode and Pi together against the existing daemon
+
+**Intent**
+
+Use Herdr regular panes as an operator to run exact OpenCode and Pi simultaneously against the existing shared production daemon. Prove common real state, controls in both directions, Pi reload generation preservation, Pi-exit isolation, and unchanged pre-existing daemon state after both test hosts exit.
+
+The Phase 3 coder is explicitly authorized to operate Herdr regular panes. It must first check `HERDR_ENV=1`, read `herdr --help` and the relevant `herdr pane`/`herdr tab` command-group help, and use only IDs returned by Herdr. It may create one owned tab with OpenCode, Pi, and inspection panes; it must not infer IDs, use floating panes, or close resources it did not create. If Herdr is unavailable, report the blocker instead of substituting headless evidence.
+
+**Files likely touched**
+
+- No repository product, test, package, lock, config, policy, or documentation file.
+- A fresh exact OpenCode installation/configuration and exact Pi profile under ownership-checked temporary roots outside the repository.
+- Only the exact coder-result artifact supplied by the Phase 3 dispatch for retained transcripts and UI observations.
+
+**Exact setup and checks**
+
+1. Record current media state, PID `45621`, exact daemon command, socket identity/ownership, daemon generation, unrelated parent client, and checkout paths before creating either test host. Obtain the generation only with attachment-only `createMusicSessionClient` after validating the protected endpoint before and after the hello.
+2. In the OpenCode pane, create a new `opencode-next-17386.XXXXXX` temporary root. Write the exact Phase 1 manifest with `trustedDependencies`, run `bun install` there, and prove the resolved temporary binary reports exactly `opencode2 v0.0.0-next-17386`. Create `config/cli.json` with `{"plugins":["<absolute checkout plugin path>"]}` and launch that resolved binary with the isolated OpenCode environment from Phase 1. Do not call global `opencode2`.
+3. In the Pi pane, create a new `pi-mixed.XXXXXX` temporary profile and launch `bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --no-extensions -e "$(realpath packages/pi-music-dock)"` with `PI_CODING_AGENT_DIR` and `PI_OFFLINE=1`.
+4. Wait for both UIs to show the same track and play state with no plugin/extension failure. Capture host PIDs, daemon/socket ownership, and provider process-tree evidence showing provider work under PID `45621`, not either test host.
+5. Trigger OpenCode play/pause with `ctrl+shift+p` and record convergence in Pi. Trigger Pi `/music` and record convergence in OpenCode. Record before/after UI and provider state and restore the user's original playback state before exiting.
+6. Run the strict attachment checkpoint immediately before Pi `/reload` and again after its status returns. Prove PID/generation/socket identity are identical, exactly one Pi music status/client lifecycle remains, and OpenCode remains healthy.
+7. Run the strict checkpoint, exit Pi normally, wait for its ownership-checking cleanup trap, then run it again and prove OpenCode can still control playback while PID/generation/socket remain unchanged.
+8. Run the strict checkpoint, exit the test OpenCode normally, remove only its validated temporary install/config root, and run the checkpoint again. Because unrelated clients remain, do not wait for or assert idle shutdown. Instead prove PID `45621`, generation, socket identity, and unrelated client remain unchanged from baseline.
+9. Close only the Herdr panes/tab created for this certification after copying complete commands, timestamps, exit codes, and UI observations to the dispatched coder result.
+
+The temporary-root cleanup traps must verify that each root is a non-symlink directory owned by the current UID, resolves as a direct child of the chosen temporary base, and has the expected `opencode-next-17386.` or `pi-mixed.` prefix before recursive removal.
+
+**Acceptance checks**
+
+- Exact OpenCode evidence comes from a fresh isolated `@opencode-ai/cli@0.0.0-next-17386` installation whose trusted postinstall ran, not the mutable global executable. Exact Pi is `0.84.0` with an isolated profile.
+- Both checkout integrations are healthy in regular panes and display the same real state from the existing shared daemon.
+- One OpenCode action converges in Pi and one Pi action converges in OpenCode, with exact before/after observations and original playback restored.
+- Live evidence proves PID `45621`, one current-UID `0600` socket under a current-UID `0700` runtime directory, daemon socket ownership, and daemon-owned provider activity.
+- Pi `/reload` preserves daemon PID and generation and does not duplicate Pi lifecycle. Pi exit removes only Pi and leaves OpenCode healthy.
+- After both test hosts exit, PID `45621`, generation, socket identity, and the unrelated pre-existing client remain unchanged. Only this run's temporary roots and Herdr resources are removed.
+- No source change is made. A failure is retained and returned for rework rather than patched during certification.
+
+**Verify commands**
+
+```sh
+test "${HERDR_ENV:-}" = 1; herdr --help >/dev/null; herdr pane; herdr tab
+```
+
+```sh
+bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'; bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'; command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null; realpath packages/opencode-music-player; realpath packages/pi-music-dock
+```
+
+Run this in the OpenCode pane before launch, then retain the absolute `oc_bin` and version:
+
+```sh
+set -eu; tmp_base="${TMPDIR:-/tmp}"; tmp_base="${tmp_base%/}"; oc_root="$(mktemp -d "$tmp_base/opencode-next-17386.XXXXXX")"; cat >"$oc_root/package.json" <<'JSON'
+{"private":true,"dependencies":{"@opencode-ai/cli":"0.0.0-next-17386"},"trustedDependencies":["@opencode-ai/cli"]}
+JSON
+(cd "$oc_root" && bun install --silent); oc_bin="$(realpath "$oc_root/node_modules/.bin/opencode2")"; case "$oc_bin" in "$oc_root"/node_modules/*) ;; *) echo "temporary OpenCode binary escaped install root" >&2; exit 1;; esac; test "$($oc_bin --version)" = 'opencode2 v0.0.0-next-17386'; mkdir "$oc_root/config"; plugin="$(realpath packages/opencode-music-player)"; printf '{"plugins":["%s"]}\n' "$plugin" >"$oc_root/config/cli.json"; printf 'oc_root=%s oc_bin=%s plugin=%s\n' "$oc_root" "$oc_bin" "$plugin"; OPENCODE_CONFIG_DIR="$oc_root/config" OPENCODE_CONFIG_PROJECT_DISABLE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 "$oc_bin" --standalone --log-level error "$PWD"
+```
+
+Run the live baseline/reload/control/exit comparisons from one persistent inspection shell. The direct client performs only hello/dispose against the validated socket; it has no startup or cleanup authority. Invoke `check_attachment` before and after each host launch, control observation, reload, and host exit.
+
+```sh
+daemon_pid=45621; daemon_command='node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js'; socket="/tmp/naxodev-music-$(id -u)/s.sock"; assert_protected_endpoint() { test "$(ps -p "$daemon_pid" -o command=)" = "$daemon_command"; test -S "$socket"; test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"; test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"; lsof -n -a -p "$daemon_pid" "$socket" >/dev/null; stat -f '%d:%i:%u:%Lp' "$socket"; }; direct_generation() { before="$(assert_protected_endpoint)" || return; observed="$(MUSIC_SESSION_SOCKET="$socket" bun -e 'import { baselineCapabilities, createMusicSessionClient } from "./packages/music-core/index.ts"; const socketPath = process.env.MUSIC_SESSION_SOCKET; if (!socketPath) throw new Error("missing validated socket"); const client = await createMusicSessionClient({ socketPath, clientId: `mixed-evidence-${process.pid}`, hostKind: "test", capabilities: [...baselineCapabilities] }); try { console.log(client.daemonInstanceId) } finally { client.dispose() }')" || return; after="$(assert_protected_endpoint)" || return; test "$after" = "$before"; test -n "$observed"; printf '%s\n' "$observed"; }; baseline_socket="$(assert_protected_endpoint)"; baseline_generation="$(direct_generation)"; test "$(assert_protected_endpoint)" = "$baseline_socket"; check_attachment() { test "$(assert_protected_endpoint)" = "$baseline_socket"; test "$(direct_generation)" = "$baseline_generation"; test "$(assert_protected_endpoint)" = "$baseline_socket"; }; check_attachment; printf 'daemon_pid=%s generation=%s socket=%s\n' "$daemon_pid" "$baseline_generation" "$baseline_socket"; lsof -n -a -p "$daemon_pid" "$socket"; ps -axww -o pid=,ppid=,command= | awk -v daemon="$daemon_pid" '$1 == daemon || $2 == daemon || /[m]edia-control|[n]owplaying-cli/'
+```
+
+```sh
+check_attachment; git diff --check
+```
+
+The final comparison is intentionally an attachment-only check, not an idle-cleanup check. If PID, command, socket identity/ownership, or expected generation differs at any checkpoint, stop without calling discovery, reconnect, startup, cleanup, or signaling APIs.
+
+**Dependencies**
+
+- Green Phase 2, `HERDR_ENV=1`, exact host packages available from the registry, active real macOS media, and supported provider tooling.
+- Existing unrelated client and PID `45621` remain healthy throughout the certification.
+
+**Non-goals**
+
+- Source changes, synthetic-client substitution for live evidence, global host installation/configuration, daemon restart/cleanup, final idle shutdown, load testing, UI/provider redesign, or closing unrelated Herdr/host resources.
+
+### Phase 4 — Write the terminus PR-description artifact
+
+**Intent**
+
+At terminus, write `pr-description.md` only at the exact artifact path supplied by that dispatch. Summarize the retained failure, the narrow three-file correction, deterministic coverage, full repository gate, current-host attachment evidence, mixed exact-host certification, and residual risk. This creates description content only; it does not create or update a PR.
+
+**Files likely touched**
+
+- Only the exact `pr-description.md` artifact path supplied by the terminus dispatch.
+
+**Acceptance checks**
+
+- Front matter contains `status: done` only.
+- The summary accurately describes reset/live-marker classification, terminal hostile/changed peers, runtime/readiness handling, and bounded propagated diagnostics without claiming a protocol redesign.
+- The test plan lists only commands and live observations actually completed. It does not claim a retroactive red run or final idle cleanup.
+- Residual risk covers exact beta hosts, macOS/provider variability, and the fact that live certification attached to an already-running generation while isolated tests/smokes covered startup and idle lifecycle.
+- History/status shows the three-path Phase 1 commit as a descendant of `c78b5b93`; docs, unrelated work, and Apnea records remain preserved. No push, publish, release, or PR is claimed.
+
+**Verify commands**
+
+```sh
+jj log -r 'c78b5b93::@' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'; jj status; git diff --check
+```
+
+Review also opens the exact dispatched artifact and checks every evidence claim against approved phase results.
+
+**Dependencies**
+
+- Approved Phase 3 evidence and the terminus dispatch's exact artifact path.
+
+**Non-goals**
+
+- Product/docs changes, release notes, new tests solely to decorate the description, commits, pushes, publication, or PR creation/update.
+
+## Whole-run definition of done
+
+- The approved Effect v4 fix is isolated in one descendant commit containing only `client.ts`, `config.ts`, and `session-client.test.ts`; `c78b5b93`, all verified ancestors, docs, Apnea records, and unrelated work are preserved.
+- Deterministic direct tests prove live-marker reset classification, terminal malformed/unmarked/dead/changed peers, split and bounded safe diagnostics, readiness gating, runtime selection, and causal early-exit propagation through host acquisition.
+- Focused checks, typecheck, package checks/smokes, and literal `bun run check` pass without repository debris.
+- Exact temporary OpenCode and exact Pi attach safely to the existing daemon. The retained mixed-host regular-pane run proves shared state, controls both directions, Pi `/reload` generation preservation, Pi-exit isolation, and unchanged pre-existing PID `45621`/generation/socket after test-host exit.
+- Only owned hosts, profiles, installs, and Herdr resources are removed. The unrelated daemon/client is never signaled, replaced, or cleaned, and no final idle cleanup is required while it remains active.
+- The dispatched PR-description artifact truthfully summarizes delivered work, actual verification, and residual risk. Nothing is pushed, published, released, or opened as a PR, and `.apnea/state.json` is never manually edited.

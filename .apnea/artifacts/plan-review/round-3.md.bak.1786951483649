@@ -1,0 +1,8 @@
+---
+status: done
+verdict: APPROVED
+---
+
+# Findings
+
+No blocking findings. The two vertical phases have explicit acceptance checks and sane verification procedures. Phase 1 now implements sequential bounded Herdr process classification and exact-host-PID socket-peer polling, uses `/quit` and `/exit` for normal shutdown and recovery, routes live failure branches through recovery, preserves unrelated peers and Apnea records, and verifies protected-daemon, media, topology, cleanup, ancestry, whitespace, and product-diff invariants. Phase 2 is artifact-only and gates its claims on approved evidence.

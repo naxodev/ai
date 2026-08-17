@@ -1,0 +1,100 @@
+---
+status: done
+---
+
+# Phase 1 coder result — real-host initialization
+
+## Root cause
+
+The primary failure was a startup race, not a surviving or foreign daemon. A freshly spawned daemon can briefly accept/reset a hello while its session graph is still becoming ready. `discoverMusicSession` correctly preserved that endpoint as an unclassifiable peer, but the owning startup workflow immediately converted the result to terminal `occupied` even though it still held the exact startup-marker lease and had launched that generation. The daemon subsequently remained healthy: a direct hello succeeded against the same socket.
+
+A second, independent observation explained the original OpenCode rendered error: the retained launch config supplied the checkout *directory*. OpenCode 17386 interprets that external-plugin value as a TUI directory and failed with `ENOENT .../packages/opencode-music-player/tui`. Its checkout entry is `packages/opencode-music-player/index.tsx`; using that exact absolute entry loaded the plugin normally.
+
+Falsified hypotheses:
+
+1. **Embedding runtime cannot execute the daemon** — falsified for Pi: its host process was Node and launched `node .../dist/music-sessiond.js`; the daemon bound the owner-only socket. The launcher now also avoids assuming an embedded Bun executable is a JS runner: a normal Node host keeps its validated `process.execPath`, while another embedded runtime uses the required `node` command with shell disabled.
+2. **Daemon exits before readiness** — falsified: after Pi reported the error, PID 13328 remained live with the owner-only socket, and a direct protocol hello succeeded.
+3. **Marker/socket window is misclassified** — proved. Eight clean `createReconnectingMusicSessionClient` runs produced three `occupied` failures before the change; the deterministic lifecycle regression models the owned-launch reset then healthy generation.
+4. **Unexpected daemon entry** — falsified: both host timelines resolved `packages/music-core/dist/music-sessiond.js`, and `ps` showed that exact path.
+5. **Cross-host lease contention** — falsified by separate clean single-host runs and the absent baseline artifacts.
+
+Existing checks were green because their launcher mocks and packed/RPC host smokes did not exercise the interactive host's owned-marker hello-reset window.
+
+## Changes
+
+- `packages/music-core/session/client.ts`
+  - Retain the existing occupied-peer behavior for every peer not belonging to the current launched lease.
+  - Treat an unclassifiable hello reset as pending only while this workflow holds the exact lease and has launched its daemon; retry through the existing bounded Effect schedule without unlinking or replacing anything.
+  - Select `process.execPath` only for Node (and the Bun CLI test runner); otherwise spawn `node` with the existing detached, no-shell, minimal-environment boundary.
+- `packages/music-core/tests/session-client.test.ts`
+  - Added deterministic coverage for missing → owned lease → launch → transient occupied/reset → healthy, asserting one launch and no peer replacement.
+  - Existing focused coverage continues to distinguish spawn errors, timeout, and malformed/reset peers.
+
+## Red and green evidence
+
+### Red before the fix
+
+```text
+$ for i in $(seq 1 8); do ... createReconnectingMusicSessionClient({ hostKind:"pi", capabilities:["state-replay","transport"] }) ...; done
+exit: 0 (diagnostic loop)
+ok 221
+err 184 music session endpoint is occupied by an unclassifiable peer
+ok 218
+ok 207
+ok 207
+ok 207
+err 189 music session endpoint is occupied by an unclassifiable peer
+err 188 music session endpoint is occupied by an unclassifiable peer
+```
+
+The exact Pi 0.84.0 regular-pane run independently rendered `Error: music session endpoint is occupied by an unclassifiable peer` while inspection found Node PID 13328 running the resolved daemon entry and holding `/tmp/naxodev-music-501/s.sock` (UID 501, mode 0600). A direct client then completed a healthy hello against that endpoint.
+
+The original OpenCode regular-pane run used the supplied checkout directory and rendered `1 plugin failed`; `/plugins` showed the bounded host diagnostic `ENOENT .../packages/opencode-music-player/tui`.
+
+### Green after the fix
+
+- Exact Pi 0.84.0, `--no-extensions -e <absolute checkout package>`, `PI_OFFLINE=1`, and an ownership-checked temporary profile initialized `music-dock` without the endpoint error. Host PID 15236 was Node; normal exit followed by the idle grace removed daemon, socket, marker, and bind lock.
+- Exact OpenCode `opencode2 v0.0.0-next-17386` loaded absolute checkout `packages/opencode-music-player/index.tsx` from an ownership-checked isolated config. It rendered `▶︎ Wrecked - Kiasmos`, without `1 plugin failed`; inspection saw one Node daemon holding the 0600 socket. Normal exit plus idle grace removed all runtime artifacts.
+- Each temporary root was a current-UID, non-symlink direct child of its temporary base and was removed by its launch-shell trap. No playback transport command was sent.
+
+## Verification transcript
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts
+exit: 0
+70 pass, 0 fail
+
+$ bunx nx run music-core:typecheck --skip-nx-cache
+exit: 0
+Successfully ran target typecheck for project music-core
+
+$ bunx nx run music-core:test --skip-nx-cache
+exit: 0
+262 pass, 0 fail
+
+$ bunx nx run music-core:package:check --skip-nx-cache
+exit: 0
+Verified npm package contents (21 files)
+
+$ bunx nx run music-core:smoke --skip-nx-cache
+exit: 0
+negotiated daemon: music-session-k3fedfkqj9e revision 1
+status-zero idle exit and cleanup: ok
+
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit: 0
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit: 0
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+
+$ git diff --check; ! rg -n '\[DEBUG-[^]]+\]' packages/music-core packages/opencode-music-player packages/pi-music-dock; ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+exit: 0
+```
+
+## Residual risks
+
+The retry is deliberately limited to a reset observed while this exact workflow owns the marker and has launched the daemon. A reset/malformed peer observed without that ownership remains terminal `occupied` and is never unlinked. This phase covers independent initialization only; it does not claim mixed-host controls, Pi reload survival, or Pi-exit isolation.

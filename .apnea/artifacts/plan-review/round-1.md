@@ -3,10 +3,10 @@ status: done
 verdict: CHANGES_REQUIRED
 ---
 
-## Findings
+# Findings
 
-### High — Phase 2 verification is not self-contained or suitable for `apnea commit`
+## High
 
-The Phase 2 command list depends on transient interactive state that the commands neither create nor preserve. In one sequence it requires exactly one live `music-sessiond` and socket, then requires that daemon and its artifacts to be absent, but launching the two pinned hosts, loading the checkout integrations, performing the bidirectional controls/reload/exit flow, waiting for idle cleanup, and transitioning between the live and closed states are only prose. A fresh-shell verifier cannot run the listed commands successfully as a coherent gate after the coder has finished and closed the hosts.
+1. **The verification block contains a prohibited destructive command.** The final cleanup runs `rm -rf "$GUARD"`, while the reviewer brief explicitly requires verify commands not to use `rm -rf`. Replace it with a guarded, non-forced cleanup that first proves the path is the expected temporary directory.
 
-Revise Phase 2 so the verification contract is executable and unambiguous: separate prerequisite, live-session, and post-close checks into explicitly staged self-contained commands or provide a phase-local verification harness/evidence artifact that `apnea commit` can validate after the interactive run. The retained evidence must bind the observations to the exact host versions and checkout paths and cover daemon PID/generation, socket ownership/mode, provider ownership, Pi reload, client exits, and final idle cleanup. Do not leave mutually exclusive live and post-cleanup assertions as an unstaged flat command list.
+2. **The artifact and hygiene checks are not self-contained.** `PR_DESCRIPTION` has no literal value in the plan, and `GUARD` is created/exported in one shell block but required by a later block; those exports will not survive independently executed verify commands. This also leaves the promised “exact dispatched” `pr-description.md` location unresolved. Name the exact repository path and make each command independently executable, or provide one safe verification procedure that preserves the required values across the write step.

@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Blocker — The forbidden old-resource cleanup preflight is still present
+
+The blocker from Rounds 1 and 2 remains unchanged. The dispatch states that the prior retained resources have already been removed and says not to include any old-resource cleanup preflight. The plan still requires old process groups `23136`/`23635`, tab `w2:tH`, panes `w2:pGF`/`w2:pGG`, and roots `opencode-next-17386.wj6FfV`/`pi-mixed.kWZwUU` in its narrative, constraints, phase work, acceptance, dependencies, definition of done, and executable Block B.
+
+Block B explicitly asserts that the removed panes and roots exist, so the run cannot reach certification from the dispatched starting state. Remove all `prior_*` state and the old cleanup block, plus every corresponding plan requirement. Start with protected-daemon, peer, and directly inspected Music.app baselines, and clean up only resources created and owned by the new run.

@@ -1,0 +1,19 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — The unknown media-state restoration promised by the plan is still absent from the harness
+
+Ordered work step 4 now explicitly requires that changed-identity or unavailable-metadata outcomes use the saved original boolean to attempt idempotent `media-control play` or `media-control pause`, followed by bounded verification. The executable `certify_media_candidate` still contains the old branch:
+
+```sh
+printf '%s candidate-state-unknown-after-toggle ...; no further media command issued\n' ...
+return 2
+```
+
+The caller then exits explicitly. Thus a successful first toggle can still leave Music.app changed without the restoration attempt required by the plan, while no host recovery trap runs because host resources have not yet been created.
+
+Implement the stated idempotent recovery in this branch: checkpoint the restoration attempt where the protected boundary remains valid, issue `play` when the original snapshot was playing or `pause` when it was paused, boundedly verify the byte-identical original snapshot, and retain the original/latest state plus command/checkpoint statuses on failure. The verify harness must match the ordered work and acceptance boundary before approval.

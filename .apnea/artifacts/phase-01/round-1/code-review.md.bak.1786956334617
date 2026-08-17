@@ -1,0 +1,20 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Critical — The phase package reintroduces the forbidden Music.app-specific protocol
+
+The approved plan requires adopting the first currently selected `media-control` source regardless of application, with no source selection, Music.app requirement, AppleScript inspection, or app-specific identity bridge. The executable Block B instead prompts to confirm a Music.app `P1-C2` source, permits the operator to “Re-select or start” one, calls `assert_live_music_app`, `direct_music_app_inspection`, and `direct_music_app_snapshot`, and lists `osascript` plus a specific Music.app source as dependencies. Its final checks also compare a direct Music.app snapshot. This directly contradicts the approved phase before code/result review can proceed.
+
+Replace the stale candidate protocol with the plan’s non-interactive single-candidate flow: the first valid `media-control` snapshot is authoritative, record its PID/full command, never select another source, prove the toggle/opposite state and exact restoration solely through the canonical media-control identity, and retain that identity throughout.
+
+## Critical — Required live certification did not pass
+
+The coder result confirms the drift caused an immediate failure: `media-control` selected VLC, but Block B then inspected Music.app with `osascript` and exited `2` when Music had no current track. The package explicitly makes any nonzero Block B a blocker. No exact host launches, named controls, reload continuity, normal exits, owned-resource cleanup, or final restoration/preservation evidence was produced. Block C passing cannot substitute for the failed live harness.
+
+## High — The submitted Block B is not self-contained
+
+The package calls `assert_live_music_app`, `direct_music_app_inspection`, `direct_music_app_snapshot`, `assert_direct_matches_media`, and `observe_candidate_state` without defining them. It also initializes `chosen_process_command` but never assigns the selected source process command, so later `assert_chosen_process` cannot pass. The replacement harness must be complete and self-contained as required by the plan.

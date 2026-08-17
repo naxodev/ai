@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "slug": "music-session-vlc-command-query",
+  "step": "code_review",
+  "phase_index": 1,
+  "phase_count_hint": null,
+  "rounds": {
+    "plan_review": 3,
+    "phase-01/code_review": 1
+  },
+  "vcs": "jj",
+  "allow_dirty": true,
+  "goal": "Complete final live certification and pr-description.md. Phase 1 certifies selected VLC using media-control; stable identity excludes raw contentItemIdentifier and artist/album may be empty. Use exact OpenCode/Pi hosts, controls, Pi reload polling, normal exits, cleanup, protected daemon continuity, and no product diff. For OpenCode Music / Play / pause selection, open the command palette and type the exact unique query. Capture the query and resulting palette. Do not require the title and Music group to occupy one ANSI line or exact bold styling. Treat the subsequent canonical media transition plus both host UI convergence as authoritative proof that the command executed. Parse Herdr tab create from .result.tab.tab_id and .result.root_pane.pane_id. No Music.app or AppleScript. Allow unrelated peer churn. Coder may operate Herdr regular panes. Phase 2 writes pr-description.md. Preserve verified commits and Apnea records. Do not push or open a PR. Use self-contained checks, jj, Effect v4, and never edit .apnea/state.json manually.",
+  "last_error": null,
+  "pending_artifact": null,
+  "pending_role": null,
+  "pending_pane_id": null,
+  "pending_pane_label": null,
+  "pending_floating_exit": null,
+  "pending_started_at": null,
+  "pending_deadline_ms": null,
+  "pending_nudged_at": null,
+  "pending_final_grace": false,
+  "pending_extended": false,
+  "role_panes": {
+    "planner": {
+      "pane_id": "w2:pJC",
+      "label": "apnea:planner:mswum9hs-ohjb"
+    },
+    "reviewer": {
+      "pane_id": "w2:pJ9",
+      "label": "apnea:reviewer:mswuhaeq-2hrb"
+    },
+    "coder": {
+      "pane_id": "w2:pJD",
+      "label": "apnea:coder:mswuo0yf-xvr0"
+    }
+  },
+  "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
+  "reviewer_tree_fingerprint": null,
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": null
+}

@@ -5,10 +5,8 @@ verdict: CHANGES_REQUIRED
 
 # Findings
 
-## Critical — The phase package is stale after the boundary repair
+## High — The Phase 2 package's handoff command rejects the valid corrected history
 
-The orchestrator has restored the plan's required boundary: current parent `b30f9987` is the Phase 1 policy slice, and the two package-smoke scripts are now the Phase 2 working-copy product changes. However, the supplied Phase 2 package still describes the old `9a2aa534` baseline, asserts that the smoke corrections are already in the parent, and defines Phase 2 as having no expected product diff.
+The orchestrator has corrected the prior isolation failure: Phase 1 commit `bd952919efe9` is a direct descendant of `c78b5b93f3dc`, contains exactly the three approved product paths, and the working-copy descendant has no non-Apnea changes. However, the package asserts that default `commit_id.short()` equals the eight-character literal `c78b5b93`. In this repository, default `short()` renders `c78b5b93f3dc`, so the command necessarily exits 1 before evaluating the valid path and working-copy checks.
 
-That package no longer describes the actual Phase 2 slice and therefore still drifts from the approved plan/current baseline. Regenerate the Phase 2 package so it explicitly reviews the two working-copy smoke-script corrections against policy-only parent `b30f9987`, while retaining the plan's focused checks, unchanged `bun run check`, hygiene gate, and narrow scope. Then dispatch fresh coder verification against that package.
-
-The coder correctly did not mutate history or run verification under demonstrably stale package assumptions. Consequently, there is not yet conforming focused/full gate evidence to review. Per the reviewer brief, review stops at package drift.
+This is a package verification defect, not a Phase 1 handoff defect. Revise the package assertion to compare compatible IDs, for example `commit_id.short(8)` against `c78b5b93`, or use a revset identity check. Then redispatch Phase 2 and run the literal `bun run check` plus protected-endpoint and final repository checks. The coder correctly stopped under the current package, so no full-gate evidence exists to approve yet.

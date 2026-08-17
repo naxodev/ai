@@ -1,0 +1,114 @@
+---
+status: done
+---
+
+# Phase 1 coder result — blocked, not certified
+
+No product, test, manifest, lockfile, or checked-in configuration files were changed. The only intended repository write is this result artifact. No Herdr certification tab/panes, owned OpenCode/Pi roots, or host processes were created: the live harness stopped during the required pre-launch Music.app certification.
+
+## Blocker
+
+The protected-daemon baseline was healthy on both attempts:
+
+- PID `45621`, command `node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js`
+- socket tuple `16777231:1237478212:501:600`
+- daemon generation `music-session-zqg8kksdwec`
+
+Attempt 1 correctly failed closed because `media-control` selected VLC (`org.videolan.vlc`), not Music.app. The required direct Music.app evidence was retained.
+
+After explicitly activating the directly inspected Music.app `P1-C2` source, attempt 2 reached the Music.app identity check but failed before the first toggle: `media-control` reported `contentItemIdentifier` `1480::1482`, whose required final component is `1482`; direct `osascript` reported the same title/artist/album/state but `database ID` `325`. `assert_direct_matches_media` therefore failed as designed. This is a hard acceptance blocker, so no host launch, named host control, reload, or exit sequence was attempted.
+
+The global media source then churned back to VLC. A manual failure-restoration attempt found Music.app had no current track and, because the selection had changed, its `media-control pause` targeted VLC. A guarded `media-control play` recovery immediately restored VLC to `playing: true`; its content identifier changed during the external churn, so exact external-item restoration cannot be claimed. Final safe inspection found the protected daemon unchanged, a live Music.app process, VLC selected and playing, and `osascript` still unable to obtain a Music.app current track. This run is not certifiable and must be discarded/reworked with a stable Music.app source whose direct database ID matches the package's asserted media identifier mapping.
+
+## Files touched
+
+- `.apnea/artifacts/phase-01/round-1/coder-result.md`
+
+## Verify transcript
+
+### Block A — exit 0
+
+Command: extracted and ran the package's **A. Self-contained handoff and prerequisites** block.
+
+```text
+HERDR_ENV=1
+Herdr command groups inspected successfully.
+Saved lockfile
+```
+
+### Block B, attempt 1 — exit 2
+
+Command: extracted and ran the package's **B. Complete persistent live harness** block in one shell, with source label `P1-C2`.
+
+```text
+2026-08-17T04:43:33Z baseline-peer-context count=2
+50825  22u ->0xf243e941e197f75c /Users/nachovazquez/.bun/bin/opencode2 --auto
+71950  24u ->0x99774868c3086981 /Users/nachovazquez/.bun/bin/opencode2 --auto
+2026-08-17T04:43:34Z checkpoint=baseline pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+50825  22u ->0xf243e941e197f75c /Users/nachovazquez/.bun/bin/opencode2 --auto
+71950  24u ->0x99774868c3086981 /Users/nachovazquez/.bun/bin/opencode2 --auto
+2026-08-17T04:43:34Z media-control-selected-non-music payload={"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"org.videolan.vlc","contentItemIdentifier":"470B830A-470C-4806-B4C2-79078DBD346E","duration":660,"elapsedTime":314,"playbackRate":1,"playing":true,"processIdentifier":68175,"timestamp":"2026-08-17T04:43:31Z","title":"P1-C2","trackNumber":3}
+2026-08-17T04:43:34Z direct-music-command=ps -axww -o pid=,command= | grep '[M]usic.app/Contents/MacOS/Music'
+90211 /System/Applications/Music.app/Contents/MacOS/Music
+2026-08-17T04:43:35Z direct-music-command=osascript -e 'tell application id "com.apple.Music"' ...
+paused, 634.885986328125, 325, P1-C2, Brandon Sanderson, Mistborn 3: The Hero of Ages
+```
+
+### Block B, attempt 2 — exit 2
+
+After Music.app activation, `media-control get --no-artwork` first returned:
+
+```text
+{"bundleIdentifier":"com.apple.Music","contentItemIdentifier":"1480::1482","playing":true,"processIdentifier":90211,"title":"P1-C2",...}
+```
+
+The complete harness output was:
+
+```text
+2026-08-17T04:44:02Z baseline-peer-context count=2
+50825  22u ->0xf243e941e197f75c /Users/nachovazquez/.bun/bin/opencode2 --auto
+71950  24u ->0x99774868c3086981 /Users/nachovazquez/.bun/bin/opencode2 --auto
+2026-08-17T04:44:03Z checkpoint=baseline pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+50825  22u ->0xf243e941e197f75c /Users/nachovazquez/.bun/bin/opencode2 --auto
+71950  24u ->0x99774868c3086981 /Users/nachovazquez/.bun/bin/opencode2 --auto
+music-app pid=90211 command=/System/Applications/Music.app/Contents/MacOS/Music state={"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"com.apple.Music","contentItemIdentifier":"1480::1482","duration":660.45387755102035,"id":"1480::1482","playbackRate":1,"playing":true,"processIdentifier":90211,"title":"P1-C2"}
+2026-08-17T04:44:04Z direct-music-command=ps -axww -o pid=,command= | grep '[M]usic.app/Contents/MacOS/Music'
+90211 /System/Applications/Music.app/Contents/MacOS/Music
+2026-08-17T04:44:04Z direct-music-command=osascript -e 'tell application id "com.apple.Music"' ...
+playing, 641.213989257812, 325, P1-C2, Brandon Sanderson, Mistborn 3: The Hero of Ages
+```
+
+### Failure boundary / final safe observation
+
+```text
+final-safe-daemon command=node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js uid=501 socket=16777231:1237478212:501:600 socket-mode=501:600 dir-mode=501:700
+final-safe-generation=music-session-zqg8kksdwec
+final-safe-media={"bundleIdentifier":"org.videolan.vlc","contentItemIdentifier":"90B3C32B-5AC1-433E-B8BD-00FC621979FF","playing":false,"processIdentifier":91740,"title":"P1-C2",...}
+unrelated-state-recovery-before={"bundleIdentifier":"org.videolan.vlc","contentItemIdentifier":"90B3C32B-5AC1-433E-B8BD-00FC621979FF","playing":false,"processIdentifier":91740,"title":"P1-C2",...}
+unrelated-state-recovery-poll=2 state={"bundleIdentifier":"org.videolan.vlc","contentItemIdentifier":"50EA8487-52F3-4B88-97B5-6356AA02CBD6","playing":true,"processIdentifier":91740,"title":"P1-C2",...}
+final-post-recovery-media={"bundleIdentifier":"org.videolan.vlc","contentItemIdentifier":"50EA8487-52F3-4B88-97B5-6356AA02CBD6","playing":true,"processIdentifier":91740,"title":"P1-C2",...}
+final-post-recovery-music-processes:
+90211 /System/Applications/Music.app/Contents/MacOS/Music
+final-post-recovery-direct-music:
+47:60: execution error: Music got an error: Can’t get current track. (-1728)
+```
+
+### Block C — exit 0
+
+Command: extracted and ran the package's **C. Final self-contained repository assertion** block.
+
+Tail:
+
+```text
+Working copy  (@) : twlqknws 44535c5f test(release): verify full repository gate
+Parent commit (@-): vqkwurqv bd952919 fix(music): tolerate daemon hello reset window
+```
+
+The block's `jj status` output listed pre-existing Apnea records (including `.apnea/state.json`); no non-Apnea working-copy diff was reported and this run did not edit `.apnea/state.json`.
+
+## Residual risks
+
+- Phase 1 acceptance checks are unmet; there is no live-host certification evidence.
+- Music.app has a live process but no current track at final inspection; its required byte-exact restoration cannot be proven.
+- The externally selected VLC source churned while the failed-run recovery was in progress. It was last observed playing, but its content ID changed, so exact VLC restoration cannot be proven.
+- The package's `database ID` versus `contentItemIdentifier` assertion must be reconciled, and the system must keep Music.app selected/stable, before a new fail-closed run.

@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Critical
+
+1. **The Phase 1 harness cannot reach host certification because its launch path calls an undefined helper and never records the exact host PIDs.** The script defines `wait_peer_for_exact_host_pid`, but both launches call `capture_peer_for_group`, which is not defined. It also leaves `oc_host_pid` and `pi_host_pid` empty, so the following `checkpoint ... 1 ...` calls would fail `assert_owned_peers` even if the undefined call were corrected. Store each group-leader PID returned by `host_pid_from_info`, then invoke the defined exact-PID peer poll. This is required both for a runnable verify command and for the task's exact-host ownership proof.
+
+2. **The executable OpenCode shutdown flow contradicts the dispatch and the plan's own constraints.** The main path opens the `System / Exit the app` command-palette action and calls the 30-second `wait_shell`; recovery does the same. The task requires sending `/exit` directly exactly once, not using the previous `wait_shell` helper, polling for up to 60 seconds, taking a final sample before failure, and independently requiring all three conditions: pane foreground group equals the saved shell PID, the recorded host PID is absent, and the recorded process group is empty. Replace both the normal and recovery logic with a dedicated bounded exit protocol, track whether `/exit` was already sent so recovery cannot send it twice, and preserve the final process-info/PID/group sample as evidence.

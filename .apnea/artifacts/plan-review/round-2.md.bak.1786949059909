@@ -1,0 +1,8 @@
+---
+status: done
+verdict: APPROVED
+---
+
+# Findings
+
+No blocking findings. The revised Pi matcher now requires the actual 16-character waveform shape, and the phases retain coherent acceptance checks and sane verification commands.

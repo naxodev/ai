@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## High — Required process evidence is captured into variables but never recorded
+
+Phase 1 requires the coder result to record each host's shell PID, foreground identity/commands, PGID/group inventory, and the selected VLC process's full command. The harness suppresses several of those values inside command substitutions. In particular, `selected_command` is never printed; the Pi launch has no equivalent of the OpenCode `opencode-info=... commands=... group=...` record; and the pre/post-reload identities, commands, and group inventories are compared but never emitted. A zero exit proves the comparisons passed, but it does not leave the complete inspectable evidence the plan's ordered work and acceptance criteria require. Emit timestamped records for the selected VLC command, both host launch snapshots (including shell IDs), and both sides of the Pi reload continuity comparison.
+
+## Medium — The protected checkpoint is not the first post-readiness action
+
+After the reload loop recognizes completion plus a coherent current Pi row, it prints `pi-reload-ready`, assigns/breaks, and runs `test "$reload_ready" -eq 1` before `checkpoint post-pi-reload-first-action`. This contradicts the explicit requirement that the protected checkpoint be the first post-readiness action. Invoke the checkpoint immediately in the successful readiness branch, before evidence logging or any subsequent validation.
+
+## Medium — Unrelated Apnea-record preservation is not gated
+
+Gates A and C reject non-`.apnea` changes but permit arbitrary changes anywhere under `.apnea`, even though the task and whole-run definition require unrelated Apnea records to remain untouched. `jj status` only reports state and does not fail on extra Apnea mutations. Add a before/after allowlist or checksum comparison that permits only the dispatch-owned artifacts and orchestrator-owned mutable records while failing on changes to unrelated Apnea records.

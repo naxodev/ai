@@ -3,10 +3,10 @@ status: done
 verdict: CHANGES_REQUIRED
 ---
 
-## Findings
+# Findings
 
-### High — Phase 2 still lacks a self-contained verification gate
+## High
 
-The prior blocker remains unresolved. Phase 2 presents mutually exclusive assertions as one flat command list: it first requires a live daemon and socket, then immediately requires both to be absent. The commands do not launch the two pinned hosts, load the checkout integrations, perform or record the control/reload/exit flow, transition from the live state to the closed state, wait through idle cleanup, or validate the recorded evidence afterward. Consequently, `apnea commit` cannot execute this verification coherently from a fresh shell.
+1. **The prohibited destructive verification command remains.** The cleanup still runs `rm -rf "$GUARD"`, contrary to the reviewer brief’s explicit requirement that verify commands not use `rm -rf`. Replace it with a guarded, non-forced cleanup after proving the path is the expected temporary directory.
 
-Revise the phase into explicit, executable stages (prerequisites, live-session capture, and post-close cleanup), or produce a durable phase-local evidence artifact plus a self-contained command that validates it after the interactive session. Evidence must be tied to the exact host versions and checkout paths and cover daemon PID/generation, owner-only socket metadata, provider ownership, Pi reload, client exits, and final idle cleanup.
+2. **The artifact and hygiene checks remain non-self-contained.** The plan still provides no literal value for `PR_DESCRIPTION`, and `GUARD` is exported in one shell block but required in another independently executed block. Name the exact `pr-description.md` repository path and make each verification command independently executable, or define one safe procedure that reliably preserves these values across the write step.

@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Major
+
+1. **Pi exit isolation still lacks the required direct post-exit media observation.** The identity model is now corrected, but the harness still proceeds from `checkpoint post-pi-quit 1 0` to Pi-root cleanup and an OpenCode UI assertion. It does not call `media_snapshot` until after executing the next OpenCode toggle. Rendered UI may be stale, so this does not independently prove that Pi `/quit` preserved the original VLC state or that media control remained healthy.
+
+   Immediately after the post-Pi checkpoint—and before root cleanup or another host action—capture a fresh `media_snapshot`, require `same_state "$chosen_original" "$post_pi_exit_media"`, and run `assert_chosen_process` on it. Then use that current observation for the OpenCode UI assertion. The raw identifier will remain recorded by `media_snapshot` without entering equality.

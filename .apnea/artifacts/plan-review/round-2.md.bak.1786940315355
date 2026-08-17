@@ -1,0 +1,28 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — The Phase 1 verify harness is not runnable and never records the owned peer identities
+
+`stable_peers` is called when establishing `baseline_peers` but is no longer defined, so `set -Eeuo pipefail` exits before media certification. If that is fixed, the baseline checkpoint expands uninitialized `oc_peer_pid` and `pi_peer_pid` variables under `set -u`. Moreover, `capture_owned_peer` is never called and neither peer PID is ever assigned, so the harness cannot identify the two owned socket rows or prove those specific rows disappear after normal exits.
+
+Initialize the peer identity state safely, capture exactly one owned row after each host launch, persist its PID/row with the corresponding process-group evidence, and use those recorded identities for post-exit and final absence checks.
+
+### Critical — Exact unrelated-peer equality remains an executable final gate
+
+Although most prose now correctly treats unrelated peers as context, the final harness still runs:
+
+```sh
+test "$(stable_peers)" = "$baseline_peers"
+```
+
+The whole-run definition of done also still says “Final peers equal baseline” and requires unrelated peers to be unchanged. This directly contradicts the dispatch and can reject a valid run when an unrelated client exits naturally. Replace the final equality with a captured final inventory plus absence checks limited to both recorded owned peer identities/process groups, and update the definition of done accordingly.
+
+### High — The harness does not directly prove that the controlled source is Music.app
+
+The dispatch requires a directly proven controllable Music.app source. `media_snapshot` discards `bundleIdentifier` and `processIdentifier`, while the interactive `source_label` is only an operator description. Consequently, any app publishing title/artist/playing metadata can satisfy the current checks.
+
+Require and retain machine-verifiable Music.app identity (for example, `bundleIdentifier == "com.apple.Music"`, with its process identity recorded) in the canonical source evidence and verify it remains the same across direct controls, host controls, and restoration.

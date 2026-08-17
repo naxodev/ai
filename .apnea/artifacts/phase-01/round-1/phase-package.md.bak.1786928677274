@@ -1,0 +1,250 @@
+---
+status: done
+---
+
+# Phase 1 package — reproduce, diagnose, and fix real-host initialization
+
+## Intent
+
+Diagnose the concrete checkout-loaded startup failure before selecting a repair. Build a tight red-capable loop around the real host/runtime path, retain sanitized diagnostics, minimize the causal condition, and turn it into a failing regression. Then make the narrow production correction and prove both exact hosts can initialize independently from a clean production runtime.
+
+This phase does **not** perform the complete root `bun run check` or the full mixed-host control/reload/exit certification; those are later phases. Keep all Effect work on repository-pinned `effect@4.0.0-beta.101` and preserve the verified product parent `c78b5b93` and every ancestor.
+
+## Required starting state
+
+1. Work from the repository root in the configured Pi coder profile and a regular pane.
+2. Confirm the working-copy parent and existing product scope before editing:
+
+   ```sh
+   jj log -r '@ | @-' --no-graph -T 'change_id.short() ++ " " ++ commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+   ```
+
+   ```sh
+   test "$(jj log -r @- --no-graph -T 'commit_id.short()')" = 'c78b5b93'
+   ```
+
+   ```sh
+   test -z "$(jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+   ```
+
+   If the parent or non-Apnea scope differs, stop and report it; do not reset, clean, restore, or rewrite anything.
+3. Read the retained real-host evidence in `.apnea/artifacts/phase-02/round-3/coder-result.md`. Treat its observations as evidence, not as a diagnosis:
+   - OpenCode `opencode2 v0.0.0-next-17386` loaded the checkout plugin and rendered `1 plugin failed`.
+   - Pi `0.84.0` loaded the checkout extension and rendered `music session endpoint is occupied by an unclassifiable peer`.
+   - Immediate inspection found no surviving music-session process or production socket.
+4. Confirm prerequisites without changing playback:
+
+   ```sh
+   test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'; bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'; command -v media-control >/dev/null; command -v node >/dev/null; node --version; bun --version
+   ```
+
+   ```sh
+   media-control get --no-artwork
+   ```
+
+5. Confirm a clean production endpoint before each real-host attempt. Never unlink an artifact merely because it is unexpected:
+
+   ```sh
+   ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+   ```
+
+## Exact implementation steps
+
+### 1. Build a red-capable real-host feedback loop
+
+Do this before changing production behavior.
+
+1. Reproduce each host **separately** against a clean production runtime before trying both together. This distinguishes a per-host launcher/runtime problem from mixed-client contention.
+2. Use isolated configuration outside the repository:
+   - OpenCode must load the absolute `packages/opencode-music-player` checkout path with project config and updates disabled.
+   - Pi must be exact `0.84.0`, use `--no-extensions -e "$(realpath packages/pi-music-dock)"`, `PI_OFFLINE=1`, and a temporary `PI_CODING_AGENT_DIR`.
+   - Each launch shell must trap exit/signals and remove only its own `mktemp` root after proving it is a current-UID, non-symlink direct child of the temporary base.
+3. A regular host pane is required for rendered host errors. If Herdr is used, first require `HERDR_ENV=1`, consult the installed `herdr` command-group help, use only IDs returned by Herdr, and create/close only owned regular shell panes. Do not use a floating pane or infer an ID.
+4. In an inspection pane, retain a short timestamped timeline from immediately before launch through failure/success. At minimum record:
+   - host command, exact version, PID, `process.execPath` or equivalent embedded-runtime evidence, and resolved daemon entry;
+   - `pgrep -alf 'music-session|music_session'` results;
+   - existence/type/UID/mode for the runtime directory, `s.sock`, `start.lock`, and `s.sock.bind-lock`;
+   - `lsof` for a live socket/process when present;
+   - child exit code/signal and bounded stderr/diagnostic output when obtainable;
+   - host-visible error and elapsed time.
+5. Do not send media transport commands during diagnosis. Active media is only a provider prerequisite.
+6. Tighten the loop until it is deterministic, runs in seconds, and catches the observed initialization failure rather than an unrelated host error. Minimize in this order, rerunning after each cut:
+   - mixed hosts → one host;
+   - full host → smallest checkout-loaded client/launcher path that retains the failure;
+   - production runtime → owner-isolated test runtime where possible;
+   - provider state → initialization only.
+7. Record the exact red loop and output in the dispatched coder-result artifact. If no deterministic red-capable loop can be built, stop and report what was tried; do not proceed on a theory.
+
+### 2. Rank and test hypotheses
+
+After the loop is red, write three to five falsifiable hypotheses in the coder result before testing them. The initial list must cover, without presuming any is correct:
+
+- the embedding host executable/runtime is unsuitable for running `dist/music-sessiond.js`;
+- the daemon starts but exits before readiness and `stdio: "ignore"` hides the causal diagnostic;
+- a transient socket/marker window is misclassified as an occupied peer;
+- checkout/package entry resolution selects an unexpected daemon artifact;
+- concurrent marker/lease ownership causes cross-host interference.
+
+For each hypothesis, state the predicted observation and vary one factor only—for example runtime executable, host ordering, entry path, or startup timing. Retain only sanitized output. Do not log environment values, artwork, or playback metadata. The final coder result must identify the proved cause and explain why existing unit/package checks remained green.
+
+### 3. Add the regression before the fix
+
+1. Add the regression at the existing production startup seam in `packages/music-core/tests/session-client.test.ts`.
+2. The regression must model the **minimized causal condition** found above. It must exercise the launcher/startup lifecycle far enough to detect the original failure class; a test that only records mock arguments is insufficient.
+3. Capture and retain the failing test command/output before editing production behavior:
+
+   ```sh
+   bun test packages/music-core/tests/session-client.test.ts
+   ```
+
+4. Add focused coverage that distinguishes:
+   - synchronous spawn failure;
+   - a child that starts but fails/exits before endpoint readiness;
+   - startup timeout with no causal child failure;
+   - a real malformed/reset peer, which must remain classified as occupied and must not be removed;
+   - bounded/truncated diagnostics that contain no playback/artwork payload or arbitrary environment contents.
+5. Use temporary paths created by the test and deterministic synchronization. Do not add arbitrary sleeps when an Effect v4 `Deferred`, `Latch`, `TestClock`, process event, or explicit probe hook can make the test deterministic.
+
+### 4. Implement only the evidence-backed production repair
+
+1. Change `packages/music-core/session/client.ts` only as required by the proved cause and regression.
+2. Preserve these invariants:
+   - the daemon entry remains resolved from the installed/check-out `@naxodev/music-core` package;
+   - runtime selection does not blindly assume an embedding host executable can interpret the daemon unless that runtime is explicitly validated;
+   - shell execution remains disabled;
+   - child environment remains minimal and does not forward secrets;
+   - one detached daemon owns provider work; clients do not regain provider ownership;
+   - startup-marker acquisition/release, singleton bind authority, retry bounds, idle shutdown, and client disposal remain truthful;
+   - an incompatible healthy generation and an unclassifiable live peer are preserved, never unlinked or replaced.
+3. Make early daemon failure observable at the host acquisition boundary with a bounded causal diagnostic. The result must distinguish spawn failure from launched-but-failed execution and retain exit code/signal plus a sanitized daemon diagnostic where available. It must not retain an unbounded pipe, keep the host alive, leak a child handle, or print media/artwork data.
+4. Keep typed failures as existing Effect v4 `Schema.TaggedErrorClass` values and compose startup/lifecycle work with current Effect v4 APIs already used by the module. Consult the pinned package source rather than guessing an API. Do not add casts, non-null assertions, Effect v3 APIs, or a second effect system to bypass typing.
+5. Touch `packages/music-core/session/config.ts` only if the red loop proves probe/marker classification is causal. If touched, add direct regression coverage for its exact authority and cleanup rule.
+6. Touch either existing host package-smoke script only if the diagnosis proves that exercising the real daemon acquisition path there is necessary to prevent recurrence. Preserve exact host pins, packed-install isolation, process-group cleanup, and current UI/RPC assertions.
+7. Do not change host UI code merely to hide or reword a core startup failure.
+
+### 5. Prove red-to-green and real-host initialization
+
+1. Run the same minimized regression and original feedback loop after the fix. Retain both green outputs next to the original red output.
+2. From a clean production runtime, launch exact checkout-loaded OpenCode alone and confirm it does not render `1 plugin failed`; wait until the plugin has initialized, then exit normally and prove owned temporary config cleanup.
+3. Wait beyond the daemon's idle grace and prove daemon/socket/marker/bind-lock cleanup.
+4. From another clean production runtime, launch exact Pi `0.84.0` alone and confirm `music-dock` initializes without `unclassifiable peer`; exit normally and prove profile/runtime cleanup.
+5. These are initialization smokes only. Do not claim shared controls, Pi `/reload`, Pi-exit isolation, or mixed-host certification in this phase.
+6. Restore the user's playback state if any host/provider action changes it unexpectedly.
+
+### 6. Clean up and report
+
+1. Remove every temporary `[DEBUG-...]` probe and throwaway harness. Do not leave a new debug file in the repository.
+2. Format only files actually changed, using their package configuration. Do not run a formatter in write mode over `.apnea`.
+3. Inspect the complete non-Apnea diff against `@-`. Every changed path must be explained by the proved cause:
+
+   ```sh
+   jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print }'
+   ```
+
+4. In the dispatched coder-result artifact, include:
+   - root cause and the evidence that falsified competing hypotheses;
+   - exact red loop and red-before-fix output;
+   - regression and production changes by file;
+   - green regression and original-loop output;
+   - exact isolated OpenCode/Pi initialization observations and cleanup;
+   - all verification commands with exit status;
+   - residual risks.
+5. Do not run `git commit`, `jj commit`, or `jj squash`. Do not push or open a PR. The orchestrator alone performs the approved-phase `jj squash` after review.
+
+## Files to touch
+
+Expected narrow paths:
+
+- `packages/music-core/session/client.ts`
+- `packages/music-core/tests/session-client.test.ts`
+
+Conditional paths, only with retained causal evidence:
+
+- `packages/music-core/session/config.ts`
+- `packages/opencode-music-player/scripts/package-smoke.ts`
+- `packages/pi-music-dock/scripts/package-smoke.ts`
+
+Also write only the exact coder-result artifact path supplied by the coder dispatch.
+
+## Files not to touch
+
+- `.apnea/state.json` or any existing `.apnea` task/artifact/history file other than the exact current coder-result artifact.
+- `docs/music-session-architecture.html`.
+- `package.json`, `bun.lock`, `nx.json`, package manifests, changelogs, READMEs, or release policy.
+- OpenCode/Pi UI/controller/extension files unless a later replan explicitly proves the core boundary cannot fix the defect.
+- Verified ancestors or unrelated worktree content.
+
+Do not create a new repository path for logs, fixtures, debug scripts, or temporary host configuration.
+
+## Acceptance checks
+
+- A deterministic red-capable real-host/minimized loop reproduces the observed initialization failure before the fix and passes afterward.
+- The coder result records exact versions, checkout paths, runtime/process timeline, sanitized diagnostics, ranked hypotheses, proved cause, and why prior checks missed it.
+- A red-before-green regression exercises the causal runtime/startup pattern, not only a mocked invocation.
+- Host diagnostics causally distinguish synchronous spawn failure, early child execution failure, timeout, and a genuinely occupied peer; output is bounded and excludes media/artwork/environment data.
+- Exact checkout-loaded OpenCode and Pi each initialize independently without the prior host error.
+- Secure runtime and lifecycle behavior remain intact: owner-only artifacts, same UID, marker lease, singleton bind, incompatible/occupied peer preservation, detached daemon ownership, bounded retries, client disposal, and idle cleanup.
+- Only repository-pinned Effect v4 APIs are used.
+- All focused tests, package checks, and smokes below pass; no debug tag, generated package/runtime debris, or production daemon remains.
+- The non-Apnea diff is narrow and evidence-backed. No verified history, docs, unrelated changes, or existing Apnea records are rewritten.
+
+## Verify commands
+
+These are the post-fix commit-gate commands. Each block is self-contained and runnable from the repository root in a fresh shell.
+
+```sh
+jj log -r @- --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'
+```
+
+```sh
+bun test packages/music-core/tests/session-client.test.ts
+```
+
+```sh
+bunx nx run music-core:typecheck --skip-nx-cache
+```
+
+```sh
+bunx nx run music-core:test --skip-nx-cache
+```
+
+```sh
+bunx nx run music-core:package:check --skip-nx-cache
+```
+
+```sh
+bunx nx run music-core:smoke --skip-nx-cache
+```
+
+```sh
+bunx nx run opencode-music-player:smoke --skip-nx-cache
+```
+
+```sh
+bunx nx run pi-music-dock:smoke --skip-nx-cache
+```
+
+```sh
+! rg -n '\[DEBUG-[^]]+\]' packages/music-core packages/opencode-music-player packages/pi-music-dock
+```
+
+```sh
+git diff --check
+```
+
+```sh
+! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+```
+
+```sh
+test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+```
+
+Review must additionally inspect `jj diff --from @- --summary` and the retained red/green evidence. Do not run the full root `bun run check` in this phase; Phase 2 owns that complete gate.
+
+## Non-goals
+
+- Full mixed OpenCode/Pi shared-state/control certification, Pi `/reload`, Pi-exit isolation, or final mixed-session cleanup evidence.
+- Protocol, provider/coordinator, transport, host UI, or idle-policy redesign.
+- Deleting or replacing an occupied endpoint, weakening mode/UID checks, adding broad sleeps/retries, or falling back to per-host provider ownership.
+- Dependency or host-pin changes, documentation/changelog work, release operations, commits, pushes, publication, or PR creation.

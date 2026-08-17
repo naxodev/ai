@@ -1,0 +1,14 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Blocker
+
+1. **The executable harness has regressed to treating `contentItemIdentifier` as stable identity.** Despite the revised prose, `media_snapshot` again emits `contentIdentity:.contentItemIdentifier`; `same_identity` removes only `playing`; and transition, restoration, recovery, host, reload, and final checks compare snapshots containing that field. It also no longer logs each complete raw observation separately. This directly violates the dispatch and will reject valid VLC play/pause transitions when VLC regenerates the identifier. Restore the round-2 evidence model: log every raw observation and raw `contentItemIdentifier`, emit only the six stable identity fields plus `playing` as canonical state, and use that canonical state for every equality gate. Update the regressed Phase 1 intent, Phase 2 evidence wording, and whole-run definition consistently.
+
+## Major
+
+2. **Pi exit isolation still lacks a direct post-exit media observation.** After `checkpoint post-pi-quit 1 0`, the harness deletes the Pi root and checks only OpenCode's rendered UI before issuing another control. Add a fresh `media_snapshot` immediately after that checkpoint and before cleanup/control, require canonical equality with the original state, and validate the selected VLC process. A UI assertion alone cannot prove that Pi `/quit` preserved current media state.

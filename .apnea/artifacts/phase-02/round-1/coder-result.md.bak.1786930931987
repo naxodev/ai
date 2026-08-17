@@ -1,0 +1,86 @@
+---
+status: done
+---
+
+# Phase 2 result — blocked before live certification
+
+## What changed
+
+No product, policy, test, configuration, or documentation files were changed. No OpenCode or Pi host was launched and no user media control was sent.
+
+The required live certification cannot be performed from this dispatch: the available execution interface is non-interactive and cannot create or observe the three required **regular** panes, retain host UI observations, issue `/reload` in Pi, or obtain consent-safe real-media transport observations. Running the supplied launch blocks non-interactively would not satisfy the package and would leave no trustworthy UI evidence. I stopped before that invalid substitution.
+
+## Files touched
+
+- `.apnea/artifacts/phase-02/round-1/coder-result.md` (this required artifact only)
+
+## Retained preflight evidence
+
+At `2026-08-16T23:53:55Z` from repository root `/Users/nachovazquez/work/1-projects/naxodev/ai`:
+
+- Focused mixed-host regression passed.
+- OpenCode: `opencode2 v0.0.0-next-17386`.
+- Pi: `0.84.0` from `@earendil-works/pi-coding-agent@0.84.0`.
+- Provider: `media-control` at `/opt/homebrew/bin/media-control`.
+- Checkout paths:
+  - `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player`
+  - `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock`
+- Production baseline was clean: no `music-sessiond`, socket, startup lock, or socket bind lock.
+- `media-control get --no-artwork` reported an active Kaset item, `Kiasmos — Wrecked`, but it was paused (`"playing":false`). No playback state was altered.
+
+## Verification transcript
+
+```text
+$ bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
+exit: 0
+bun test v1.3.7 (ba426210)
+(pass) mixed-host Pi and OpenCode clients share FIFO and survive Pi reload [42.21ms]
+1 pass, 50 filtered out, 0 fail
+
+$ test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'
+exit: 0
+opencode2 v0.0.0-next-17386
+
+$ bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'
+exit: 0
+0.84.0
+
+$ command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+exit: 0
+provider=media-control path=/opt/homebrew/bin/media-control
+
+$ realpath packages/opencode-music-player
+exit: 0
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player
+
+$ realpath packages/pi-music-dock
+exit: 0
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock
+
+$ ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+exit: 0
+runtime=absent
+
+$ media-control get --no-artwork
+exit: 0
+{"artist":"Kiasmos","contentItemIdentifier":"F092650B-9962-42E6-A3B9-E46333DF45C3","title":"Wrecked","bundleIdentifier":"com.sertacozercan.Kaset","playing":false,"processIdentifier":22072,"timestamp":"2026-08-16T22:12:23Z","playbackRate":1}
+
+$ bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'; test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'; bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'; command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null; ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"; git diff --check
+exit: 0
+2026-08-16T23:54:26Z
+(pass) mixed-host Pi and OpenCode clients share FIFO and survive Pi reload [43.41ms]
+1 pass, 50 filtered out, 0 fail
+stage_d=pass
+
+$ test -z "$(jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+exit: 0
+no_new_non_apnea_diff=pass
+```
+
+## Missing live evidence
+
+Not run: the regular-pane OpenCode and Pi launch blocks; host PIDs/exits and temporary-root cleanup; daemon/socket/lsof/provider ownership while live; two-direction UI control convergence; Pi `/reload` PID/generation preservation; Pi exit with OpenCode still controllable; and the final-client 35-second idle-cleanup proof. Therefore this artifact does **not** claim Phase 2 acceptance.
+
+## Residual risks
+
+Phase 2 remains unverified. A human/operator with three regular panes and permission to interact with the active media session must perform Stage B and Stage C exactly as packaged, then retain the required raw command and UI evidence in a subsequent artifact.

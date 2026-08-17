@@ -1,0 +1,51 @@
+---
+status: done
+---
+
+# Phase 1 rework result
+
+## Changes
+
+Addressed the review findings in the two permitted core files.
+
+- `packages/music-core/session/client.ts`
+  - Added the typed `exit` startup failure with optional exit code, signal, and bounded daemon diagnostic.
+  - Changed daemon stdio to a stderr-only pipe; it retains at most 512 bytes and only daemon-prefixed lines, dropping arbitrary child output. The pipe is unreferenced and removed after exit/spawn error.
+  - The launcher now exposes daemon graph readiness from its `music-sessiond listening` diagnostic. The coordinator does not probe the socket during this specific pre-ready window, then preserves every `occupied` endpoint as terminal once readiness is reported.
+  - Added a pure runtime-selection seam: Node and the Bun CLI retain their executable; an embedded Bun host uses `node`.
+- `packages/music-core/tests/session-client.test.ts`
+  - Added deterministic tests for runtime selection, bounded early-exit diagnostics, readiness-gated startup, and terminal occupied peer behavior after a launched daemon is ready.
+
+## Verification
+
+```text
+$ bun test packages/music-core/tests/session-client.test.ts
+exit: 0
+73 pass, 0 fail
+
+$ bunx nx run music-core:typecheck --skip-nx-cache
+exit: 0
+Successfully ran target typecheck for project music-core
+
+$ bunx nx run music-core:package:check --skip-nx-cache
+exit: 0
+Verified npm package contents (21 files)
+
+$ bun -e '...connectOrStartMusicSession...'
+exit: 0
+ready=true
+
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit: 0
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit: 0
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+```
+
+## Residual risk
+
+The post-change full `bunx nx run music-core:test --skip-nx-cache` run exposed an existing concurrent-managed-caller race: one follower observed `occupied` while another generation was starting, so the command exited 1 at `20 concurrent managed callers converge on one selected graph`. The focused client suite passes, but the full core test gate is not green. The failed test left its test daemon running; I terminated that owned daemon with SIGTERM and confirmed socket/marker cleanup. This needs a further narrow rework before approval.

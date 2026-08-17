@@ -2,70 +2,51 @@
 status: done
 ---
 
-## What changed
+# Phase 2 coder result
 
-No product files were edited. Reviewed the retained package-smoke corrections: both synchronous diagnostic helpers render absent `stdout`/`stderr` as empty strings; Pi validates piped stdin/stdout/stderr inside its existing process-group termination, diagnostic capture, owned-core check, and cleanup boundary. The approved parent remains `9a2aa534 chore(format): exclude Apnea runtime records`.
+## Blocker: approved-history handoff mismatch
 
-## Files touched
+No live certification was started. The required self-contained Phase 2 source/history assertion failed at its first fail-closed check:
 
-- `.apnea/artifacts/phase-02/round-1/coder-result.md` (required result artifact only)
+```text
+$ test "$(jj log -r '@- & bd952919' --no-graph -T 'commit_id.short(8)')" = 'bd952919'
+exit 1
+```
 
-## Verify transcript
+The current repository evidence is:
 
-1. `bunx nx run opencode-music-player:typecheck --skip-nx-cache`
-   - Exit: 0
-   - Output tail: `Successfully ran target typecheck for project opencode-music-player`; cache skipped.
-2. `bunx nx run pi-music-dock:typecheck --skip-nx-cache`
-   - Exit: 0
-   - Output tail: `Successfully ran target typecheck for project pi-music-dock`; cache skipped.
-3. `bunx nx run opencode-music-player:smoke --skip-nx-cache`
-   - Exit: 0
-   - Output tail:
-     ```text
-     installed OpenCode 0.0.0-next-17386: .../node_modules/@opencode-ai/cli/bin/opencode2.exe
-     isolated packed resolutions: plugin=.../node_modules/@naxodev/opencode-music-player/index.tsx; core=.../node_modules/@naxodev/music-core/index.ts
-     OpenCode loaded the installed package and rendered its app and sidebar slots.
-     OpenCode package smoke cleanup: ok
-     ```
-4. `bunx nx run pi-music-dock:smoke --skip-nx-cache`
-   - Exit: 0
-   - Output tail:
-     ```text
-     installed Pi 0.84.0: .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
-     isolated packed roots: music-dock=.../node_modules/@naxodev/pi-music-dock; music-core=.../node_modules/@naxodev/music-core
-     Pi registered extension commands: /music, /music-next, /music-prev
-     Pi RPC status-zero exit and cleanup: ok
-     ```
-5. `bun run check`
-   - Exit: 0
-   - Output tail:
-     ```text
-     $ bun run format:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke
-     All matched files use Prettier code style!
-     policy:check: 8 pass, 0 fail
-     installed Node v24.8.0
-     installed package root: /private/tmp/music-core-installed-smoke-.../install/node_modules/@naxodev/music-core/index.ts
-     negotiated daemon: music-session-8x91jw0sb76 revision 1
-     status-zero idle exit and cleanup: ok
-     installed Pi 0.84.0: .../node_modules/@earendil-works/pi-coding-agent/dist/cli.js
-     Pi registered extension commands: /music, /music-next, /music-prev
-     Pi RPC status-zero exit and cleanup: ok
-     installed OpenCode 0.0.0-next-17386: .../node_modules/@opencode-ai/cli/bin/opencode2.exe
-     OpenCode loaded the installed package and rendered its app and sidebar slots.
-     OpenCode package smoke cleanup: ok
-     NX Successfully ran targets typecheck, test, parity, format:check, package:check, smoke for 6 projects
-     Run duration: 57.8s; Cache: 0/31 hit (0%)
-     ```
-     The full gate also completed unrelated package smokes.
-6. `git diff --check`
-   - Exit: 0
-   - Output tail: *(silent)*
-7. `test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"`
-   - Exit: 0
-   - Output tail: *(silent)*
+```text
+$ jj log -r '@- & bd952919' --no-graph -T 'commit_id.short(8)'
+<empty>
 
-Final `jj diff --summary` and `jj status` showed only dispatcher-managed `.apnea` activity; no product diff or package debris was present. No temporary smoke root was retained.
+$ jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)'
+c78b5b93
 
-## Residual risks
+$ jj status
+Working copy  (@) : twlqknws fe3b1206 (no description set)
+Parent commit (@-): kmmwnyzm d68f29a7 test(release): verify full repository gate
+```
 
-None for Phase 2. This phase does not certify the Phase 3 real mixed-host regular-pane session.
+Therefore `bd952919` is not exactly `@-`, as the package requires. I did not repair, rewrite, squash, restore, or otherwise alter history.
+
+## Preflight completed before the blocker was diagnosed
+
+```text
+$ test "${HERDR_ENV:-}" = 1; herdr --help >/dev/null; herdr pane || true; herdr tab || true; bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'; (command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null); realpath packages/opencode-music-player; realpath packages/pi-music-dock
+exit 0
+HERDR_ENV=1
+Pi version: 0.84.0
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock
+```
+
+## Actions not taken
+
+- No Herdr tab or pane was created; no existing Herdr resource was controlled or closed.
+- No OpenCode or Pi host was launched.
+- No temporary root, isolated config, profile, repository-local file, product source, history, protected daemon resource, or unrelated client was modified.
+- `.apnea/state.json` was not edited.
+
+## Residual risk
+
+Phase 2's exact-history prerequisite must be reconciled by the orchestrator/package author before live certification can safely proceed. The expected `bd952919` identity may now be an ancestor behind the Phase 1 verification commit, but this package explicitly requires it to be the immediate parent; I did not weaken that assertion.

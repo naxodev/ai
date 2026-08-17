@@ -1,0 +1,18 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Critical
+
+1. **OpenCode shutdown still contradicts the dispatch.** The plan still prescribes `/exit`, explicitly rejects command-palette Exit, and implements shutdown with `herdr pane run "$pane" '/exit'`. The dispatch forbids `/exit`. The plan and harness must instead send Escape, open `ctrl+p`, prove the search is clean, type exact `Exit`, capture text/ANSI showing `System` and `Exit`, guard and press Enter exactly once, and only then poll the saved shell PID, host PID, and process group.
+
+2. **Pi classification still does not recognize the required stable integrated leader.** The executable classifier still checks whether argv contains the resolved `dist/cli.js`. It must require the leader PID to equal PGID and require exact `argv0 == "pi"`, `name == "node"`, and `cwd == repo`, rejecting all transient wrappers. Pre-launch Pi version/root/profile checks and post-classification exact-PID socket-peer proof remain separate requirements.
+
+## High
+
+3. **Recovery still invokes the prohibited `/exit` path.** `recover` calls `send_opencode_exit_once` before polling whenever its old guard is unset. Recovery must never use `/exit` or repeat palette Enter after submission; if a safe normal palette exit was not proven, it must preserve the uncertain resource.
+
+The blocking findings from rounds 1 and 2 remain present in the narrative, acceptance checks, and executable verify harness.

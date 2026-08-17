@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "slug": "music-session-vlc-herdr-shape",
+  "step": "code_review",
+  "phase_index": 1,
+  "phase_count_hint": null,
+  "rounds": {
+    "plan_review": 8,
+    "phase-01/code_review": 1
+  },
+  "vcs": "jj",
+  "allow_dirty": true,
+  "goal": "Complete final live certification and pr-description.md. Phase 1 certifies selected VLC using media-control. Exclude raw contentItemIdentifier from stable playback identity; artist/album may be empty. Use exact OpenCode/Pi hosts, controls, reload polling, normal exits, cleanup, protected daemon continuity, and no product diff. For Herdr tab creation, parse tab ID from .result.tab.tab_id and initial pane ID from .result.root_pane.pane_id exactly; never use .result.pane.pane_id. No Music.app or AppleScript. Allow unrelated peer churn. Coder may operate Herdr regular panes. Phase 2 writes pr-description.md. Preserve verified commits and Apnea records. Do not push or open a PR. Use self-contained checks, jj, Effect v4, and never edit .apnea/state.json manually.",
+  "last_error": null,
+  "pending_artifact": null,
+  "pending_role": null,
+  "pending_pane_id": null,
+  "pending_pane_label": null,
+  "pending_floating_exit": null,
+  "pending_started_at": null,
+  "pending_deadline_ms": null,
+  "pending_nudged_at": null,
+  "pending_final_grace": false,
+  "pending_extended": false,
+  "role_panes": {
+    "planner": {
+      "pane_id": "w2:pJ4",
+      "label": "apnea:planner:mswu7ove-vo4m"
+    },
+    "reviewer": {
+      "pane_id": "w2:pHW",
+      "label": "apnea:reviewer:mswtpqyg-3f9i"
+    },
+    "coder": {
+      "pane_id": "w2:pJ5",
+      "label": "apnea:coder:mswu8sed-fp5g"
+    }
+  },
+  "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
+  "reviewer_tree_fingerprint": null,
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": null
+}

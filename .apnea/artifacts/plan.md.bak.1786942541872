@@ -1,0 +1,384 @@
+---
+status: done
+---
+
+# Plan: final live certification and PR description
+
+## Goal restatement
+
+Complete the two remaining gates for the already-verified shared Effect v4 music-session migration without changing product code or verified history:
+
+1. Live-certify exact isolated OpenCode `0.0.0-next-17386`, loading `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player/index.tsx`, and exact Pi `0.84.0`, loading only `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock`, against protected daemon PID `45621`.
+2. Create the exact `pr-description.md` artifact supplied by the Phase 2 dispatch from approved implementation, automated-test, and successful live-certification evidence.
+
+Phase 1 uses whichever real media source `media-control get --no-artwork` reports at the start of the run. It does not select, activate, or require a particular application. Before either host starts, it proves that source is stable and controllable, records bundle identifier, process ID, content identity, title, artist, album, duration, and playing state, and restores the exact original identity and playing state. The same identity must remain stable throughout every later host control. No Music.app-specific inspection, AppleScript database ID, or mapping from `contentItemIdentifier` to an application-specific ID is part of certification.
+
+Nothing is pushed and no PR is opened or updated.
+
+## Run-wide constraints
+
+- Preserve verified product commit `bd952919` (`fix(music): tolerate daemon hello reset window`), its parent `c78b5b93`, the current `test(release): verify full repository gate` Apnea working-copy change, and unrelated Apnea records. Artifact writes can change the mutable working-copy commit ID, so verify description, ancestry, and diff rather than pinning that ID.
+- PID `45621`, exact command `node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js`, and `/tmp/naxodev-music-$(id -u)/s.sock` are protected pre-existing resources. Never signal, restart, replace, unlink, or clean them.
+- Treat any protected PID, owner, command, socket tuple/owner/mode, or daemon-generation mismatch as a blocker, never as permission to repair the runtime.
+- Probe generation only through `createMusicSessionClient` against the already-validated explicit socket, and always dispose the probe before inventorying peers. Do not use `connectOrStartMusicSession`, a startup lease, a reconnecting probe, or discovery cleanup.
+- Record unrelated peers as contextual rows containing PID, FD, daemon endpoint token, and full command. Unrelated peers may arrive or depart naturally; equality of baseline and final unrelated-peer inventories is not required.
+- Identify the one peer owned by each live host from its recorded process group. Never signal, close, or clean another peer, process group, root, tab, pane, media application, or record.
+- The coder is explicitly authorized to use Herdr regular panes as operator. First require `HERDR_ENV=1` and inspect the installed command groups. Use only IDs returned by Herdr JSON, `--current`, or explicit IDs; use no floating panes, inferred IDs, focus-dependent targeting, or modal-vim Pi profile.
+- Use only normal host actions: Pi `/quit` and OpenCode's visibly selected **System / Exit the app** command-palette action. Do not use `ctrl+c`, direct signals, OpenCode `/quit`, tab closure as process termination, or the `ctrl+shift+p` music shortcut encoding.
+- Keep product code on repository-pinned `effect@4.0.0-beta.101`. Do not introduce Effect v3 or another effect system.
+- No product-history operation is expected. If a dispatch creates a separate run-owned artifact change that must be folded, use path-scoped `jj squash` into only the run-owned Apnea change. Never use `git commit`, amend/rewrite `bd952919` or its ancestors, or rewrite unrelated `.apnea` history.
+- Never manually edit `.apnea/state.json`, reset or clean the worktree, push, publish, release, or create/update a PR.
+
+## Phases
+
+### Phase 1 — Evidence-only mixed-host live certification
+
+#### Intent
+
+Run one persistent, fail-closed certification sequence. Establish immutable repository, protected-daemon, peer, pane, and currently selected real-media baselines; prove the selected source is stable, controllable by `media-control toggle-play-pause`, and exactly restorable; launch both exact isolated hosts in returned regular panes; then prove shared rendering, named controls in both directions, Pi reload continuity, normal exits, owned-resource cleanup, post-Pi OpenCode control, exact final media restoration, and an unchanged protected daemon.
+
+#### Files likely touched
+
+In the repository:
+
+- Only the exact Phase 1 coder-result artifact supplied by dispatch.
+
+Temporary resources outside the repository:
+
+- One new ownership-checked OpenCode install/config/XDG root.
+- One new ownership-checked Pi profile root.
+- One returned regular Herdr tab containing exactly two returned host panes.
+
+Do not touch product files, tests, manifests, lockfiles, docs, checked-in configuration, prior artifacts, `.apnea/state.json`, or product history.
+
+#### Ordered work
+
+1. **Re-establish the verified handoff.** Assert the current change description, `bd952919` parentage, `c78b5b93` ancestry, exact three-path `bd952919` diff, no non-Apnea child diff, and the Effect v4 pin. Capture `jj status` without cleaning or rewriting anything.
+2. **Validate operator prerequisites.** Require `HERDR_ENV=1`; inspect `herdr --help`, `herdr pane`, and `herdr tab`; require `jq`, `lsof`, `media-control`, Bun, exact Pi `0.84.0`, the absolute OpenCode entry file, and the absolute Pi package directory. Do not require Music.app or `osascript`.
+3. **Capture the protected baseline.** In one persistent operator shell, validate PID `45621`, UID, exact full command, socket existence, socket/directory ownership and mode, and socket device/inode tuple. Probe and retain the nonempty daemon generation with a direct disposable client. Capture peers after probe disposal. Checkpoints throughout the run must revalidate the exact baseline PID/command/socket tuple and generation, then assert only the expected run-owned peer shape; unrelated-peer count or membership is never an equality gate.
+4. **Adopt and certify the currently selected source without changing selection.** The first valid `media-control get --no-artwork` result after the daemon baseline becomes the sole candidate. Canonicalize exactly these fields: `bundleIdentifier`, `processIdentifier`, `contentIdentity` from `contentItemIdentifier`, `title`, `artist`, `album`, `duration`, and `playing`. Require a nonempty bundle and content identity, positive integral live process ID, string metadata, finite nonnegative duration, and boolean playing state. Record the selected PID's full command. Take repeated bounded snapshots and require exact canonical equality plus the same live PID/full command before any control.
+5. **Prove direct controllability and exact restoration.** Before the first toggle, save the canonical original snapshot and the idempotent restoration action (`media-control play` if originally playing, otherwise `media-control pause`). Strictly checkpoint immediately before and after `media-control toggle-play-pause`; bounded-poll until the same exact identity tuple and process command report the opposite `playing` value. Strictly checkpoint immediately before and after the saved restoration action; bounded-poll until the complete canonical snapshot is byte-for-byte equal to the original. Repeat a short stability sample after restoration. Any command failure, checkpoint failure, missing metadata, process change, content/metadata/duration change, source switch, absent opposite transition, or unproved exact restoration blocks host launch. Never activate or substitute another source.
+6. **Prepare isolated exact hosts.** Create ownership-checked temporary roots directly below the resolved temporary directory. Install trusted `@opencode-ai/cli@0.0.0-next-17386` under the OpenCode root, prove binary containment and exact version, create isolated config and all four XDG roots, and configure the sole plugin as the absolute checkout `packages/opencode-music-player/index.tsx` file. Disable project config, updates, and model fetch; launch only that binary with `--standalone`. Create a canonical `PI_CODING_AGENT_DIR/settings.json` whose sole package is the absolute `packages/pi-music-dock` directory. Launch exact Pi `0.84.0` offline and ephemeral without unrelated skills, prompts, themes, context, or project trust. Load Pi through profile package discovery, not `-e`, so `/reload` exercises package teardown and reload.
+7. **Create only owned regular panes.** Capture the complete pre-existing pane inventory. Create one regular tab and one regular split from returned Herdr JSON, retain tab ID, both pane IDs, and both original shell PIDs, and verify that the owned tab contains exactly those panes. Mark each launch as submitted before sending it, then separately classify its foreground process group. Never close the tab while a submitted host is live or unclassified.
+8. **Launch and identify OpenCode, then Pi.** Strictly checkpoint before and after each launch. Capture each host's foreground PID/name/argv/argv0/cwd/cmdline set, per-PID full `ps` commands, PGID, complete process-group inventory, shell PID, and exactly one daemon peer row belonging to that process group. Unrelated peer churn is allowed. Capture zoomed text and ANSI UI for both hosts, proving zoom-on, reads, and zoom-off succeeded. Require exactly one coherent extension-specific status in each viewport, with the expected marker and canonical selected-source title/artist on the same row; reject unrelated token matches or error banners.
+9. **Execute the named OpenCode control.** Open the OpenCode palette with `ctrl+p`, type exact query `Music / Play / pause`, and use ANSI evidence to prove the bold selected row is **Play / pause** in group **Music**. Checkpoint immediately before Enter. Execute it, require the same exact source identity/process and the opposite playing state, checkpoint after convergence, and prove both hosts render that state. Never use `ctrl+shift+p`.
+10. **Execute Pi `/music`.** Checkpoint immediately before the command, run `/music`, require the same exact source identity/process and byte-exact original canonical snapshot, checkpoint after convergence, and prove both hosts render the restored state.
+11. **Prove Pi `/reload` continuity without a race.** Capture Pi's exact foreground identity set, per-PID full commands, PGID, full process-group inventory, owned peer row, and current UI immediately before `/reload`; prove the reload completion text is absent from the pre-command current visible/recent capture. Checkpoint, invoke `/reload`, and bounded-poll current `visible` and `recent-unwrapped` captures on every iteration. Normalize soft wrapping, accept completion already rendered before the first poll, and require a restored coherent Pi status in the current visible capture. Do not use a future-only output wait. As soon as both predicates pass, make the strict daemon PID/generation/socket/owned-peer checkpoint the first action, then immediately capture and compare the exact Pi PID/identity/full-command/process-group inventories with their pre-reload values. Only after those comparisons may the harness check media and both UIs again.
+12. **Exit Pi normally.** Capture final Pi PID/identity/full-command/group/owned-peer evidence, checkpoint, submit `/quit`, and wait for the original shell. Prove every recorded foreground PID is absent, the entire recorded group is empty, and the recorded Pi peer is absent; checkpoint with only OpenCode expected. Delete the Pi root only after explicit ownership, non-symlink, expected-parent/name, empty-group, and no-process-reference checks. OpenCode and the exact original media snapshot must remain healthy.
+13. **Prove post-Pi OpenCode control.** Select the same named OpenCode palette action twice, retaining selected-row ANSI and pre/post checkpoints for each action. The first operation must reach the opposite playing state while preserving exact source identity/process; the second must restore the byte-exact original canonical snapshot.
+14. **Exit OpenCode normally.** Capture final OpenCode PID/identity/full-command/group/owned-peer evidence. Open its palette, type `Exit`, and use ANSI to prove **Exit the app** in group **System** is the selected bold row. Checkpoint before Enter, execute it, wait for the original shell, and prove all recorded foreground PIDs, the complete group, and the recorded OpenCode peer are absent. Checkpoint with no run-owned peers expected. Delete the OpenCode root only after the same ownership and process-reference checks.
+15. **Prove final preservation and clean only owned topology.** Capture final peer context without comparing unrelated rows to baseline. Assert both recorded owned peer PIDs/groups are absent. Revalidate the protected PID/UID/command/socket tuple and exact generation. Require a fresh canonical `media-control` snapshot to be byte-for-byte equal to the original and the same selected process PID/full command to remain live. Verify the owned tab still contains exactly the two returned shell panes, close only that tab, prove those IDs are gone, and prove every pre-existing pane remains.
+16. **Record complete, truthful evidence.** Write timestamps, command statuses, canonical source snapshots, selected process command, returned IDs, install/profile evidence, every daemon checkpoint, peer and process/group inventory, selected-row ANSI, host text/ANSI, reload polling captures, normal shell returns, root/tab cleanup evidence, final repository assertions, and a truthful conclusion only to the exact dispatched coder-result artifact. A nonzero live harness is not certification even if later recovery observations look healthy.
+17. **Fail safely.** On failure, independently capture endpoint, generation only when the endpoint still equals the validated baseline, peers, canonical media, pane process-info, full commands, groups, and text/ANSI UI with per-probe statuses. Attempt only Pi `/quit` and selected OpenCode **System / Exit the app** for successfully classified owned groups. If and only if the selected media identity still exactly matches the original, attempt the saved idempotent play/pause restoration and record whether exact restoration succeeds; never control a newly selected/different item. Do not signal anything. Preserve all run-owned roots/tab/panes on a failed run after evidence and normal-exit attempts, so unclassified ownership is not hidden by cleanup.
+
+#### Acceptance checks
+
+- The exact verified commit ancestry/diff and Effect v4 pin remain intact, with no non-Apnea child diff.
+- The candidate is the source currently selected by `media-control`, regardless of application. No source activation/substitution or app-specific identity bridge is used.
+- Before host launch, retained evidence includes exact bundle identifier, process ID and full process command, content identity, title, artist, album, duration, and original playing state; repeated snapshots prove stability; `media-control toggle-play-pause` proves an opposite transition; and the saved idempotent action restores the byte-exact canonical original.
+- Every later media observation preserves the same bundle, process ID/command, content identity, title, artist, album, and duration. Only `playing` changes at intended controls, and the exact original state is restored after Pi `/music`, after the second post-Pi OpenCode action, and at final inspection.
+- OpenCode is a fresh trusted exact `0.0.0-next-17386` install with isolated config/XDG roots and sole absolute checkout plugin entry `packages/opencode-music-player/index.tsx`.
+- Pi is exact `0.84.0`, uses an owned profile whose sole package is `packages/pi-music-dock`, and loads it through reloadable profile discovery.
+- Both regular-pane UIs simultaneously contain exactly one coherent extension-specific representation tying the expected marker to the selected source identity; every acceptance capture proves zoom-on, text/ANSI reads, and zoom-off succeeded.
+- Each live host group owns exactly one recorded daemon peer. Baseline/final unrelated peers are context only and may churn.
+- OpenCode's visibly selected named **Music / Play / pause** action changes playback; Pi `/music` reverses it.
+- Strict protected PID/generation/socket/owned-peer checkpoints bracket candidate certification, each host launch, every host control, reload, and exit.
+- Pi `/reload` completion is detected by bounded polling of current visible/recent output, accepting already-rendered completion only with current coherent status. The first post-detection action is the strict protected checkpoint, immediately followed by exact Pi PID/identity/full-command/process-group equality checks.
+- Pi `/quit` and selected OpenCode **System / Exit the app** return their original shells. Recorded PIDs, groups, and owned peers are gone before owned-root deletion; only the owned tab/panes are then removed.
+- Final evidence proves the selected media identity and original playing state exactly restored, no run-owned peer/group/root/tab remains, pre-existing panes remain, protected daemon PID `45621` and its generation/socket are unchanged, and no product diff exists.
+- No direct signal, `ctrl+c`, OpenCode `/quit`, encoded music shortcut, floating pane, protected/unrelated cleanup, source substitution, final idle-daemon claim, push, or PR operation occurs.
+- On failure, recovery evidence is retained and the phase remains blocked; normal-exit recovery or a later healthy observation cannot be promoted into passing evidence.
+
+#### Verify commands
+
+Run block A first. Run the live protocol in block B in one persistent operator shell, preserving the full transcript in the dispatched coder-result. Run block C after successful owned-resource cleanup. The detailed Phase 1 package must expand block B into one fail-closed inline harness; it must not depend on an untracked repository script.
+
+##### A. Self-contained handoff and prerequisites
+
+```sh
+set -euo pipefail
+repo='/Users/nachovazquez/work/1-projects/naxodev/ai'
+cd "$repo"
+test "$(jj log -r '@' --no-graph -T 'description.first_line()')" = \
+  'test(release): verify full repository gate'
+test "$(jj log -r 'parents(@) & bd952919' --no-graph -T 'commit_id.short(8)')" = bd952919
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = c78b5b93
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+test "$(jq -r '.dependencies.effect' packages/music-core/package.json)" = '4.0.0-beta.101'
+test "${HERDR_ENV:-}" = 1
+command -v jq >/dev/null
+command -v lsof >/dev/null
+command -v media-control >/dev/null
+command -v bun >/dev/null
+herdr --help >/dev/null
+herdr pane >/dev/null 2>&1 || test "$?" -eq 2
+herdr tab >/dev/null 2>&1 || test "$?" -eq 2
+test "$(bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version)" = 0.84.0
+test "$(realpath packages/opencode-music-player/index.tsx)" = \
+  "$repo/packages/opencode-music-player/index.tsx"
+test -f "$repo/packages/opencode-music-player/index.tsx"
+test "$(realpath packages/pi-music-dock)" = "$repo/packages/pi-music-dock"
+media-control test
+```
+
+##### B. Persistent live protocol
+
+The phase package's inline harness must execute these exact command surfaces and assertions in the order above:
+
+```sh
+# Protected endpoint/generation: validate before connecting, use the explicit
+# socket, dispose, and validate the same endpoint again.
+daemon_pid=45621
+socket="/tmp/naxodev-music-$(id -u)/s.sock"
+test "$(ps -p "$daemon_pid" -o command=)" = \
+  'node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js'
+test "$(ps -p "$daemon_pid" -o uid= | tr -d ' ')" = "$(id -u)"
+test -S "$socket"
+test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"
+test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"
+lsof -n -a -p "$daemon_pid" "$socket" >/dev/null
+MUSIC_SESSION_SOCKET="$socket" bun -e '
+  import { baselineCapabilities, createMusicSessionClient } from "./packages/music-core/index.ts"
+  const socketPath = process.env.MUSIC_SESSION_SOCKET
+  if (!socketPath) throw new Error("missing explicit socket")
+  const client = await createMusicSessionClient({
+    socketPath,
+    clientId: `final-cert-${process.pid}`,
+    hostKind: "test",
+    capabilities: [...baselineCapabilities],
+  })
+  try { console.log(client.daemonInstanceId) } finally { client.dispose() }
+'
+
+# Canonical source capture. The persistent harness stores this sorted compact
+# JSON as `original`, records the selected PID's full command, repeats it to
+# establish stability, and uses equality of del(.playing) at every transition.
+media-control get --no-artwork | jq -Sce '
+  {
+    bundleIdentifier,
+    processIdentifier,
+    contentIdentity:.contentItemIdentifier,
+    title,
+    artist,
+    album,
+    duration,
+    playing
+  }
+  | select(
+      (.bundleIdentifier | type == "string" and length > 0) and
+      (.processIdentifier | type == "number" and . > 0 and floor == .) and
+      (.contentIdentity | type == "string" and length > 0) and
+      (.title | type == "string") and
+      (.artist | type == "string") and
+      (.album | type == "string") and
+      (.duration | type == "number" and isfinite and . >= 0) and
+      (.playing | type == "boolean")
+    )'
+
+# Direct preflight transport and restoration, each operation surrounded by the
+# complete protected checkpoint in the persistent harness.
+media-control toggle-play-pause
+# Then exactly one saved idempotent command, chosen before the toggle:
+# media-control play    # when original.playing was true
+# media-control pause   # when original.playing was false
+
+# Returned regular panes only. Parse every ID from JSON; never infer it.
+herdr pane current --current
+herdr pane list --workspace "$HERDR_WORKSPACE_ID"
+herdr tab create --workspace "$HERDR_WORKSPACE_ID" \
+  --cwd /Users/nachovazquez/work/1-projects/naxodev/ai \
+  --label 'final music certification' --no-focus
+# Use result.root_pane.pane_id from the preceding JSON:
+# herdr pane split "$OC_PANE" --direction down --cwd "$repo" --no-focus
+
+# Exact OpenCode isolation and configuration are built under an owned mktemp
+# root. The sole plugin value is the file, not an app-specific or package ID.
+cat >"$OC_ROOT/package.json" <<'JSON'
+{"private":true,"dependencies":{"@opencode-ai/cli":"0.0.0-next-17386"},"trustedDependencies":["@opencode-ai/cli"]}
+JSON
+(cd "$OC_ROOT" && bun install)
+"$OC_ROOT/node_modules/.bin/opencode2" --version
+printf '{"plugins":["%s"]}\n' \
+  '/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player/index.tsx' \
+  >"$OC_ROOT/config/cli.json"
+
+# Exact reloadable Pi profile.
+jq -n --arg package \
+  '/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock' \
+  '{packages:[$package]}' >"$PI_ROOT/settings.json"
+
+# Submit these launch command strings only to their returned regular panes.
+env XDG_CONFIG_HOME="$OC_ROOT/xdg/config" \
+  XDG_STATE_HOME="$OC_ROOT/xdg/state" \
+  XDG_DATA_HOME="$OC_ROOT/xdg/data" \
+  XDG_CACHE_HOME="$OC_ROOT/xdg/cache" \
+  OPENCODE_CONFIG_DIR="$OC_ROOT/config" \
+  OPENCODE_CONFIG_PROJECT_DISABLE=1 \
+  OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+  OPENCODE_DISABLE_AUTOUPDATE=1 \
+  OPENCODE_DISABLE_MODELS_FETCH=1 \
+  "$OC_ROOT/node_modules/.bin/opencode2" --standalone --log-level error \
+  /Users/nachovazquez/work/1-projects/naxodev/ai
+
+env PI_CODING_AGENT_DIR="$PI_ROOT" PI_OFFLINE=1 PI_TELEMETRY=0 \
+  PI_SKIP_VERSION_CHECK=1 \
+  bunx --package @earendil-works/pi-coding-agent@0.84.0 pi \
+  --no-session --no-skills --no-prompt-templates --no-themes \
+  --no-context-files --no-approve
+```
+
+The harness must then use explicit returned pane IDs to submit and verify, in order:
+
+```sh
+herdr pane send-keys "$OC_PANE" ctrl+p
+herdr pane send-text "$OC_PANE" 'Music / Play / pause'
+# Read visible ANSI, prove selected Music / Play / pause, checkpoint, then Enter.
+herdr pane send-keys "$OC_PANE" enter
+herdr pane run "$PI_PANE" '/music'
+herdr pane run "$PI_PANE" '/reload'
+# Bounded loop: read current visible and recent-unwrapped on every iteration.
+herdr pane read "$PI_PANE" --source visible --format text
+herdr pane read "$PI_PANE" --source recent-unwrapped --format text
+herdr pane run "$PI_PANE" '/quit'
+# After Pi's original shell returns, select the named OpenCode music action twice.
+herdr pane send-keys "$OC_PANE" ctrl+p
+herdr pane send-text "$OC_PANE" 'Music / Play / pause'
+herdr pane send-keys "$OC_PANE" enter
+herdr pane send-keys "$OC_PANE" ctrl+p
+herdr pane send-text "$OC_PANE" 'Music / Play / pause'
+herdr pane send-keys "$OC_PANE" enter
+# Finally select the built-in normal exit.
+herdr pane send-keys "$OC_PANE" ctrl+p
+herdr pane send-text "$OC_PANE" 'Exit'
+# Read visible ANSI, prove selected System / Exit the app, checkpoint, then Enter.
+herdr pane send-keys "$OC_PANE" enter
+```
+
+For every line above, the persistent harness supplies bounded waits, exact canonical media comparisons, UI assertions, process/group/owned-peer captures, and pre/post protected checkpoints. The raw command list alone is not passing evidence.
+
+##### C. Final self-contained repository assertion
+
+```sh
+set -euo pipefail
+cd /Users/nachovazquez/work/1-projects/naxodev/ai
+test "$(jj log -r '@' --no-graph -T 'description.first_line()')" = \
+  'test(release): verify full repository gate'
+test "$(jj log -r 'parents(@) & bd952919' --no-graph -T 'commit_id.short(8)')" = bd952919
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = c78b5b93
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test "$(jq -r '.dependencies.effect' packages/music-core/package.json)" = '4.0.0-beta.101'
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+git diff --check
+test -z "$(find packages \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+jj status
+```
+
+#### Dependencies
+
+- Preserved approved deterministic/focused tests, packed-host smokes, literal `bun run check`, and prior protected-daemon evidence represented by verified commits; this evidence-only phase does not rerun the full gate.
+- `HERDR_ENV=1`, installed regular-pane Herdr controls, `jq`, `lsof`, `media-control`, Bun, and registry access.
+- A currently selected real `media-control` source that remains stable and controllable for the whole certification. Its application is deliberately unspecified.
+- Protected daemon PID `45621`, exact command, socket tuple/ownership/mode, and generation remain healthy. Unrelated peers may churn naturally.
+
+#### Non-goals
+
+- Product/test/docs/config/manifest/lockfile changes or new product commits.
+- Re-running `bun run check` or substituting synthetic/RPC evidence for rendered live hosts.
+- Selecting or activating a media source; requiring Music.app; using AppleScript; comparing app database IDs; or translating `contentItemIdentifier` into an app-specific ID.
+- Global OpenCode/Pi installation or configuration.
+- Next/previous/seek/provider-switch testing.
+- Daemon startup, restart, signaling, unlinking, discovery cleanup, replacement, or final idle shutdown.
+- Signals, `ctrl+c`, OpenCode `/quit`, shortcut-encoded music control, floating panes, inferred IDs, broad deletion/glob cleanup, or cleanup beyond resources created and proven owned by this run.
+- Push, publication, release, or PR creation/update.
+
+### Phase 2 — Create `pr-description.md` and finish
+
+#### Intent
+
+Create only the exact `pr-description.md` artifact supplied by the Phase 2 dispatch. Orient reviewers to the shared Effect v4 music-session migration, reset-window fix, approved automated gates, and successful exact mixed-host live certification. Writing the artifact does not create or update a PR.
+
+#### Files likely touched
+
+- Only the exact `pr-description.md` artifact path supplied by Phase 2 dispatch.
+
+Do not guess that path in advance. Do not touch product files, prior artifacts, `.apnea/state.json`, or verified history.
+
+#### Ordered work
+
+1. Read the `new-pr` skill before drafting. Read the actual approved commit range/full diff, approved phase results/reviews, and successful Phase 1 result. Do not infer evidence from this plan or from failed attempts.
+2. Write front matter containing `status: done` only.
+3. Use concise reviewer-oriented sections: summary/TL;DR, architectural scope or files-to-review guidance where useful, test/live-certification plan, and residual risk.
+4. Explain only what the approved diff supports: shared daemon/provider/session ownership, reconnecting OpenCode/Pi clients, bounded diagnostics/artwork/transport behavior, Effect v4, and the narrow hello-reset tolerance.
+5. Report only approved automated and live evidence. Include exact OpenCode/Pi versions, absolute checkout entry/profile package, currently selected real-source identity fields, named OpenCode and Pi controls, reload continuity, normal exits, owned-peer/group/root/tab cleanup, exact playback restoration, no product diff, and protected-daemon preservation.
+6. State residual risks truthfully: pinned pre-release hosts, macOS/media-provider variability, and certification against one already-running shared daemon generation. State that unrelated peers were left untouched and no final idle-daemon cleanup was required or attempted; deterministic/packed lifecycle tests cover idle shutdown.
+7. Do not claim a push, opened/updated PR, daemon replacement, source-app-specific identity proof, final live idle shutdown, or evidence absent from approved results. Include no AI/assistant attribution or co-author footer.
+8. If dispatch materializes the artifact in a separate run-owned Jujutsu change that must be folded, inspect source and destination first and use a path-scoped `jj squash` affecting only that exact artifact and the run-owned Apnea change. Never rewrite product commits or unrelated Apnea history; never use `git commit`.
+9. Verify exact front matter, whitespace, claims against approved evidence, ancestry, and non-Apnea scope. Do not run `gh pr create`, `gh pr edit`, or push.
+
+#### Acceptance checks
+
+- The exact dispatched artifact exists with `status: done` front matter.
+- It summarizes delivered implementation phases, approved test plan, final live certification, and residual risk in reviewer-focused prose.
+- Every implementation/test/live statement traces to the actual diff or an approved result/review; failed attempts are not represented as passing.
+- It identifies the Effect v4/shared-session boundary and exact final host certification without unnecessary hunk narration or app-specific source assumptions.
+- It claims no push, PR creation/update, daemon replacement, unrelated cleanup, or final idle shutdown.
+- Verified commits and unrelated Apnea history remain preserved with no non-Apnea working-copy diff.
+
+#### Verify commands
+
+Set the variable to the exact literal path from Phase 2 dispatch; this guard prevents path invention.
+
+```sh
+set -euo pipefail
+cd /Users/nachovazquez/work/1-projects/naxodev/ai
+artifact="${APNEA_PR_DESCRIPTION_ARTIFACT:?set to the exact Phase 2 dispatch path}"
+test -f "$artifact"
+test "$(head -n 3 "$artifact")" = "$(printf '%s\n' '---' 'status: done' '---')"
+test "$(jj log -r '@' --no-graph -T 'description.first_line()')" = \
+  'test(release): verify full repository gate'
+test "$(jj log -r 'parents(@) & bd952919' --no-graph -T 'commit_id.short(8)')" = bd952919
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = c78b5b93
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+test "$(jq -r '.dependencies.effect' packages/music-core/package.json)" = '4.0.0-beta.101'
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+git diff --check
+jj log -r 'c78b5b93::@' --no-graph \
+  -T 'commit_id.short(8) ++ " " ++ description.first_line() ++ "\n"'
+jj status
+```
+
+Review must open the exact artifact and compare every evidence claim with approved coder results/reviews, not merely search for keywords.
+
+#### Dependencies
+
+- Approved successful Phase 1 coder result and review.
+- Previously approved implementation and automated-gate evidence.
+- Phase 2 dispatch supplying the exact artifact path.
+
+#### Non-goals
+
+- Product/docs/release-note changes, tests, product-history rewriting, commits, push, publication, release, or actual PR creation/update.
+
+## Whole-run definition of done
+
+- Verified product commit `bd952919`, parent `c78b5b93`, exact approved three-path diff, current artifact-only release-gate change, unrelated Apnea records, and repository-pinned Effect v4 remain intact with no non-Apnea child diff.
+- Phase 1 begins from current baselines and mutates only resources created and owned by the current run.
+- The currently selected real media source—without regard to application—is recorded from `media-control` with exact bundle, PID, content identity, title, artist, album, duration, and playing state; repeated snapshots prove stability; a guarded direct media-control toggle proves controllability; and the exact original identity/state is restored before host launch.
+- Fresh exact OpenCode `0.0.0-next-17386` loads the absolute checkout `packages/opencode-music-player/index.tsx`; exact Pi `0.84.0` loads only `packages/pi-music-dock` from an owned reloadable profile; both run in returned regular panes.
+- Approved evidence proves simultaneous same-source/state UI, visibly selected OpenCode **Music / Play / pause**, Pi `/music`, bounded current-capture Pi `/reload` detection and immediate exact process/daemon comparison, normal Pi `/quit`, post-Pi OpenCode named control, exact final restoration, and visibly selected OpenCode **System / Exit the app**.
+- Strict PID/generation/socket/owned-peer checkpoints bracket every control, reload, and exit. Owned foreground PIDs/process groups and roots are gone before only the owned tab/panes close.
+- No run-owned peer/group/root/tab remains after normal exits. The selected media identity and original playing state are exactly restored. Protected PID `45621`, owner, command, socket tuple/ownership/mode, generation, pre-existing panes, and non-product tree remain unchanged; unrelated peers are context only and are never signaled or cleaned.
+- The exact dispatched `pr-description.md` truthfully summarizes delivered phases, approved tests, final certification, and residual risk. Nothing is pushed, published, released, or opened/updated as a PR, and `.apnea/state.json` is never manually edited.

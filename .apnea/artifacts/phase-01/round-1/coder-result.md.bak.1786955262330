@@ -1,0 +1,70 @@
+---
+status: done
+---
+
+# Phase 1 live certification result
+
+**Certification did not pass.** No product, test, configuration, manifest, lockfile, commit, or `.apnea/state.json` change was made.
+
+## What ran
+
+Ran the approved persistent-Bash supervisor setup and execution blocks with:
+
+```sh
+APNEA_CODER_RESULT_ARTIFACT=.apnea/artifacts/phase-01/round-1/coder-result.md
+# RUNNER_DIR: mktemp under the system TMPDIR; owner/mode and all A/B/C files validated
+source "$RUNNER_DIR/gate-a.sh"
+source "$RUNNER_DIR/live-cert.sh"
+source "$RUNNER_DIR/gate-c.sh"
+```
+
+The three exact gate bodies were written as owner-only regular files under the exported runner, then A and B were sourced. B exited `1`; therefore C was deliberately not sourced.
+
+## Evidence completed before failure
+
+- Gate A completed, including `bun run check`, repository gate, daemon generation, and initial non-allowlisted Apnea snapshot.
+- VLC was the selected source (PID `68175`, `/Applications/VLC.app/Contents/MacOS/VLC`). Canonical original state was `P1-C2`, playing `true`; direct toggle reached `false`, then exact canonical restoration was stable across three observations.
+- Exact isolated OpenCode was classified as leader/PID/PGID `26675` with the owned `opencode2.exe` argv0 and exactly one peer.
+- Pi `0.84.0`, owned root, and profile package were proven pre-launch; Pi was classified as leader/PID/PGID `27633` with `argv0=pi`, `name=node`, repository cwd, and exactly one peer.
+- Initial OpenCode control, Pi `/music` restoration, Pi `/reload` continuity, Pi `/quit`, and both post-Pi OpenCode play/pause transitions completed. All recorded canonical media states restored to the original playing state.
+- Pi root cleanup completed before the later failure. Recovery restored/verified VLC’s original canonical state and left the protected daemon unchanged.
+
+## Failure / residual risks
+
+The final OpenCode palette flow failed before any irreversible exit submission:
+
+```text
+2026-08-17T08:16:53Z palette-search-cleared=ctrl+a,backspace next-query=Exit
+{"error":{"code":"timeout","message":"timed out waiting for output match"},"id":"cli:pane:wait-output"}
+2026-08-17T08:17:03Z recovery-start rc=1 oc-live=1 pi-live=0 oc-submitted=1 pi-submitted=1 tab=w2:tW oc-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.GiQ4ej
+2026-08-17T08:17:04Z recovery-opencode-exit=preserved guarded-enter=0 reason=no-normal-exit-submission
+2026-08-17T08:17:04Z recovery-preserved-uncertain-resources=true
+```
+
+`select_palette` was called with expected title `Exit the app`, but the dispatched goal/acceptance requirement is a palette containing `System` and `Exit`; its `wait-output` timed out before palette capture and before Enter. Per the package recovery rule, OpenCode was not exited or signalled. The known owned OpenCode root, tab `w2:tW`, panes `w2:pMA`/`w2:pMB`, OpenCode leader/group `26675`, and runner directory remain preserved for review. This is incomplete cleanup and a failed certification; Gate C was not eligible to prove the final preservation manifest.
+
+## Verify transcript (tail and key evidence)
+
+```text
+supervisor-log=/tmp/vlc-cert-supervisor-1786954551.log exit=1
+2026-08-17T08:16:05Z checkpoint=baseline endpoint=16777231:1237478212:501:600 generation=music-session-zqg8kksdwec unrelated-peer-churn-allowed=true
+2026-08-17T08:16:05Z selected-vlc-process=68175 full-command=/Applications/VLC.app/Contents/MacOS/VLC canonical={"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"org.videolan.vlc","duration":660,"playing":true,"processIdentifier":68175,"title":"P1-C2"}
+2026-08-17T08:16:09Z media=direct-opposite canonical={"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"org.videolan.vlc","duration":660,"playing":false,"processIdentifier":68175,"title":"P1-C2"}
+2026-08-17T08:16:11Z media=direct-restored canonical={"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"org.videolan.vlc","duration":660,"playing":true,"processIdentifier":68175,"title":"P1-C2"}
+2026-08-17T08:16:24Z host-classified=opencode ... foreground_process_group_id=26675 ... argv0=.../opencode2.exe
+2026-08-17T08:16:35Z host-classified=pi ... foreground_process_group_id=27633 ... argv0=pi name=node cwd=/Users/nachovazquez/work/1-projects/naxodev/ai
+2026-08-17T08:16:38Z palette-query=Music / Play / pause expected-group=Music expected-title=Play / pause
+2026-08-17T08:16:44Z pi-reload-after shell-pid=26348 pgid=27633 ... continuity checks passed
+2026-08-17T08:16:45Z pi-shell-return=... foreground_process_group_id=26348 ... argv0=zsh
+2026-08-17T08:16:48Z palette-query=Music / Play / pause expected-group=Music expected-title=Play / pause
+2026-08-17T08:16:51Z palette-query=Music / Play / pause expected-group=Music expected-title=Play / pause
+2026-08-17T08:16:53Z opencode-pre-exit-info=... host-pid=26675 ...
+2026-08-17T08:16:53Z palette-search-cleared=ctrl+a,backspace next-query=Exit
+{"error":{"code":"timeout","message":"timed out waiting for output match"},"id":"cli:pane:wait-output"}
+2026-08-17T08:17:03Z recovery-start rc=1 oc-live=1 pi-live=0 oc-submitted=1 pi-submitted=1 tab=w2:tW oc-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.GiQ4ej pi-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-vlc-cert.mZ9xDX
+2026-08-17T08:17:04Z recovery-opencode-exit=preserved guarded-enter=0 reason=no-normal-exit-submission
+2026-08-17T08:17:04Z media=recovery-before-restore canonical={"album":"Mistborn 3: The Hero of Ages","artist":"Brandon Sanderson","bundleIdentifier":"org.videolan.vlc","duration":660,"playing":true,"processIdentifier":68175,"title":"P1-C2"}
+2026-08-17T08:17:04Z recovery-preserved-uncertain-resources=true
+```
+
+The complete 334,748-byte supervisor transcript is retained at `/tmp/vlc-cert-supervisor-1786954551.log` for the orchestrator/reviewer.

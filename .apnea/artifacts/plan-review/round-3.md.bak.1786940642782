@@ -1,0 +1,26 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### Critical — Recovery can delete evidence and close the tab after a failed checkpoint without capturing the required state
+
+`recover_owned_run` claims to capture classified process/group/peer/UI state, but it only assigns `process_info` to a variable; it does not emit that information, the process-group inventory, or Pi UI evidence. Its pre/post recovery checkpoints can fail before peer capture when the original failure is a protected endpoint or generation mismatch. Because recovery uses `set +e`, those failures are ignored. It also clears the live/submitted flags before requiring the post-exit checkpoint to succeed, then may delete roots and close the tab based only on those flags.
+
+Thus a protected-boundary checkpoint failure can lead to normal exit attempts followed by root/tab cleanup with no usable before/after process, group, peer, and UI evidence. This contradicts the dispatch's explicit recovery requirement and the plan's own stated behavior.
+
+Add an independent best-effort recovery evidence routine that emits process info, full commands, group inventory, peer inventory, and UI state before each exit attempt and resulting shell/group/owned-peer state afterward, even when protected checks fail. Do not clear ownership state or delete roots/close the tab unless normal exit and owned-peer disappearance are proven and the required evidence has been retained; otherwise leave the owned resources identified for rework.
+
+### High — A transient snapshot failure after the first media toggle can bypass mandatory playback restoration
+
+After `media-control toggle-play-pause`, `certify_media_candidate` unconditionally runs:
+
+```sh
+current="$(media_snapshot)" || return 2
+```
+
+This occurs even when `wait_media_state` already observed the opposite state. If that one additional snapshot fails, the function returns without attempting restoration. The caller then performs an explicit `exit "$rc"`, which does not invoke the `ERR` recovery trap. The Music.app source may therefore remain toggled despite the plan requiring restoration whenever an operation may have changed playback.
+
+Restructure this path so an observed transition always enters the guarded restore sequence, and so any unknown post-toggle state receives bounded re-observation/restoration handling rather than returning directly. Every hard-blocker exit after a possible change must retain evidence of an attempted and verified restoration, or explicitly preserve resources/state for recovery when restoration cannot be proven.

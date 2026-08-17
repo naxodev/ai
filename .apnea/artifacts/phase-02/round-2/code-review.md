@@ -5,14 +5,14 @@ verdict: CHANGES_REQUIRED
 
 # Findings
 
-## Critical — The approved phase boundary remains unrestored
+The Phase 2 package is consistent with approved Plan Phase 2, so review proceeds against the package. No product implementation diff is present.
 
-Round 1 required the orchestrator to restore the plan's separate slices before Phase 2 could be reviewed. That has not occurred. The referenced Phase 2 package still treats both package-smoke corrections as part of parent `9a2aa534` alongside the Phase 1 `.prettierignore` result, although the approved plan requires Phase 1 to be policy-only and the smoke-script corrections to form the separate Phase 2 product slice.
+## High — The required mixed-host certification did not occur
 
-Current read-only history inspection again confirms that `ae742b68..9a2aa534` includes all three paths:
+The exact isolated OpenCode UI rendered `1 plugin failed`. The coder correctly treated that as a blocker, but consequently Pi was never launched and there is no evidence for simultaneous shared state, controls in both directions, Pi `/reload` generation preservation, Pi-exit isolation, post-Pi OpenCode control, or restoration of the original playback state. These are mandatory Phase 2 acceptance checks, so the phase cannot be approved.
 
-- `.prettierignore`
-- `packages/opencode-music-player/scripts/package-smoke.ts`
-- `packages/pi-music-dock/scripts/package-smoke.ts`
+The result does provide credible fail-closed evidence: the exact isolated OpenCode version/path and failed UI are recorded; final history/scope checks pass; and the protected PID, command, generation, socket tuple, ownership, and baseline `lsof` rows remained unchanged. Independent inspection also confirms the owned OpenCode PID/root are gone, the protected endpoint is still present with the recorded identity, and no non-Apnea working-copy change exists.
 
-The coder correctly reports that this cannot be repaired within the coder role and did not claim Phase 2 verification. The orchestrator must restore the approved boundary while preserving all work, then regenerate the Phase 2 package and coder evidence. Until then, there is no conforming Phase 2 diff to review and the required focused/full verification evidence is intentionally absent.
+## Medium — OpenCode was interrupted contrary to the package's exit procedure
+
+The coder sent terminal `ctrl+c` rather than using OpenCode's required built-in `/quit`. `ctrl+c` delivers an interrupt signal to the foreground process, so the statement that no process was signaled is not accurate even though only the owned host was affected. It also bypassed the prescribed normal-exit lifecycle and left the EXIT cleanup incomplete until a later guarded manual removal. Rework must use the package's normal host exit and ownership-validated cleanup procedure rather than an interrupt.

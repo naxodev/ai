@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Critical
+
+1. **The required prior-run cleanup is missing.** Before the new certification, the task requires inspecting and cleaning only retained tab `w2:tH` and roots `opencode-next-17386.wj6FfV` and `pi-mixed.kWZwUU`, after proving recorded host process groups `23136` and `23635` are absent. It also requires ownership-validated `find -depth -delete` and retained command/output evidence. Phase 1 starts directly with handoff/prerequisite and protected-daemon checks; neither its ordered work nor verify harness performs or records this cleanup. Add a fail-closed preflight that uses these exact recorded identifiers, validates absence/ownership, avoids broad deletion, and records all commands and output.
+
+2. **The Pi reload procedure repeats the explicitly forbidden future-only wait and does not wait for coherent restored status.** The harness runs `herdr pane wait-output ... --source recent-unwrapped` after `/reload`. The task explicitly requires a bounded polling loop over newly captured current visible/recent output, accepting a completion message already rendered before polling begins, and forbids a future-only `wait-output` call. The polling success condition must include both the reload completion message and restored coherent music status. Immediately upon that combined detection, the harness must capture the strict protected checkpoint and then compare the exact Pi PID/identity/full-command/process-group inventories before and after reload. Replace the current `wait-output` sequence and order the checkpoint/comparisons accordingly.

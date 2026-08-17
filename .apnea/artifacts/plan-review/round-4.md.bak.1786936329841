@@ -1,0 +1,14 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — The new process-verification helpers are never used
+
+The prose and acceptance criteria now require exact Pi PID/identity/full-command continuity, and the harness defines `foreground_identity`, `foreground_commands`, `process_group_inventory`, `assert_recorded_foreground_gone`, and `assert_process_group_empty`. However, the executable sequence never calls any of them.
+
+The reload section still only compares `foreground_process_group_id` and prints the two process-info documents. The exit sections still only run the previous PGID-only `ps` checks, and OpenCode foreground identity is never captured before `/quit`. Consequently, the verify commands still do not establish the revised acceptance claims.
+
+Capture and compare the before/after Pi identity, command, and group inventories with explicit `test` assertions. Before each host exits, retain its foreground process-info/identity; after shell return, invoke `assert_recorded_foreground_gone` and `assert_process_group_empty` for that host before cleanup. The definitions alone are not verification.

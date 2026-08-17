@@ -2,42 +2,87 @@
 status: done
 ---
 
-Fixed the review finding in the selected server graph. The coordinator scope now starts and retains the selected provider event stream's first pull before activation, then supplies that exact pull to the fixed coordinator graph. This preserves a single event source, prevents first-event loss, and retains event-source finalization in the coordinator scope. Restored the three legacy event-disposal assertions to exact-once behavior.
+# Phase 1 rework result
 
-Files changed for this rework:
-- `packages/music-core/session/server.ts`
-- `packages/music-core/tests/session-server.test.ts`
+## Amendments
 
-Verification:
+- `packages/music-core/session/config.ts`
+  - Replaced the metadata-only pre-hello marker snapshot with a validated live marker-generation proof: secure artifact identity, parsed UID/PID/token, liveness, and a post-read identity check.
+  - `starting()` now requires the exact same fresh marker generation after the hello reset. In-place marker rewrites (same inode) and artifact replacement fail closed.
+- `packages/music-core/tests/session-client.test.ts`
+  - Added deterministic same-inode marker-token rewrite coverage; it remains `occupied`, retains both artifacts, and exposes no cleanup capability.
+  - Replaced the fabricated coordinator exit result with a managed launcher seam that emits split `music-sessiond:` stderr and an actual pre-readiness child `exit`; acquisition receives the bounded typed `exit` error.
+- `packages/music-core/session/client.ts`
+  - No additional rework change; the existing launcher/coordinator wiring is exercised by the new end-to-end seam test.
+
+## Verification
+
+All commands ran from the repository root.
 
 ```text
-$ bun test packages/music-core/tests/session-server.test.ts -t 'selected.*blocked|blocked.*selected'
-exit: 0
-(pass) selected graph shutdown interrupts blocked coordinator work before draining connections
-1 pass, 0 fail
+$ bun test packages/music-core/tests/session-client.test.ts
+exit 0
+79 pass, 0 fail, 434 expect() calls
 
-$ bun test packages/music-core/tests/session-server.test.ts
-exit: 0
-35 pass, 0 fail
+$ bunx nx run music-core:typecheck --skip-nx-cache
+exit 0
+Successfully ran target typecheck for project music-core
 
-$ bunx nx run-many -t build typecheck test format:check package:check --projects=music-core
-exit: 0
-NX Successfully ran targets build, typecheck, test, format:check, package:check for project music-core
-203 pass, 0 fail
+$ bunx nx run music-core:format:check --skip-nx-cache
+exit 0
+All matched files use Prettier code style!
 
-$ ! rg -n 'Effect\.runSync|setTimeout\(|setInterval\(|Bun\.sleep' packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts
-exit: 0
+$ bunx nx run music-core:test --skip-nx-cache
+exit 0
+271 pass, 0 fail, 1227 expect() calls
 
-$ jj diff --summary
-exit: 0
-Inspected: only the package's server, daemon, and server-test product paths are present alongside pre-existing dirty worktree files.
+$ bunx nx run music-core:package:check --skip-nx-cache
+exit 0
+Bundled 201 modules in 51ms
+Verified npm package contents (21 files)
 
-$ jj diff --git packages/music-core/session/server.ts packages/music-core/session/music-sessiond.ts packages/music-core/tests/session-server.test.ts
-exit: 0
-Inspected: provider-only selection, separate ownership scopes, eager selected event pull, and coordinator -> connection -> provider -> listener teardown order are present.
+$ bunx nx run music-core:smoke --skip-nx-cache
+exit 0
+negotiated daemon: music-session-clp5vmruhnh revision 1
+status-zero idle exit and cleanup: ok
 
-$ git diff --check
-exit: 0
+$ bunx nx run opencode-music-player:smoke --skip-nx-cache
+exit 0
+installed OpenCode 0.0.0-next-17386
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+
+$ bunx nx run pi-music-dock:smoke --skip-nx-cache
+exit 0
+installed Pi 0.84.0
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+
+$ ! rg -n '\[DEBUG-[^]]+\]' packages/music-core packages/opencode-music-player packages/pi-music-dock; git diff --check; test -z "$(find packages -type f \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+exit 0
 ```
 
-Residual risks: none identified. `.apnea/state.json` and unrelated dirty worktree changes were not modified.
+The first full `music-core:test` invocation hit the pre-existing concurrent-startup race (`20 concurrent managed callers...` reported occupied); its immediate no-edit rerun passed. Nx marked the task flaky. The focused suite and final full suite both passed.
+
+## Live attachment evidence
+
+Baseline and every successful before/during/after direct hello checkpoint preserved:
+
+```text
+PID:        45621
+Generation: music-session-zqg8kksdwec
+Socket:     16777231:1237478212:501:600
+```
+
+- Exact isolated OpenCode: set `TMPDIR` to its canonical path before running the prescribed install. This preserves the required containment check across macOS `/var` → `/private/var` aliasing without weakening it. The trusted install produced:
+  - binary: `/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.Rhpubz/node_modules/@opencode-ai/cli/bin/opencode2.exe`
+  - version: `opencode2 v0.0.0-next-17386`
+  - checkout plugin: `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player`
+  - UI: rendered the checkout player slot with no `1 plugin failed` or startup error. No playback control was issued. OpenCode exited normally; its ownership-checked root was removed and the post-exit checkpoint passed.
+- Exact isolated Pi: `0.84.0`, profile `/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-attachment.wH9Ssr`, checkout extension `/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock`. The rendered UI listed `music-dock`, showed the current empty/paused dock state, and contained no unclassifiable-peer or extension startup error. No playback control or reload was issued. Pi exited with the normal double-Ctrl-C path, its ownership-checked root was removed, and the post-exit checkpoint passed.
+
+Neither host signaled, replaced, unlinked, cleaned, or otherwise took ownership of the unrelated production daemon or its clients.
+
+## Residual risk
+
+No product-scope blocker remains. The existing 20-client startup test is timing-sensitive under this local Bun run (one initial full-suite failure, immediate rerun green); it is retained unchanged and Nx reported it as flaky. No commit, push, or `.apnea/state.json` edit was made.

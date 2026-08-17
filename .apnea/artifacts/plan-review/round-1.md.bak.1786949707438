@@ -1,0 +1,10 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — Reload precondition failures bypass the recovery trap
+
+In `.apnea/artifacts/plan.md:732-733`, the stale reload-message checks call `exit 1` while both hosts are live. Bash does not run an `ERR` trap for an explicit `exit`, so these branches skip `recover`, leaving the owned OpenCode/Pi processes, peers, temporary roots, and Herdr tab alive. This contradicts the plan’s fail-closed recovery and cleanup requirements. Route these failures through `recover 1` or a failing command that invokes the installed trap.

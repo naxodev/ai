@@ -1,0 +1,67 @@
+---
+status: done
+---
+
+# Phase 2 rework result — live certification still blocked
+
+## What changed
+
+No source change was requested by the round-1 review and no product, policy, test, configuration, or documentation file was edited.
+
+The required corrective action is a real, manually observed three-regular-pane session. This dispatch has only a non-interactive command interface, so it cannot launch and observe the required OpenCode and Pi UIs in separate regular panes, issue `/reload` through Pi's UI, retain trustworthy UI state/control observations, or safely alter the user's real media session. I did not substitute headless launches, package smokes, synthetic clients, floating panes, or fabricated observations for those requirements.
+
+## Files touched
+
+- `.apnea/artifacts/phase-02/round-2/coder-result.md` (this required artifact only)
+
+## Verification transcript
+
+```text
+$ bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'
+exit: 0
+bun test v1.3.7 (ba426210)
+(pass) mixed-host Pi and OpenCode clients share FIFO and survive Pi reload [46.26ms]
+1 pass, 50 filtered out, 0 fail
+
+$ test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'; opencode2 --version
+exit: 0
+opencode2 v0.0.0-next-17386
+
+$ bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'; bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version
+exit: 0
+0.84.0
+
+$ command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null
+exit: 0
+provider=/opt/homebrew/bin/media-control
+
+$ realpath packages/opencode-music-player
+exit: 0
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player
+
+$ realpath packages/pi-music-dock
+exit: 0
+/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock
+
+$ ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"
+exit: 0
+stage_a_runtime=absent
+
+$ media-control get --no-artwork
+exit: 0
+{"artist":"Kiasmos","contentItemIdentifier":"F092650B-9962-42E6-A3B9-E46333DF45C3","title":"Wrecked","bundleIdentifier":"com.sertacozercan.Kaset","playing":false,"processIdentifier":22072,"timestamp":"2026-08-16T22:12:23Z","playbackRate":1}
+
+$ bun test packages/music-core/tests/session-server.test.ts -t 'mixed-host Pi and OpenCode clients share FIFO and survive Pi reload'; test "$(opencode2 --version)" = 'opencode2 v0.0.0-next-17386'; bunx --package @earendil-works/pi-coding-agent@0.84.0 pi --version | grep -qx '0.84.0'; command -v media-control >/dev/null || command -v nowplaying-cli >/dev/null; ! pgrep -f '[m]usic-sessiond' >/dev/null; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock"; test ! -e "/tmp/naxodev-music-$(id -u)/start.lock"; test ! -e "/tmp/naxodev-music-$(id -u)/s.sock.bind-lock"; git diff --check; test -z "$(jj diff --from @- --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+exit: 0
+(pass) mixed-host Pi and OpenCode clients share FIFO and survive Pi reload [43.07ms]
+1 pass, 50 filtered out, 0 fail
+stage_d=pass
+```
+
+## Missing required rework evidence
+
+No real pane session was performed. Consequently there is no evidence for the separate checkout-loaded host PIDs; temporary-profile/config cleanup; one live daemon/socket/lsof/provider tree; bidirectional UI control convergence; Pi reload preservation of daemon PID and generation; Pi exit isolation with OpenCode still controllable; or final-client 35-second idle cleanup after a live session.
+
+## Residual risks
+
+The round-1 critical finding remains unresolved. An operator with access to three regular panes and permission to interact with active real media must execute Stage B and Stage C as written and record the complete raw command output and precise UI observations in a later dispatch artifact.

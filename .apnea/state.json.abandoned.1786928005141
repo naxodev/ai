@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "slug": "music-session-real-host-fix",
+  "step": "coding",
+  "phase_index": 1,
+  "phase_count_hint": null,
+  "rounds": {
+    "plan_review": 1,
+    "phase-01/code_review": 6
+  },
+  "vcs": "jj",
+  "allow_dirty": true,
+  "goal": "Diagnose and fix the concrete real-host initialization failure found after all verified shared-session commits. Preserve verified history, Apnea records, docs, and unrelated changes. Do not push or open a PR. Reproduction evidence: exact OpenCode opencode2 v0.0.0-next-17386 loaded checkout packages/opencode-music-player from isolated config and rendered \"1 plugin failed\"; exact Pi 0.84.0 loaded checkout packages/pi-music-dock and rendered \"Error: music session endpoint is occupied by an unclassifiable peer\"; immediate inspection showed no music-session process and no /tmp/naxodev-music-501/s.sock. Active real media and media-control were available. First diagnose root cause with useful host diagnostics and create the narrow production fix with regression tests. Then rerun full bun run check. Then rerun one real mixed OpenCode/Pi regular-pane certification with the coder explicitly authorized to use Herdr regular shell panes as the operator, including shared UI/control, one daemon ownership, Pi /reload generation preservation, Pi exit isolation, final idle cleanup. Finally create pr-description.md. Use Effect v4 only, jj squash workflow, Pi profiles, regular panes, self-contained commit verify commands, never manually edit .apnea/state.json, and never rewrite unrelated .apnea history.",
+  "last_error": null,
+  "pending_artifact": null,
+  "pending_role": null,
+  "pending_pane_id": null,
+  "pending_pane_label": null,
+  "pending_floating_exit": null,
+  "pending_started_at": null,
+  "pending_deadline_ms": null,
+  "pending_nudged_at": null,
+  "pending_final_grace": false,
+  "pending_extended": false,
+  "role_panes": {
+    "planner": {
+      "pane_id": "w2:pDW",
+      "label": "apnea:planner:mswh1eg7-n7i0"
+    },
+    "reviewer": {
+      "pane_id": "w2:pDX",
+      "label": "apnea:reviewer:mswh8f5a-22s2"
+    },
+    "coder": {
+      "pane_id": "w2:pDY",
+      "label": "apnea:coder:mswhc5ee-k7rs"
+    }
+  },
+  "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
+  "reviewer_tree_fingerprint": null,
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": ".apnea/artifacts/phase-01/round-6/code-review.md"
+}

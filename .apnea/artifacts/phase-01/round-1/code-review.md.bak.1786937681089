@@ -1,0 +1,22 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Package alignment
+
+The phase package is aligned with the approved Phase 1 scope. No product-scope expansion was introduced.
+
+## Findings
+
+### High — Phase 1 certification did not satisfy its core acceptance checks
+
+The first required OpenCode control never changed canonical playback state, and the diagnostic Pi `/music` interaction also produced no state change. The coder correctly failed closed, but this leaves controls in both directions, Pi `/reload` preservation, Pi-exit isolation, post-Pi OpenCode control, and the successful end-to-end certification unverified. Re-run against media that is demonstrably controllable through the host integrations; do not advance to Phase 2 from this blocked result.
+
+### High — OpenCode did not exit by the phase-package mechanism
+
+The package and approved plan require OpenCode's built-in `/quit`, but the exact host rendered `/quit` as ordinary prompt text. The coder instead selected the command-palette `Exit` action. That appears to be a safe normal host exit, but it is still a material drift from the package and its acceptance criterion. The next package must resolve the exact host's supported normal-exit mechanism explicitly rather than prescribing a command this version does not implement.
+
+### Medium — Required boundary evidence is incomplete after the failure
+
+The result includes the pre-OpenCode-control checkpoint and a final protected-daemon snapshot, but no immediate post-failed-control checkpoint and no checkpoint-by-checkpoint evidence around the subsequent diagnostic action and both host exits. The package requires daemon identity/generation/peer evidence immediately before and after each action and exit, including failure cleanup. Preserve those boundary records in the rework result even when a convergence assertion fails.

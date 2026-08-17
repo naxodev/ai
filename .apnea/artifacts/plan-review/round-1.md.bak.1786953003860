@@ -1,0 +1,17 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## High — Launch polling does not classify the exact expected host leader
+
+Phase 1's `wait_non_shell_group` accepts the first foreground process group whose ID differs from the shell, uses a 30-second deadline, and returns/fails immediately around that sample. It never verifies the group leader against the owned host installation. Consequently, `zsh`, `env`, Bun, a wrapper, or another transient non-shell leader can be recorded as `oc_host_pid`/`pi_host_pid`, contrary to the dispatch's central classification requirement.
+
+Revise the launch poll to run for up to 60 seconds and treat every nonmatching or temporarily incomplete sample as transient. It may succeed only when the foreground process-group leader itself matches the applicable host predicate:
+
+- OpenCode: the leader's argv/path equals the owned exact `opencode2.exe` binary.
+- Pi: the leader's argv command contains the owned Pi root's `node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
+
+Only after that exact classification should the group become recovery-owned and the separate exact-PID `lsof` peer poll begin. The acceptance checks and verify harness should state and enforce these predicates explicitly.

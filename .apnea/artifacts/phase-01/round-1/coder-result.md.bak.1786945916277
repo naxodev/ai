@@ -1,0 +1,74 @@
+---
+status: done
+---
+
+# Phase 1 live-certification result
+
+## Outcome
+
+The fresh VLC-only live harness did **not** certify. Block A passed, but the single persistent Block B exited `1` during the first simultaneous-host UI assertion. Block C was not run, because Block B did not reach successful owned cleanup.
+
+The selected source was VLC only. Direct `media-control` control and restoration passed before either host was launched. The canonical original state was:
+
+```json
+{"album":"","artist":"","bundleIdentifier":"org.videolan.vlc","duration":1454,"playing":true,"processIdentifier":68175,"title":"The Well of Ascension_ Mistborn, Book 2 (Unabridged)- Track 18.mp3"}
+```
+
+`contentItemIdentifier` changed from `5996888A-964E-4BAF-9A79-7A40E3969293` to `166D2131-4B8B-42C1-8523-C6A3D1F20AE2` across the direct pause/play cycle and was recorded but excluded from equality, as required. The protected daemon socket tuple and generation remained unchanged throughout the recovery. Recovery used only normal `/quit` and OpenCode palette exit; it did not signal anything. It restored the original playback state.
+
+## What changed
+
+Only this dispatched result artifact was written. No product source, test, manifest, lockfile, checked-in configuration, commit, or `.apnea/state.json` was modified.
+
+The failed-run recovery deliberately preserved its ownership-checked resources for rework:
+
+- tab `w2:tJ`, panes `w2:pHM` and `w2:pHN`
+- `/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.wb5LZl`
+- `/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-mixed.tfXRaA`
+
+Post-recovery checks confirmed both returned panes and both roots still exist, and a fresh VLC observation still equals the canonical original state (with a newly observed raw identifier `8B9A1E5F-FFDE-4540-9277-9E67055D7F85`).
+
+## Verify transcript
+
+```text
+$ /bin/bash /var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/phase-01-live-runner.pO3e9B/A.sh
+exit 0
+Saved lockfile
+
+$ /bin/bash /var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/phase-01-live-runner.pO3e9B/B.sh
+exit 1
+
+2026-08-17T05:38:21Z checkpoint=baseline pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+2026-08-17T05:38:23Z selected-source=org.videolan.vlc original={"album":"","artist":"","bundleIdentifier":"org.videolan.vlc","duration":1454,"playing":true,"processIdentifier":68175,"title":"The Well of Ascension_ Mistborn, Book 2 (Unabridged)- Track 18.mp3"} process-command=/Applications/VLC.app/Contents/MacOS/VLC restore-command=play
+2026-08-17T05:38:23Z checkpoint=pre-media-control-toggle pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+2026-08-17T05:38:24Z checkpoint=post-media-control-toggle pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+2026-08-17T05:38:25Z checkpoint=pre-media-control-restore pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+2026-08-17T05:38:26Z checkpoint=post-media-control-restore pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+2026-08-17T05:38:27Z selected-source-certified bundle=org.videolan.vlc process-id=68175 title=The Well of Ascension_ Mistborn, Book 2 (Unabridged)- Track 18.mp3 artist= album= duration=1454 original-playing=true
+opencode-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.wb5LZl binary=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.wb5LZl/node_modules/@opencode-ai/cli/bin/opencode2.exe version=opencode2 v0.0.0-next-17386 config={"plugins":["/Users/nachovazquez/work/1-projects/naxodev/ai/packages/opencode-music-player/index.tsx"]}
+pi-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-mixed.tfXRaA version=0.84.0 settings={"packages":["/Users/nachovazquez/work/1-projects/naxodev/ai/packages/pi-music-dock"]}
+controller=w2:pHK owned-tab=w2:tJ opencode-pane=w2:pHM pi-pane=w2:pHN
+2026-08-17T05:38:49Z checkpoint=post-opencode-launch pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+2026-08-17T05:38:51Z checkpoint=pre-pi-launch pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+coherent opencode music status: ⏸︎ The Well of Ascension_ Mist…
+error: expected exactly one coherent pi music status "⏸ <waveform> The Well of Ascension_ Mistborn, Book… · ", found 0
+2026-08-17T05:38:54Z recovery-start rc=1 oc_live=1 pi_live=1 oc_submitted=1 pi_submitted=1
+2026-08-17T05:38:59Z recovery-evidence=after-pi-normal-exit tab=w2:tJ oc-pane=w2:pHM pi-pane=w2:pHN oc-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.wb5LZl pi-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-mixed.tfXRaA oc-pgid=2202 pi-pgid=2726 oc-peer-pid=2202 pi-peer-pid=2726 oc-returned=0 pi-returned=1
+2026-08-17T05:39:04Z recovery-checkpoint=recovery-post-opencode-exit status=0 output=2026-08-17T05:39:04Z checkpoint=recovery-post-opencode-exit pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 unrelated-peer-count-not-asserted=true
+2026-08-17T05:39:06Z recovery-preserved-owned-resources tab=w2:tJ oc-pane=w2:pHM pi-pane=w2:pHN oc-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/opencode-next-17386.wb5LZl pi-root=/private/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/pi-mixed.tfXRaA oc-submitted=0 pi-submitted=0
+
+$ /bin/bash /var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/phase-01-live-runner.pO3e9B/C.sh
+not run (Block B failed; its required successful cleanup did not occur)
+```
+
+The complete, unmodified 1,030-line Block B stdout/stderr transcript is retained at:
+
+```text
+/var/folders/fh/zx6t2vf55zd3rmf08mrg5jdc0000gn/T/phase-01-live-runner.pO3e9B/B.log
+```
+
+## Residual risk / blocker
+
+The package's Pi UI matcher does not accept the actual extension rendering when `artist` is empty. The actual Pi pane showed the coherent status beginning `⏸ ▅▄▄▄… The Well of Ascension_ Mistborn, Book… ·`; the matcher required `⏸ <waveform> The Well of Ascension_ Mistborn, Book… · `, including a trailing artist-derived space, and reported zero matches. This is an assertion/protocol defect, not a source switch or playback-identity failure.
+
+Because the harness is fail-closed, no named host controls, Pi reload, post-Pi OpenCode control, successful-path root cleanup, tab closure, or final Block C assertion was attempted. A corrected phase package is required before a new certification run can be approved.

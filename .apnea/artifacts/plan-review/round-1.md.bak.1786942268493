@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Blocker — Phase 1 contradicts the dispatch and will fail before certification
+
+The task explicitly says the prior retained resources have already been safely removed and instructs: **“do not include any old-resource cleanup preflight.”** The plan instead makes that stale cleanup mandatory throughout the goal restatement, ordered work, acceptance checks, dependencies, whole-run definition of done, and Block B. The harness requires tab `w2:tH`, panes `w2:pGF`/`w2:pGG`, and both old roots to exist, then closes/deletes them. Against the dispatched starting state, the exact pane/root assertions will fail before the live certification begins.
+
+Remove all prior-run cleanup logic and requirements, including the `prior_*` variables and pre-trap cleanup block. Phase 1 should begin from the current certified-clean state with the protected-daemon, peer, and Music.app baselines. Retain cleanup only for resources newly created and owned by this run. Update the goal, ordered work, acceptance checks, dependencies, whole-run definition of done, and verify harness consistently.

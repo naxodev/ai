@@ -1,0 +1,138 @@
+---
+status: done
+---
+
+# Phase 1 coder result
+
+No product, test, configuration, history, or state-file changes were made. Only this dispatched artifact was written.
+
+## 1. Approved handoff and scope — PASS
+
+```text
+$ [self-contained jj identity/scope assertion block from phase package]
+exit 0
+approved_commit=bd952919 fix(music): tolerate daemon hello reset window parent=c78b5b93
+M packages/music-core/session/client.ts
+M packages/music-core/session/config.ts
+M packages/music-core/tests/session-client.test.ts
+```
+
+This proves `bd952919` is exactly `@-`, `c78b5b93` is its parent, the approved commit changes exactly those three paths, and the current child had no non-Apnea diff.
+
+## 2. Protected endpoint evidence — PASS
+
+The persistent-shell protected gate validated the following before the full check and again after it:
+
+```text
+PID:             45621
+exact command:   node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js
+socket:          /tmp/naxodev-music-501/s.sock
+socket tuple:    16777231:1237478212:501:600
+directory mode:  501:700
+generation:      music-session-zqg8kksdwec
+```
+
+Both endpoint assertions passed: PID command equality, socket type, socket owner/mode, runtime-directory owner/mode, and daemon ownership of the socket (`lsof`). The before and after `lsof` observations were identical in relevant ownership/path details:
+
+```text
+COMMAND   PID         USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    45621 nachovazquez   13u  unix 0x92b42519e692921f      0t0      /tmp/naxodev-music-501/s.sock
+node    45621 nachovazquez   16u  unix 0x91c6be82950a6663      0t0      /tmp/naxodev-music-501/s.sock
+node    45621 nachovazquez   17u  unix 0xf243e941e197f75c      0t0      /tmp/naxodev-music-501/s.sock
+node    45621 nachovazquez   18u  unix 0xea134277ddbd5d07      0t0      /tmp/naxodev-music-501/s.sock
+```
+
+## 3. Unchanged full gate — PASS
+
+```text
+$ bun run check
+exit 0
+elapsed_seconds=48
+```
+
+Relevant complete gate transcript (all reported targets passed):
+
+```text
+$ bun run format:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke
+$ prettier --check .
+Checking formatting...
+All matched files use Prettier code style!
+$ bun test scripts
+8 pass
+0 fail
+16 expect() calls
+Ran 8 tests across 3 files. [4.26s]
+
+NX Running targets typecheck, test, parity, format:check, package:check, smoke for 6 projects:
+- opencode-music-player
+- pi-music-dock
+- opencode-vim
+- music-core
+- pi-apnea
+- apnea
+
+music-core:test: 272 pass, 0 fail, 1230 expect() calls; 10 files
+pi-music-dock:test: 23 pass, 0 fail, 88 expect() calls; 3 files
+opencode-music-player:test: 126 pass, 0 fail, 364 expect() calls; 16 files
+opencode-vim:parity: 16 pass, 0 fail, 190 expect() calls; 1 file
+apnea:test: 336 pass, 0 fail; 31 files
+pi-apnea:test: 20 pass, 0 fail; 6 files
+opencode-vim:test: 101 pass, 0 fail; 6 files
+
+music-core:package:check: Verified npm package contents (21 files)
+opencode-music-player:package:check: Verified npm package contents (15 files)
+opencode-vim:package:check: Verified npm package contents (11 files)
+All format-check targets reported: All matched files use Prettier code style!
+All typecheck targets completed successfully.
+
+music-core:smoke:
+installed Node v24.8.0
+negotiated daemon: music-session-wl4wtcacjg revision 1
+status-zero idle exit and cleanup: ok
+
+pi-music-dock:smoke:
+installed Pi 0.84.0
+Pi registered extension commands: /music, /music-next, /music-prev
+Pi RPC status-zero exit and cleanup: ok
+
+opencode-music-player:smoke:
+installed OpenCode 0.0.0-next-17386
+OpenCode loaded the installed package and rendered its app and sidebar slots.
+OpenCode package smoke cleanup: ok
+
+NX Successfully ran targets typecheck, test, parity, format:check, package:check, smoke for 6 projects
+Nx read the output from the cache instead of running the command for 19 out of 31 tasks.
+Run duration: 40.5s
+Cache: 19/31 hit (61%)
+Critical path: 35.9s (opencode-music-player:smoke)
+```
+
+The persistent-shell after checks completed even after retaining the gate status:
+
+```text
+after: pid=45621 generation=music-session-zqg8kksdwec socket=16777231:1237478212:501:600 check_status=0 elapsed_seconds=48
+socket tuple equality: PASS
+generation equality: PASS
+final endpoint equality: PASS
+```
+
+Thus the direct `createMusicSessionClient` generation probe and protected endpoint identity were preserved across the literal root gate.
+
+## 4. Final repository assertions — PASS
+
+```text
+$ [self-contained final repository assertion block from phase package]
+exit 0
+git diff --check: pass
+package debris (.tgz/.sock/.bind-lock*/.log/.tmp): none
+non-Apnea child diff: none
+bd952919 remains in current ancestry: pass
+bd952919 three-path summary: pass
+Parent commit (@-): vqkwurqv bd952919 fix(music): tolerate daemon hello reset window
+```
+
+`jj status` listed only pre-existing Apnea records (including the orchestrator-owned `.apnea/state.json`); no non-Apnea working-copy changes were present. This task did not edit `.apnea/state.json`.
+
+## Residual risks
+
+None for Phase 1. The shared daemon was neither restarted, signaled, unlinked, cleaned up, nor replaced. No final idle shutdown was attempted because unrelated clients may remain attached.

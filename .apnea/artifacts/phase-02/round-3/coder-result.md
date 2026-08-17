@@ -2,40 +2,35 @@
 status: done
 ---
 
-## What changed
+# Phase 2 rework result — blocked before gate
 
-No product files were edited. The orchestrator has restored the commit boundary: the current parent is now `b30f9987 chore(format): exclude Apnea runtime records`, while the two allowed smoke-script corrections are working-copy changes. This resolves the round-2 history finding.
+The orchestrator corrected the Phase 1 commit isolation: the parent is now `bd952919efe9`, its parent is `c78b5b93f3dc`, and its summary is exactly the three approved product paths. However, the unchanged required assertion still fails at its first condition because this repository's `jj log ... commit_id.short()` renders 12 characters while the assertion requires the 8-character literal `c78b5b93`.
 
-However, the only supplied Phase 2 package has not been regenerated as the review requires. It still asserts that both corrections are already in parent `9a2aa534` and that no product diff is expected. That assertion is false for the current baseline, so running its verification and reporting against its stated assumptions would not be a conforming package implementation. No coder-side history mutation or package rewrite is permitted.
+Per the package, I stopped before `bun run check` and before any protected-daemon access. I did not weaken or edit the assertion.
 
-## Files touched
+## Required assertion evidence
 
-- `.apnea/artifacts/phase-02/round-3/coder-result.md` (required result artifact only)
+```text
+$ set -eu; test "$(jj log -r '@--' --no-graph -T 'commit_id.short()')" = 'c78b5b93'; expected="$(printf '%s\n' 'M packages/music-core/session/client.ts' 'M packages/music-core/session/config.ts' 'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"; actual="$(jj diff -r @- --summary | LC_ALL=C sort)"; test "$actual" = "$expected"; test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"; printf 'phase_1_commit=%s\n%s\n' "$(jj log -r @- --no-graph -T 'commit_id.short() ++ " " ++ description.first_line()')" "$actual"
+exit 1
 
-## Verify transcript
+$ jj log -r '@--' --no-graph -T 'commit_id.short() ++ "\n"'
+c78b5b93f3dc
 
-1. `jj status`
-   - Exit: 0
-   - Output tail: parent is `b30f9987 chore(format): exclude Apnea runtime records`; working-copy product changes are limited to `packages/opencode-music-player/scripts/package-smoke.ts` and `packages/pi-music-dock/scripts/package-smoke.ts`, alongside dispatcher-managed `.apnea` activity.
-2. `jj diff --summary`
-   - Exit: 0
-   - Output tail: the same two package-smoke scripts are the only product changes.
-3. `jj diff -r 'ae742b68..b30f9987' --summary`
-   - Exit: 0
-   - Output tail: among product/policy paths, only `.prettierignore` is in the restored parent slice; remaining output is existing dispatcher-managed `.apnea` history.
-4. `jj diff -r 'ae742b68..9a2aa534' --summary`
-   - Exit: 0
-   - Output tail: historical commit `9a2aa534` retains the prior combined slice; it is not the current parent.
-5. `jj log -r 'ancestors(@, 5)' --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'`
-   - Exit: 0
-   - Output tail:
-     ```text
-     b30f998716a6 chore(format): exclude Apnea runtime records
-     ae742b687d42 docs(music): document shared session architecture
-     ```
+$ jj diff -r @- --summary
+M packages/music-core/session/client.ts
+M packages/music-core/session/config.ts
+M packages/music-core/tests/session-client.test.ts
 
-The package's focused and full verification commands were not run because the required regenerated Phase 2 package is absent and the supplied package's parent/diff assumptions are demonstrably stale.
+$ expected="$(printf '%s\n' 'M packages/music-core/session/client.ts' 'M packages/music-core/session/config.ts' 'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"; actual="$(jj diff -r @- --summary | LC_ALL=C sort)"; test "$actual" = "$expected"; echo equal; test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"; echo clean; printf 'phase_1_commit=%s\n%s\n' "$(jj log -r @- --no-graph -T 'commit_id.short() ++ " " ++ description.first_line()')" "$actual"
+equal
+clean
+phase_1_commit=bd952919efe9 fix(music): tolerate daemon hello reset window
+M packages/music-core/session/client.ts
+M packages/music-core/session/config.ts
+M packages/music-core/tests/session-client.test.ts
+```
 
-## Residual risks
+## Residual risk
 
-Blocker: regenerate the Phase 2 package for the restored boundary, with the two smoke-script corrections as the Phase 2 working-copy slice, then dispatch fresh coder verification. No history, product, or existing Apnea record was manually changed.
+The Phase 1 handoff is now isolated, but Phase 2 cannot proceed until its unchanged assertion compares a compatible commit-ID length (for example, the full observed `c78b5b93f3dc`). Full-gate and production-endpoint evidence are intentionally absent. No code, configuration, history, `.apnea/state.json`, or production resource was changed; only this required artifact was written.

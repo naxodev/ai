@@ -1,0 +1,12 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+# Findings
+
+## Major
+
+1. **The live harness does not directly prove media-state isolation after Pi exits.** Phase 1 step 12 and its acceptance checks require Pi `/quit` to leave both OpenCode and the original media state healthy. After `checkpoint post-pi-quit`, the script only runs `assert_ui "$oc_pane" opencode "$chosen_original"`; that can validate stale rendered text and does not take a current `media-control` observation. The next media observation occurs only after invoking OpenCode's toggle, so the required pre-action post-Pi state is not independently established.
+
+   Immediately after the post-Pi daemon/peer checkpoint—and before deleting the Pi root or selecting another OpenCode action—capture a fresh `media_snapshot`, require byte equality with the canonical original state (the six stable identity fields plus `playing`), and validate the selected VLC process. This will also record the raw `contentItemIdentifier` without comparing it, preserving the corrected identity model.

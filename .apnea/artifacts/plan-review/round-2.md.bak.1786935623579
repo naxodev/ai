@@ -1,0 +1,16 @@
+---
+status: done
+verdict: CHANGES_REQUIRED
+---
+
+## Findings
+
+### High — The harness does not prove the claimed Pi process continuity or host-process termination
+
+The reload check compares only `foreground_process_group_id`. A process can be replaced while remaining in the same process group, so this does not establish the whole-run claim of “one Pi process … across `/reload`.” Likewise, after each `/quit`, `wait_shell_return` proves that the pane shell regained the foreground and the peer check proves that the music connection disappeared, but neither proves that every process in the recorded host process group exited. The plan then deletes the host root despite its own requirement to do so only after the exact host group is gone.
+
+Capture the Pi host PID and command/process set from `foreground_processes` before reload and assert the same host PID/command remains afterward. After both Pi and OpenCode `/quit`, explicitly assert that no non-shell process remains in each recorded host process group before deleting its root or closing the tab.
+
+### Medium — The prerequisite fallback is not supported by the self-contained harness
+
+Section A accepts either `media-control` or `nowplaying-cli`, but immediately and repeatedly invokes `media-control`; the harness cannot run when only the advertised fallback is installed. Either require `media-control` unconditionally or provide a complete alternative implementation for every media read/test used by the harness.

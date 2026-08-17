@@ -1,0 +1,194 @@
+---
+status: done
+---
+
+# Phase 1 package — unchanged full gate with protected-daemon evidence
+
+## Intent
+
+Verify the already-approved commit `bd952919` (`fix(music): tolerate daemon hello reset window`) without changing product code or history. Run the literal root `bun run check` once and prove that the legitimately existing shared daemon remains the same before and after the gate.
+
+The protected resources are:
+
+- daemon PID: `45621`
+- exact command: `node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js`
+- socket: `/tmp/naxodev-music-$(id -u)/s.sock`
+
+Treat any PID, command, socket identity, ownership, mode, or generation mismatch as a blocker. A mismatch does **not** authorize restart, signaling, unlinking, discovery cleanup, replacement, or startup. Do not require final idle shutdown; unrelated clients remain attached, and deterministic plus packed smokes inside the unchanged full gate provide idle-lifecycle evidence.
+
+## Files to touch
+
+Only:
+
+- the exact coder-result artifact path supplied by the coder dispatch
+
+Record commands, relevant complete stdout/stderr, exit codes, elapsed time, endpoint evidence, and conclusions there.
+
+## Files not to touch
+
+Do not edit, create, delete, restore, or rewrite:
+
+- `packages/music-core/session/client.ts`
+- `packages/music-core/session/config.ts`
+- `packages/music-core/tests/session-client.test.ts`
+- any other product, test, package, lock, policy, configuration, or documentation file
+- `.apnea/state.json`
+- any prior `.apnea` task, artifact, backup, or history record
+- verified commit `bd952919`, its ancestors, or unrelated working-copy content
+
+Do not create repository-local logs, archives, package tarballs, sockets, temporary files, or debug scripts. Do not run a formatter in write mode.
+
+## Exact steps
+
+Run all commands from the repository root.
+
+### 1. Prove the approved handoff and scope
+
+Run this block exactly. It is self-contained and deliberately uses revset identity checks and `commit_id.short(8)`; never compare Jujutsu's default 12-character `short()` output with an eight-character literal.
+
+```sh
+set -eu
+test "$(jj log -r '@- & bd952919' --no-graph -T 'commit_id.short(8)')" = 'bd952919'
+test "$(jj log -r 'parents(bd952919) & c78b5b93' --no-graph -T 'commit_id.short(8)')" = 'c78b5b93'
+expected="$(printf '%s\n' \
+  'M packages/music-core/session/client.ts' \
+  'M packages/music-core/session/config.ts' \
+  'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+actual="$(jj diff -r bd952919 --summary | LC_ALL=C sort)"
+test "$actual" = "$expected"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+printf 'approved_commit=%s parent=%s\n%s\n' \
+  "$(jj log -r bd952919 --no-graph -T 'commit_id.short(8) ++ " " ++ description.first_line()')" \
+  "$(jj log -r 'parents(bd952919)' --no-graph -T 'commit_id.short(8)')" \
+  "$actual"
+```
+
+Expected result:
+
+- `bd952919` is exactly `@-`.
+- Its parent is exactly `c78b5b93`.
+- Its summary contains exactly the three approved modified product paths.
+- The current child has no non-Apnea changes.
+
+If any assertion fails, stop and report the mismatch. Do not repair history, restore files, or discard unrelated state.
+
+### 2. Run the protected full gate in one persistent shell
+
+Run the following as one block in one shell so the before/after variables cannot be lost or reconstructed. The direct generation probe uses only `createMusicSessionClient` with the already validated explicit socket. Do not replace it with `connectOrStartMusicSession`, a reconnecting client, startup leases, discovery cleanup, or any API capable of starting or cleaning a daemon.
+
+The block intentionally captures `bun run check`'s status before performing the non-destructive after-checks. Do not add `set -e`, pipe the gate through a command that masks its status, substitute narrower targets, suppress failures, or rerun a failed target after editing configuration.
+
+```sh
+set -u
+daemon_pid=45621
+daemon_command='node /Users/nachovazquez/work/1-projects/naxodev/ai/packages/music-core/dist/music-sessiond.js'
+socket="/tmp/naxodev-music-$(id -u)/s.sock"
+assert_protected_endpoint() {
+  test "$(ps -p "$daemon_pid" -o command=)" = "$daemon_command"
+  test -S "$socket"
+  test "$(stat -f '%u:%Lp' "$socket")" = "$(id -u):600"
+  test "$(stat -f '%u:%Lp' "$(dirname "$socket")")" = "$(id -u):700"
+  lsof -n -a -p "$daemon_pid" "$socket" >/dev/null
+  stat -f '%d:%i:%u:%Lp' "$socket"
+}
+direct_generation() {
+  before="$(assert_protected_endpoint)" || return
+  observed="$(MUSIC_SESSION_SOCKET="$socket" bun -e 'import { baselineCapabilities, createMusicSessionClient } from "./packages/music-core/index.ts"; const socketPath = process.env.MUSIC_SESSION_SOCKET; if (!socketPath) throw new Error("missing validated socket"); const client = await createMusicSessionClient({ socketPath, clientId: `full-gate-${process.pid}`, hostKind: "test", capabilities: [...baselineCapabilities] }); try { console.log(client.daemonInstanceId) } finally { client.dispose() }')" || return
+  after="$(assert_protected_endpoint)" || return
+  test "$after" = "$before"
+  test -n "$observed"
+  printf '%s\n' "$observed"
+}
+before_socket="$(assert_protected_endpoint)" || exit 1
+before_generation="$(direct_generation)" || exit 1
+test "$(assert_protected_endpoint)" = "$before_socket" || exit 1
+printf 'before: pid=%s generation=%s socket=%s\n' "$daemon_pid" "$before_generation" "$before_socket"
+lsof -n -a -p "$daemon_pid" "$socket"
+started="$(date +%s)"
+bun run check
+check_status=$?
+elapsed="$(( $(date +%s) - started ))"
+after_socket="$(assert_protected_endpoint)" || exit 1
+after_generation="$(direct_generation)" || exit 1
+test "$after_socket" = "$before_socket" || exit 1
+test "$after_generation" = "$before_generation" || exit 1
+test "$(assert_protected_endpoint)" = "$before_socket" || exit 1
+printf 'after: pid=%s generation=%s socket=%s check_status=%s elapsed_seconds=%s\n' \
+  "$daemon_pid" "$after_generation" "$after_socket" "$check_status" "$elapsed"
+lsof -n -a -p "$daemon_pid" "$socket"
+exit "$check_status"
+```
+
+Capture:
+
+- the initial and final socket tuple (`device:inode:uid:mode`);
+- initial and final `daemonInstanceId`;
+- both `lsof` observations;
+- complete relevant `bun run check` stdout/stderr;
+- gate exit code and elapsed seconds.
+
+If `bun run check` fails, retain the failure output and report it for rework. The block must still attempt the non-destructive after comparison. Do not patch product code in this phase. If a protected baseline assertion fails before or after the gate, stop without cleanup, startup, unlinking, signaling, or unrelated-client action.
+
+### 3. Prove the repository remains clean outside Apnea
+
+Run this separate, self-contained final block after the protected gate, including when the gate reported a failure if the shell remains usable:
+
+```sh
+set -eu
+git diff --check
+test -z "$(find packages \( -name '*.tgz' -o -name '*.sock' -o -name '*.bind-lock*' -o -name '*.log' -o -name '*.tmp' \) -print -quit)"
+test -z "$(jj diff --summary | awk '$2 !~ /^\.apnea\// { print; exit }')"
+test "$(jj log -r 'bd952919 & ancestors(@)' --no-graph -T 'commit_id.short(8)')" = 'bd952919'
+expected="$(printf '%s\n' 'M packages/music-core/session/client.ts' 'M packages/music-core/session/config.ts' 'M packages/music-core/tests/session-client.test.ts' | LC_ALL=C sort)"
+test "$(jj diff -r bd952919 --summary | LC_ALL=C sort)" = "$expected"
+jj status
+```
+
+This must show:
+
+- no whitespace errors;
+- no `.tgz`, `.sock`, `.bind-lock*`, `.log`, or `.tmp` debris anywhere under `packages`;
+- no non-Apnea change in the working-copy child;
+- `bd952919` still present in current ancestry with exactly its approved three-path content.
+
+### 4. Write the coder result
+
+In only the exact coder-result artifact supplied by the coder dispatch, report:
+
+1. the history assertion output and pass/fail status;
+2. protected before evidence: PID, exact command validation, socket tuple and ownership/modes, `lsof`, and generation;
+3. the literal command `bun run check`, its relevant complete stdout/stderr, exit code, and elapsed time;
+4. protected after evidence and explicit equality results for socket tuple and generation;
+5. final repository assertion output;
+6. any blocker or residual risk.
+
+Report failures truthfully. Do not claim a gate passed merely because after-checks passed, and do not claim daemon preservation unless every protected before/after assertion passed.
+
+## Acceptance checks
+
+Phase 1 is accepted only when all of the following are true:
+
+- The self-contained history assertion proves `bd952919` is the current parent, its parent is `c78b5b93`, it contains exactly the three approved product paths, and the child has no non-Apnea changes.
+- The literal, unchanged root `bun run check` exits zero, including root format/policy checks and all Nx typecheck, test, parity, format, package, and smoke targets.
+- PID `45621`, its exact command, socket device/inode/UID/mode, runtime-directory UID/mode, daemon ownership of the socket, and `daemonInstanceId` are identical before and after the full gate.
+- `git diff --check` passes and no listed package debris remains.
+- No source or history repair, daemon cleanup/restart, final idle assertion, or unrelated-client action occurs.
+- Only the dispatched coder-result artifact is written.
+
+A failed check means the phase requires rework; it does not authorize implementation changes during this final-gate phase.
+
+## Dependencies
+
+- Approved current parent `bd952919` and verified ancestor `c78b5b93`.
+- Existing workspace dependencies and Bun/Nx toolchains.
+- The legitimately existing protected PID `45621`, socket, and daemon generation.
+
+## Non-goals
+
+- Product or test changes.
+- Focused-test or narrower-gate substitutions.
+- Formatting writes, dependency changes, or lockfile updates.
+- History repair, commits, squashes, pushes, publication, releases, or PR creation/update.
+- Daemon startup, restart, signaling, unlinking, discovery cleanup, replacement, or idle shutdown.
+- Exact OpenCode/Pi live controls, Pi `/reload`, or Pi-exit isolation; those belong to Phase 2.
+- Editing `.apnea/state.json` or rewriting unrelated Apnea history.

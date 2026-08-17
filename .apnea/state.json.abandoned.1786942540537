@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "slug": "music-session-generic-media-live",
+  "step": "coding",
+  "phase_index": 1,
+  "phase_count_hint": null,
+  "rounds": {
+    "plan_review": 1,
+    "phase-01/code_review": 1
+  },
+  "vcs": "jj",
+  "allow_dirty": true,
+  "goal": "Complete final live certification and pr-description.md for the verified shared Effect v4 music-session migration. Preserve verified commits and unrelated Apnea records. Do not push or open a PR. Phase 1 is evidence-only and must use the currently selected real media source, regardless of app, after proving it is stable and controllable by media-control toggle plus exact identity/state restoration. Do not require Music.app, AppleScript database IDs, or map contentItemIdentifier to app-specific IDs. Record bundle, process ID, content identity, title, artist, album, duration, and playing state from media-control; require identity stability throughout controls and exact original playing-state restoration. Use exact isolated OpenCode 0.0.0-next-17386 with packages/opencode-music-player/index.tsx, exact Pi 0.84.0 with packages/pi-music-dock, protected daemon PID 45621, strict daemon PID/generation/socket checkpoints, and owned-peer tracking while allowing unrelated peer churn. Coder is explicitly authorized to use Herdr regular panes as operator. Execute named OpenCode play/pause, Pi /music, Pi /reload, Pi /quit, post-Pi OpenCode named control, and OpenCode command-palette Exit. Detect reload by bounded polling of current visible/recent Pi capture, accepting already rendered output, then immediately compare exact Pi PID/identity/full command/process-group inventory and daemon generation. Prove normal exits, owned peers/groups/roots/tab removed, selected media identity and original playing state restored, no product diff, and protected daemon unchanged. Never signal or clean unrelated clients or daemon. Phase 2 creates pr-description.md and finishes. Use self-contained commit verifies, Pi profiles, regular panes, jj squash workflow, Effect v4 only, never manually edit .apnea/state.json, and never rewrite unrelated .apnea history.",
+  "last_error": null,
+  "pending_artifact": null,
+  "pending_role": null,
+  "pending_pane_id": null,
+  "pending_pane_label": null,
+  "pending_floating_exit": null,
+  "pending_started_at": null,
+  "pending_deadline_ms": null,
+  "pending_nudged_at": null,
+  "pending_final_grace": false,
+  "pending_extended": false,
+  "role_panes": {
+    "planner": {
+      "pane_id": "w2:pG0",
+      "label": "apnea:planner:mswr50h5-zo83"
+    },
+    "reviewer": {
+      "pane_id": "w2:pH1",
+      "label": "apnea:reviewer:mswraeyk-53t0"
+    },
+    "coder": {
+      "pane_id": "w2:pH2",
+      "label": "apnea:coder:mswrdb4m-kr82"
+    }
+  },
+  "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
+  "reviewer_tree_fingerprint": null,
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": ".apnea/artifacts/phase-01/round-1/code-review.md"
+}

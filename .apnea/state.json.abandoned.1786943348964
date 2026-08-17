@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "slug": "music-session-vlc-fresh",
+  "step": "coding",
+  "phase_index": 1,
+  "phase_count_hint": null,
+  "rounds": {
+    "plan_review": 1,
+    "phase-01/code_review": 1
+  },
+  "vcs": "jj",
+  "allow_dirty": true,
+  "goal": "Complete final live certification and pr-description.md for the verified shared Effect v4 music-session migration. Do not push or open a PR. Phase 1 uses the currently selected VLC source and media-control only. No Music.app, AppleScript, app-specific database IDs, or bundle rejection. Prove selected media identity stability, direct toggle controllability, exact original playing-state restoration, exact isolated OpenCode 0.0.0-next-17386 checkout entry, exact Pi 0.84.0 checkout extension, shared UI state, controls both directions, Pi reload continuity via current-output polling, Pi exit isolation, post-Pi OpenCode control, normal exits, owned cleanup, protected existing daemon PID/generation/socket continuity, and no product diff. Allow unrelated peer churn; never signal or clean unrelated clients or daemon. Coder is authorized to operate Herdr regular panes. Phase 2 writes pr-description.md. Preserve verified commits and unrelated Apnea records. Use self-contained commit checks, Pi profiles, regular panes, jj squash, Effect v4, and never edit .apnea/state.json manually.",
+  "last_error": null,
+  "pending_artifact": null,
+  "pending_role": null,
+  "pending_pane_id": null,
+  "pending_pane_label": null,
+  "pending_floating_exit": null,
+  "pending_started_at": null,
+  "pending_deadline_ms": null,
+  "pending_nudged_at": null,
+  "pending_final_grace": false,
+  "pending_extended": false,
+  "role_panes": {
+    "planner": {
+      "pane_id": "w2:pH5",
+      "label": "apnea:planner:mswrp4sa-l281"
+    },
+    "reviewer": {
+      "pane_id": "w2:pH6",
+      "label": "apnea:reviewer:mswruako-w2tm"
+    }
+  },
+  "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",
+  "reviewer_tree_fingerprint": null,
+  "current_phase_package": ".apnea/artifacts/phase-01/round-1/phase-package.md",
+  "current_code_review": null
+}
