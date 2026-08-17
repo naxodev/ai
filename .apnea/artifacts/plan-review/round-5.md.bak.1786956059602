@@ -1,8 +1,0 @@
----
-status: done
-verdict: APPROVED
----
-
-# Findings
-
-No blocking findings. The plan now implements the required stable Pi group-leader signature and exact-PID peer proof, replaces `/exit` with the guarded clean-search `System / Exit` command-palette flow, and retains coherent vertical phases with acceptance checks and concrete verify commands.

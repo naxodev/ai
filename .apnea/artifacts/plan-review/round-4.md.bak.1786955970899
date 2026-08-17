@@ -1,8 +1,0 @@
----
-status: done
-verdict: APPROVED
----
-
-## Findings
-
-No blocking findings. The plan now uses guarded `escape` then one `ctrl+d` for OpenCode shutdown, forbids palette Exit and `/exit`, retains the required shell/host/group polling, and provides coherent vertical phases with acceptance checks and sane verification procedures.

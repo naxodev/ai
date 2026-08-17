@@ -1,8 +1,0 @@
----
-status: done
-verdict: APPROVED
----
-
-## Findings
-
-No findings. The round-1 recovery-path issue is resolved, and both phases have coherent scope, acceptance checks, and sane verification commands.
