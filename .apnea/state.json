@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "slug": "music-session-pr-description-only",
+  "slug": "music-session-complete",
   "step": "committing",
   "phase_index": 1,
   "phase_count_hint": null,
@@ -10,7 +10,7 @@
   },
   "vcs": "jj",
   "allow_dirty": true,
-  "goal": "Create the final pr-description.md artifact for the completed shared Effect v4 music-session migration, then finish. The implementation, full bun run check, pinned packed OpenCode/Pi smokes, and real mixed-host VLC certification are already approved and verified. Read the actual jj diff and history against the appropriate base, scan recent merged PR titles, and write reviewer-oriented PR content with a Conventional Commit title, two-sentence TL;DR, files-to-review table with a start point, architecture/how, non-obvious reviewer notes, and exact tests. Do not mention workflow tooling, agents, or generated artifacts. Do not push or open a PR. Preserve all code and Apnea records; only create/update pr-description.md. Use self-contained verify commands, jj, Pi profiles, regular panes, and never edit .apnea/state.json manually.",
+  "goal": "One final phase only: validate the existing approved pr-description.md against the actual jj implementation diff and finish the run. Do not rewrite product code or the approved artifact unless a factual error exists. Verify its title, two-sentence TL;DR, files table, architecture, reviewer notes, tests, no prohibited attribution/workflow references, and product-tree preservation. The phase package must use independent self-contained one-line verify commands with no shared variables or multiline shell constructs. After approval the orchestrator will run apnea commit --done. Do not create any further phase. Do not push or open a PR. Preserve verified commits and Apnea records; never edit .apnea/state.json manually.",
   "last_error": null,
   "pending_artifact": null,
   "pending_role": null,
@@ -24,16 +24,16 @@
   "pending_extended": false,
   "role_panes": {
     "planner": {
-      "pane_id": "w2:pMZ",
-      "label": "apnea:planner:mswzylxl-v3lq"
+      "pane_id": "w2:pN3",
+      "label": "apnea:planner:msx0p23f-o6gx"
     },
     "reviewer": {
-      "pane_id": "w2:pMY",
-      "label": "apnea:reviewer:mswzw2x7-dxrh"
+      "pane_id": "w2:pN2",
+      "label": "apnea:reviewer:msx0ms9w-lujz"
     },
     "coder": {
-      "pane_id": "w2:pM0",
-      "label": "apnea:coder:msx05t3k-ig57"
+      "pane_id": "w2:pN4",
+      "label": "apnea:coder:msx0vjls-ba95"
     }
   },
   "package_root": "/Users/nachovazquez/work/1-projects/naxodev/pi-apnea",

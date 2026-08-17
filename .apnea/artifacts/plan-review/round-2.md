@@ -3,10 +3,10 @@ status: done
 verdict: CHANGES_REQUIRED
 ---
 
-# Findings
+## Findings
 
-## High
+### High — Product-tree preservation remains under-verified
 
-1. **The prohibited destructive verification command remains.** The cleanup still runs `rm -rf "$GUARD"`, contrary to the reviewer brief’s explicit requirement that verify commands not use `rm -rf`. Replace it with a guarded, non-forced cleanup after proving the path is the expected temporary directory.
+The plan still checks `eec2b96b..@` only for `.prettierignore`, `README.md`, `bun.lock`, `docs`, and `packages`. Changes or additions at any other product path would therefore pass despite the acceptance criterion and definition of done requiring the complete product tree to remain unchanged. `git diff --check` only detects malformed whitespace; it does not require an empty diff.
 
-2. **The artifact and hygiene checks remain non-self-contained.** The plan still provides no literal value for `PR_DESCRIPTION`, and `GUARD` is exported in one shell block but required in another independently executed block. Name the exact `pr-description.md` repository path and make each verification command independently executable, or define one safe procedure that reliably preserves these values across the write step.
+Add an independent, self-contained one-line command that checks the complete repository diff from `eec2b96b` to `@`, permitting only orchestrator-managed `.apnea/**` paths and the conditionally editable `pr-description.md`. The current scoped equality command may remain as an implementation-baseline guard, but it cannot establish repository-wide preservation.
