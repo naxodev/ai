@@ -262,6 +262,49 @@ const closeServer = (server: net.Server, hooks: ServerLifecycleHooks) =>
     catch: (cause) => socketError("close", cause),
   })
 
+type SocketCloseWait = {
+  readonly closed: boolean
+  readonly destroyed: boolean
+  once(event: "close", listener: () => void): unknown
+  destroy(): unknown
+}
+
+/**
+ * Peer-visible close. `destroyed` can flip before `close` is emitted; only
+ * `socket.closed` or the `close` event mean the endpoint is finalized.
+ */
+export const whenSocketClosed = (socket: SocketCloseWait): Promise<void> =>
+  new Promise((resolve) => {
+    if (socket.closed) {
+      resolve()
+      return
+    }
+    socket.once("close", () => resolve())
+  })
+
+/** Destroy if needed, always arming `close` before destroy. */
+export const destroySocketAndWaitClosed = (
+  socket: SocketCloseWait,
+): Promise<void> =>
+  new Promise((resolve) => {
+    if (socket.closed) {
+      resolve()
+      return
+    }
+    socket.once("close", () => resolve())
+    if (!socket.destroyed) socket.destroy()
+  })
+
+const awaitSocketClosed = (socket: net.Socket) =>
+  Effect.promise(() => whenSocketClosed(socket))
+
+const destroyEnrolledSockets = (sockets: Iterable<net.Socket>) =>
+  Effect.promise(async () => {
+    await Promise.all(
+      [...sockets].map((socket) => destroySocketAndWaitClosed(socket)),
+    )
+  })
+
 type BoundPathIdentity = {
   readonly dev: number
   readonly ino: number
@@ -564,6 +607,9 @@ const connection = (
           socket.off("close", onClose)
           close()
         }).pipe(
+          // Wait for the exact socket end so pre-hello shutdown is peer-visible
+          // before the connection fiber reports finalized.
+          Effect.andThen(awaitSocketClosed(socket)),
           Effect.andThen(Queue.shutdown(input)),
           Effect.andThen(Queue.shutdown(completion)),
           Effect.andThen(Queue.shutdown(mandatory)),
@@ -1067,10 +1113,12 @@ const makeLayer = (
             // Stop application acceptance before any asynchronous teardown.
             active = false
             closing = true
-            yield* Effect.sync(() => {
-              invokeHook(hooks.onClosing)
-              for (const socket of sockets) socket.destroy()
-            })
+            // Destroy enrolled sockets and wait for each 'close' before draining
+            // fibers. Pre-hello peers must be peer-visible finalized exactly once
+            // so server.close and concurrent waiters cannot hang on half-open ends.
+            yield* Effect.sync(() => invokeHook(hooks.onClosing)).pipe(
+              Effect.andThen(destroyEnrolledSockets(sockets)),
+            )
             // A focused test can hold this finalizer while the real listener
             // remains live, then connect through Node's production callback.
             yield* hooks.awaitClosing ?? Effect.void

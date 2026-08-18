@@ -37,9 +37,11 @@ import {
   type CoordinatorProviderFixture,
 } from "../session/provider.ts"
 import {
+  destroySocketAndWaitClosed,
   layerWithHooks,
   MusicSessionServerService,
   startMusicSessionServer,
+  whenSocketClosed,
 } from "../session/server.ts"
 import { createMusicSessionClient } from "../session/client.ts"
 import {
@@ -262,6 +264,9 @@ const connected = (path: string) => {
     socket.once("error", onError)
   })
 }
+
+/** Peer-visible close; destroyed can flip before close is emitted. */
+const awaitClosed = (socket: net.Socket) => whenSocketClosed(socket)
 
 const frameReader = (socket: net.Socket) => {
   const framer = new NdjsonFramer()
@@ -771,7 +776,67 @@ test("scoped signal wait removes both handlers on interruption", async () => {
   expect(signals.listenerCount("SIGTERM")).toBe(0)
 })
 
+test("whenSocketClosed waits for close, not merely destroyed", async () => {
+  // Why: destroy() can flip destroyed before the peer-visible close lifecycle
+  // finishes. Shutdown must not treat destroyed as closed or waiters hang/races.
+  type FakeSocket = EventEmitter & {
+    closed: boolean
+    destroyed: boolean
+    destroy: () => void
+  }
+  const socket: FakeSocket = Object.assign(new EventEmitter(), {
+    closed: false,
+    destroyed: true,
+    destroy() {
+      throw new Error("destroy must not run when already destroyed")
+    },
+  })
+  let resolved = false
+  const done = whenSocketClosed(socket).then(() => {
+    resolved = true
+  })
+  await Promise.resolve()
+  expect(resolved).toBe(false)
+  expect(socket.destroyed).toBe(true)
+  expect(socket.closed).toBe(false)
+  socket.emit("close")
+  await done
+  expect(resolved).toBe(true)
+})
+
+test("destroySocketAndWaitClosed arms close before destroy", async () => {
+  // Why: arming close after destroy can miss a synchronous close and hang drain.
+  const order: string[] = []
+  type FakeSocket = EventEmitter & {
+    closed: boolean
+    destroyed: boolean
+    destroy: () => void
+  }
+  const socket: FakeSocket = Object.assign(new EventEmitter(), {
+    closed: false,
+    destroyed: false,
+    destroy(this: FakeSocket) {
+      order.push("destroy")
+      this.destroyed = true
+      // close may fire in the same turn as destroy
+      queueMicrotask(() => {
+        this.closed = true
+        this.emit("close")
+        order.push("close")
+      })
+    },
+  })
+  const done = destroySocketAndWaitClosed(socket)
+  expect(order).toEqual(["destroy"])
+  await done
+  expect(order).toEqual(["destroy", "close"])
+  expect(socket.closed).toBe(true)
+})
+
 test("server shutdown exactly finalizes a pre-hello connection and graph", async () => {
+  // Why: a raw pre-hello peer must be destroyed exactly once with the graph.
+  // Server-side destroy is not enough to observe — the client socket's close
+  // is the peer-visible finalization signal under load on Linux/Windows.
   const path = socketPath("stalled")
   const provider = createFakeProvider()
   const counts = {
@@ -802,8 +867,11 @@ test("server shutdown exactly finalizes a pre-hello connection and graph", async
       },
     })
     socket = await connected(path)
+    const peerClosed = awaitClosed(socket)
     await server.close()
+    // Idempotent second close must not double-finalize hooks or hang.
     await server.close()
+    await peerClosed
     expect(socket.destroyed).toBe(true)
     expect(existsSync(path)).toBe(false)
     expect(counts).toEqual({
