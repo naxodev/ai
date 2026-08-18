@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   rename,
   readFile,
   readdir,
@@ -52,11 +53,11 @@ import {
   Scope,
 } from "effect"
 import { TestClock } from "effect/testing"
-import {
-  type ArtworkResult,
-  type ProviderStatus,
-  type RevisionedState,
-  type TransportResult,
+import type {
+  ArtworkResult,
+  ProviderStatus,
+  RevisionedState,
+  TransportResult,
 } from "../session/protocol.ts"
 import {
   createFakeProvider,
@@ -1615,6 +1616,10 @@ test("managed runtime rejects non-directory and simulated foreign-owned roots wi
 })
 
 test("exclusive startup marker lease has one winner and preserves replacements", async () => {
+  // Why: singleton ownership is filesystem-exclusive. Concurrent acquirers must
+  // collapse to one lease, and a replaced generation must stay foreign to the
+  // old lease so release cannot delete a successor's marker (even when Linux
+  // recycles the inode number after unlink+create).
   const root = await mkdtemp("/tmp/music-session-lease-")
   try {
     const runtime = resolveMusicSessionRuntimePaths({
@@ -1632,7 +1637,7 @@ test("exclusive startup marker lease has one winner and preserves replacements",
     expect(leases.filter((result) => result.type === "contended")).toHaveLength(
       19,
     )
-    const before = await lstat(runtime.markerPath)
+    const firstToken = acquired[0]!.lease.attemptToken
     await acquired[0]!.lease.release()
     await acquired[0]!.lease.release()
     await expect(lstat(runtime.markerPath)).rejects.toMatchObject({
@@ -1641,33 +1646,44 @@ test("exclusive startup marker lease has one winner and preserves replacements",
 
     const replacement = await acquireStartupMarkerLease(runtime)
     if (replacement.type !== "acquired") throw new Error("lease contention")
-    await rm(runtime.markerPath)
-    await writeFile(
-      runtime.markerPath,
-      JSON.stringify({
-        version: 1,
-        uid: runtime.uid,
-        pid: process.pid,
-        attemptToken: replacement.lease.attemptToken,
-      }),
-      { mode: 0o600 },
-    )
-    await chmod(runtime.markerPath, 0o600)
-    const replacementDiscovery = await discoverMusicSession({
-      runtime,
-      ownedLease: replacement.lease,
-      clientId: "replacement",
-      hostKind: "test",
-    })
-    expect(replacementDiscovery.type).toBe("starting")
-    await expect(replacement.lease.release()).rejects.toBeInstanceOf(
-      MusicSessionRuntimeError,
-    )
-    const after = await lstat(runtime.markerPath)
-    expect(before.ino).not.toBe(after.ino)
-    expect(await readFile(runtime.markerPath, "utf8")).toContain(
-      replacement.lease.attemptToken,
-    )
+    const ownedToken = replacement.lease.attemptToken
+    // Hold the owned inode open so unlink+create cannot recycle it. The
+    // successor generation must remain a distinct identity even on Linux.
+    const heldInode = await open(runtime.markerPath, "r")
+    try {
+      await rm(runtime.markerPath)
+      const foreignToken = `foreign-${randomUUID()}`
+      await writeFile(
+        runtime.markerPath,
+        JSON.stringify({
+          version: 1,
+          uid: runtime.uid,
+          pid: process.pid,
+          attemptToken: foreignToken,
+        }),
+        { mode: 0o600 },
+      )
+      await chmod(runtime.markerPath, 0o600)
+      // Discovery with the old lease must treat the live foreign marker as
+      // starting, never as owned/missing: waiters converge on the successor.
+      const replacementDiscovery = await discoverMusicSession({
+        runtime,
+        ownedLease: replacement.lease,
+        clientId: "replacement",
+        hostKind: "test",
+      })
+      expect(replacementDiscovery.type).toBe("starting")
+      await expect(replacement.lease.release()).rejects.toBeInstanceOf(
+        MusicSessionRuntimeError,
+      )
+      const markerBody = await readFile(runtime.markerPath, "utf8")
+      expect(markerBody).toContain(foreignToken)
+      expect(markerBody).not.toContain(ownedToken)
+      expect(markerBody).not.toContain(firstToken)
+      expect(existsSync(runtime.markerPath)).toBe(true)
+    } finally {
+      await heldInode.close()
+    }
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -2037,6 +2053,10 @@ test("returned managed client does not relaunch after live server loss", async (
 })
 
 test("20 concurrent managed callers converge on one selected graph", async () => {
+  // Why: cross-host clients must share one daemon generation. A waiter that
+  // inspects before the socket exists and revalidates after bind must keep
+  // waiting (starting), not die as occupied — otherwise OpenCode/Pi cannot
+  // converge under concurrent connect-or-start.
   const root = await mkdtemp("/tmp/music-session-convergence-")
   const runtime = resolveMusicSessionRuntimePaths({
     root,
@@ -2055,7 +2075,7 @@ test("20 concurrent managed callers converge on one selected graph", async () =>
           runtime,
           clientId: `concurrent-${index}`,
           hostKind: index % 2 === 0 ? "opencode" : "pi",
-          startup: { attempts: 8, initialDelayMs: 10, maxDelayMs: 40 },
+          startup: { attempts: 12, initialDelayMs: 5, maxDelayMs: 40 },
           launcher: async () => {
             launches++
             server = await startMusicSessionServer({ runtime }, provider, {
@@ -2112,6 +2132,79 @@ test("20 concurrent managed callers converge on one selected graph", async () =>
   } finally {
     for (const client of clients) client.dispose()
     await server?.close().catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("discovery keeps waiting when a live marker's socket appears mid-probe", async () => {
+  // Why: concurrent connect-or-start waiters often inspect while only the
+  // startup marker exists. If the winner binds the socket between inspect and
+  // revalidation, classifying that as occupied would kill waiters that should
+  // converge on the single generation.
+  const root = await mkdtemp("/tmp/music-session-socket-appears-")
+  let server: net.Server | undefined
+  try {
+    const uid = process.getuid?.() ?? -1
+    const base = resolveMusicSessionRuntimePaths({ root, uid })
+    await Effect.runPromise(prepareManagedRuntimeDirectory(base))
+    await writeFile(
+      base.markerPath,
+      JSON.stringify({
+        version: 1,
+        uid,
+        pid: process.pid,
+        attemptToken: "live-start",
+      }),
+      { mode: 0o600 },
+    )
+    await chmod(base.markerPath, 0o600)
+    let socketStats = 0
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid,
+      dependencies: {
+        lstat: (async (path) => {
+          if (path === base.socketPath) {
+            socketStats++
+            // After the initial endpoint inspect misses the socket, bind it so
+            // the absent() revalidation observes a newly appeared endpoint.
+            if (socketStats === 1) {
+              try {
+                await lstat(path)
+              } catch (cause: unknown) {
+                if (
+                  typeof cause === "object" &&
+                  cause !== null &&
+                  "code" in cause &&
+                  cause.code === "ENOENT"
+                ) {
+                  server = net.createServer((socket) => socket.destroy())
+                  await new Promise<void>((resolve, reject) => {
+                    server!.once("error", reject)
+                    server!.listen(base.socketPath, resolve)
+                  })
+                  await chmod(base.socketPath, 0o600)
+                }
+                throw cause
+              }
+            }
+          }
+          return lstat(path)
+        }) as typeof lstat,
+      },
+    })
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "socket-appears",
+      hostKind: "test",
+    })
+    expect(found.type).toBe("starting")
+    expect(existsSync(base.markerPath)).toBe(true)
+    expect(existsSync(base.socketPath)).toBe(true)
+  } finally {
+    await new Promise<void>(
+      (resolve) => server?.close(() => resolve()) ?? resolve(),
+    )
     await rm(root, { recursive: true, force: true })
   }
 })
@@ -3281,27 +3374,37 @@ test("reset classification fails closed when endpoint or marker changes during i
         server!.listen(base.socketPath, resolve)
       })
       await chmod(base.socketPath, 0o600)
-      const originalSocket = await lstat(base.socketPath)
-      const originalMarker = await lstat(base.markerPath)
-      const found = await discoverMusicSession({
-        runtime,
-        clientId: `reset-replaced-${artifact}`,
-        hostKind: "test",
-      })
-      expect(found).toEqual({ type: "occupied" })
-      expect(replaced).toBe(true)
-      const socket = await lstat(base.socketPath)
-      const marker = await lstat(base.markerPath)
-      if (artifact === "endpoint")
-        expect([socket.dev, socket.ino]).not.toEqual([
-          originalSocket.dev,
-          originalSocket.ino,
-        ])
-      else
-        expect([marker.dev, marker.ino]).not.toEqual([
-          originalMarker.dev,
-          originalMarker.ino,
-        ])
+      // Hold original inodes open so replacement cannot recycle them on Linux.
+      // Fail-closed classification keys off identity change, not path reuse.
+      const heldSocket = await open(base.socketPath, "r").catch(() => undefined)
+      const heldMarker = await open(base.markerPath, "r")
+      try {
+        const found = await discoverMusicSession({
+          runtime,
+          clientId: `reset-replaced-${artifact}`,
+          hostKind: "test",
+        })
+        // Why: a reset is waitable only for the exact pre-hello generation. If
+        // the endpoint or marker is replaced mid-inspection, fail closed as
+        // occupied so a foreign peer never inherits waiting authority.
+        expect(found).toEqual({ type: "occupied" })
+        expect(replaced).toBe(true)
+        if (artifact === "marker") {
+          expect(await readFile(base.markerPath, "utf8")).toContain(
+            "replacement",
+          )
+          expect(await readFile(base.markerPath, "utf8")).not.toContain(
+            '"attemptToken":"original"',
+          )
+        } else {
+          // Endpoint was swapped for a stale unbound socket path; original
+          // live listener is gone.
+          expect(existsSync(base.socketPath)).toBe(true)
+        }
+      } finally {
+        await heldSocket?.close().catch(() => {})
+        await heldMarker.close().catch(() => {})
+      }
     } finally {
       await new Promise<void>(
         (resolve) => server?.close(() => resolve()) ?? resolve(),

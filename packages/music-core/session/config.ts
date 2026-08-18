@@ -1004,7 +1004,14 @@ export class ManagedRuntimeProbe {
         this.#paths.socketPath,
         "runtime socket changed during discovery",
       )
-    if (!socket && inspected.socket) return { type: "occupied" }
+    // A socket can appear after the initial inspect while a live startup
+    // marker still owns the generation. Concurrent waiters must treat that as
+    // starting and retry the connect, not as a foreign occupied peer. Only an
+    // endpoint that appears with no live marker is unclassifiable.
+    if (!socket && inspected.socket) {
+      if (inspected.marker && !inspected.deadMarker) return { type: "starting" }
+      return { type: "occupied" }
+    }
     if (inspected.marker && !inspected.deadMarker) return { type: "starting" }
     const proofs = [inspected.socket, inspected.marker].filter(
       (proof): proof is ArtifactProof => proof !== undefined,
