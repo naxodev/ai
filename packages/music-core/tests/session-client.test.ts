@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test"
+import { expect, test as baseTest } from "bun:test"
+import { createSessionTest, type SessionTestFn } from "./unix-session.ts"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import {
@@ -63,6 +64,84 @@ import {
   createFakeProvider,
   startMusicSessionServer,
 } from "../session/server.ts"
+
+const test: SessionTestFn = createSessionTest(
+  baseTest,
+  new Set([
+    "TestClock startup retries are immediate, paced, bounded, and interruptible",
+    "explicit terminal observation replays one retained retryable loss",
+    "explicit artwork requests correlate independently and settle disposed work",
+    "explicit artwork requests report connection loss rather than command indeterminacy",
+    "reconnecting artwork is delegated once and never replayed after loss",
+    "reconnecting artwork fences a late completion after managed disposal",
+    "reconnecting disposal disposes a late Promise discovery client",
+    "reconnecting disposal owns a client that loses the reservation-to-adoption race",
+    "reconnecting disposal is one completion through a reentrant listener",
+    "reconnecting disposal owns a healthy client while cleanup is interrupted",
+    "reconnecting fences late A callbacks and replays retained listeners",
+    "reconnecting replacement incompatibility retains its terminal range once",
+    "reconnecting preserves runtime failures instead of disguising them",
+    "reconnecting disposal interrupts a TestClock replacement sleep",
+    "reconnecting uses the bounded Phase 3 schedule without a busy loop",
+    "managed runtime resolver and preparation keep a compact owner-only layout",
+    "managed runtime rejects wrong-mode and symlinked roots without repair",
+    "managed discovery rejects unsafe socket artifacts without connecting or removing them",
+    "managed runtime rejects non-directory and simulated foreign-owned roots without repair",
+    "exclusive startup marker lease has one winner and preserves replacements",
+    "connect-or-start acquires one marker, launches once, and returns a hello client",
+    "reconnecting client adopts one replacement generation without replay",
+    "reconnecting client adopts B only after A genuinely idles out",
+    "reconnecting before A's idle grace keeps the same generation",
+    "returned managed client does not relaunch after live server loss",
+    "20 concurrent managed callers converge on one selected graph",
+    "discovery keeps waiting when a live marker's socket appears mid-probe",
+    "marker release failure disposes a successful client and remains observable",
+    "owned daemon readiness closes the transient hello-reset window",
+    "a managed child early exit reaches acquisition without becoming timeout",
+    "a peer remains terminal occupied after the launched daemon is ready",
+    "marker is released after startup timeout and interruption",
+    "launcher rejection releases its owned marker",
+    "primary startup failure remains primary when marker release fails",
+    "workflow marker release does not remove a replacement marker",
+    "incompatible managed startup is terminal after marker acquisition",
+    "TestClock waiting startup stops at an incompatible healthy generation",
+    "incompatible managed startup is terminal before marker acquisition",
+    "managed marker EPERM process checks stay conservative through the seam",
+    "invalid managed markers fail closed and remain untouched",
+    "dead managed marker grants guarded idempotent cleanup",
+    "unknown marker process errors remain starting without cleanup",
+    "refused socket disappearance after the connection attempt is missing without cleanup authority",
+    "refused managed socket yields guarded idempotent stale cleanup",
+    "stale cleanup refuses a replacement artifact",
+    "simulated foreign socket and marker ownership fail closed without cleanup",
+    "malformed and reset managed peers stay occupied without cleanup",
+    "a retryable reset with a live startup marker remains starting",
+    "terminal reset and malformed peers do not borrow live-marker authority",
+    "reset classification fails closed when endpoint or marker changes during inspection",
+    "reset classification rejects an in-place marker generation rewrite",
+    "managed discovery returns a handshaken healthy client",
+    "managed discovery preserves a live incompatible daemon generation",
+    "healthy discovery grants cleanup only for a separately proven dead marker",
+    "healthy discovery wins over an untrusted startup marker",
+    "a valid live startup marker is starting and grants no cleanup",
+    "a live marker cannot mask unsafe socket type or ownership",
+    "malformed negotiated hello result fails once and destroys the socket",
+    "hello failure response and malformed frame destroy the client socket",
+    "impossible negotiated capabilities destroy the client socket",
+    "out-of-order transport responses settle only their matching command",
+    "unsolicited and duplicate responses cannot settle later requests",
+    "typed command failures are request-local and disposal is terminal",
+    "state authority and listener isolation retain only ordered daemon snapshots",
+    "connection loss races leave every admitted command indeterminate without replay",
+    "malformed transport success terminates only after indeterminate settlement",
+    "active malformed daemon data terminates once without publishing late frames",
+    "disposal wins first and suppresses late daemon callbacks",
+    "split and multiple status frames isolate listeners and retain command use",
+    "hello chunk status survives the active-reader transition",
+    "explicit client bounds pending requests and recovers after settlement",
+    "explicit client exposes current negotiated revision and capabilities",
+  ]),
+)
 
 test("startup timing resolves through the tagged config boundary", async () => {
   await expect(
@@ -1261,7 +1340,7 @@ test("managed launcher uses detached packaged entry and releases its child handl
     | undefined
   const runtime = resolveMusicSessionRuntimePaths({
     root: "/tmp",
-    uid: process.getuid?.() ?? -1,
+    uid: 1000,
   })
   const launched = launchManagedMusicSessionDaemon(runtime, {
     entry: () => "/absolute/music-sessiond.js",
@@ -1288,8 +1367,10 @@ test("managed launcher uses detached packaged entry and releases its child handl
   await Promise.resolve()
   listeners.get("spawn")?.()
   await launched
+  // Production selects the daemon runtime through the same seam hosts use.
+  // On embedded Bun (OpenCode/Windows CI) that may be "node", not execPath.
   expect(invocation).toEqual({
-    command: process.execPath,
+    command: resolveMusicSessionDaemonRuntime(),
     args: ["/absolute/music-sessiond.js"],
     options: {
       detached: true,
@@ -1334,7 +1415,7 @@ test("managed launcher retains bounded daemon diagnostics for early exit", async
   const child = new Child()
   const runtime = resolveMusicSessionRuntimePaths({
     root: "/tmp",
-    uid: process.getuid?.() ?? -1,
+    uid: 1000,
   })
   const launched = launchManagedMusicSessionDaemon(runtime, {
     entry: () => "/absolute/music-sessiond.js",
@@ -1386,7 +1467,7 @@ test("managed launcher truncates diagnostics on a valid UTF-8 boundary", async (
   const child = new Child()
   const runtime = resolveMusicSessionRuntimePaths({
     root: "/tmp",
-    uid: process.getuid?.() ?? -1,
+    uid: 1000,
   })
   const launched = launchManagedMusicSessionDaemon(runtime, {
     entry: () => "/absolute/music-sessiond.js",
@@ -1417,7 +1498,7 @@ test("managed launcher recognizes readiness only after a split complete line", a
   const child = new Child()
   const runtime = resolveMusicSessionRuntimePaths({
     root: "/tmp",
-    uid: process.getuid?.() ?? -1,
+    uid: 1000,
   })
   const launched = launchManagedMusicSessionDaemon(runtime, {
     entry: () => "/absolute/music-sessiond.js",
@@ -1439,7 +1520,7 @@ test("managed launcher recognizes readiness only after a split complete line", a
 test("managed launcher reports synchronous and initial spawn failures", async () => {
   const runtime = resolveMusicSessionRuntimePaths({
     root: "/tmp",
-    uid: process.getuid?.() ?? -1,
+    uid: 1000,
   })
   await expect(
     launchManagedMusicSessionDaemon(runtime, {

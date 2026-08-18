@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test"
+import { expect, test as baseTest } from "bun:test"
+import { createSessionTest, type SessionTestFn } from "./unix-session.ts"
 import { existsSync } from "node:fs"
 import {
   chmod,
@@ -50,6 +51,61 @@ import {
 } from "../session/music-sessiond.ts"
 import { NdjsonFramer } from "../session/framing.ts"
 import { LEGACY_PROTOCOL, PROTOCOL } from "../session/protocol.ts"
+
+const test: SessionTestFn = createSessionTest(
+  baseTest,
+  new Set([
+    "managed server owns only its bound owner-only socket",
+    "post-bind hardening failure closes and removes only the partial managed socket",
+    "second managed server leaves the first endpoint unchanged and connectable",
+    "managed shutdown retains a replacement bound path",
+    "legacy and current peers share replay and live updates",
+    "incompatible and state-only peers do not disturb a healthy session",
+    "server shutdown exactly finalizes a pre-hello connection and graph",
+    "server close interrupts post-hello forwarding before late provider events",
+    "partial-frame disconnect exactly finalizes input and connection while listener stays healthy",
+    "natural malformed-client disconnect leaves the listener healthy",
+    "correlates an invalid request without closing the listener",
+    "socket defects are observed while a healthy peer remains live",
+    "throwing enrollment seam still destroys the accepted socket",
+    "acceptance during actual server shutdown is enrolled then finalized",
+    "production closing refusal destroys a real listener connection",
+    "Node acceptance rejected before enrollment destroys the exact socket",
+    "an occupied path reports listen failure without disrupting its owner",
+    "a dead exact bind reservation is reclaimed before binding",
+    "simultaneous daemon bind contenders retain one provider owner",
+    "process daemon contenders retain one winner and a non-interfering loser",
+    "one graph replays hello, status, and state to both clients",
+    "a disconnected peer does not stop another client's replay",
+    "post-bind listener faults reach the Promise facade",
+    "close failure remains typed after real cleanup and is memoized",
+    "multiple cleanup failures retain both tagged operations",
+    "unlink failures are typed after listener cleanup and ENOENT is tolerated",
+    "executable composes one real graph for managed default and explicit sockets",
+    "executable exits cleanly after its initial no-client idle grace",
+    "executable reports actual unsafe managed-runtime preparation with nonzero status",
+    "executable reports cleanup failure with nonzero status after SIGTERM",
+    "direct Layer owners join tagged cleanup in one outer program",
+    "server close interrupts blocked coordinator sampling and finalizes ownership",
+    "selected graph shutdown interrupts blocked coordinator work before draining connections",
+    "two socket admissions retain FIFO order while the first transport blocks",
+    "mixed-host Pi and OpenCode clients share FIFO and survive Pi reload",
+    "idle grace tracks negotiated clients, cancels, restarts, and expires once",
+    "signal and server defects take foreground precedence over idle expiry",
+    "post-join interruption publishes one matching idle leave",
+    "pre-hello and rejected hello sockets cannot pin idle shutdown",
+    "inbound frame burst overflow closes only the abusive connection",
+    "inbound chunk overflow during a blocked request stays local",
+    "oversized provider state is contained without taking down its selected graph",
+    "24 alternating clients share one selected provider and fan out updates",
+    "a paused reader backpressures locally while 23 clients keep receiving state",
+    "real clients retain global FIFO and recover after command-lane overflow",
+    "artwork is capability-negotiated, authoritative, and cached per recording",
+    "real artwork responses contain exact, oversized, and malformed provider payloads",
+    "blocked artwork remains isolated, shared, retryable, and connection-local",
+    "two clients share the daemon command lane",
+  ]),
+)
 
 const socketPath = (name: string) =>
   `/tmp/music-session-${name}-${process.pid}-${randomUUID()}.sock`
