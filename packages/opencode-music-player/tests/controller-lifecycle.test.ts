@@ -1,302 +1,177 @@
-import { expect, spyOn, test } from "bun:test"
-import { testRender } from "@opentui/solid"
+import { expect, test } from "bun:test"
 import { createController } from "../index.tsx"
-import { CompactPlayer } from "../ui.tsx"
+import { createSessionSystemMedia } from "../system-media.ts"
 
-const player = (id: string) => ({
-  track: {
-    id,
-    name: id,
-    artists: "Artist",
-    album: "Album",
-    duration_ms: 1000,
-    artwork: null,
-  },
-  is_playing: true,
-  progress_ms: 0,
-  fetched_at: Date.now(),
-})
+const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
+}
+const flush = () => Promise.resolve().then(() => Promise.resolve())
 
-const theme = {
-  text: {
-    default: "white",
-    subdued: "gray",
-    action: { primary: { default: "blue" } },
-    feedback: { error: { default: "red" } },
-  },
-  border: { default: "gray" },
-  background: {
-    surface: { offset: "black" },
-    action: { primary: { default: "black" } },
-  },
+function context() {
+  const session = { loading: false, error: null, player: null as any }
+  const toasts: unknown[] = []
+  return {
+    session,
+    toasts,
+    context: {
+      storage: {
+        memory: () => [
+          session,
+          (update: (draft: typeof session) => void) => update(session),
+        ],
+      },
+      ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
+    },
+  }
 }
 
-test("a completed poll leaves one timeout and view mounts schedule none", async () => {
-  let reads = 0
-  let nextTimer = 0
-  const pending = new Map<number, () => void>()
-  const cleared: number[] = []
-  const session = { loading: false, error: null, player: null as any }
-  const context = {
-    storage: {
-      memory: () => [
-        session,
-        (update: (state: typeof session) => void) => update(session),
-      ],
+function client(name: string) {
+  const listeners = new Set<(state: any) => void>()
+  const connectionListeners = new Set<(connection: any) => void>()
+  const state = {
+    daemonInstanceId: name,
+    revision: 1,
+    state: {
+      is_playing: false,
+      progress_ms: 0,
+      shuffle: false,
+      repeat: "off",
+      device: null,
+      fetched_at: 1,
+      track: {
+        id: name,
+        uri: `system:${name}`,
+        name,
+        artists: "Artist",
+        album: "Album",
+        duration_ms: 180_000,
+      },
     },
-    ui: { toast: { show: () => {} } },
-    theme,
   }
-  const controller = createController(context as any, {
-    createBackend: () =>
-      ({
-        player: async () => player(`read-${++reads}`),
-      }) as any,
-    scheduleTimeout: ((callback: () => void) => {
-      const timer = ++nextTimer
-      pending.set(timer, callback)
-      return timer
-    }) as any,
-    clearScheduledTimeout: ((timer: number) => {
-      cleared.push(timer)
-      pending.delete(timer)
-    }) as any,
-    delay: async () => {},
-  })
-
-  await controller.refreshAll()
-  expect(pending.size).toBe(1)
-  const [timer, runPoll] = pending.entries().next().value!
-  pending.delete(timer)
-  runPoll()
-  await Promise.resolve()
-  await Promise.resolve()
-  expect(reads).toBe(3)
-  expect(pending.size).toBe(1)
-
-  const compact = await testRender(
-    () =>
-      CompactPlayer({
-        context: context as any,
-        state: session,
-        onPlayPause: () => {},
-        onSeek: () => {},
-      }),
-    { width: 40, height: 4 },
-  )
-  expect(pending.size).toBe(1)
-  expect(nextTimer).toBe(2)
-
-  compact.renderer.destroy()
-  controller.dispose()
-  expect(cleared).toEqual([2])
-  expect(pending.size).toBe(0)
-})
-
-test("disposal clears the sole poll and ignores an in-flight refresh", async () => {
-  let resolvePlayer: ((value: unknown) => void) | undefined
-  let reads = 0
-  const scheduled: Array<() => void> = []
-  const cleared: number[] = []
-  const session = { loading: false, error: null, player: null as any }
-  const context = {
-    storage: {
-      memory: () => [
-        session,
-        (update: (state: typeof session) => void) => update(session),
-      ],
+  const value: any = {
+    daemonInstanceId: name,
+    selectedRevision: 1,
+    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
+    state,
+    status: { kind: "ready", provider: "media", message: "ready" },
+    connection: { type: "connected", daemonInstanceId: name },
+    disposals: 0,
+    gate: undefined as Promise<void> | undefined,
+    artworkGate: undefined as Promise<any> | undefined,
+    subscribeState(listener: (event: any) => void) {
+      listeners.add(listener)
+      listener(state)
+      return () => listeners.delete(listener)
     },
-    ui: { toast: { show: () => {} } },
+    subscribeStatus(listener: (event: any) => void) {
+      listener(this.status)
+      return () => {}
+    },
+    subscribeConnection(listener: (event: any) => void) {
+      connectionListeners.add(listener)
+      listener(this.connection)
+      return () => connectionListeners.delete(listener)
+    },
+    emitConnection(next: any) {
+      this.connection = next
+      for (const listener of [...connectionListeners]) listener(next)
+    },
+    emit(next: any) {
+      for (const listener of [...listeners]) listener(next)
+    },
+    async toggle() {
+      return { action: "toggle" as const }
+    },
+    async play() {
+      await this.gate
+      return { action: "play" as const }
+    },
+    async pause() {
+      return { action: "pause" as const }
+    },
+    async next() {
+      return { action: "next" as const }
+    },
+    async previous() {
+      return { action: "previous" as const }
+    },
+    async seek() {
+      return { action: "seek" as const }
+    },
+    async artwork() {
+      return this.artworkGate ?? { type: "unavailable" as const }
+    },
+    async dispose() {
+      this.disposals++
+    },
   }
+  return { value, listeners }
+}
 
-  const controller = createController(context as any, {
-    createBackend: () =>
-      ({
-        player: () => {
-          reads++
-          return new Promise((resolve) => {
-            resolvePlayer = resolve
-          })
-        },
-      }) as any,
-    scheduleTimeout: ((callback: () => void) => {
-      scheduled.push(callback)
-      return scheduled.length
-    }) as any,
-    clearScheduledTimeout: ((timer: number) => cleared.push(timer)) as any,
-    delay: async () => {},
+test("disposal before factory resolution releases the client without callbacks", async () => {
+  const late = deferred<any>()
+  const { context: host, session } = context()
+  const media = createSessionSystemMedia({ createClient: () => late.promise })
+  const controller = createController(host as any, {
+    createSessionMedia: () => media,
   })
-
-  expect(reads).toBe(1)
-  // No fallback poll competes with the provider sample already in flight.
-  expect(scheduled).toHaveLength(0)
   controller.dispose()
-  expect(cleared).toEqual([])
-
-  resolvePlayer?.({
-    track: { id: "late", name: "Late", artists: "Artist", duration_ms: 1 },
-    is_playing: true,
-    progress_ms: 0,
-    fetched_at: Date.now(),
-  })
-  await Promise.resolve()
-  await Promise.resolve()
-
+  const next = client("late").value
+  late.resolve(next)
+  await flush()
+  expect(next.disposals).toBe(1)
   expect(session.player).toBeNull()
-  expect(scheduled).toHaveLength(0)
 })
 
-test("disposal cancels command callers and suppresses late command work", async () => {
-  let rejectPlay: ((reason: unknown) => void) | undefined
-  let playCalls = 0
-  let nextCalls = 0
-  let coreDisposals = 0
-  let presentationDisposals = 0
-  const toasts: unknown[] = []
-  const session = {
-    loading: false,
-    error: null,
-    player: player("paused"),
-  }
-  session.player.is_playing = false
-  const context = {
-    storage: {
-      memory: () => [
-        session,
-        (update: (state: typeof session) => void) => update(session),
-      ],
-    },
-    ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
-  }
-  const controller = createController(context as any, {
-    createBackend: () =>
-      ({
-        player: async () => session.player,
-        play: () => {
-          playCalls++
-          return new Promise<void>((_resolve, reject) => {
-            rejectPlay = reject
-          })
-        },
-        next: async () => {
-          nextCalls++
-        },
-        subscribe: () => () => {
-          coreDisposals++
-        },
-        subscribePresentation: () => () => {
-          presentationDisposals++
-        },
-      }) as any,
-    scheduleTimeout: (() => 1) as any,
-    clearScheduledTimeout: (() => {}) as any,
-    delay: async () => {},
+test("disposal settles held work once and leaves another session client healthy", async () => {
+  const first = client("first")
+  const second = client("second")
+  const held = deferred<void>()
+  const heldArtwork = deferred<any>()
+  first.value.gate = held.promise
+  first.value.artworkGate = heldArtwork.promise
+  const firstHost = context()
+  const secondHost = context()
+  const create = (host: ReturnType<typeof context>, value: any) =>
+    createController(host.context as any, {
+      createSessionMedia: () =>
+        createSessionSystemMedia({
+          createClient: async () => value,
+          resolveArtworkDetails: async (_key, target) => ({
+            artwork: null,
+            duration_ms: target.duration_ms,
+          }),
+        }),
+    })
+  const controllerA = create(firstHost, first.value)
+  const controllerB = create(secondHost, second.value)
+  await flush()
+  const operation = controllerA.playPause()
+  controllerA.dispose()
+  controllerA.dispose()
+  await operation
+  held.resolve()
+  heldArtwork.resolve({ type: "available", base64: "late" })
+  first.value.emitConnection({
+    type: "reconnecting",
+    error: { message: "late", retryable: true },
   })
-  await controller.refreshAll()
-  const active = controller.playPause()
-  await Promise.resolve()
-  const queued = controller.next()
-
-  controller.dispose()
-  controller.dispose()
-  await Promise.all([active, queued])
-
-  expect(playCalls).toBe(1)
-  expect(nextCalls).toBe(0)
-  expect(session.loading).toBe(false)
-  expect(coreDisposals).toBe(1)
-  expect(presentationDisposals).toBe(1)
-
-  rejectPlay?.(new Error("late failure"))
-  await Promise.resolve()
-  await Promise.resolve()
-
-  expect(session.player.is_playing).toBe(false)
-  expect(toasts).toHaveLength(0)
-
-  await controller.next()
-  await controller.playPause()
-  expect(playCalls).toBe(1)
-  expect(nextCalls).toBe(0)
-})
-
-test("disposal before the deferred runner turn starts no backend command", async () => {
-  let plays = 0
-  const session = { loading: false, error: null, player: player("paused") }
-  session.player.is_playing = false
-  const context = {
-    storage: {
-      memory: () => [
-        session,
-        (update: (state: typeof session) => void) => update(session),
-      ],
-    },
-    ui: { toast: { show: () => {} } },
+  const update = {
+    ...second.value.state,
+    revision: 2,
+    state: { ...second.value.state.state, progress_ms: 99 },
   }
-  const controller = createController(context as any, {
-    createBackend: () =>
-      ({
-        player: async () => session.player,
-        play: async () => {
-          plays++
-        },
-      }) as any,
-    scheduleTimeout: (() => 1) as any,
-    clearScheduledTimeout: (() => {}) as any,
-    delay: async () => {},
-  })
-  await controller.refreshAll()
-
-  const command = controller.playPause()
-  controller.dispose()
-  await command
-  await Promise.resolve()
-
-  expect(plays).toBe(0)
-  expect(session.loading).toBe(false)
-})
-
-test("post-disposal openApp resolves before opening, toasting, delaying, or refreshing", async () => {
-  const session = { loading: false, error: null, player: null as any }
-  const toasts: unknown[] = []
-  let delayCalls = 0
-  let playerCalls = 0
-  const spawn = spyOn(Bun, "spawn").mockImplementation(() => undefined as never)
-  const context = {
-    storage: {
-      memory: () => [
-        session,
-        (update: (state: typeof session) => void) => update(session),
-      ],
-    },
-    ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
-  }
-  const controller = createController(context as any, {
-    createBackend: () =>
-      ({
-        player: async () => {
-          playerCalls++
-          return null
-        },
-      }) as any,
-    scheduleTimeout: (() => 1) as any,
-    clearScheduledTimeout: (() => {}) as any,
-    delay: async () => {
-      delayCalls++
-    },
-  })
-
-  try {
-    await Promise.resolve()
-    const initialPlayerCalls = playerCalls
-    controller.dispose()
-    await controller.openApp()
-
-    expect(spawn).not.toHaveBeenCalled()
-    expect(toasts).toHaveLength(0)
-    expect(delayCalls).toBe(0)
-    expect(playerCalls).toBe(initialPlayerCalls)
-  } finally {
-    spawn.mockRestore()
-  }
+  second.value.emit(update)
+  await flush()
+  expect(first.value.disposals).toBe(1)
+  expect(second.value.disposals).toBe(0)
+  expect(secondHost.session.player?.progress_ms).toBe(99)
+  expect(firstHost.toasts).toEqual([])
+  controllerB.dispose()
+  await flush()
+  expect(second.value.disposals).toBe(1)
 })

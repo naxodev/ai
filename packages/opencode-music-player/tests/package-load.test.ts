@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { createMusicPlayerPlugin } from "../index.tsx"
 import plugin from "../index.tsx"
+import { createSessionSystemMedia } from "../system-media.ts"
 
 type SlotName = "app" | "sidebar.content"
 type Slot = (props: any) => any
@@ -10,6 +11,118 @@ type SlotClaim = { append: SlotName; render: Slot }
 test("package entrypoint exports an OpenCode TUI plugin definition", () => {
   expect(plugin.id).toBe("music-player")
   expect(plugin.setup).toBeFunction()
+})
+
+test("production session adapter is shared by both slots and disposes only its client", async () => {
+  let backendFactories = 0
+  let clientFactories = 0
+  let disposals = 0
+  const slots = new Map<SlotName, Slot>()
+  const session = {
+    loading: false,
+    error: null as string | null,
+    player: null as any,
+  }
+  const client: any = {
+    daemonInstanceId: "daemon",
+    selectedRevision: 1,
+    negotiatedCapabilities: ["state-replay", "transport", "native-artwork"],
+    state: {
+      daemonInstanceId: "daemon",
+      revision: 1,
+      state: {
+        is_playing: false,
+        progress_ms: 0,
+        shuffle: false,
+        repeat: "off",
+        device: null,
+        fetched_at: 1,
+        track: null,
+      },
+    },
+    status: {
+      kind: "degraded",
+      provider: "nowplaying-cli",
+      message: "daemon fallback",
+    },
+    connection: { type: "connected", daemonInstanceId: "daemon" },
+    subscribeState(listener: (value: any) => void) {
+      listener(this.state)
+      return () => {}
+    },
+    subscribeStatus(listener: (value: any) => void) {
+      listener(this.status)
+      return () => {}
+    },
+    subscribeConnection(listener: (value: any) => void) {
+      listener(this.connection)
+      return () => {}
+    },
+    async toggle() {
+      return { action: "toggle" as const }
+    },
+    async play() {
+      return { action: "play" as const }
+    },
+    async pause() {
+      return { action: "pause" as const }
+    },
+    async next() {
+      return { action: "next" as const }
+    },
+    async previous() {
+      return { action: "previous" as const }
+    },
+    async seek() {
+      return { action: "seek" as const }
+    },
+    async artwork() {
+      return { type: "unavailable" as const }
+    },
+    async dispose() {
+      disposals++
+    },
+  }
+  const context = {
+    storage: {
+      memory: () => [
+        session,
+        (update: (draft: typeof session) => void) => update(session),
+      ],
+    },
+    ui: {
+      toast: { show: () => {} },
+      slot: (claim: SlotClaim) => {
+        slots.set(claim.append, claim.render)
+        return () => {}
+      },
+    },
+    keymap: { layer: () => {} },
+  }
+  const testPlugin = createMusicPlayerPlugin({
+    createSessionMedia: () => {
+      backendFactories++
+      return createSessionSystemMedia({
+        createClient: async () => {
+          clientFactories++
+          return client
+        },
+      })
+    },
+  })
+
+  const cleanup = await testPlugin.setup(context as any)
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(backendFactories).toBe(1)
+  expect(clientFactories).toBe(1)
+  expect([...slots.keys()]).toEqual(["app", "sidebar.content"])
+  expect(session.error).toBe("daemon fallback")
+  cleanup?.()
+  await Promise.resolve()
+  expect(disposals).toBe(1)
 })
 
 test("setup shares one session and persistent keymap across sidebar remounts", async () => {

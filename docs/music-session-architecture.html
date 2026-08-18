@@ -1,0 +1,1209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="A field guide to the process, state, concurrency, and scaling architecture of the OpenCode and Pi music plugins."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%2307121f'/%3E%3Cpath d='M18 42V18l28-6v25a10 10 0 1 1-5-8.7V20l-18 4v13a10 10 0 1 1-5-8.7V42Z' fill='%2352e5e7'/%3E%3C/svg%3E"
+    />
+    <title>Music session architecture field guide</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #07121f;
+        --ink-2: #0d1c2d;
+        --ink-3: #142a3d;
+        --paper: #f2eadc;
+        --paper-dim: #c9c1b5;
+        --cyan: #52e5e7;
+        --cyan-dim: #227c86;
+        --coral: #ff795f;
+        --yellow: #ffd166;
+        --line: #345065;
+        --max: 78rem;
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--paper);
+        background:
+          linear-gradient(90deg, rgb(82 229 231 / 0.035) 1px, transparent 1px) 0
+            0 / 2.5rem 2.5rem,
+          linear-gradient(rgb(82 229 231 / 0.035) 1px, transparent 1px) 0 0 /
+            2.5rem 2.5rem,
+          var(--ink);
+        font-family: var(--sans);
+        line-height: 1.58;
+      }
+
+      a {
+        color: var(--cyan);
+        text-underline-offset: 0.22em;
+        text-decoration-thickness: 0.08em;
+      }
+
+      a:hover {
+        color: #a4ffff;
+      }
+
+      a:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 3px solid var(--yellow);
+        outline-offset: 4px;
+        border-radius: 2px;
+      }
+
+      .skip-link {
+        position: fixed;
+        z-index: 20;
+        top: 0.75rem;
+        left: 0.75rem;
+        padding: 0.55rem 0.8rem;
+        color: var(--ink);
+        background: var(--yellow);
+        font: 700 0.8rem var(--mono);
+        transform: translateY(-180%);
+      }
+
+      .skip-link:focus {
+        transform: none;
+      }
+
+      header {
+        position: relative;
+        overflow: hidden;
+        border-bottom: 1px solid var(--line);
+      }
+
+      header::after {
+        position: absolute;
+        right: -9rem;
+        bottom: -10rem;
+        width: 30rem;
+        height: 30rem;
+        border: 1px solid var(--cyan-dim);
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 3rem rgb(82 229 231 / 0.025),
+          0 0 0 7rem rgb(255 121 95 / 0.018);
+        content: "";
+        pointer-events: none;
+      }
+
+      .masthead,
+      main,
+      footer {
+        width: min(calc(100% - 2rem), var(--max));
+        margin-inline: auto;
+      }
+
+      .masthead {
+        position: relative;
+        z-index: 1;
+        padding: clamp(3.5rem, 8vw, 7rem) 0 3rem;
+      }
+
+      .eyebrow,
+      .section-index,
+      .tag,
+      th,
+      dt,
+      .legend,
+      .signal-label {
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow,
+      .section-index {
+        color: var(--coral);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 13ch;
+        margin-bottom: 1.2rem;
+        font-size: clamp(2.8rem, 8vw, 6.4rem);
+        line-height: 0.94;
+        letter-spacing: -0.055em;
+      }
+
+      .lede {
+        max-width: 43rem;
+        margin-bottom: 0;
+        color: var(--paper-dim);
+        font-size: clamp(1.05rem, 2.3vw, 1.35rem);
+      }
+
+      nav {
+        position: sticky;
+        z-index: 10;
+        top: 0;
+        overflow-x: auto;
+        border-bottom: 1px solid var(--line);
+        background: rgb(7 18 31 / 0.94);
+        backdrop-filter: blur(12px);
+      }
+
+      nav ul {
+        display: flex;
+        width: min(calc(100% - 2rem), var(--max));
+        margin: 0 auto;
+        padding: 0;
+        list-style: none;
+      }
+
+      nav a {
+        display: block;
+        padding: 0.85rem 1rem 0.75rem 0;
+        color: var(--paper-dim);
+        font: 700 0.72rem var(--mono);
+        letter-spacing: 0.04em;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      nav a::before {
+        color: var(--cyan-dim);
+        content: "// ";
+      }
+
+      nav a:hover {
+        color: var(--cyan);
+      }
+
+      main {
+        padding-bottom: 4rem;
+      }
+
+      section {
+        scroll-margin-top: 4rem;
+        padding: clamp(3.5rem, 8vw, 6.5rem) 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      h2 {
+        max-width: 22ch;
+        margin-bottom: 1rem;
+        font-size: clamp(2rem, 4vw, 3.6rem);
+        line-height: 1.05;
+        letter-spacing: -0.035em;
+      }
+
+      h3 {
+        margin-bottom: 0.55rem;
+        color: var(--cyan);
+        font: 700 0.9rem var(--mono);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .intro {
+        max-width: 48rem;
+        margin-bottom: 2.2rem;
+        color: var(--paper-dim);
+        font-size: 1.06rem;
+      }
+
+      code {
+        color: #a4ffff;
+        font-family: var(--mono);
+        font-size: 0.92em;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(7, auto);
+        align-items: stretch;
+        gap: 0.55rem;
+        margin-top: 2.5rem;
+      }
+
+      .flow-node {
+        min-width: 0;
+        padding: 1.15rem;
+        border: 1px solid var(--line);
+        background: var(--ink-2);
+      }
+
+      .flow-node strong {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-size: 1rem;
+      }
+
+      .flow-node span {
+        display: block;
+        color: var(--paper-dim);
+        font-size: 0.82rem;
+      }
+
+      .flow-node.core {
+        border-color: var(--cyan-dim);
+        box-shadow: inset 0 3px 0 var(--cyan);
+      }
+
+      .flow-arrow {
+        display: grid;
+        place-items: center;
+        color: var(--coral);
+        font: 700 1.4rem var(--mono);
+      }
+
+      .margin-note {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 1rem;
+        max-width: 58rem;
+        margin-top: 2rem;
+        padding: 1rem 1.2rem;
+        border-left: 3px solid var(--yellow);
+        color: var(--paper-dim);
+        background: rgb(255 209 102 / 0.055);
+      }
+
+      .margin-note strong {
+        color: var(--yellow);
+        font-family: var(--mono);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        margin-top: 2rem;
+        border: 1px solid var(--line);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--ink-2);
+      }
+
+      th,
+      td {
+        padding: 0.85rem 1rem;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      th:last-child,
+      td:last-child {
+        border-right: 0;
+      }
+
+      th {
+        color: var(--cyan);
+        background: var(--ink-3);
+      }
+
+      td {
+        min-width: 9rem;
+        color: var(--paper-dim);
+      }
+
+      td:first-child {
+        color: var(--paper);
+        font-weight: 650;
+      }
+
+      .yes {
+        color: var(--cyan);
+        font: 700 0.75rem var(--mono);
+      }
+
+      .no {
+        color: #8899a7;
+        font: 700 0.75rem var(--mono);
+      }
+
+      .event-pair {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 1rem;
+        align-items: stretch;
+        margin-top: 2rem;
+      }
+
+      .event {
+        position: relative;
+        padding: 1.5rem;
+        border: 1px solid var(--line);
+        background: var(--ink-2);
+      }
+
+      .event.snapshot {
+        border-top: 4px solid var(--cyan);
+      }
+
+      .event.invalidation {
+        border-top: 4px solid var(--coral);
+      }
+
+      .event .tag {
+        color: var(--paper-dim);
+      }
+
+      .event strong {
+        display: block;
+        margin: 0.55rem 0;
+        font-size: 1.25rem;
+      }
+
+      .event p {
+        margin-bottom: 0;
+        color: var(--paper-dim);
+      }
+
+      .versus {
+        display: grid;
+        place-items: center;
+        color: var(--yellow);
+        font: 700 0.75rem var(--mono);
+        writing-mode: vertical-rl;
+      }
+
+      .lanes {
+        display: grid;
+        gap: 0.8rem;
+        margin-top: 2.2rem;
+      }
+
+      .lane {
+        display: grid;
+        grid-template-columns: 3.2rem minmax(10rem, 0.8fr) minmax(16rem, 2fr);
+        min-height: 8rem;
+        border: 1px solid var(--line);
+        background: var(--ink-2);
+      }
+
+      .lane-number {
+        display: grid;
+        place-items: center;
+        color: var(--ink);
+        background: var(--cyan);
+        font: 800 1.25rem var(--mono);
+      }
+
+      .lane:nth-child(2) .lane-number,
+      .lane:nth-child(4) .lane-number {
+        background: var(--coral);
+      }
+
+      .lane-title,
+      .lane-track {
+        padding: 1.2rem;
+      }
+
+      .lane-title {
+        border-right: 1px solid var(--line);
+      }
+
+      .lane-title p,
+      .lane-track p {
+        margin: 0;
+        color: var(--paper-dim);
+        font-size: 0.9rem;
+      }
+
+      .signal {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        align-items: center;
+        margin-bottom: 0.65rem;
+      }
+
+      .signal span {
+        padding: 0.25rem 0.5rem;
+        border: 1px solid var(--cyan-dim);
+        color: var(--cyan);
+        background: rgb(82 229 231 / 0.04);
+        font: 700 0.7rem var(--mono);
+      }
+
+      .signal i {
+        color: var(--coral);
+        font: normal 700 0.9rem var(--mono);
+      }
+
+      .guard-grid,
+      .host-grid,
+      .failure-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        margin-top: 2rem;
+        border: 1px solid var(--line);
+        background: var(--line);
+      }
+
+      .guard,
+      .host,
+      .failure {
+        padding: 1.4rem;
+        background: var(--ink-2);
+      }
+
+      .guard p,
+      .host p,
+      .failure p {
+        margin-bottom: 0;
+        color: var(--paper-dim);
+      }
+
+      .timing-strip {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 0.35rem;
+        margin-top: 1.2rem;
+      }
+
+      .timing-strip span {
+        display: grid;
+        min-height: 3.8rem;
+        place-items: center;
+        border: 1px solid var(--line);
+        color: var(--paper);
+        background: var(--ink-3);
+        font: 700 0.78rem var(--mono);
+        text-align: center;
+      }
+
+      .timing-strip .poll {
+        border-color: var(--cyan-dim);
+        color: var(--cyan);
+      }
+
+      .timing-strip .retry {
+        border-color: #a94e45;
+        color: var(--coral);
+      }
+
+      .topology {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 4.5rem minmax(0, 1fr);
+        gap: 1rem;
+        align-items: center;
+        margin-top: 2.2rem;
+      }
+
+      .machine {
+        padding: 1.2rem;
+        border: 1px solid var(--cyan-dim);
+        background: var(--ink-2);
+      }
+
+      .machine > strong {
+        display: block;
+        margin-bottom: 1rem;
+        color: var(--cyan);
+        font: 700 0.78rem var(--mono);
+        text-transform: uppercase;
+      }
+
+      .instances {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.5rem;
+      }
+
+      .instance,
+      .provider,
+      .broker {
+        padding: 0.7rem;
+        border: 1px solid var(--line);
+        font: 700 0.72rem var(--mono);
+        text-align: center;
+      }
+
+      .provider {
+        margin-top: 0.55rem;
+        border-color: #a94e45;
+        color: var(--coral);
+      }
+
+      .broker {
+        margin: 0.55rem 0;
+        border-color: var(--yellow);
+        color: var(--yellow);
+      }
+
+      .scale-arrow {
+        color: var(--yellow);
+        font: 700 0.72rem var(--mono);
+        text-align: center;
+      }
+
+      .broker-contract {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.65rem;
+        margin-top: 1.2rem;
+      }
+
+      .broker-contract div {
+        padding: 0.9rem;
+        border-left: 2px solid var(--cyan);
+        color: var(--paper-dim);
+        background: var(--ink-2);
+        font-size: 0.9rem;
+      }
+
+      .broker-contract strong {
+        display: block;
+        color: var(--paper);
+      }
+
+      .checklist {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.7rem 1.2rem;
+        margin: 2rem 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .checklist li {
+        position: relative;
+        min-height: 3.4rem;
+        padding: 0.75rem 0.75rem 0.75rem 2.6rem;
+        border-bottom: 1px solid var(--line);
+        color: var(--paper-dim);
+      }
+
+      .checklist li::before {
+        position: absolute;
+        top: 0.78rem;
+        left: 0;
+        width: 1.7rem;
+        height: 1.7rem;
+        border: 1px solid var(--cyan-dim);
+        color: var(--cyan);
+        content: "✓";
+        font: 700 1rem/1.6rem var(--mono);
+        text-align: center;
+      }
+
+      footer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 2rem;
+        padding: 2.5rem 0 4rem;
+        color: var(--paper-dim);
+      }
+
+      footer p {
+        margin: 0;
+      }
+
+      .source-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.8rem 1.2rem;
+      }
+
+      @media (max-width: 760px) {
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-arrow {
+          min-height: 1.5rem;
+          transform: rotate(90deg);
+        }
+
+        .event-pair,
+        .topology {
+          grid-template-columns: 1fr;
+        }
+
+        .versus {
+          writing-mode: horizontal-tb;
+        }
+
+        .scale-arrow {
+          padding: 0.5rem;
+        }
+
+        .lane {
+          grid-template-columns: 2.6rem 1fr;
+        }
+
+        .lane-title {
+          border-right: 0;
+        }
+
+        .lane-track {
+          grid-column: 2;
+          padding-top: 0;
+        }
+
+        .guard-grid,
+        .host-grid,
+        .failure-grid,
+        .checklist,
+        .broker-contract {
+          grid-template-columns: 1fr;
+        }
+
+        .timing-strip {
+          grid-template-columns: repeat(4, 1fr);
+        }
+
+        footer {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      @media print {
+        :root {
+          color-scheme: light;
+          --ink: #ffffff;
+          --ink-2: #ffffff;
+          --ink-3: #eef3f5;
+          --paper: #101820;
+          --paper-dim: #34434d;
+          --cyan: #006a73;
+          --cyan-dim: #4e7c80;
+          --coral: #a43226;
+          --yellow: #775900;
+          --line: #aebbc1;
+        }
+
+        body {
+          background: #fff;
+          font-size: 9.5pt;
+        }
+
+        nav,
+        .skip-link {
+          display: none;
+        }
+
+        header::after {
+          display: none;
+        }
+
+        .masthead {
+          padding: 2rem 0;
+        }
+
+        h1 {
+          font-size: 36pt;
+        }
+
+        section {
+          padding: 2rem 0;
+          break-inside: avoid;
+        }
+
+        .table-wrap {
+          overflow: visible;
+        }
+
+        a {
+          color: #005861;
+        }
+
+        a[href]::after {
+          content: " (" attr(href) ")";
+          font-size: 0.8em;
+          overflow-wrap: anywhere;
+        }
+
+        .source-links a[href]::after {
+          display: block;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to architecture</a>
+    <header>
+      <div class="masthead">
+        <p class="eyebrow">Field guide 01 / macOS Now Playing</p>
+        <h1>Music session architecture</h1>
+        <p class="lede">
+          How 20+ OpenCode and Pi clients use one same-user Unix socket daemon,
+          one provider authority, and local presentation without duplicating
+          machine-media work.
+        </p>
+      </div>
+    </header>
+
+    <nav aria-label="Music session architecture sections">
+      <ul>
+        <li><a href="#model">Topology</a></li>
+        <li><a href="#ownership">Ownership</a></li>
+        <li><a href="#protocol">Protocol and replay</a></li>
+        <li><a href="#lanes">Bounded work</a></li>
+        <li><a href="#lifecycle">Lifecycle</a></li>
+        <li><a href="#hosts">Host boundaries</a></li>
+        <li><a href="#capacity">Capacity</a></li>
+        <li><a href="#invariants">Failure behavior</a></li>
+      </ul>
+    </nav>
+
+    <main id="content">
+      <section id="model" aria-labelledby="model-title">
+        <p class="section-index">01 / Topology</p>
+        <h2 id="model-title">One provider authority serves many clients</h2>
+        <p class="intro">
+          OpenCode and Pi keep their user interfaces local. Their session
+          clients communicate with one daemon for the current user, and that
+          daemon owns the selected macOS media provider.
+        </p>
+        <div
+          class="flow"
+          role="img"
+          aria-label="Twenty or more OpenCode and Pi clients connect through one same-user Unix socket daemon to one macOS media provider"
+        >
+          <div class="flow-node">
+            <strong>OpenCode and Pi clients</strong
+            ><span>host UI · subscriptions · local presentation</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node core">
+            <strong>music-session daemon</strong
+            ><span>Effect graph · Unix socket · replay · command order</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>macOS provider</strong
+            ><span>one event source · clock · poll · native artwork</span>
+          </div>
+        </div>
+        <div class="margin-note">
+          <strong>Machine scope</strong
+          ><span
+            >The daemon is a same-user, machine-local boundary. It is the
+            current topology, not a proposed deployment mode.</span
+          >
+        </div>
+      </section>
+
+      <section id="ownership" aria-labelledby="ownership-title">
+        <p class="section-index">02 / Ownership</p>
+        <h2 id="ownership-title">Scopes make shutdown ownership explicit</h2>
+        <p class="intro">
+          Effect v4 Layers and scopes acquire the provider, coordinator,
+          listener, connections, and finalizers as one daemon graph. Clients own
+          only their connection and presentation lifecycle.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <caption
+              class="signal-label"
+              style="padding: 0.9rem; text-align: left"
+            >
+              Ownership boundary
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Resource</th>
+                <th scope="col">Client</th>
+                <th scope="col">Daemon</th>
+                <th scope="col">Shutdown owner</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Session connection and presentation</td>
+                <td>One client, subscriptions, UI, waveform, notifications</td>
+                <td>Accept and fan out frames</td>
+                <td>Host disposal and connection scope</td>
+              </tr>
+              <tr>
+                <td>Provider authority</td>
+                <td><span class="no">NONE</span></td>
+                <td>
+                  Provider Layer, event source, playback clock, poll scheduler
+                </td>
+                <td>Daemon scope</td>
+              </tr>
+              <tr>
+                <td>Transport and replay</td>
+                <td>Submit commands and consume replay</td>
+                <td>Global FIFO, status/state refs, revisions</td>
+                <td>Coordinator scope</td>
+              </tr>
+              <tr>
+                <td>Artwork</td>
+                <td>
+                  OpenCode catalog, download, conversion, cache, rendering; Pi
+                  has none
+                </td>
+                <td>Bounded native read and recording-identity validation</td>
+                <td>Respective scoped owner</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="intro" style="margin-top: 2rem">
+          Shutdown stops or refuses new acceptance, interrupts coordinator work,
+          drains dependent connection children, finalizes provider and event
+          ownership, then closes the listener and removes only its exact proven
+          socket path. Signal, defect, and idle paths converge at that
+          idempotent cleanup boundary.
+        </p>
+      </section>
+
+      <section id="protocol" aria-labelledby="protocol-title">
+        <p class="section-index">03 / Protocol and replay</p>
+        <h2 id="protocol-title">
+          Hello establishes a generation before state becomes authoritative
+        </h2>
+        <p class="intro">
+          Owner-only runtime discovery uses startup-marker leases for concurrent
+          first clients, while the hardened socket bind remains the final
+          singleton authority. Twenty concurrent first clients converge on one
+          generation.
+        </p>
+        <div class="event-pair">
+          <article class="event snapshot">
+            <span class="tag">hello and replay</span
+            ><strong>Negotiate, then project</strong>
+            <p>
+              Hello intersects revision ranges and capabilities. Supported
+              legacy and current clients share a daemon; an incompatible client
+              receives terminal range details and cannot unlink, kill, or
+              replace the healthy generation. Status and state replay
+              immediately after hello.
+            </p>
+          </article>
+          <article class="event invalidation">
+            <span class="tag">generation fence</span
+            ><strong>Reject stale work</strong>
+            <p>
+              State revisions are monotonic and daemon instance IDs identify
+              generations. A reconnecting client retains its last accepted
+              presentation, adopts only a new hello/replay generation, ignores
+              late old work, and never replays commands.
+            </p>
+          </article>
+        </div>
+        <div class="margin-note">
+          <strong>Command loss</strong
+          ><span
+            >An admitted command without a result at connection loss is
+            indeterminate. Reconnect is for a fresh generation, not a command
+            retry mechanism.</span
+          >
+        </div>
+      </section>
+
+      <section id="lanes" aria-labelledby="lanes-title">
+        <p class="section-index">04 / Bounded work</p>
+        <h2 id="lanes-title">Separate authority lanes protect healthy peers</h2>
+        <p class="intro">
+          The daemon contains provider observation, command execution,
+          connection input, state fan-out, and artwork work so one stalled
+          reader or expensive request does not become a global pause.
+        </p>
+        <div class="lanes">
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">1</div>
+            <div class="lane-title">
+              <h3>Provider authority</h3>
+              <p>One event stream and one sampling/poll authority.</p>
+            </div>
+            <div class="lane-track">
+              <p>
+                Provider observation remains O(1). Sampling is serialized and
+                coalesced; recovery polling belongs to the coordinator, not a
+                host.
+              </p>
+            </div>
+          </article>
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">2</div>
+            <div class="lane-title">
+              <h3>Global transport FIFO</h3>
+              <p>Commands from OpenCode and Pi share one order.</p>
+            </div>
+            <div class="lane-track">
+              <p>
+                The bounded command queue serializes provider transport. Clients
+                receive correlated required responses rather than inferring an
+                outcome from later state.
+              </p>
+            </div>
+          </article>
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">3</div>
+            <div class="lane-title">
+              <h3>Per-connection fan-out</h3>
+              <p>Finite inbound and pending work per peer.</p>
+            </div>
+            <div class="lane-track">
+              <p>
+                State updates coalesce for a slow reader while mandatory
+                responses and status are preserved. A paused or abusive
+                connection can be disconnected locally without blocking 23
+                healthy peers or terminating the daemon.
+              </p>
+            </div>
+          </article>
+          <article class="lane">
+            <div class="lane-number" aria-hidden="true">4</div>
+            <div class="lane-title">
+              <h3>Native artwork</h3>
+              <p>Bounded and deduplicated by identity.</p>
+            </div>
+            <div class="lane-track">
+              <p>
+                The daemon validates complete recording identity before and
+                after the read, bounds payload/cache work, and shares concurrent
+                identical requests. Artwork failure does not block playback
+                state.
+              </p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="lifecycle" aria-labelledby="lifecycle-title">
+        <p class="section-index">05 / Lifecycle</p>
+        <h2 id="lifecycle-title">
+          The last client starts an idle grace, not an immediate teardown
+        </h2>
+        <p class="intro">
+          A completed new connection cancels the zero-client grace. If grace
+          expires, the daemon follows the same scoped shutdown path; a later
+          client can start or adopt a new generation.
+        </p>
+        <div class="guard-grid">
+          <article class="guard">
+            <h3>Startup</h3>
+            <p>
+              An exact-owner marker lease coordinates launch attempts. The
+              daemon starts detached, and socket binding decides the one winner.
+            </p>
+          </article>
+          <article class="guard">
+            <h3>Reconnect</h3>
+            <p>
+              Schedule-paced attempts retain accepted presentation state until a
+              handshaken replacement replays.
+            </p>
+          </article>
+          <article class="guard">
+            <h3>Idle</h3>
+            <p>
+              Only negotiated client departure starts the bounded grace. Joining
+              cancels it.
+            </p>
+          </article>
+          <article class="guard">
+            <h3>Cleanup</h3>
+            <p>
+              Finalizers remove only artifacts whose identity and ownership were
+              proven; they do not delete a replacement path.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="hosts" aria-labelledby="hosts-title">
+        <p class="section-index">06 / Host boundaries</p>
+        <h2 id="hosts-title">Presentation remains host-local</h2>
+        <div class="host-grid">
+          <article class="host">
+            <h3>OpenCode music player</h3>
+            <p>
+              One reconnecting client feeds compact and sidebar Solid UI.
+              OpenCode owns optimistic presentation, seek coalescing,
+              notifications, waveform projection, iTunes lookup and image
+              conversion, bounded cache/jobs, Kitty graphics, and half-block
+              fallback rendering.
+            </p>
+          </article>
+          <article class="host">
+            <h3>Pi music dock</h3>
+            <p>
+              One live TUI session owns one reconnecting client, a composable
+              status line, waveform, notifications, commands, and shortcuts. Pi
+              does not request or render artwork.
+            </p>
+          </article>
+        </div>
+        <p class="intro" style="margin-top: 2rem">
+          Neither host owns provider discovery, provider polling, the playback
+          clock, native media reads, or cross-host transport ordering. Disposing
+          one client leaves the daemon available to every other client.
+        </p>
+      </section>
+
+      <section id="capacity" aria-labelledby="capacity-title">
+        <p class="section-index">07 / Capacity</p>
+        <h2 id="capacity-title">
+          Provider cost stays constant while delivery scales with clients
+        </h2>
+        <div class="table-wrap">
+          <table>
+            <caption
+              class="signal-label"
+              style="padding: 0.9rem; text-align: left"
+            >
+              Current cost model
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Work</th>
+                <th scope="col">Cost</th>
+                <th scope="col">Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Provider observation, event subscription, polling</td>
+                <td>O(1)</td>
+                <td>One daemon-owned provider authority per machine</td>
+              </tr>
+              <tr>
+                <td>State fan-out and client presentation</td>
+                <td>O(N)</td>
+                <td>
+                  Each connected client receives replay/live updates and renders
+                  locally
+                </td>
+              </tr>
+              <tr>
+                <td>OpenCode catalog and rendering work</td>
+                <td>O(OpenCode clients)</td>
+                <td>
+                  Catalog, cache, and terminal presentation remain
+                  OpenCode-local
+                </td>
+              </tr>
+              <tr>
+                <td>Alternating client evidence</td>
+                <td>24 clients verified</td>
+                <td>Evidence of behavior, not a configured maximum</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="invariants" aria-labelledby="invariants-title">
+        <p class="section-index">08 / Failure behavior</p>
+        <h2 id="invariants-title">
+          Contain local failure without replacing healthy authority
+        </h2>
+        <div class="failure-grid">
+          <article class="failure">
+            <h3>Incompatible client</h3>
+            <p>
+              Return actionable revision-range details and leave the healthy
+              daemon untouched.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Slow reader</h3>
+            <p>
+              Apply bounded per-connection work and disconnect locally when
+              required.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Provider failure</h3>
+            <p>
+              Publish status and recover through the daemon-owned event and
+              polling paths.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Artwork failure</h3>
+            <p>
+              Return an artwork outcome while preserving playback-state
+              delivery.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Host reload</h3>
+            <p>
+              Dispose one client and local presentation; remaining clients keep
+              the daemon generation alive.
+            </p>
+          </article>
+          <article class="failure">
+            <h3>Final disconnect</h3>
+            <p>
+              Allow bounded idle expiry to close the graph and clean exact owned
+              runtime artifacts.
+            </p>
+          </article>
+        </div>
+        <ul class="checklist" aria-label="Current architecture invariants">
+          <li>One same-user daemon owns one provider authority.</li>
+          <li>Hello and replay establish compatible generations.</li>
+          <li>Revisions and instance IDs fence stale state.</li>
+          <li>Commands never replay after connection loss.</li>
+          <li>Global FIFO ordering spans OpenCode and Pi clients.</li>
+          <li>Bounded local failures do not block healthy peers.</li>
+          <li>Native artwork reads validate identity and remain bounded.</li>
+          <li>Presentation and OpenCode catalog work stay host-local.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Source of truth: current package implementation and package-level
+        architecture notes.
+      </p>
+      <div class="source-links" aria-label="Package architecture sources">
+        <a href="../packages/music-core/README.md">music-core README</a>
+        <a href="../packages/opencode-music-player/README.md"
+          >OpenCode player README</a
+        >
+        <a href="../packages/pi-music-dock/README.md">Pi music dock README</a>
+      </div>
+    </footer>
+  </body>
+</html>
