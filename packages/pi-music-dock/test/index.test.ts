@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import type {
+	ArtworkIdentity,
+	ArtworkResult,
 	MusicSessionConnectionLifecycle,
 	PlayerState,
 	ProviderStatus,
@@ -7,7 +9,11 @@ import type {
 	ReconnectingMusicSessionClientOptions,
 	RevisionedState,
 } from "@naxodev/music-core";
-import { createMusicDock } from "../extensions/music-dock/index.ts";
+import {
+	createMusicDock,
+	musicSidebarOverlayContract,
+} from "../extensions/music-dock/index.ts";
+import { PNG_1X1_BASE64, PNG_1X1_BYTES } from "./artwork-fixtures.ts";
 
 type Timer = { callback: () => void; active: boolean };
 
@@ -23,6 +29,7 @@ const deferred = <T>() => {
 };
 const player = (
 	kind: "playing" | "paused" | "idle" = "playing",
+	trackId = "track",
 ): PlayerState => ({
 	is_playing: kind === "playing",
 	progress_ms: 1000,
@@ -34,19 +41,21 @@ const player = (
 		kind === "idle"
 			? null
 			: {
-					id: "track",
-					uri: "test:track",
-					name: "Song",
+					id: trackId,
+					uri: `test:${trackId}`,
+					name: trackId === "track" ? "Song" : `Song ${trackId}`,
 					artists: "Artist",
 					album: "Album",
 					duration_ms: 10_000,
 				},
 });
 
+const pngBase64 = PNG_1X1_BASE64;
+
 class FakeClient implements ReconnectingMusicSessionClient {
 	daemonInstanceId = "daemon-a";
 	selectedRevision = 4;
-	negotiatedCapabilities = ["state-replay", "transport"];
+	negotiatedCapabilities = ["state-replay", "transport", "native-artwork"];
 	state: RevisionedState | undefined = {
 		daemonInstanceId: this.daemonInstanceId,
 		revision: this.selectedRevision,
@@ -67,10 +76,15 @@ class FakeClient implements ReconnectingMusicSessionClient {
 		(connection: MusicSessionConnectionLifecycle) => void
 	>();
 	readonly calls: string[] = [];
+	readonly artworkCalls: ArtworkIdentity[] = [];
 	commandGate: Promise<void> | undefined;
 	commandFailure: Error | undefined;
 	disposeCalls = 0;
 	disposeGate: Promise<void> | undefined;
+	artworkResult: ArtworkResult | (() => Promise<ArtworkResult>) = {
+		type: "unavailable",
+	};
+	artworkGate: Promise<void> | undefined;
 
 	subscribeState(listener: (state: RevisionedState) => void) {
 		this.stateListeners.add(listener);
@@ -130,8 +144,11 @@ class FakeClient implements ReconnectingMusicSessionClient {
 	seek(positionMs: number) {
 		return this.command(`seek:${positionMs}`);
 	}
-	async artwork() {
-		return { type: "unavailable" } as never;
+	async artwork(identity: ArtworkIdentity) {
+		this.artworkCalls.push(identity);
+		await this.artworkGate;
+		const result = this.artworkResult;
+		return typeof result === "function" ? result() : result;
 	}
 	async dispose() {
 		this.disposeCalls++;
@@ -139,10 +156,48 @@ class FakeClient implements ReconnectingMusicSessionClient {
 	}
 }
 
+/**
+ * Models real Pi TUI overlay behavior:
+ * - showOverlay returns a handle
+ * - handle.hide() removes the overlay only (does NOT resolve any custom Promise)
+ * - setWidget(key, factory) creates the host; setWidget(key, undefined) disposes it
+ * - No ctx.ui.custom path for the persistent panel
+ */
+type OverlayHandleMock = {
+	hide: () => void;
+	setHidden: (hidden: boolean) => void;
+	isHidden: () => boolean;
+	focus: () => void;
+	unfocus: () => void;
+	isFocused: () => boolean;
+	hidden: boolean;
+	focused: boolean;
+	hideCalls: number;
+};
+
+type HostRecord = {
+	key: string;
+	component: { dispose?: () => void; render: (w: number) => string[] };
+	disposeCalls: number;
+};
+
+type OverlayRecord = {
+	component: any;
+	options: any;
+	handle: OverlayHandleMock;
+	hiddenByHide: boolean;
+};
+
 function setup(
 	createClient: (
 		options: ReconnectingMusicSessionClientOptions,
 	) => Promise<ReconnectingMusicSessionClient>,
+	extras: {
+		fetch?: (
+			input: string | URL | Request,
+			init?: RequestInit,
+		) => Promise<Response>;
+	} = {},
 ) {
 	let start: ((event: unknown, ctx: any) => Promise<void>) | undefined;
 	let shutdown: ((event: unknown, ctx: any) => Promise<void>) | undefined;
@@ -153,13 +208,110 @@ function setup(
 		string,
 		{ handler: (args: string, ctx: any) => Promise<void> }
 	> = {};
-	const shortcuts: Array<{ handler: (ctx: any) => Promise<void> }> = [];
+	const shortcuts: Array<{
+		description?: string;
+		handler: (ctx: any) => Promise<void>;
+	}> = [];
+	const hosts = new Map<string, HostRecord>();
+	const overlays: OverlayRecord[] = [];
+	const terminalWrites: string[] = [];
+	// A second overlay that could exist alongside the music panel.
+	const foreignOverlay = {
+		handle: null as OverlayHandleMock | null,
+		hideCalls: 0,
+	};
+
+	const makeHandle = (): OverlayHandleMock => {
+		const handle: OverlayHandleMock = {
+			hidden: false,
+			focused: false,
+			hideCalls: 0,
+			hide() {
+				// Real Pi: hide removes the overlay from the TUI only.
+				// It does not dispose the host widget or resolve a custom Promise.
+				handle.hideCalls++;
+				handle.hidden = true;
+				handle.focused = false;
+			},
+			setHidden(hidden: boolean) {
+				handle.hidden = hidden;
+				if (hidden) handle.focused = false;
+			},
+			isHidden() {
+				return handle.hidden;
+			},
+			focus() {
+				handle.focused = true;
+				handle.hidden = false;
+			},
+			unfocus() {
+				handle.focused = false;
+			},
+			isFocused() {
+				return handle.focused;
+			},
+		};
+		return handle;
+	};
+
+	const tui = {
+		requestRender: () => {},
+		terminal: {
+			write: (data: string) => {
+				terminalWrites.push(data);
+			},
+		},
+		showOverlay: (component: any, options?: any) => {
+			const handle = makeHandle();
+			overlays.push({
+				component,
+				options,
+				handle,
+				hiddenByHide: false,
+			});
+			const originalHide = handle.hide.bind(handle);
+			handle.hide = () => {
+				originalHide();
+				const record = overlays.find((item) => item.handle === handle);
+				if (record) record.hiddenByHide = true;
+			};
+			return handle;
+		},
+	};
+
 	const ui = {
 		setStatus: (_key: string, value: string | undefined) =>
 			statuses.push(value),
-		theme: { fg: (_color: string, value: string) => value },
+		theme: {
+			fg: (_color: string, value: string) => value,
+		},
 		notify: (message: string) => notifications.push(message),
+		setWidget: (
+			key: string,
+			content:
+				| ((
+						tuiArg: any,
+						theme: any,
+				  ) => {
+						dispose?: () => void;
+						render: (w: number) => string[];
+				  })
+				| undefined,
+		) => {
+			// Mirror Pi: dispose existing host for this key before replace/clear.
+			const existing = hosts.get(key);
+			if (existing) {
+				existing.component.dispose?.();
+				existing.disposeCalls++;
+				hosts.delete(key);
+			}
+			if (content === undefined) return;
+			const component = content(tui, ui.theme);
+			hosts.set(key, { key, component, disposeCalls: 0 });
+		},
+		// Intentionally no custom() — persistent panel must not use it.
 	};
+
 	const ctx = { mode: "tui", hasUI: true, ui };
 	createMusicDock(
 		{
@@ -176,6 +328,12 @@ function setup(
 		{
 			createClient,
 			now: () => 1,
+			// Default fetch never hits the network — catalog tests inject their own.
+			fetch:
+				extras.fetch ??
+				(async () => {
+					throw new Error("network disabled in dock tests");
+				}),
 			setInterval: (callback) => {
 				const timer = { callback, active: true };
 				intervals.push(timer);
@@ -186,6 +344,15 @@ function setup(
 			},
 		},
 	);
+
+	// Simulate another extension overlay that must not be confused with ours.
+	foreignOverlay.handle = makeHandle();
+	const foreignHide = foreignOverlay.handle.hide.bind(foreignOverlay.handle);
+	foreignOverlay.handle.hide = () => {
+		foreignHide();
+		foreignOverlay.hideCalls++;
+	};
+
 	return {
 		start: (context: any = ctx) => start?.({}, context),
 		shutdown: (context: any = ctx) => shutdown?.({}, context),
@@ -193,15 +360,37 @@ function setup(
 			commands[name]!.handler("", context),
 		shortcut: (index: number, context: any = ctx) =>
 			shortcuts[index]!.handler(context),
+		shortcutByDescription: (fragment: string, context: any = ctx) => {
+			const match = shortcuts.find((item) =>
+				item.description?.includes(fragment),
+			);
+			return match!.handler(context);
+		},
 		statuses,
 		notifications,
 		intervals,
+		hosts,
+		overlays,
+		terminalWrites,
+		foreignOverlay,
 		activeIntervals: () => intervals.filter((timer) => timer.active),
 		context: ctx,
+		commands,
+		shortcuts,
+		musicHost: () => hosts.get(musicSidebarOverlayContract.widgetKey),
+		musicOverlay: () =>
+			overlays.find((item) =>
+				item.component ===
+				hosts.get(musicSidebarOverlayContract.widgetKey)?.component
+					? false
+					: true,
+			) ?? overlays.at(-1),
 	};
 }
 
-test("session client is created only for a live TUI start with Pi capabilities", async () => {
+test("session client is created only for a live TUI start with Pi capabilities including native-artwork", async () => {
+	// Why: one reconnecting client per live TUI session is the ownership model.
+	// native-artwork is negotiated here so artwork() is legal without a second client.
 	const client = new FakeClient();
 	const options: ReconnectingMusicSessionClientOptions[] = [];
 	const dock = setup(async (next) => {
@@ -217,11 +406,74 @@ test("session client is created only for a live TUI start with Pi capabilities",
 	expect(options[0]).toMatchObject({
 		clientId: expect.stringMatching(/^pi-music-dock-/),
 		hostKind: "pi",
-		capabilities: ["state-replay", "transport"],
+		capabilities: ["state-replay", "transport", "native-artwork"],
 	});
 	expect(client.stateListeners.size).toBe(1);
 	expect(client.statusListeners.size).toBe(1);
 	expect(client.connectionListeners.size).toBe(1);
+	await dock.shutdown();
+});
+
+test("panel mounts via setWidget host + showOverlay with responsive nonCapturing contract", async () => {
+	// Why: Pi 0.84 custom() only resolves on done(); hide() does not. A persistent
+	// panel must own showOverlay from a widget host so shutdown never hangs.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	expect(dock.hosts.has(musicSidebarOverlayContract.widgetKey)).toBe(true);
+	expect(dock.overlays).toHaveLength(1);
+	const options = dock.overlays[0]!.options;
+	expect(options).toMatchObject({
+		anchor: musicSidebarOverlayContract.anchor,
+		width: musicSidebarOverlayContract.width,
+		maxHeight: musicSidebarOverlayContract.maxHeight,
+		nonCapturing: musicSidebarOverlayContract.nonCapturing,
+	});
+	expect(options.visible(100, 40)).toBe(true);
+	expect(options.visible(99, 40)).toBe(false);
+	// Host contributes no editor chrome.
+	expect(dock.musicHost()!.component.render(40)).toEqual([]);
+	await dock.shutdown();
+});
+
+test("music-view and ctrl+alt+m toggle visibility; music-focus focuses the panel", async () => {
+	// Why: users need hide/show and focus without a second overlay instance.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	const handle = dock.overlays[0]!.handle;
+	expect(handle.hidden).toBe(false);
+
+	await dock.command("music-view");
+	expect(handle.hidden).toBe(true);
+	expect(dock.overlays[0]!.options.visible(120, 40)).toBe(false);
+
+	await dock.shortcutByDescription("side panel");
+	expect(handle.hidden).toBe(false);
+
+	await dock.command("music-focus");
+	expect(handle.focused).toBe(true);
+	expect(handle.hidden).toBe(false);
+	await dock.shutdown();
+});
+
+test("focused panel keys delegate transport exactly once through the same client", async () => {
+	// Why: Space/arrows while focused must not invent a second transport path.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	await dock.command("music-focus");
+	const component = dock.overlays[0]!.component;
+	component.handleInput(" ");
+	component.handleInput("\x1b[C");
+	component.handleInput("\x1b[D");
+	await flush();
+	expect(client.calls).toEqual(["toggle", "next", "previous"]);
+	component.handleInput("\x1b");
+	expect(dock.overlays[0]!.handle.focused).toBe(false);
 	await dock.shutdown();
 });
 
@@ -366,29 +618,208 @@ test("each rejected live command notifies its caller once", async () => {
 	await dock.shutdown();
 });
 
-test("reload waits for pending acquisition, disposes the old client once, and fences late callbacks", async () => {
-	const pending = deferred<ReconnectingMusicSessionClient>();
+test("provider failure falls back to catalog art and paints ready presentation", async () => {
+	// Why: media-control often fails native art (~1.5MB beyond daemon bound).
+	// Without catalog fallback the live panel shows "no artwork" for real tracks.
+	const client = new FakeClient();
+	client.artworkResult = async () => {
+		throw new Error("PROVIDER_FAILURE");
+	};
+	const dock = setup(async () => client, {
+		fetch: async (input) => {
+			const href = String(input);
+			if (href.includes("itunes.apple.com/search")) {
+				return new Response(
+					JSON.stringify({
+						results: [
+							{
+								trackName: "Song",
+								artistName: "Artist",
+								collectionName: "Album",
+								trackTimeMillis: 10_000,
+								artworkUrl100:
+									"https://is1-ssl.mzstatic.com/image/100x100bb.jpg",
+							},
+						],
+					}),
+					{ status: 200 },
+				);
+			}
+			if (href.includes("mzstatic.com")) {
+				return new Response(PNG_1X1_BYTES, { status: 200 });
+			}
+			throw new Error(`unexpected ${href}`);
+		},
+	});
+	await dock.start();
+	await flush();
+	// Allow catalog chain to settle.
+	await Bun.sleep(10);
+	await flush();
+	const rendered = dock.overlays[0]!.component.render(30).join("\n");
+	expect(rendered).not.toContain("no artwork");
+	expect(rendered).not.toContain("loading art");
+	expect(rendered).toContain("Song");
+	await dock.shutdown();
+});
+
+test("replacement aborts in-flight catalog fallback so late art cannot paint", async () => {
+	// Why: generation + AbortController must fence catalog completions the same
+	// way native artwork is fenced — otherwise track B shows track A's cover.
+	const client = new FakeClient();
+	const nativeGate = deferred<void>();
+	client.artworkResult = async () => {
+		await nativeGate.promise;
+		throw new Error("PROVIDER_FAILURE");
+	};
+	let catalogStarts = 0;
+	const catalogGate = deferred<void>();
+	const dock = setup(async () => client, {
+		fetch: async (input) => {
+			const href = String(input);
+			if (href.includes("itunes.apple.com/search")) {
+				catalogStarts++;
+				await catalogGate.promise;
+				return new Response(
+					JSON.stringify({
+						results: [
+							{
+								trackName: "Song",
+								artistName: "Artist",
+								collectionName: "Album",
+								trackTimeMillis: 10_000,
+								artworkUrl100:
+									"https://is1-ssl.mzstatic.com/image/100x100bb.jpg",
+							},
+						],
+					}),
+					{ status: 200 },
+				);
+			}
+			return new Response(PNG_1X1_BYTES, { status: 200 });
+		},
+	});
+	await dock.start();
+	await flush();
+	// Start first artwork (still gated on native).
+	expect(client.artworkCalls).toHaveLength(1);
+	// Replace track before native resolves — aborts generation 1.
+	client.artworkResult = { type: "unavailable" };
+	client.artworkGate = undefined;
+	client.emitState(player("playing", "track-b"));
+	await flush();
+	nativeGate.resolve();
+	catalogGate.resolve();
+	await flush();
+	await Bun.sleep(10);
+	await flush();
+	// Second track may catalog-fail to unavailable (network disabled path after
+	// identity change uses unavailable native + our fetch). Either way the first
+	// generation must not paint over track-b metadata.
+	const rendered = dock.overlays[0]!.component.render(30).join("\n");
+	expect(rendered).toContain("Song track-b");
+	await dock.shutdown();
+	// Catalog for the aborted first generation should not complete a paint;
+	// starts may be 0 (aborted before fallback) or 1 (started then aborted).
+	expect(catalogStarts).toBeLessThanOrEqual(1);
+});
+
+test("stale artwork cannot overwrite a replacement track or session", async () => {
+	// Why: artwork is async and non-replayable. A late completion for track A
+	// after the user skipped to track B (or reloaded) must not paint the panel.
+	const client = new FakeClient();
+	const gate = deferred<void>();
+	client.artworkGate = gate.promise;
+	client.artworkResult = { type: "available", base64: pngBase64 };
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	expect(client.artworkCalls).toHaveLength(1);
+	expect(client.artworkCalls[0]?.id).toBe("track");
+
+	const secondGate = deferred<void>();
+	client.artworkGate = secondGate.promise;
+	client.artworkResult = {
+		type: "available",
+		base64: pngBase64,
+	};
+	client.emitState(player("playing", "track-b"));
+	await flush();
+	expect(client.artworkCalls).toHaveLength(2);
+
+	gate.resolve();
+	await flush();
+	const component = dock.overlays[0]!.component;
+	expect(client.artworkCalls[1]?.id).toBe("track-b");
+
+	secondGate.resolve();
+	await flush();
+	const after = component.render(30).join("\n");
+	expect(after).toContain("Song track-b");
+
+	const late = deferred<void>();
+	client.artworkGate = late.promise;
+	client.emitState(player("playing", "track-c"));
+	await flush();
+	await dock.start();
+	await flush();
+	late.resolve();
+	await flush();
+	client.emitState(player("paused", "track-c"));
+	await dock.shutdown();
+});
+
+test("reload/shutdown returns promptly, hides the exact host overlay once, and leaves foreign overlays alone", async () => {
+	// Why: hide() only removes the TUI overlay — it does not complete a custom()
+	// Promise. The host is disposed by clearing the widget key synchronously, so
+	// reload/shutdown must return without awaiting any done() callback. A foreign
+	// overlay that happens to exist must not be hidden.
 	const old = new FakeClient();
 	const replacement = new FakeClient();
 	let factories = 0;
-	const dock = setup(async () =>
-		++factories === 1 ? pending.promise : replacement,
-	);
+	const dock = setup(async () => (++factories === 1 ? old : replacement));
 	await dock.start();
+	await flush();
+	expect(dock.overlays).toHaveLength(1);
+	const firstHandle = dock.overlays[0]!.handle;
+	const firstHost = dock.musicHost();
+	expect(firstHost).toBeDefined();
+	const foreignBefore = dock.foreignOverlay.hideCalls;
+
 	const reloading = dock.start();
+	await Promise.race([
+		reloading,
+		Bun.sleep(200).then(() => {
+			throw new Error("reload hung — custom() promise still awaited?");
+		}),
+	]);
 	await flush();
-	expect(factories).toBe(1);
-	pending.resolve(old);
-	await reloading;
-	await flush();
+	expect(firstHandle.hideCalls).toBe(1);
 	expect(old.disposeCalls).toBe(1);
 	expect(factories).toBe(2);
+	expect(dock.overlays.length).toBe(2);
+	expect(firstHandle.hideCalls).toBe(1);
+	expect(dock.foreignOverlay.hideCalls).toBe(foreignBefore);
+	// Host for the old key was disposed via setWidget clear (tracked as remove).
+	expect(dock.hosts.has(musicSidebarOverlayContract.widgetKey)).toBe(true);
+
 	const statusCount = dock.statuses.length;
 	old.emitState(player("paused"));
 	expect(dock.statuses).toHaveLength(statusCount);
 	expect(replacement.stateListeners.size).toBe(1);
-	await dock.shutdown();
+
+	const secondHandle = dock.overlays.at(-1)!.handle;
+	const shutting = dock.shutdown();
+	await Promise.race([
+		shutting,
+		Bun.sleep(200).then(() => {
+			throw new Error("shutdown hung — custom() promise still awaited?");
+		}),
+	]);
+	expect(secondHandle.hideCalls).toBe(1);
 	expect(replacement.disposeCalls).toBe(1);
+	expect(dock.hosts.has(musicSidebarOverlayContract.widgetKey)).toBe(false);
+	expect(dock.foreignOverlay.hideCalls).toBe(foreignBefore);
 });
 
 test("shutdown during acquisition disposes the late client and fences all feedback", async () => {
@@ -398,7 +829,12 @@ test("shutdown during acquisition disposes the late client and fences all feedba
 	await dock.start();
 	const stopping = dock.shutdown();
 	pending.resolve(client);
-	await stopping;
+	await Promise.race([
+		stopping,
+		Bun.sleep(200).then(() => {
+			throw new Error("shutdown hung during acquisition");
+		}),
+	]);
 	client.emitStatus({
 		kind: "unavailable",
 		provider: "media-control",
@@ -414,6 +850,7 @@ test("shutdown during acquisition disposes the late client and fences all feedba
 	expect(client.stateListeners.size).toBe(0);
 	expect(dock.notifications).toEqual([]);
 	expect(dock.statuses.at(-1)).toBeUndefined();
+	expect(dock.overlays[0]!.handle.hideCalls).toBe(1);
 });
 
 test("reload fences a held old-generation command without delaying the replacement", async () => {

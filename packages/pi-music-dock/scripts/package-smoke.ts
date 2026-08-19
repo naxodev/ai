@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const expectedCommands = ["music", "music-next", "music-prev"];
+const expectedCommands = [
+	"music",
+	"music-next",
+	"music-prev",
+	"music-view",
+	"music-focus",
+];
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
 const coreDirectory = fileURLToPath(
 	new URL("../../music-core/", import.meta.url),
