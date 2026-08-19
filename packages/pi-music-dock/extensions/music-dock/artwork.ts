@@ -279,15 +279,16 @@ function selectCatalogCandidate(
 	return matches[0] ?? null;
 }
 
-/** Exact catalog match → 300x300 mzstatic URL, or null when ambiguous/wrong. */
+/** Exact catalog match → 300x300 PNG mzstatic URL, or null when ambiguous/wrong. */
 export function selectArtworkUrl(
 	target: TrackCatalogTarget,
 	results: CatalogTrack[],
 ): string | null {
-	const match = selectCatalogCandidate(target, results);
-	return (
-		match?.artworkUrl100?.replace(/100x100(?=[a-z]*\.)/, "300x300") ?? null
-	);
+	const source = selectCatalogCandidate(target, results)?.artworkUrl100;
+	if (!source) return null;
+	const resized = source.replace(/100x100(?=[a-z]*\.)/, "300x300");
+	const png = resized.replace(/\.[a-z0-9]+(?=([?#].*)?$)/i, ".png");
+	return png === resized ? null : png;
 }
 
 export function selectCatalogTrack(
@@ -453,7 +454,17 @@ export async function resolveArtworkPresentation(
 		const result = await loadNative();
 		if (signal.aborted) return { kind: "unavailable" };
 		nativePresentation = presentArtworkResult(result, getDimensions);
-		if (nativePresentation.kind === "ready") return nativePresentation;
+		if (
+			nativePresentation.kind === "ready" &&
+			nativePresentation.artwork.mime === "image/png"
+		)
+			return nativePresentation;
+		if (nativePresentation.kind === "ready") {
+			// pi-tui's Kitty path declares f=100 (PNG) for every payload. Native
+			// JPEG/GIF/WebP bytes would create a blank Ghostty placement, so seek
+			// an exact catalog PNG instead of handing mislabeled bytes to Image.
+			nativePresentation = { kind: "unsupported" };
+		}
 	} catch {
 		// PROVIDER_FAILURE and transport errors fall through to catalog.
 		if (signal.aborted) return { kind: "unavailable" };

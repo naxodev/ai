@@ -58,6 +58,7 @@ type ImageTheme = {
 };
 
 const EMPTY_ARTWORK: ArtworkPresentation = { kind: "empty" };
+const ARTWORK_ROWS = 10;
 
 /**
  * Exact ownership key for a ready artwork payload.
@@ -156,7 +157,7 @@ export function createMusicSidebar(
 		disposeImage();
 		image = new Image(base64, mime, imageTheme, {
 			maxWidthCells: 26,
-			maxHeightCells: 10,
+			maxHeightCells: ARTWORK_ROWS,
 			filename: "artwork",
 		});
 		imageKey = key;
@@ -218,21 +219,31 @@ export function createMusicSidebar(
 	};
 
 	const renderArtwork = (inner: number): string[] => {
-		const placeholder = (label: string) => [
-			theme.fg("dim", clip(`[ ${label} ]`, inner)),
-		];
+		const reserveSlot = (lines: string[]) => {
+			const reserved = lines.slice(0, ARTWORK_ROWS);
+			while (reserved.length < ARTWORK_ROWS) reserved.push("");
+			return reserved;
+		};
+		const placeholder = (label: string) => {
+			const lines = Array.from({ length: ARTWORK_ROWS }, () => "");
+			lines[Math.floor(ARTWORK_ROWS / 2)] = theme.fg(
+				"dim",
+				clip(`[ ${label} ]`, inner),
+			);
+			return lines;
+		};
 		if (state.artwork.kind === "loading") return placeholder("loading art");
 		if (state.artwork.kind === "unavailable") return placeholder("no artwork");
 		if (state.artwork.kind === "unsupported")
 			return placeholder("unsupported image");
 		if (state.artwork.kind !== "ready" || !image)
 			return placeholder("no artwork");
-		const lines = image.render(inner);
-		return lines.map((line) => {
+		const lines = image.render(inner).map((line) => {
 			// Image sequences may already fit; still guard plain fallback text.
 			if (visibleWidth(line) > inner) return clip(line, inner);
 			return line;
 		});
+		return reserveSlot(lines);
 	};
 
 	const renderBody = (width: number): string[] => {
