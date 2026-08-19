@@ -430,8 +430,11 @@ test("panel mounts via setWidget host + showOverlay with responsive nonCapturing
 		maxHeight: musicSidebarOverlayContract.maxHeight,
 		nonCapturing: musicSidebarOverlayContract.nonCapturing,
 	});
-	expect(options.visible(100, 40)).toBe(true);
-	expect(options.visible(99, 40)).toBe(false);
+	// Why: Herdr commonly allocates 82-column split panes even when the tab is
+	// zoomed. Keep the 30-column panel visible there while preserving 50
+	// columns for the transcript; narrower panes still auto-hide it.
+	expect(options.visible(80, 40)).toBe(true);
+	expect(options.visible(79, 40)).toBe(false);
 	// Host contributes no editor chrome.
 	expect(dock.musicHost()!.component.render(40)).toEqual([]);
 	await dock.shutdown();
