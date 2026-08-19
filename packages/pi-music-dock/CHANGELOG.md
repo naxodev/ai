@@ -4,6 +4,13 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 
 ## [Unreleased]
 
+### Added
+
+- Responsive right-center music side panel overlay (plugin approximation; may cover transcript).
+- Native artwork on the same reconnecting client (`native-artwork` capability) with local PNG/JPEG/GIF/WebP sniffing.
+- Bounded iTunes catalog fallback when native art is missing, too large, unsupported, or fails (exact match + mzstatic allowlist).
+- `/music-view` and `ctrl+alt+m` to toggle the panel; `/music-focus` plus Space/arrows/Escape while focused.
+
 ### Changed
 
 - Refresh promptly for provider changes, retain bounded polling fallback, and clean up subscriptions on reload and shutdown.
