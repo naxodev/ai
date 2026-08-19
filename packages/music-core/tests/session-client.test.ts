@@ -1832,10 +1832,14 @@ test("reconnecting client adopts one replacement generation without replay", asy
     const lifecycle: string[] = []
     const states: number[] = []
     let connectedReplacement: (() => void) | undefined
+    let replayedReplacement: (() => void) | undefined
     let reconnecting: (() => void) | undefined
     let stateFromA: (() => void) | undefined
     const replacement = new Promise<void>((resolve) => {
       connectedReplacement = resolve
+    })
+    const replacementReplay = new Promise<void>((resolve) => {
+      replayedReplacement = resolve
     })
     const reconnectingSeen = new Promise<void>((resolve) => {
       reconnecting = resolve
@@ -1862,6 +1866,7 @@ test("reconnecting client adopts one replacement generation without replay", asy
       states.push(state.revision)
       if (state.daemonInstanceId === firstInstance && state.revision > 1)
         stateFromA?.()
+      if (state.daemonInstanceId !== firstInstance) replayedReplacement?.()
     })
     firstProvider.emit({
       type: "snapshot",
@@ -1893,7 +1898,7 @@ test("reconnecting client adopts one replacement generation without replay", asy
     expect(replayDuringReconnect).toEqual([retainedState!.revision])
     unsubscribeReplay()
     unsubscribeReplay()
-    await replacement
+    await Promise.all([replacement, replacementReplay])
     expect(client.connection.type).toBe("connected")
     expect(client.daemonInstanceId).not.toBe(firstInstance)
     expect(launches).toBe(2)

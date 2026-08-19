@@ -34,8 +34,6 @@ bun install -g @naxodev/apnea
 npm install -g @naxodev/apnea
 ```
 
-> `0.1.0` has not been published to the npm registry yet. Until it is, install from source (below).
-
 For Pi, install the separate adapter:
 
 ```bash

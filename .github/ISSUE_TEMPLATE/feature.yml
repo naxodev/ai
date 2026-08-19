@@ -21,6 +21,7 @@ body:
     attributes:
       label: Package
       options:
+        - "@naxodev/music-core"
         - "@naxodev/opencode-music-player"
         - "@naxodev/opencode-vim"
         - "@naxodev/pi-music-dock"

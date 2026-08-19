@@ -2,6 +2,20 @@
 
 Host-neutral music-session contracts, a same-user machine-local client boundary, and compatibility APIs for Pi and OpenCode.
 
+## Requirements
+
+- Node.js 22.19 or later, or Bun 1.3 or later
+- macOS for system media discovery and transport
+- A TypeScript-aware runtime or bundler because the package publishes TypeScript source
+
+## Install
+
+```sh
+bun add @naxodev/music-core
+```
+
+The formatting, clock, reconciliation, waveform, and protocol APIs are platform-neutral. `createSystemMedia()` and the managed music-session daemon require macOS media providers.
+
 ## Session architecture
 
 Many host clients connect to one owner-only Unix socket daemon. The daemon selects and owns one provider, its event source, playback clock, recovery polling, state and status authority, global transport queue, and native artwork reads. Clients receive hello, status, and state replay on connection, followed by revisioned updates. Host presentation remains outside this package.
@@ -128,3 +142,11 @@ Frames, queues, and pending requests are finite. A slow or abusive connection ca
 ## Low-level provider compatibility
 
 `createSystemMedia()` exposes normalized media discovery and transport for low-level consumers. It supports provider event subscriptions when available and polling-only fallback behavior, but it does not describe the production host topology. Use the session client for shared daemon ownership.
+
+## Community
+
+Use [GitHub Discussions](https://github.com/naxodev/ai/discussions) for usage questions and [GitHub Issues](https://github.com/naxodev/ai/issues) for reproducible defects. Report vulnerabilities through the workspace [security policy](../../SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

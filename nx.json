@@ -70,7 +70,7 @@
     },
     "version": {
       "useLegacyVersioning": false,
-      "preVersionCommand": "bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke",
+      "preVersionCommand": "bun run security:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1",
       "conventionalCommits": true,
       "updateDependents": "auto",
       "fallbackCurrentVersionResolver": "disk",

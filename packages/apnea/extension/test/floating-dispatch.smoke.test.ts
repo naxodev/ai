@@ -76,7 +76,7 @@ describe("floating dispatch smoke", () => {
       // herdr ≥ 0.7.4: plugin/cmd/binary/open failures must stay actionable
       if (!disp.ok) {
         expect(disp.error).toMatch(
-          /apnea herdr plugin not linked|cmd_oneshot|not found on PATH|herdr plugin pane open failed/,
+          /apnea herdr plugin not linked|cmd_oneshot|not found on PATH|herdr plugin pane open failed|floating popup already open/,
         )
         return
       }

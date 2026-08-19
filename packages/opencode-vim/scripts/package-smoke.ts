@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises"
@@ -12,16 +13,8 @@ import { join, resolve } from "node:path"
 const manifest = (await Bun.file(
   new URL("../package.json", import.meta.url),
 ).json()) as { dependencies: { "@opencode-ai/plugin": string } }
-const expectedOpenCode = `opencode2 v${manifest.dependencies["@opencode-ai/plugin"]}`
-const openCodeVersion = Bun.spawnSync(["opencode2", "--version"], {
-  stdout: "pipe",
-  stderr: "pipe",
-})
-if (
-  !openCodeVersion.success ||
-  openCodeVersion.stdout.toString().trim() !== expectedOpenCode
-)
-  throw new Error(`package smoke requires ${expectedOpenCode}`)
+const openCodePin = manifest.dependencies["@opencode-ai/plugin"]
+const expectedOpenCode = `opencode2 v${openCodePin}`
 
 const socket = `opencode-vim-smoke-${process.pid}-${crypto.randomUUID()}`
 const session = "smoke"
@@ -80,7 +73,11 @@ try {
     join(work, "package.json"),
     JSON.stringify({
       private: true,
-      dependencies: { "@naxodev/opencode-vim": `file:${archive}` },
+      dependencies: {
+        "@naxodev/opencode-vim": `file:${archive}`,
+        "@opencode-ai/cli": openCodePin,
+      },
+      trustedDependencies: ["@opencode-ai/cli"],
     }),
   )
 
@@ -91,6 +88,22 @@ try {
   })
   if (!install.success)
     throw new Error(`package install failed: ${install.stderr}`)
+
+  const openCodeBinary = await realpath(
+    join(work, "node_modules", ".bin", "opencode2"),
+  )
+  const openCodeVersion = Bun.spawnSync([openCodeBinary, "--version"], {
+    cwd: work,
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  if (
+    !openCodeVersion.success ||
+    openCodeVersion.stdout.toString().trim() !== expectedOpenCode
+  )
+    throw new Error(
+      `temporary OpenCode install must provide ${expectedOpenCode}`,
+    )
 
   await writeFile(
     join(work, "smoke.ts"),
@@ -153,7 +166,7 @@ export { default } from "./index.tsx"
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_VIM_SMOKE_MARKER: reloadMarker,
   }
-  const command = ["opencode2", "--standalone", "--log-level", "error", work]
+  const command = [openCodeBinary, "--standalone", "--log-level", "error", work]
     .map(shellQuote)
     .join(" ")
   let stage = "launching OpenCode"

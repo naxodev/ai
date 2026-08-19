@@ -1,6 +1,8 @@
 node_modules/
 .nx/
+.apnea/
 .DS_Store
 *.log
 *.tgz
 **/dist/
+/pr-description.md
