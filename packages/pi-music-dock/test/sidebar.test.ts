@@ -107,6 +107,26 @@ test("unsupported and missing artwork render text placeholders, not Image bytes"
 	expect(sidebar.render(30).join("\n")).toContain("loading art");
 });
 
+test("artwork states reserve one stable ten-row slot", () => {
+	// Why: the right-center overlay must not jump when a one-row loading label
+	// becomes a ten-row image after an asynchronous artwork request settles.
+	const { sidebar } = panel();
+	const states = [
+		{ kind: "empty" } as const,
+		{ kind: "loading" } as const,
+		{ kind: "unavailable" } as const,
+		{ kind: "unsupported" } as const,
+		{
+			kind: "ready",
+			artwork: { base64: PNG_1X1_BASE64, mime: "image/png" as const },
+		} as const,
+	];
+	for (const artwork of states) {
+		sidebar.update({ player: null, artwork });
+		expect(sidebar.render(30)).toHaveLength(19);
+	}
+});
+
 test("focused input delegates transport exactly once and Escape unfocuses", () => {
 	// Why: while focused the panel owns Space/arrows; those keys must map to
 	// the same single-client transport path, and Escape must return the editor.

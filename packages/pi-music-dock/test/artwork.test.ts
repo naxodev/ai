@@ -221,7 +221,7 @@ test("track artwork identity and fence key pin the exact current track", () => {
 test("catalog matching requires exact title+artist, album when present, duration ±1s", () => {
 	// Why: a wrong cover is worse than none — only the exact recording may win.
 	expect(selectArtworkUrl(target, [exactHit()])).toBe(
-		"https://is1-ssl.mzstatic.com/image/300x300bb.jpg",
+		"https://is1-ssl.mzstatic.com/image/300x300bb.png",
 	);
 	expect(
 		selectArtworkUrl(target, [{ ...exactHit(), artistName: "Someone Else" }]),
@@ -235,7 +235,7 @@ test("catalog matching requires exact title+artist, album when present, duration
 		selectArtworkUrl(target, [{ ...exactHit(), trackTimeMillis: 120_000 }]),
 	).toBeNull();
 	expect(selectArtworkUrl({ ...target, duration_ms: 0 }, [exactHit()])).toBe(
-		"https://is1-ssl.mzstatic.com/image/300x300bb.jpg",
+		"https://is1-ssl.mzstatic.com/image/300x300bb.png",
 	);
 	expect(
 		selectArtworkUrl(
@@ -362,6 +362,44 @@ test("native success avoids the catalog entirely", async () => {
 		artwork: { base64: png, mime: "image/png" },
 	});
 	expect(catalogHits).toBe(0);
+});
+
+test("native JPEG falls back to a catalog PNG compatible with Kitty rendering", async () => {
+	// Why: pi-tui's Kitty encoder declares f=100 (PNG) for every image. Passing
+	// native JPEG bytes through as ready makes Ghostty reject a blank placement.
+	let catalogHits = 0;
+	let imageUrl = "";
+	const presentation = await resolveArtworkPresentation({
+		identity: {
+			id: "t1",
+			name: target.title,
+			artists: target.artist,
+			// Match the observed VLC state: title/artist exist, but album and
+			// duration are absent. One exact catalog recording may still win.
+			album: "",
+			duration_ms: 0,
+		},
+		loadNative: async () => ({ type: "available", base64: jpeg }),
+		fetch: async (input) => {
+			const href = String(input);
+			if (href.includes("itunes.apple.com/search")) {
+				catalogHits++;
+				return jsonResponse({ results: [exactHit()] });
+			}
+			imageUrl = href;
+			return bytesResponse(PNG_1X1_BYTES, {
+				headers: { "content-type": "image/png" },
+			});
+		},
+		signal: new AbortController().signal,
+		getDimensions: safeDims,
+	});
+	expect(catalogHits).toBe(1);
+	expect(imageUrl).toEndWith("/300x300bb.png");
+	expect(presentation).toEqual({
+		kind: "ready",
+		artwork: { base64: png, mime: "image/png" },
+	});
 });
 
 test("provider failure and too-large native results use exact catalog match", async () => {
