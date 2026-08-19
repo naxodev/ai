@@ -92,8 +92,8 @@ Shortcut constants are at the top of `extensions/music-dock/index.ts`. Edit them
 
 ## Side panel behavior
 
-- **Default:** visible on wide terminals (about 100 columns or more).
-- **Responsive:** auto-hides when the terminal is narrower than about 100 columns.
+- **Default:** visible on terminals 80 columns or wider, including common 82-column Herdr split panes.
+- **Responsive:** auto-hides below 80 columns, leaving at least 50 columns beside the 30-column overlay.
 - **Size:** about 30 columns wide, up to about 90% of terminal height, anchored `right-center`.
 - **Content:** artwork (or placeholder), title, artist, album, animated waveform, progress/time, play state, and concise keyboard help. Every line is clipped to the panel width.
 - **Overlay vs real sidebar:** this is an overlay approximation. It can cover transcript text. Pi does not currently expose a layout-reserving sidebar slot for extensions.
@@ -112,7 +112,7 @@ Automated tests cannot confirm live macOS media state or terminal rendering. Ver
 
 1. Start playback and confirm the status line shows the pause icon, an animated waveform, and the current title and artist.
 2. On a wide terminal, confirm the right-center side panel shows metadata, waveform, progress, and artwork or a placeholder.
-3. Resize below about 100 columns and confirm the panel auto-hides; widen again and confirm it returns.
+3. Resize below 80 columns and confirm the panel auto-hides; widen again and confirm it returns.
 4. Run `/music-view` and `ctrl+alt+m`; confirm toggle. Run `/music-focus`, then Space / arrows / Escape.
 5. Run `/music`, `/music-next`, and `/music-prev`; confirm controls and status reflect the shared daemon state.
 6. Try `ctrl+alt+p`, `ctrl+alt+n`, and `ctrl+alt+b`; use the slash commands if the terminal intercepts a chord.

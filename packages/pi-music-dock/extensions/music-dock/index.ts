@@ -44,7 +44,7 @@ const KEY_VIEW = Key.ctrlAlt("m");
 const STATUS_KEY = "music-dock";
 /** Empty host widget key — factory only exists to receive TUI/theme and own the overlay. */
 const OVERLAY_HOST_WIDGET_KEY = "music-dock-sidebar-host";
-const SIDEBAR_MIN_COLS = 100;
+const SIDEBAR_MIN_COLS = 80;
 const SIDEBAR_WIDTH = 30;
 const SIDEBAR_MAX_HEIGHT = "90%";
 
