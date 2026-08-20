@@ -4,12 +4,15 @@ import type { PlayerState, WaveEngine } from "@naxodev/music-core";
 import { formatMs, livePlaybackPosition } from "@naxodev/music-core";
 import {
 	deleteKittyImage,
+	getCellDimensions,
+	getImageDimensions,
 	Image,
 	matchesKey,
 	Key,
 	truncateToWidth,
 	visibleWidth,
 	type Component,
+	type ImageDimensions,
 } from "@earendil-works/pi-tui";
 import type { ArtworkPresentation } from "./artwork.ts";
 import { renderWave } from "./waveform.ts";
@@ -58,7 +61,8 @@ type ImageTheme = {
 };
 
 const EMPTY_ARTWORK: ArtworkPresentation = { kind: "empty" };
-const ARTWORK_ROWS = 10;
+const ARTWORK_ROWS = 8;
+const ARTWORK_MAX_COLUMNS = 16;
 
 /**
  * Exact ownership key for a ready artwork payload.
@@ -92,6 +96,23 @@ function borderLine(left: string, fill: string, right: string, inner: number) {
 	return `${left}${fill.repeat(Math.max(0, inner))}${right}`;
 }
 
+function imageColumns(dimensions: ImageDimensions, inner: number): number {
+	const maxWidth = Math.max(
+		1,
+		Math.min(ARTWORK_MAX_COLUMNS, Math.max(1, inner - 2)),
+	);
+	const cells = getCellDimensions();
+	const widthScale =
+		(maxWidth * cells.widthPx) / Math.max(1, dimensions.widthPx);
+	const heightScale =
+		(ARTWORK_ROWS * cells.heightPx) / Math.max(1, dimensions.heightPx);
+	const scale = Math.min(widthScale, heightScale);
+	return Math.max(
+		1,
+		Math.min(maxWidth, Math.ceil((dimensions.widthPx * scale) / cells.widthPx)),
+	);
+}
+
 /**
  * Create a self-contained side panel component.
  * Host code pushes player/artwork/focus updates; the panel owns image lifecycle.
@@ -111,6 +132,7 @@ export function createMusicSidebar(
 		hiddenByUser: false,
 	};
 	let image: Image | null = null;
+	let imageDimensions: ImageDimensions | null = null;
 	let imageKey: string | undefined;
 	let disposed = false;
 	let cachedWidth: number | undefined;
@@ -143,6 +165,7 @@ export function createMusicSidebar(
 			}
 		}
 		image = null;
+		imageDimensions = null;
 		imageKey = undefined;
 	};
 
@@ -155,8 +178,9 @@ export function createMusicSidebar(
 		const key = artworkImageKey(mime, base64);
 		if (image && imageKey === key) return;
 		disposeImage();
+		imageDimensions = getImageDimensions(base64, mime);
 		image = new Image(base64, mime, imageTheme, {
-			maxWidthCells: 26,
+			maxWidthCells: ARTWORK_MAX_COLUMNS,
 			maxHeightCells: ARTWORK_ROWS,
 			filename: "artwork",
 		});
@@ -226,10 +250,10 @@ export function createMusicSidebar(
 		};
 		const placeholder = (label: string) => {
 			const lines = Array.from({ length: ARTWORK_ROWS }, () => "");
-			lines[Math.floor(ARTWORK_ROWS / 2)] = theme.fg(
-				"dim",
-				clip(`[ ${label} ]`, inner),
-			);
+			const text = clip(`[ ${label} ]`, inner);
+			const left = Math.max(0, Math.floor((inner - visibleWidth(text)) / 2));
+			lines[Math.floor(ARTWORK_ROWS / 2)] =
+				" ".repeat(left) + theme.fg("dim", text);
 			return lines;
 		};
 		if (state.artwork.kind === "loading") return placeholder("loading art");
@@ -238,10 +262,15 @@ export function createMusicSidebar(
 			return placeholder("unsupported image");
 		if (state.artwork.kind !== "ready" || !image)
 			return placeholder("no artwork");
+		const columns = imageDimensions
+			? imageColumns(imageDimensions, inner)
+			: Math.min(ARTWORK_MAX_COLUMNS, inner);
+		const left = Math.max(0, Math.floor((inner - columns) / 2));
 		const lines = image.render(inner).map((line) => {
-			// Image sequences may already fit; still guard plain fallback text.
-			if (visibleWidth(line) > inner) return clip(line, inner);
-			return line;
+			const width = visibleWidth(line);
+			if (width === 0 && line.length > 0) return " ".repeat(left) + line;
+			if (width > inner) return clip(line, inner);
+			return " ".repeat(Math.max(0, Math.floor((inner - width) / 2))) + line;
 		});
 		return reserveSlot(lines);
 	};
@@ -261,15 +290,7 @@ export function createMusicSidebar(
 		lines.push(line(title));
 		lines.push(border(borderLine("├", "─", "┤", inner)));
 
-		for (const artLine of renderArtwork(inner)) {
-			// Kitty image lines may contain only escape sequences; wrap with borders
-			// only when the line has visible text so image geometry stays intact.
-			if (visibleWidth(artLine) === 0 && artLine.length > 0) {
-				lines.push(artLine);
-			} else {
-				lines.push(line(artLine));
-			}
-		}
+		for (const artLine of renderArtwork(inner)) lines.push(line(artLine));
 
 		const track = state.player?.track;
 		if (track) {

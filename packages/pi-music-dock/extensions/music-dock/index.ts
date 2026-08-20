@@ -108,6 +108,26 @@ function errMsg(error: unknown): string {
 		: String(error);
 }
 
+function withArtworkDuration(
+	player: PlayerState | null,
+	artwork: ArtworkPresentation,
+): PlayerState | null {
+	const duration =
+		artwork.kind === "ready" ? artwork.artwork.duration_ms : undefined;
+	if (
+		!player?.track ||
+		player.track.duration_ms > 0 ||
+		!duration ||
+		!Number.isFinite(duration) ||
+		duration <= 0
+	)
+		return player;
+	return {
+		...player,
+		track: { ...player.track, duration_ms: duration },
+	};
+}
+
 export function createMusicDock(
 	pi: ExtensionAPI,
 	overrides: Partial<MusicDockDependencies> = {},
@@ -143,12 +163,14 @@ export function createMusicDock(
 		patch: Partial<MusicSidebarState> = {},
 	) => {
 		if (!session.sidebar || !isLive(session)) return;
+		const artwork = patch.artwork ?? session.artwork;
+		const player = patch.player !== undefined ? patch.player : session.player;
 		session.sidebar.update({
-			player: session.player,
-			artwork: session.artwork,
+			artwork,
 			focused: session.focused,
 			hiddenByUser: session.userHidden,
 			...patch,
+			player: withArtworkDuration(player, artwork),
 		});
 	};
 

@@ -398,7 +398,11 @@ test("native JPEG falls back to a catalog PNG compatible with Kitty rendering", 
 	expect(imageUrl).toEndWith("/300x300bb.png");
 	expect(presentation).toEqual({
 		kind: "ready",
-		artwork: { base64: png, mime: "image/png" },
+		artwork: {
+			base64: png,
+			mime: "image/png",
+			duration_ms: 335_400,
+		},
 	});
 });
 
@@ -595,5 +599,6 @@ test("current live track-style metadata resolves through catalog", async () => {
 	);
 	expect(resolved).not.toBeNull();
 	expect(resolved?.mime).toBe("image/png");
+	expect(resolved?.duration_ms).toBe(335_400);
 	expect(detectImageMimeFromBase64(resolved!.base64)).toBe("image/png");
 });

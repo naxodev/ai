@@ -625,6 +625,18 @@ test("provider failure falls back to catalog art and paints ready presentation",
 	// Why: media-control often fails native art (~1.5MB beyond daemon bound).
 	// Without catalog fallback the live panel shows "no artwork" for real tracks.
 	const client = new FakeClient();
+	client.state = {
+		daemonInstanceId: client.daemonInstanceId,
+		revision: client.selectedRevision,
+		state: {
+			...player(),
+			track: {
+				...player().track!,
+				album: "",
+				duration_ms: 0,
+			},
+		},
+	};
 	client.artworkResult = async () => {
 		throw new Error("PROVIDER_FAILURE");
 	};
@@ -663,6 +675,9 @@ test("provider failure falls back to catalog art and paints ready presentation",
 	expect(rendered).not.toContain("no artwork");
 	expect(rendered).not.toContain("loading art");
 	expect(rendered).toContain("Song");
+	// Catalog metadata fills only the presentation gap; daemon state remains
+	// authoritative and can replace it when richer provider data arrives.
+	expect(rendered).toContain("/ 0:10");
 	await dock.shutdown();
 });
 
