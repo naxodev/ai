@@ -717,8 +717,9 @@ export type MusicSessionDiscovery =
   | { readonly type: "stale"; readonly cleanup: () => Promise<void> }
 
 /**
- * Performs one managed-runtime inspection and hello. It intentionally never
- * starts, signals, retries, or replaces a daemon generation.
+ * Performs one managed-runtime inspection and hello. It never starts, signals,
+ * or replaces a daemon generation. A retryable reset gets one fresh hello only
+ * after the startup marker disappears; persistent unknown peers stay occupied.
  */
 export async function discoverMusicSession(
   options: MusicSessionDiscoveryOptions,
@@ -742,40 +743,61 @@ export async function discoverMusicSession(
         throw new Error("invalid managed runtime probe result")
     }
   }
-  if (!probe.socketPath) return nonEndpoint()
-  try {
+  const socketPath = probe.socketPath
+  if (!socketPath) return nonEndpoint()
+  const connect = async (): Promise<MusicSessionDiscovery> => {
     const client = await createMusicSessionClient({
       ...options,
-      socketPath: probe.socketPath,
+      socketPath,
     })
-    const found = await probe.healthy(client)
-    if (found.type !== "healthy")
-      throw new Error("invalid managed runtime healthy probe")
-    return found.cleanup
-      ? { type: "healthy", client, cleanup: found.cleanup }
-      : { type: "healthy", client }
+    try {
+      const found = await probe.healthy(client)
+      if (found.type !== "healthy")
+        throw new Error("invalid managed runtime healthy probe")
+      return found.cleanup
+        ? { type: "healthy", client, cleanup: found.cleanup }
+        : { type: "healthy", client }
+    } catch (cause) {
+      client.dispose()
+      throw cause
+    }
+  }
+  const incompatible = (cause: unknown) =>
+    cause instanceof MusicSessionClientError &&
+    cause.code === "INCOMPATIBLE_PROTOCOL"
+  const refused = (cause: unknown) =>
+    cause instanceof MusicSessionClientError &&
+    cause.transportCode !== undefined &&
+    ["ECONNREFUSED", "ENOENT"].includes(cause.transportCode)
+  const retryableReset = (cause: unknown) =>
+    cause instanceof MusicSessionClientError &&
+    cause.code === "CONNECTION_LOST" &&
+    cause.retryable
+
+  try {
+    return await connect()
   } catch (cause) {
-    if (
-      cause instanceof MusicSessionClientError &&
-      cause.code === "INCOMPATIBLE_PROTOCOL"
-    )
-      return { type: "incompatible", error: cause }
-    if (
-      cause instanceof MusicSessionClientError &&
-      cause.transportCode &&
-      ["ECONNREFUSED", "ENOENT"].includes(cause.transportCode)
-    )
-      return nonEndpoint()
-    // A reset is retryable only when an independently proven live startup
-    // marker still owns this generation. A malformed/unmarked peer remains
-    // occupied and never gains cleanup authority.
-    if (
-      cause instanceof MusicSessionClientError &&
-      cause.code === "CONNECTION_LOST" &&
-      cause.retryable &&
-      (await probe.starting()) === "starting"
-    )
-      return { type: "starting" }
+    if (incompatible(cause))
+      return { type: "incompatible", error: cause as MusicSessionClientError }
+    if (refused(cause)) return nonEndpoint()
+    if (retryableReset(cause)) {
+      // A live, unchanged marker still owns the pre-hello generation. If the
+      // winner released it while this hello was in flight, confirm once against
+      // the now-ready owner-only endpoint. This grants no cleanup authority.
+      if ((await probe.starting()) === "starting") return { type: "starting" }
+      try {
+        return await connect()
+      } catch (confirmationCause) {
+        if (incompatible(confirmationCause))
+          return {
+            type: "incompatible",
+            error: confirmationCause as MusicSessionClientError,
+          }
+        // Confirmation never inherits stale-cleanup authority from the first
+        // reset. A disappeared or replaced endpoint remains fail-closed.
+        if (refused(confirmationCause)) return { type: "occupied" }
+      }
+    }
     return { type: "occupied" }
   }
 }
