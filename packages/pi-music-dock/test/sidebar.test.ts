@@ -128,7 +128,7 @@ test("artwork states reserve one stable compact slot", () => {
 	];
 	for (const artwork of states) {
 		sidebar.update({ player: null, artwork });
-		expect(sidebar.render(30)).toHaveLength(17);
+		expect(sidebar.render(30)).toHaveLength(18);
 	}
 });
 
@@ -141,18 +141,25 @@ test("Kitty artwork is centered inside both panel borders", () => {
 		const { sidebar } = panel();
 		sidebar.update({
 			player: player(),
+			engine: createEngine(16, "spacing"),
 			artwork: {
 				kind: "ready",
 				artwork: { base64: PNG_1X1_BASE64, mime: "image/png" },
 			},
 		});
-		const imageLine = sidebar
-			.render(30)
-			.find((line) => line.includes("\x1b_G"));
+		const lines = sidebar.render(30);
+		const imageIndex = lines.findIndex((line) => line.includes("\x1b_G"));
+		const statusIndex = lines.findIndex((line) => line.includes("Playing"));
+		const progressIndex = lines.findIndex((line) => line.includes(" / "));
+		const imageLine = lines[imageIndex];
 		expect(imageLine).toBeDefined();
 		expect(imageLine).toStartWith(`│${" ".repeat(6)}\x1b_G`);
 		expect(imageLine).toEndWith("│");
 		expect(visibleWidth(imageLine!)).toBe(30);
+		// One bordered row separates the physical eight-row image from metadata.
+		expect(statusIndex - imageIndex).toBe(9);
+		// A second row keeps the animated waveform distinct from progress.
+		expect(lines[progressIndex - 1]).toBe(`│${" ".repeat(28)}│`);
 	} finally {
 		resetCapabilitiesCache();
 	}

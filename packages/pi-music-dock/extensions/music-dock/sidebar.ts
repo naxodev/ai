@@ -291,6 +291,7 @@ export function createMusicSidebar(
 		lines.push(border(borderLine("├", "─", "┤", inner)));
 
 		for (const artLine of renderArtwork(inner)) lines.push(line(artLine));
+		lines.push(line(""));
 
 		const track = state.player?.track;
 		if (track) {
@@ -321,6 +322,7 @@ export function createMusicSidebar(
 				const wave = renderWave(state.engine, playing);
 				// Wave is fixed engine width; clip if the panel is narrower.
 				lines.push(line(` ${clip(wave, Math.max(1, inner - 1))}`));
+				lines.push(line(""));
 			}
 
 			const duration = Math.max(0, track.duration_ms);
