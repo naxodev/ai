@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { createEngine, type PlayerState } from "@naxodev/music-core";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import {
+	resetCapabilitiesCache,
+	setCapabilities,
+	setCellDimensions,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import {
 	artworkImageKey,
 	createMusicSidebar,
@@ -107,9 +112,9 @@ test("unsupported and missing artwork render text placeholders, not Image bytes"
 	expect(sidebar.render(30).join("\n")).toContain("loading art");
 });
 
-test("artwork states reserve one stable ten-row slot", () => {
-	// Why: the right-center overlay must not jump when a one-row loading label
-	// becomes a ten-row image after an asynchronous artwork request settles.
+test("artwork states reserve one stable compact slot", () => {
+	// Why: the right-center overlay must not jump when a loading label becomes
+	// an image, but ten rows made the panel dominate a common split pane.
 	const { sidebar } = panel();
 	const states = [
 		{ kind: "empty" } as const,
@@ -123,7 +128,33 @@ test("artwork states reserve one stable ten-row slot", () => {
 	];
 	for (const artwork of states) {
 		sidebar.update({ player: null, artwork });
-		expect(sidebar.render(30)).toHaveLength(19);
+		expect(sidebar.render(30)).toHaveLength(17);
+	}
+});
+
+test("Kitty artwork is centered inside both panel borders", () => {
+	// Why: a zero-width image sequence at column zero paints over the left
+	// border. Prefixing the measured placement keeps a compact cover contained.
+	setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+	setCellDimensions({ widthPx: 9, heightPx: 18 });
+	try {
+		const { sidebar } = panel();
+		sidebar.update({
+			player: player(),
+			artwork: {
+				kind: "ready",
+				artwork: { base64: PNG_1X1_BASE64, mime: "image/png" },
+			},
+		});
+		const imageLine = sidebar
+			.render(30)
+			.find((line) => line.includes("\x1b_G"));
+		expect(imageLine).toBeDefined();
+		expect(imageLine).toStartWith(`│${" ".repeat(6)}\x1b_G`);
+		expect(imageLine).toEndWith("│");
+		expect(visibleWidth(imageLine!)).toBe(30);
+	} finally {
+		resetCapabilitiesCache();
 	}
 });
 

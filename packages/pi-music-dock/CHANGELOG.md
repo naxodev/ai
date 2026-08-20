@@ -17,8 +17,9 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 
 ### Fixed
 
-- Reserve a stable ten-row artwork slot so asynchronous cover loading does not shift the centered panel.
-- Request catalog artwork as PNG and reject incompatible native formats before Kitty rendering.
+- Reserve a stable compact artwork slot so asynchronous loading does not shift the centered panel.
+- Center Kitty artwork inside both panel borders instead of painting over the left edge.
+- Request catalog artwork as PNG and use exact catalog duration when provider metadata is sparse.
 
 ## [0.1.0] - 2026-08-06
 

@@ -27,6 +27,8 @@ export type SupportedArtworkMime =
 export type ResolvedArtwork = {
 	readonly base64: string;
 	readonly mime: SupportedArtworkMime;
+	/** Exact catalog duration used only when provider presentation is sparse. */
+	readonly duration_ms?: number;
 };
 
 export type ArtworkPresentation =
@@ -399,8 +401,13 @@ export async function resolveCatalogArtwork(
 		const payload = JSON.parse(new TextDecoder().decode(responseBytes)) as {
 			results?: CatalogTrack[];
 		};
-		const artworkUrl = selectArtworkUrl(target, payload.results ?? []);
+		const results = payload.results ?? [];
+		const artworkUrl = selectArtworkUrl(target, results);
 		if (!artworkUrl) return null;
+		const catalogDuration = selectCatalogTrack(
+			target,
+			results,
+		)?.trackTimeMillis;
 		const bytes = await downloadCatalogImage(artworkUrl, fetcher, signal);
 		if (!bytes || signal?.aborted) return null;
 		const mime = detectImageMimeFromBytes(bytes);
@@ -408,7 +415,10 @@ export async function resolveCatalogArtwork(
 		const base64 = Buffer.from(bytes).toString("base64");
 		// Catalog bytes are untrusted too — reject bombs; no second fallback loop.
 		const accepted = acceptResolvedArtwork(base64, mime, getDimensions);
-		return accepted.kind === "ready" ? accepted.artwork : null;
+		if (accepted.kind !== "ready") return null;
+		return catalogDuration
+			? { ...accepted.artwork, duration_ms: catalogDuration }
+			: accepted.artwork;
 	} catch {
 		return null;
 	}
