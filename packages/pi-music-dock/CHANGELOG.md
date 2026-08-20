@@ -18,7 +18,8 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 ### Fixed
 
 - Reserve a stable compact artwork slot so asynchronous loading does not shift the centered panel.
-- Center Kitty artwork inside both panel borders instead of painting over the left edge.
+- Center Kitty artwork inside both panel borders and separate it from metadata.
+- Separate the animated waveform from the progress row.
 - Request catalog artwork as PNG and use exact catalog duration when provider metadata is sparse.
 
 ## [0.1.0] - 2026-08-06
