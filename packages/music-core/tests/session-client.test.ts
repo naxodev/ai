@@ -116,6 +116,7 @@ const test: SessionTestFn = createSessionTest(
     "simulated foreign socket and marker ownership fail closed without cleanup",
     "malformed and reset managed peers stay occupied without cleanup",
     "a retryable reset with a live startup marker remains starting",
+    "startup waiter confirms the daemon after its marker is released during hello",
     "terminal reset and malformed peers do not borrow live-marker authority",
     "reset classification fails closed when endpoint or marker changes during inspection",
     "reset classification rejects an in-place marker generation rewrite",
@@ -3263,7 +3264,9 @@ test("malformed and reset managed peers stay occupied without cleanup", async ()
       })
       await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
       let closed: Promise<void> | undefined
+      let connections = 0
       server = net.createServer((socket) => {
+        connections++
         closed = new Promise<void>((resolve) => socket.once("close", resolve))
         if (mode === "malformed") socket.end("not json\\n")
         else socket.destroy()
@@ -3280,6 +3283,9 @@ test("malformed and reset managed peers stay occupied without cleanup", async ()
       })
       expect(found.type).toBe("occupied")
       expect("cleanup" in found).toBe(false)
+      // Malformed frames are terminal immediately. A transport reset gets
+      // exactly one confirmation, never an unbounded trust/retry loop.
+      expect(connections).toBe(mode === "reset" ? 2 : 1)
       await closed
       expect((await lstat(runtime.socketPath)).isSocket()).toBe(true)
     } finally {
@@ -3316,6 +3322,63 @@ test("a retryable reset with a live startup marker remains starting", async () =
     expect("cleanup" in found).toBe(false)
     expect((await lstat(runtime.socketPath)).isSocket()).toBe(true)
     await acquired.lease.release()
+  } finally {
+    await new Promise<void>(
+      (resolve) => server?.close(() => resolve()) ?? resolve(),
+    )
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("startup waiter confirms the daemon after its marker is released during hello", async () => {
+  // Why: simultaneous Pi launches can connect while the winning startup marker
+  // still exists, then observe a reset after the winner releases that marker.
+  // One fresh hello must adopt the now-ready daemon instead of terminally
+  // classifying the owner-only endpoint as an unknown peer.
+  const root = await mkdtemp("/tmp/music-session-post-marker-confirm-")
+  let server: net.Server | undefined
+  try {
+    const runtime = resolveMusicSessionRuntimePaths({
+      root,
+      uid: process.getuid?.() ?? -1,
+    })
+    const acquired = await acquireStartupMarkerLease(runtime)
+    if (acquired.type !== "acquired") throw new Error("expected marker lease")
+    let connections = 0
+    server = net.createServer(async (connection) => {
+      connections++
+      if (connections === 1) {
+        await acquired.lease.release()
+        connection.destroy()
+        return
+      }
+      const framer = new NdjsonFramer()
+      connection.on("data", (chunk) => {
+        for (const frame of framer.push(chunk) as ScriptedFrame[])
+          if (frame.type === "hello")
+            connection.write(
+              `${JSON.stringify({ type: "response", requestId: 0, ok: true, data: { daemonInstanceId: "post-marker-daemon", packageVersion: "test", protocol: { major: 1, minRevision: 0, maxRevision: 1, selectedRevision: 1 }, capabilities: ["state-replay", "transport"] } })}\n`,
+            )
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject)
+      server!.listen(runtime.socketPath, resolve)
+    })
+    await chmod(runtime.socketPath, 0o600)
+
+    const found = await discoverMusicSession({
+      runtime,
+      clientId: "post-marker-confirm",
+      hostKind: "pi",
+    })
+    expect(found.type).toBe("healthy")
+    expect(connections).toBe(2)
+    if (found.type === "healthy") {
+      expect(found.client.daemonInstanceId).toBe("post-marker-daemon")
+      found.client.dispose()
+    }
+    expect(existsSync(runtime.markerPath)).toBe(false)
   } finally {
     await new Promise<void>(
       (resolve) => server?.close(() => resolve()) ?? resolve(),
