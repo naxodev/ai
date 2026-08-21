@@ -129,12 +129,18 @@ function harness(
     duration_ms: target.duration_ms,
   }),
 ) {
+  const session = {
+    loading: false,
+    error: null as string | null,
+    player: null as PlayerState | null,
+  }
   const toasts: unknown[] = []
   const context = {
     storage: {
-      memory: () => {
-        throw new Error("live playback state must not use host storage")
-      },
+      memory: () => [
+        session,
+        (update: (draft: typeof session) => void) => update(session),
+      ],
     },
     ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
   }

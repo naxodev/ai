@@ -5,7 +5,7 @@ import { isMac, mergeArtworkCompletion, type SessionMedia } from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
 
 type Context = Plugin.Context
-type SessionStore = UiState
+type SessionStore = UiState & { loadingOwners?: string[] }
 type SeekIntent = {
   positionMs: number
   resolves: Array<() => void>
@@ -13,7 +13,6 @@ type SeekIntent = {
 
 export type Controller = {
   session: SessionStore
-  subscribe: (listener: (session: SessionStore) => void) => () => void
   openApp: () => Promise<void>
   refreshAll: () => Promise<void>
   playPause: () => Promise<void>
@@ -83,16 +82,18 @@ export function createController(
   context: Context,
   dependencies: ControllerDependencies = controllerDependencies,
 ): Controller {
-  const session: SessionStore = {
-    loading: false,
-    error: null,
-    player: null,
-  }
-  const sessionListeners = new Set<(session: SessionStore) => void>()
-  const setSession = (update: (draft: SessionStore) => void) => {
-    update(session)
-    for (const listener of sessionListeners) listener(session)
-  }
+  const [session, setSession] = context.storage.memory<SessionStore>(
+    "music-player.session.v6",
+    {
+      initial: {
+        loading: false,
+        loadingOwners: [],
+        error: null,
+        player: null,
+      },
+    },
+  )
+  const loadingOwner = crypto.randomUUID()
   const media = dependencies.createSessionMedia()
   let disposed = false
   let lifecycleGeneration = 0
@@ -134,11 +135,17 @@ export function createController(
     transportError = message
     publishError()
   }
-  const updateLoading = () => {
-    if (!isActive()) return
+  const setLoadingOwner = (active: boolean) => {
     setSession((draft) => {
-      draft.loading = pending.size > 0
+      const owners = new Set(draft.loadingOwners ?? [])
+      if (active) owners.add(loadingOwner)
+      else owners.delete(loadingOwner)
+      draft.loadingOwners = [...owners]
+      draft.loading = owners.size > 0
     })
+  }
+  const updateLoading = () => {
+    if (isActive()) setLoadingOwner(pending.size > 0)
   }
   const settle = (resolve: () => void) => {
     if (!pending.delete(resolve)) return
@@ -289,11 +296,6 @@ export function createController(
 
   return {
     session,
-    subscribe(listener) {
-      sessionListeners.add(listener)
-      listener(session)
-      return () => sessionListeners.delete(listener)
-    },
     refreshAll,
     async openApp() {
       if (!isActive()) return
@@ -326,12 +328,7 @@ export function createController(
       activeSeek = null
       for (const resolve of [...pending]) settle(resolve)
       void media.dispose().catch(() => {})
-      if (session.loading) {
-        setSession((draft) => {
-          draft.loading = false
-        })
-      }
-      sessionListeners.clear()
+      setLoadingOwner(false)
     },
   }
 }
@@ -380,7 +377,6 @@ function AppHost(props: { context: Context; ctrl: Controller }) {
     <CompactPlayer
       context={context}
       state={ctrl.session}
-      subscribe={ctrl.subscribe}
       onPlayPause={() => void ctrl.playPause()}
       onSeek={(positionMs) => void ctrl.seek(positionMs)}
     />
@@ -413,23 +409,34 @@ export function createMusicPlayerPlugin(options?: {
               }
             : controllerDependencies,
         )
+      // Slot renderers must observe host-owned state before package components run.
+      const observeSession = () => {
+        void ctrl.session.loading
+        void ctrl.session.error
+        void ctrl.session.player
+      }
       const unsubApp = context.ui.slot({
         append: "session.composer.top",
-        render: () => <AppHost context={context} ctrl={ctrl} />,
+        render: () => {
+          observeSession()
+          return <AppHost context={context} ctrl={ctrl} />
+        },
       })
       const unsubSidebar = context.ui.slot({
         append: "sidebar.content",
-        render: () => (
-          <SidebarPlayer
-            context={context}
-            state={ctrl.session}
-            subscribe={ctrl.subscribe}
-            onPlayPause={() => void ctrl.playPause()}
-            onNext={() => void ctrl.next()}
-            onPrev={() => void ctrl.prev()}
-            onSeek={(positionMs) => void ctrl.seek(positionMs)}
-          />
-        ),
+        render: () => {
+          observeSession()
+          return (
+            <SidebarPlayer
+              context={context}
+              state={ctrl.session}
+              onPlayPause={() => void ctrl.playPause()}
+              onNext={() => void ctrl.next()}
+              onPrev={() => void ctrl.prev()}
+              onSeek={(positionMs) => void ctrl.seek(positionMs)}
+            />
+          )
+        },
       })
       return () => {
         unsubApp()

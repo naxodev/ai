@@ -205,38 +205,75 @@ console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-musi
       )
 
   const packageDir = join(nodeModules, "@naxodev", "opencode-music-player")
-  const tuiEntry = join(packageDir, "index.tsx")
+  const packageEntry = join(packageDir, "index.tsx")
+  const tuiEntry = join(packageDir, "tui.tsx")
   const originalEntry = join(packageDir, "index.original.tsx")
-  await rename(tuiEntry, originalEntry)
+  await rename(packageEntry, originalEntry)
   const fixtureSource = `import { createController, createMusicPlayerPlugin } from "./index.original.tsx"
 
 const track = {
+  uri: "system:smoke-track",
   id: "smoke-track",
   name: "SMOKE COMPACT TRACK MARKER",
   artists: "SMOKE COMPACT ARTIST MARKER",
   album: "Smoke album",
   duration_ms: 245000,
   artwork: null,
+  artwork_loading: true,
 }
 let playing = true
+let publishSnapshot = () => {}
+let publishArtwork = () => {}
+const mountedSlots = new Set()
+const updateTimers = []
+let updatesScheduled = false
+
+const scheduleUpdates = () => {
+  if (updatesScheduled || mountedSlots.size < 2) return
+  updatesScheduled = true
+  updateTimers.push(setTimeout(() => publishSnapshot(), 100))
+  updateTimers.push(setTimeout(() => publishArtwork(), 300))
+}
+
+const player = () => ({
+  track,
+  is_playing: playing,
+  progress_ms: 123000,
+  shuffle: false,
+  repeat: "off",
+  device: null,
+  fetched_at: Date.now(),
+})
 
 const plugin = createMusicPlayerPlugin({
   createController: (context) => {
     return createController(context, {
       createSessionMedia: () => ({
-        player: async () => ({
-          track,
-          is_playing: playing,
-          progress_ms: 123000,
-          fetched_at: Date.now(),
-        }),
+        player: async () => null,
         play: async () => { playing = true },
         pause: async () => { playing = false },
         next: async () => {},
         previous: async () => {},
         seek: async () => {},
-        subscribe: () => () => {},
-        subscribePresentation: () => () => {},
+        subscribe: (listener) => {
+          publishSnapshot = () => listener({ type: "snapshot", state: player() })
+          return () => { publishSnapshot = () => {} }
+        },
+        subscribePresentation: (listener) => {
+          publishArtwork = () => listener({
+            type: "artwork-completion",
+            identity: {
+              uid: track.id,
+              title: track.name,
+              artist: track.artists,
+              album: track.album,
+              duration_ms: track.duration_ms,
+            },
+            artwork: null,
+            duration_ms: track.duration_ms,
+          })
+          return () => { publishArtwork = () => {} }
+        },
         dispose: async () => {},
       }),
     })
@@ -246,17 +283,36 @@ const plugin = createMusicPlayerPlugin({
 export default {
   ...plugin,
   async setup(context) {
-    const dispose = await plugin.setup(context)
+    const fixtureContext = {
+      ...context,
+      ui: {
+        ...context.ui,
+        slot(claim) {
+          return context.ui.slot({
+            ...claim,
+            render(props) {
+              mountedSlots.add(claim.append)
+              scheduleUpdates()
+              return claim.render(props)
+            },
+          })
+        },
+      },
+    }
+    const dispose = await plugin.setup(fixtureContext)
     const session = await context.client.session.create({
       title: "Music player smoke",
     })
     await context.data.session.sync(session.id)
     context.ui.router.navigate({ type: "session", sessionID: session.id })
-    return dispose
+    return async () => {
+      for (const timer of updateTimers) clearTimeout(timer)
+      await dispose?.()
+    }
   },
 }
 `
-  await writeFile(tuiEntry, fixtureSource)
+  await writeFile(packageEntry, fixtureSource)
 
   const config = join(root, "config")
   await mkdir(config)
@@ -329,6 +385,11 @@ export default {
     const expanded = capturePane()
     if (!expanded.includes("Smoke album"))
       throw new Error("expanded sidebar did not render its track metadata")
+    if (
+      !expanded.includes("Artwork unavailable") ||
+      expanded.includes("Loading artwork")
+    )
+      throw new Error("expanded sidebar did not settle delayed artwork")
     if (occurrences(expanded, "SMOKE COMPACT TRACK MARKER") !== 2)
       throw new Error("expanded host did not render track in both real slots")
     if (occurrences(expanded, "⏸") < 2)
@@ -340,7 +401,7 @@ export default {
 
     await terminateTmux()
     await writeFile(
-      tuiEntry,
+      packageEntry,
       fixtureSource.replace("let playing = true", "let playing = false"),
     )
     launchTui()
