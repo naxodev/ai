@@ -67,7 +67,7 @@
     "validate": "bun run format:check && bun run check && bun run test && bun run pack:check"
   },
   "dependencies": {
-    "@naxodev/music-core": "^0.1.0",
+    "@naxodev/music-core": "^0.1.1",
     "@opencode-ai/plugin": "0.0.0-next-17444",
     "@opentui/core": "0.5.3",
     "@opentui/solid": "0.5.3",
