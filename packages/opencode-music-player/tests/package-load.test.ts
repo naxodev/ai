@@ -158,8 +158,14 @@ test("setup shares one session and persistent keymap across sidebar remounts", a
       },
     },
   )
+  const sessionListeners = new Set<(state: typeof session) => void>()
   const controller = {
     session,
+    subscribe(listener: (state: typeof session) => void) {
+      sessionListeners.add(listener)
+      listener(session)
+      return () => sessionListeners.delete(listener)
+    },
     openApp: async () => {},
     refreshAll: async () => {},
     playPause: async () => {},
@@ -219,6 +225,16 @@ test("setup shares one session and persistent keymap across sidebar remounts", a
   )
   await app.waitForFrame((frame) => frame.includes("Shared session track"))
   expect(keymapLayers).toBe(1)
+  const replacement = {
+    ...session,
+    player: {
+      ...session.player,
+      track: { ...session.player.track, id: "async", name: "Async track" },
+      is_playing: false,
+    },
+  }
+  for (const listener of sessionListeners) listener(replacement)
+  await app.waitForFrame((frame) => frame.includes("Async track"))
 
   mountedView = "sidebar-first"
   const firstSidebar = await testRender(

@@ -28,5 +28,5 @@ test("SidebarPlayer keeps transport as the playback-state affordance", () => {
 test("SidebarPlayer keeps loading, empty, and error feedback", () => {
   expect(uiSource).toContain("Syncing…")
   expect(uiSource).toContain("Nothing playing")
-  expect(uiSource).toMatch(/props\.state\.error/)
+  expect(uiSource).toMatch(/state\.error/)
 })

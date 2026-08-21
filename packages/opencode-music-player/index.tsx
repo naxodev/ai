@@ -1,6 +1,5 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode-ai/plugin/tui"
-import { createStore, produce } from "solid-js/store"
 import { createSessionSystemMedia, openNowPlayingApp } from "./system-media.ts"
 import { isMac, mergeArtworkCompletion, type SessionMedia } from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
@@ -14,6 +13,7 @@ type SeekIntent = {
 
 export type Controller = {
   session: SessionStore
+  subscribe: (listener: (session: SessionStore) => void) => () => void
   openApp: () => Promise<void>
   refreshAll: () => Promise<void>
   playPause: () => Promise<void>
@@ -83,14 +83,16 @@ export function createController(
   context: Context,
   dependencies: ControllerDependencies = controllerDependencies,
 ): Controller {
-  // Host storage may use another Solid runtime when this plugin comes from npm.
-  const [session, setSessionStore] = createStore<SessionStore>({
+  const session: SessionStore = {
     loading: false,
     error: null,
     player: null,
-  })
-  const setSession = (update: (draft: SessionStore) => void) =>
-    setSessionStore(produce(update))
+  }
+  const sessionListeners = new Set<(session: SessionStore) => void>()
+  const setSession = (update: (draft: SessionStore) => void) => {
+    update(session)
+    for (const listener of sessionListeners) listener(session)
+  }
   const media = dependencies.createSessionMedia()
   let disposed = false
   let lifecycleGeneration = 0
@@ -287,6 +289,11 @@ export function createController(
 
   return {
     session,
+    subscribe(listener) {
+      sessionListeners.add(listener)
+      listener(session)
+      return () => sessionListeners.delete(listener)
+    },
     refreshAll,
     async openApp() {
       if (!isActive()) return
@@ -324,6 +331,7 @@ export function createController(
           draft.loading = false
         })
       }
+      sessionListeners.clear()
     },
   }
 }
@@ -372,6 +380,7 @@ function AppHost(props: { context: Context; ctrl: Controller }) {
     <CompactPlayer
       context={context}
       state={ctrl.session}
+      subscribe={ctrl.subscribe}
       onPlayPause={() => void ctrl.playPause()}
       onSeek={(positionMs) => void ctrl.seek(positionMs)}
     />
@@ -414,6 +423,7 @@ export function createMusicPlayerPlugin(options?: {
           <SidebarPlayer
             context={context}
             state={ctrl.session}
+            subscribe={ctrl.subscribe}
             onPlayPause={() => void ctrl.playPause()}
             onNext={() => void ctrl.next()}
             onPrev={() => void ctrl.prev()}
