@@ -149,7 +149,7 @@ jobs:
 
       - name: Publish source package with OIDC and provenance
         if: steps.published.outputs.skip != 'true'
-        run: npm publish "packages/${{ steps.release.outputs.project }}" --access public --provenance --tag "${{ steps.release.outputs.dist_tag }}"
+        run: npm publish "./packages/${{ steps.release.outputs.project }}" --access public --provenance --tag "${{ steps.release.outputs.dist_tag }}"
         env:
           npm_config_registry: https://registry.npmjs.org
 
