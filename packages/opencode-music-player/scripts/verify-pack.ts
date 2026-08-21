@@ -3,9 +3,14 @@ const expectedFiles = new Set([
   "LICENSE",
   "README.md",
   "SUPPORT.md",
+  "artwork-placement.ts",
+  "artwork.ts",
+  "artwork.tsx",
   "index.tsx",
+  "kitty-graphics.ts",
   "package.json",
   "system-media.ts",
+  "tmux-offset.ts",
   "types.ts",
   "ui.tsx",
   "waveform.tsx",
@@ -27,9 +32,7 @@ for (const expected of expectedFiles) {
 }
 
 for (const file of files) {
-  if (file.startsWith("tests/") || file.startsWith("scripts/")) {
-    throw new Error(`npm package contains development file ${file}`)
-  }
+  if (!expectedFiles.has(file)) throw new Error(`npm package contains ${file}`)
 }
 
 console.log(`Verified npm package contents (${files.size} files)`)

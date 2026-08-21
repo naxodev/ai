@@ -52,7 +52,7 @@
     "test": "bun test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "pack:check": "npm pack --dry-run",
+    "pack:check": "bun scripts/verify-pack.ts",
     "smoke:package": "bun scripts/package-smoke.ts"
   },
   "dependencies": {

@@ -1,8 +1,13 @@
 # Changelog
 
-This file records the standalone `0.1.0` release. Later versions use generated [GitHub release notes](https://github.com/naxodev/ai/releases?q=opencode-music-player).
+This file records the initial package release. Later versions use generated [GitHub release notes](https://github.com/naxodev/ai/releases?q=opencode-music-player).
 
-## [Unreleased]
+## [0.1.0] - 2026-08-20
+
+### Added
+
+- Initial macOS system Now Playing integration for the OpenCode 2 TUI.
+- Playback controls, progress display, expandable details, and waveform visualization.
 
 ### Changed
 
@@ -18,12 +23,4 @@ This file records the standalone `0.1.0` release. Later versions use generated [
 
 - Re-anchor native album artwork and remove stale Kitty images when its sidebar slot moves or resizes.
 
-## [0.1.0] - 2026-08-06
-
-### Added
-
-- Initial macOS system Now Playing footer for the OpenCode 2 TUI.
-- Playback controls, progress display, expandable details, and waveform visualization.
-
-[Unreleased]: https://github.com/naxodev/ai/compare/opencode-music-player@v0.1.0...HEAD
 [0.1.0]: https://github.com/naxodev/ai/releases/tag/opencode-music-player@v0.1.0

@@ -7,17 +7,26 @@
   "workspaces": [
     "packages/*"
   ],
+  "overrides": {
+    "@babel/core": "7.29.7",
+    "brace-expansion": "5.0.9"
+  },
   "scripts": {
-    "check": "bun run format:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check smoke",
+    "check": "bun run format:check && bun run security:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "release:dry-run": "bunx nx release --skip-publish --dry-run",
-    "policy:check": "bun test scripts"
+    "policy:check": "bun test scripts",
+    "security:check": "bun audit"
   },
   "devDependencies": {
     "@nx/js": "23.1.1",
     "nx": "23.1.1",
     "prettier": "3.9.6",
     "typescript": "6.0.3"
+  },
+  "patchedDependencies": {
+    "minimatch@8.0.7": "patches/minimatch@8.0.7.patch",
+    "minimatch@9.0.9": "patches/minimatch@9.0.9.patch"
   }
 }

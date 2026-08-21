@@ -85,25 +85,6 @@ jobs:
       - name: Upgrade npm for trusted publishing
         run: npm install --global npm@11
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install tested OpenCode CLI
-        if: startsWith(steps.release.outputs.project, 'opencode-')
-        env:
-          PROJECT: ${{ steps.release.outputs.project }}
-        run: |
-          OPENCODE_VERSION=$(node -p "require('./packages/$PROJECT/package.json').dependencies['@opencode-ai/plugin']")
-          bun add --global --trust "@opencode-ai/cli@$OPENCODE_VERSION"
-
-      - name: Install TUI test dependencies
-        if: startsWith(steps.release.outputs.project, 'opencode-')
-        run: brew install tmux
-
-      - name: Install Neovim parity oracle
-        if: steps.release.outputs.project == 'opencode-vim'
-        run: brew install neovim
-
       - name: Verify package name and version
         env:
           EXPECTED_NAME: ${{ steps.release.outputs.package }}
@@ -129,6 +110,34 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Install dependencies
+        if: steps.published.outputs.skip != 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Audit dependencies
+        if: steps.published.outputs.skip != 'true'
+        run: bun run security:check
+
+      - name: Validate release policy
+        if: steps.published.outputs.skip != 'true'
+        run: bun run policy:check
+
+      - name: Install tested OpenCode CLI
+        if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
+        env:
+          PROJECT: ${{ steps.release.outputs.project }}
+        run: |
+          OPENCODE_VERSION=$(node -p "require('./packages/$PROJECT/package.json').dependencies['@opencode-ai/plugin']")
+          bun add --global --trust "@opencode-ai/cli@$OPENCODE_VERSION"
+
+      - name: Install TUI test dependencies
+        if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
+        run: brew install tmux
+
+      - name: Install Neovim parity oracle
+        if: steps.published.outputs.skip != 'true' && steps.release.outputs.project == 'opencode-vim'
+        run: brew install neovim
 
       - name: Run package release gates
         if: steps.published.outputs.skip != 'true'

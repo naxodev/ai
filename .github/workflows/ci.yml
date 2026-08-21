@@ -41,6 +41,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Audit dependencies
+        run: bun run security:check
+
+      - name: Validate release policy
+        if: matrix.os != 'windows-latest'
+        run: bun run policy:check
+
       - name: Set affected revisions
         uses: nrwl/nx-set-shas@3e9ad7370203c1e93d109be57f3b72eb0eb511b1 # v4
 
