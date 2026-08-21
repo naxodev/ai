@@ -128,7 +128,7 @@ bun run check
 bun packages/pi-music-dock/scripts/waveform-demo.ts
 ```
 
-The package smoke packs Pi and music-core, installs exact `@earendil-works/pi-coding-agent@0.84.0` and `@earendil-works/pi-tui@0.84.0`, loads the packed extension through RPC, checks the registered commands, and proves prompt process exit. Pi 0.83.x and 0.84.x remain the supported peer range. Run it on macOS because the package is macOS-only.
+The package smoke packs Pi and music-core, installs exact `@earendil-works/pi-coding-agent@0.84.2` and `@earendil-works/pi-tui@0.84.2`, loads the packed extension through RPC, checks the registered commands, and proves prompt process exit. Pi 0.83.x and 0.84.x remain the supported peer range. Run it on macOS because the package is macOS-only.
 
 See the workspace [contribution guide](../../CONTRIBUTING.md) for contribution and release instructions.
 

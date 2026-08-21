@@ -805,7 +805,7 @@ export async function discoverMusicSession(
 /** Compatibility spelling for callers that name the operation an endpoint probe. */
 export const discoverMusicSessionEndpoint = discoverMusicSession
 
-export class MusicSessionStartupError extends Schema.TaggedErrorClass<MusicSessionStartupError>()(
+export class MusicSessionStartupError extends Schema.TaggedError<MusicSessionStartupError>()(
   "MusicSession.StartupError",
   {
     operation: Schema.Union([

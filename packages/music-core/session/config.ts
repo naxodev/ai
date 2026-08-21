@@ -24,7 +24,7 @@ export const MAX_ARTWORK_BASE64_CHARS =
 export const ARTWORK_RESPONSE_OVERHEAD_BYTES = 128
 const encodedArtworkBytes = (bytes: number) => Math.ceil(bytes / 3) * 4
 
-export class MusicSessionRuntimeError extends Schema.TaggedErrorClass<MusicSessionRuntimeError>()(
+export class MusicSessionRuntimeError extends Schema.TaggedError<MusicSessionRuntimeError>()(
   "MusicSession.RuntimeError",
   {
     operation: Schema.String,
@@ -161,7 +161,7 @@ export type ResolvedMusicSessionOptions = {
   readonly startup: Required<MusicSessionStartupOptions>
 }
 
-export class MusicSessionConfigError extends Schema.TaggedErrorClass<MusicSessionConfigError>()(
+export class MusicSessionConfigError extends Schema.TaggedError<MusicSessionConfigError>()(
   "MusicSession.ConfigError",
   { setting: Schema.String, operation: Schema.String, message: Schema.String },
 ) {}
