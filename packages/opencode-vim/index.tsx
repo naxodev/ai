@@ -132,8 +132,11 @@ function VimHost(props: {
           : historyFor(editor)
         : undefined
     let actions: VimAction[] = []
+    let consume = true
     props.setRuntime((draft) => {
-      actions = transition(draft, key).actions
+      const result = transition(draft, key)
+      actions = result.actions
+      consume = result.consume
       setPending(hasPendingInput(draft))
     })
     if (props.runtime.mode === "normal") {
@@ -143,7 +146,7 @@ function VimHost(props: {
     if (!editor || editor.isDestroyed || !history) {
       setMode(props.runtime.mode)
       updateIndicator()
-      return
+      return consume ? undefined : false
     }
     syncVimHistory(history, editor.plainText)
     if (editor.plainText.length === 0) {
@@ -180,6 +183,7 @@ function VimHost(props: {
     setMode(props.runtime.mode)
     updateIndicator()
     syncCursor()
+    return consume ? undefined : false
   }
 
   const commands = (
@@ -236,6 +240,11 @@ function VimHost(props: {
         id: "vimcode-v2.insert.return",
         bind: "return",
         run: () => handle("return"),
+      },
+      {
+        id: "vimcode-v2.insert.ctrl-return",
+        bind: "ctrl+return",
+        run: () => handle("ctrl+return"),
       },
     ],
   }))

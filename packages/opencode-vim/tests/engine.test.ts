@@ -14,7 +14,6 @@ describe("vim transition engine", () => {
   test("multiplies operator and motion counts", () => {
     const state = createVimState("normal")
     for (const key of ["2", "d", "3", "w"]) transition(state, key)
-    expect(transition(createVimState("normal"), "escape").consume).toBe(true)
     const replay = createVimState("normal")
     transition(replay, "2")
     transition(replay, "d")
@@ -22,6 +21,15 @@ describe("vim transition engine", () => {
     expect(transition(replay, "w").actions).toEqual([
       { type: "operator-motion", operator: "delete", key: "w", count: 6 },
     ])
+  })
+
+  test("passes idle normal Escape to the host but cancels pending Vim input", () => {
+    expect(transition(createVimState("normal"), "escape").consume).toBe(false)
+
+    const pending = createVimState("normal")
+    transition(pending, "d")
+    expect(transition(pending, "escape").consume).toBe(true)
+    expect(hasPendingInput(pending)).toBe(false)
   })
 
   test("saturates accumulated and multiplied counts before emitting actions", () => {
@@ -186,14 +194,14 @@ describe("vim transition engine", () => {
     expect(state.mode).toBe("insert")
   })
 
-  test("uses Enter for newlines and leaves submission to the host", () => {
+  test("uses Enter for newlines and Ctrl+Enter for submission", () => {
     const state = createVimState()
     expect(transition(state, "return").actions).toEqual([
       { type: "command", id: "input.newline" },
     ])
     expect(transition(state, "ctrl+return")).toEqual({
-      consume: false,
-      actions: [],
+      consume: true,
+      actions: [{ type: "command", id: "input.submit" }],
     })
     const normal = createVimState("normal")
     expect(transition(normal, "return")).toEqual({
