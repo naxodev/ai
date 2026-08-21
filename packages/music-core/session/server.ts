@@ -56,7 +56,7 @@ import {
   type LegacySessionProvider,
 } from "./provider.ts"
 
-export class MusicSessionSocketError extends Schema.TaggedErrorClass<MusicSessionSocketError>()(
+export class MusicSessionSocketError extends Schema.TaggedError<MusicSessionSocketError>()(
   "MusicSession.SocketError",
   {
     operation: Schema.String,

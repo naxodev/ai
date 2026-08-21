@@ -30,7 +30,7 @@ import type {
   TransportAction,
 } from "./protocol.ts"
 
-export class ProviderError extends Schema.TaggedErrorClass<ProviderError>()(
+export class ProviderError extends Schema.TaggedError<ProviderError>()(
   "MusicSession.ProviderError",
   { operation: Schema.String, message: Schema.String, cause: Schema.Defect() },
 ) {}

@@ -2,13 +2,13 @@ import { Schema } from "effect"
 import { err, type ToolErr } from "./result.ts"
 
 /** No `.apnea/state.json` for the current project root. */
-export class NoRunState extends Schema.TaggedErrorClass<NoRunState>()(
+export class NoRunState extends Schema.TaggedError<NoRunState>()(
   "NoRunState",
   {},
 ) {}
 
 /** Tool call refused by the step → legal-tools table. */
-export class IllegalTool extends Schema.TaggedErrorClass<IllegalTool>()(
+export class IllegalTool extends Schema.TaggedError<IllegalTool>()(
   "IllegalTool",
   {
     step: Schema.String,
@@ -18,7 +18,7 @@ export class IllegalTool extends Schema.TaggedErrorClass<IllegalTool>()(
 ) {}
 
 /** Dispatch kind refused at the current step. */
-export class IllegalKind extends Schema.TaggedErrorClass<IllegalKind>()(
+export class IllegalKind extends Schema.TaggedError<IllegalKind>()(
   "IllegalKind",
   {
     step: Schema.String,
@@ -28,7 +28,7 @@ export class IllegalKind extends Schema.TaggedErrorClass<IllegalKind>()(
 ) {}
 
 /** Global or project config missing, invalid, or untrusted. */
-export class ConfigError extends Schema.TaggedErrorClass<ConfigError>()(
+export class ConfigError extends Schema.TaggedError<ConfigError>()(
   "ConfigError",
   {
     message: Schema.String,
@@ -38,7 +38,7 @@ export class ConfigError extends Schema.TaggedErrorClass<ConfigError>()(
 ) {}
 
 /** `state.json` present but not decodable / inconsistent. */
-export class StateCorrupt extends Schema.TaggedErrorClass<StateCorrupt>()(
+export class StateCorrupt extends Schema.TaggedError<StateCorrupt>()(
   "StateCorrupt",
   {
     path: Schema.String,
@@ -47,23 +47,20 @@ export class StateCorrupt extends Schema.TaggedErrorClass<StateCorrupt>()(
 ) {}
 
 /** VCS detect / dirty / commit / bookmark failure. */
-export class VcsError extends Schema.TaggedErrorClass<VcsError>()("VcsError", {
+export class VcsError extends Schema.TaggedError<VcsError>()("VcsError", {
   message: Schema.String,
   command: Schema.optional(Schema.String),
 }) {}
 
 /** Herdr CLI or pane failure. */
-export class HerdrError extends Schema.TaggedErrorClass<HerdrError>()(
-  "HerdrError",
-  {
-    message: Schema.String,
-    command: Schema.optional(Schema.String),
-    details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  },
-) {}
+export class HerdrError extends Schema.TaggedError<HerdrError>()("HerdrError", {
+  message: Schema.String,
+  command: Schema.optional(Schema.String),
+  details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+}) {}
 
 /** Commit/review gate refused (e.g. verdict not APPROVED). */
-export class GateRefused extends Schema.TaggedErrorClass<GateRefused>()(
+export class GateRefused extends Schema.TaggedError<GateRefused>()(
   "GateRefused",
   {
     gate: Schema.String,
@@ -73,7 +70,7 @@ export class GateRefused extends Schema.TaggedErrorClass<GateRefused>()(
 ) {}
 
 /** `workflow_wait` hit its timeout without a complete artifact. */
-export class WaitTimeout extends Schema.TaggedErrorClass<WaitTimeout>()(
+export class WaitTimeout extends Schema.TaggedError<WaitTimeout>()(
   "WaitTimeout",
   {
     artifact: Schema.String,
@@ -83,7 +80,7 @@ export class WaitTimeout extends Schema.TaggedErrorClass<WaitTimeout>()(
 ) {}
 
 /** `workflow_wait` aborted (Esc / cancel signal). */
-export class WaitAborted extends Schema.TaggedErrorClass<WaitAborted>()(
+export class WaitAborted extends Schema.TaggedError<WaitAborted>()(
   "WaitAborted",
   {
     artifact: Schema.String,
@@ -92,7 +89,7 @@ export class WaitAborted extends Schema.TaggedErrorClass<WaitAborted>()(
 ) {}
 
 /** Artifact exists but front-matter / shape is invalid. */
-export class ArtifactInvalid extends Schema.TaggedErrorClass<ArtifactInvalid>()(
+export class ArtifactInvalid extends Schema.TaggedError<ArtifactInvalid>()(
   "ArtifactInvalid",
   {
     artifact: Schema.String,
@@ -101,7 +98,7 @@ export class ArtifactInvalid extends Schema.TaggedErrorClass<ArtifactInvalid>()(
 ) {}
 
 /** Phase-package verify commands failed — commit refused. */
-export class VerifyFailed extends Schema.TaggedErrorClass<VerifyFailed>()(
+export class VerifyFailed extends Schema.TaggedError<VerifyFailed>()(
   "VerifyFailed",
   {
     commands: Schema.Array(Schema.String),

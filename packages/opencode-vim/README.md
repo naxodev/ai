@@ -3,11 +3,11 @@
 Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 
 > [!IMPORTANT]
-> This package is tested with exactly `opencode2 v0.0.0-next-17395` and matching `@opencode-ai/plugin` and `@opencode-ai/theme` packages. The OpenCode V2 TUI plugin API is beta and may change before its stable release.
+> This package is tested with exactly `opencode2 v0.0.0-next-17444` and matching `@opencode-ai/plugin` and `@opencode-ai/theme` packages. The OpenCode V2 TUI plugin API is beta and may change before its stable release.
 
 ## Requirements
 
-- OpenCode 2 `v0.0.0-next-17395`
+- OpenCode 2 `v0.0.0-next-17444`
 - Bun 1.3 or later, which OpenCode uses to load TypeScript plugin packages
 - Neovim, required only for development parity tests
 - A supported clipboard executable for system clipboard yanks: macOS `pbcopy`,
@@ -49,7 +49,7 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 
 ## Compatibility
 
-Version `0.1.0` supports only OpenCode 2 `v0.0.0-next-17395`. Its TUI plugin API is not stable, so newer or older OpenCode builds may not load this package.
+Version `0.1.0` supports only OpenCode 2 `v0.0.0-next-17444`. Its TUI plugin API is not stable, so newer or older OpenCode builds may not load this package.
 
 The package intentionally ships TypeScript and TSX source because this OpenCode release loads TUI plugins with Bun. It is not a precompiled JavaScript library and does not support direct loading by Node.js.
 

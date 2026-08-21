@@ -36,7 +36,7 @@ type CommandCode = Extract<
   ProtocolErrorCode,
   "SERVER_BUSY" | "DISPOSED" | "PROVIDER_FAILURE"
 >
-export class SessionCommandError extends Schema.TaggedErrorClass<SessionCommandError>()(
+export class SessionCommandError extends Schema.TaggedError<SessionCommandError>()(
   "MusicSession.CommandError",
   {
     code: Schema.Literals(["SERVER_BUSY", "DISPOSED", "PROVIDER_FAILURE"]),
