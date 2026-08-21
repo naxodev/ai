@@ -18,6 +18,7 @@ import {
   cleanupFailedInteractiveLaunch,
   ensurePromptSubmitted,
   floatingPanePath,
+  paneReadRecentArgs,
   probeHerdrAvailability,
   resolveExecutable,
 } from "./herdr.ts"
@@ -109,6 +110,22 @@ describe("HerdrLive.writeFloatingTaskScript", () => {
       process.env.PATH = prevPath
     }
     expect(fs.existsSync(script)).toBe(false)
+  })
+})
+
+describe("paneReadRecentArgs", () => {
+  test("pins the shared 80-line recent-unwrapped text request", () => {
+    expect(paneReadRecentArgs("pane-7")).toEqual([
+      "pane",
+      "read",
+      "pane-7",
+      "--source",
+      "recent-unwrapped",
+      "--lines",
+      "80",
+      "--format",
+      "text",
+    ])
   })
 })
 

@@ -1,4 +1,4 @@
-import { Clock, Effect, Option, Result } from "effect"
+import { Clock, Effect, Exit, Option, Result } from "effect"
 import { resetRecoveryLadder } from "../domain/recovery.ts"
 import { inferKind } from "../domain/artifact-kind.ts"
 import { timeoutMsForKind } from "../domain/timeouts.ts"
@@ -7,7 +7,11 @@ import {
   isCompleteArtifact,
   parseFrontMatter,
 } from "../domain/frontmatter.ts"
-import { looksLikeShellOnly, parseFloatingExit } from "../domain/herdr.ts"
+import {
+  looksLikeShellOnly,
+  parseFloatingExit,
+  shellJoin,
+} from "../domain/herdr.ts"
 import { abs, rel } from "../domain/paths.ts"
 import {
   nextAfter,
@@ -27,7 +31,7 @@ import { ok, type ToolResult } from "../result.ts"
 import { decodeFrontMatterResult } from "../schema/frontmatter.ts"
 import { Config } from "../services/config.ts"
 import { FileSystem } from "../services/file-system.ts"
-import { Herdr } from "../services/herdr.ts"
+import { Herdr, paneReadRecentArgs } from "../services/herdr.ts"
 import { RunStore } from "../services/run-store.ts"
 import { Vcs } from "../services/vcs.ts"
 
@@ -164,7 +168,7 @@ export type WaitHooks = {
  * check.
  *
  * Recovery (does not immediately escalate):
- * - idle/done without artifact for ≥60s → one nudge prompt into the role pane
+ * - idle without artifact for ≥60s → one nudge prompt into the role pane
  * - still working/blocked at timeout → extend budget once by max(50%, 2m)
  * - idle at final timeout and never nudged → final nudge + 3m grace
  */
@@ -549,7 +553,47 @@ export const waitWorkflow = (
           } else {
             lastStatus = info.agent_status ?? "unknown"
 
-            const isIdle = lastStatus === "idle" || lastStatus === "done"
+            if (lastStatus === "done") {
+              // Pane status and filesystem visibility are separate observations.
+              // The artifact may have completed between the read above and this
+              // terminal status, so fail the contract only after one fresh read.
+              const artifactAfterDone = yield* readArtifact()
+              if (isCompleteArtifact(artifactAfterDone, { requireVerdict })) {
+                return yield* advanceOnComplete(
+                  artifactAfterDone!,
+                  "artifact ready as role exited",
+                )
+              }
+
+              const paneId = state.pending_pane_id
+              const role = state.pending_role ?? "unknown role"
+              const transcriptCommand = shellJoin([
+                "herdr",
+                ...paneReadRecentArgs(paneId),
+              ])
+              const paneOutputExit = yield* Effect.exit(
+                herdr.paneReadRecent(paneId),
+              )
+              const paneOutput = Exit.isSuccess(paneOutputExit)
+                ? paneOutputExit.value
+                : null
+              state.last_error = `${role} reported done without complete artifact ${pendingArtifact}`
+              yield* store.save(state, root)
+              return yield* new HerdrError({
+                message: `role/artifact contract violated: ${role} reported done without completing ${pendingArtifact}`,
+                details: {
+                  pane_id: paneId,
+                  role,
+                  artifact: pendingArtifact,
+                  last_agent_status: lastStatus,
+                  transcript_command: transcriptCommand,
+                  pane_output: paneOutput,
+                  hint: `inspect the terminal pane with: ${transcriptCommand}`,
+                },
+              })
+            }
+
+            const isIdle = lastStatus === "idle"
             if (isIdle) {
               // Per-call timestamp. `minBudgetFor` guarantees this call
               // is long enough to reach the threshold from here.
@@ -640,7 +684,7 @@ export const waitWorkflow = (
           // escalation by three minutes.
           if (
             !finalNudgeGrace &&
-            (lastStatus === "idle" || lastStatus === "done") &&
+            lastStatus === "idle" &&
             state.pending_pane_id
           ) {
             // Grant the whole thing in ONE save, then nudge. A flag
