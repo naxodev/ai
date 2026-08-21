@@ -4,7 +4,7 @@ import { createMusicPlayerPlugin } from "../index.tsx"
 import plugin from "../index.tsx"
 import { createSessionSystemMedia } from "../system-media.ts"
 
-type SlotName = "app" | "sidebar.content"
+type SlotName = "session.composer.top" | "sidebar.content"
 type Slot = (props: any) => any
 type SlotClaim = { append: SlotName; render: Slot }
 
@@ -118,7 +118,7 @@ test("production session adapter is shared by both slots and disposes only its c
   await Promise.resolve()
   expect(backendFactories).toBe(1)
   expect(clientFactories).toBe(1)
-  expect([...slots.keys()]).toEqual(["app", "sidebar.content"])
+  expect([...slots.keys()]).toEqual(["session.composer.top", "sidebar.content"])
   expect(session.error).toBe("daemon fallback")
   cleanup?.()
   await Promise.resolve()
@@ -217,13 +217,13 @@ test("setup shares one session and persistent keymap across sidebar remounts", a
   const cleanup = await testPlugin.setup(context as any)
 
   expect(constructed).toBe(1)
-  expect(registered).toEqual(["app", "sidebar.content"])
+  expect(registered).toEqual(["session.composer.top", "sidebar.content"])
 
   mountedView = "app"
-  const app = await testRender(() => slots.get("app")!({}), {
-    width: 80,
-    height: 4,
-  })
+  const app = await testRender(
+    () => slots.get("session.composer.top")!({ sessionID: "one" }),
+    { width: 80, height: 4 },
+  )
   await app.waitForFrame((frame) => frame.includes("Shared session track"))
   expect(keymapLayers).toBe(1)
 

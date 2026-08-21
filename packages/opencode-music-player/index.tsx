@@ -400,7 +400,7 @@ export function createMusicPlayerPlugin(options?: {
             : controllerDependencies,
         )
       const unsubApp = context.ui.slot({
-        append: "app",
+        append: "session.composer.top",
         render: () => <AppHost context={context} ctrl={ctrl} />,
       })
       const unsubSidebar = context.ui.slot({
