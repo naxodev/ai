@@ -137,6 +137,46 @@ describe("commitWorkflow (fake layers)", () => {
   })
 
   itEffect(
+    "comment-only verify fence → ArtifactInvalid without verification",
+    () => {
+      const state = baseState()
+      const reviewAbs = `${ROOT}/${state.current_code_review}`
+      const pkgAbs = `${ROOT}/${state.current_phase_package}`
+      const fs = seedFiles(state, {
+        [reviewAbs]: approvedReview(),
+        [pkgAbs]: phasePackage("# no executable check"),
+      })
+      const { layer, vcs } = layerOf(fs)
+      return Effect.gen(function* () {
+        const r = yield* Effect.result(commitWorkflow({}, ROOT))
+        expectFailure(r, "ArtifactInvalid")
+        expect(vcs.verifyRuns).toHaveLength(0)
+        expect(vcs.commits).toHaveLength(0)
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "non-shell example fence without a Verify heading is never executed",
+    () => {
+      const state = baseState()
+      const reviewAbs = `${ROOT}/${state.current_code_review}`
+      const pkgAbs = `${ROOT}/${state.current_phase_package}`
+      const fs = seedFiles(state, {
+        [reviewAbs]: approvedReview(),
+        [pkgAbs]: "```typescript\nconst command = 'bun test'\n```\n",
+      })
+      const { layer, vcs } = layerOf(fs)
+      return Effect.gen(function* () {
+        const r = yield* Effect.result(commitWorkflow({}, ROOT))
+        expectFailure(r, "ArtifactInvalid")
+        expect(vcs.verifyRuns).toHaveLength(0)
+        expect(vcs.commits).toHaveLength(0)
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
     "verify failure → VerifyFailed + verify.log written + state unchanged",
     () => {
       const state = baseState()
@@ -144,7 +184,19 @@ describe("commitWorkflow (fake layers)", () => {
       const pkgAbs = `${ROOT}/${state.current_phase_package}`
       const fs = seedFiles(state, {
         [reviewAbs]: approvedReview(),
-        [pkgAbs]: phasePackage(),
+        [pkgAbs]: `# Phase
+
+## Verify commands
+
+\`\`\`sh
+echo first
+\`\`\`
+
+\`\`\`bash
+false
+echo unreachable
+\`\`\`
+`,
       })
       const { layer, vcs, fakeFs } = layerOf(fs, {
         // failing verify (tagged VerifyFailed path — not a ToolResult)
@@ -153,7 +205,14 @@ describe("commitWorkflow (fake layers)", () => {
       return Effect.gen(function* () {
         const r = yield* Effect.result(commitWorkflow({}, ROOT))
         const e = expectFailure(r, "VerifyFailed")
-        expect(e.commands.length).toBeGreaterThan(0)
+        expect(vcs.verifyRuns[0]?.blocks).toEqual([
+          { interpreter: "sh", source: "echo first\n" },
+          { interpreter: "bash", source: "false\necho unreachable\n" },
+        ])
+        expect(e.commands).toEqual([
+          "sh -e -c 'echo first\n'",
+          "bash -e -c 'false\necho unreachable\n'",
+        ])
         expect(e.outputs[0]).toContain("exit=1")
         // outputs is only the last 2000 chars — a real tsc/test failure
         // overflows it, so the caller must be told where the full log is.
