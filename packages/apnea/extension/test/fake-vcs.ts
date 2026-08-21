@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect"
 import { VcsError } from "../errors.ts"
 import type { VcsBackend } from "../domain/types.ts"
+import type { VerifyBlock } from "../domain/verify-commands.ts"
 import { Vcs, type VcsService } from "../services/vcs.ts"
 
 export type FakeVcsOptions = {
@@ -19,7 +20,7 @@ export type FakeVcsRecorder = {
   bookmarks: Array<{ root: string; slug: string }>
   verifyRuns: Array<{
     root: string
-    commands: readonly string[]
+    blocks: readonly VerifyBlock[]
     timeoutMs: number
   }>
   ensureBranches: Array<{ root: string; slug: string }>
@@ -91,9 +92,9 @@ export function fakeVcsLayer(opts: FakeVcsOptions = {}): {
         recorder.bookmarks.push({ root, slug })
       }),
 
-    runVerify: (root, commands, timeoutMs) =>
+    runVerify: (root, blocks, timeoutMs) =>
       Effect.sync(() => {
-        recorder.verifyRuns.push({ root, commands, timeoutMs })
+        recorder.verifyRuns.push({ root, blocks, timeoutMs })
         return opts.verify ?? { ok: true, log: "$ true\nexit=0\n" }
       }),
   }
