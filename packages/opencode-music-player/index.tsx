@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode-ai/plugin/tui"
+import { createStore, produce } from "solid-js/store"
 import { createSessionSystemMedia, openNowPlayingApp } from "./system-media.ts"
 import { isMac, mergeArtworkCompletion, type SessionMedia } from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
@@ -82,10 +83,14 @@ export function createController(
   context: Context,
   dependencies: ControllerDependencies = controllerDependencies,
 ): Controller {
-  const [session, setSession] = context.storage.memory<SessionStore>(
-    "music-player.session.v5",
-    { initial: { loading: false, error: null, player: null } },
-  )
+  // Host storage may use another Solid runtime when this plugin comes from npm.
+  const [session, setSessionStore] = createStore<SessionStore>({
+    loading: false,
+    error: null,
+    player: null,
+  })
+  const setSession = (update: (draft: SessionStore) => void) =>
+    setSessionStore(produce(update))
   const media = dependencies.createSessionMedia()
   let disposed = false
   let lifecycleGeneration = 0

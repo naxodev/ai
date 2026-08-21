@@ -129,18 +129,12 @@ function harness(
     duration_ms: target.duration_ms,
   }),
 ) {
-  const session = {
-    loading: false,
-    error: null as string | null,
-    player: null as PlayerState | null,
-  }
   const toasts: unknown[] = []
   const context = {
     storage: {
-      memory: () => [
-        session,
-        (update: (draft: typeof session) => void) => update(session),
-      ],
+      memory: () => {
+        throw new Error("live playback state must not use host storage")
+      },
     },
     ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
   }
@@ -151,7 +145,7 @@ function harness(
         resolveArtworkDetails,
       }),
   })
-  return { controller, session, toasts }
+  return { controller, session: controller.session, toasts }
 }
 
 test("production session controller receives replay/live/replacement state without host polling", async () => {
@@ -218,11 +212,11 @@ test("session artwork completion merges through the controller without replacing
   await flush()
   await flush()
   await flush()
-  expect(view.session.player).toMatchObject({
-    is_playing: true,
-    progress_ms: 12_000,
-    track: { id: "artwork", artwork: cover, artwork_loading: false },
-  })
+  expect(view.session.player?.is_playing).toBeTrue()
+  expect(view.session.player?.progress_ms).toBe(12_000)
+  expect(view.session.player?.track?.id).toBe("artwork")
+  expect(view.session.player?.track?.artwork?.id).toBe(cover.id)
+  expect(view.session.player?.track?.artwork_loading).toBeFalse()
   view.controller.dispose()
 })
 

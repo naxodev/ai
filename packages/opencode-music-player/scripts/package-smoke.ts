@@ -305,10 +305,13 @@ export default {
   }
   const waitForPlayer = async () => {
     for (let attempt = 0; attempt < 80; attempt++) {
-      const compact = capturePane().replaceAll(/\s/g, "")
+      const pane = capturePane()
+      const compact = pane.replaceAll(/\s/g, "")
       if (
         compact.includes("SMOKECOMPACTTRACKMARKER") &&
-        compact.includes("SMOKECOMPACTARTISTMARKER")
+        compact.includes("SMOKECOMPACTARTISTMARKER") &&
+        pane.includes("Build ·") &&
+        pane.includes("shift+tab agents")
       )
         return
       if (attempt === 79) throw new Error("timed out waiting for music player")

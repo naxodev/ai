@@ -12,17 +12,14 @@ const deferred = <T>() => {
 const flush = () => Promise.resolve().then(() => Promise.resolve())
 
 function context() {
-  const session = { loading: false, error: null, player: null as any }
   const toasts: unknown[] = []
   return {
-    session,
     toasts,
     context: {
       storage: {
-        memory: () => [
-          session,
-          (update: (draft: typeof session) => void) => update(session),
-        ],
+        memory: () => {
+          throw new Error("live playback state must not use host storage")
+        },
       },
       ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
     },
@@ -114,7 +111,7 @@ function client(name: string) {
 
 test("disposal before factory resolution releases the client without callbacks", async () => {
   const late = deferred<any>()
-  const { context: host, session } = context()
+  const { context: host } = context()
   const media = createSessionSystemMedia({ createClient: () => late.promise })
   const controller = createController(host as any, {
     createSessionMedia: () => media,
@@ -124,7 +121,7 @@ test("disposal before factory resolution releases the client without callbacks",
   late.resolve(next)
   await flush()
   expect(next.disposals).toBe(1)
-  expect(session.player).toBeNull()
+  expect(controller.session.player).toBeNull()
 })
 
 test("disposal settles held work once and leaves another session client healthy", async () => {
@@ -169,7 +166,7 @@ test("disposal settles held work once and leaves another session client healthy"
   await flush()
   expect(first.value.disposals).toBe(1)
   expect(second.value.disposals).toBe(0)
-  expect(secondHost.session.player?.progress_ms).toBe(99)
+  expect(controllerB.session.player?.progress_ms).toBe(99)
   expect(firstHost.toasts).toEqual([])
   controllerB.dispose()
   await flush()
