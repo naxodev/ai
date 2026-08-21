@@ -11,6 +11,7 @@ const expectedFiles = new Set([
   "package.json",
   "system-media.ts",
   "tmux-offset.ts",
+  "tui.tsx",
   "types.ts",
   "ui.tsx",
   "waveform.tsx",
