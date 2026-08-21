@@ -128,6 +128,7 @@ function harness(
     artwork: null,
     duration_ms: target.duration_ms,
   }),
+  now: () => number = Date.now,
 ) {
   const session = {
     loading: false,
@@ -149,6 +150,7 @@ function harness(
       createSessionSystemMedia({
         createClient: async () => client,
         resolveArtworkDetails,
+        now,
       }),
   })
   return { controller, session: controller.session, toasts }
@@ -223,6 +225,33 @@ test("session artwork completion merges through the controller without replacing
   expect(view.session.player?.track?.id).toBe("artwork")
   expect(view.session.player?.track?.artwork?.id).toBe(cover.id)
   expect(view.session.player?.track?.artwork_loading).toBeFalse()
+  view.controller.dispose()
+})
+
+test("same-track polling does not reopen completed artwork", async () => {
+  let now = 1_000
+  const current = player("artwork-retry", true)
+  const { client } = createClient(current)
+  const view = harness(
+    client,
+    async (_key: string, target: any) => ({
+      artwork: null,
+      duration_ms: target.duration_ms,
+    }),
+    () => now,
+  )
+  for (let index = 0; index < 4; index++) await flush()
+  expect(view.session.player?.track?.artwork_loading).toBeFalse()
+
+  now = 3_001
+  client.emitState({
+    ...current,
+    progress_ms: 15_000,
+    fetched_at: now,
+    track: { ...current.track!, id: "volatile-next" },
+  })
+  expect(view.session.player?.track?.artwork_loading).toBeFalse()
+  expect(view.session.player?.track?.id).toBe("volatile-next")
   view.controller.dispose()
 })
 

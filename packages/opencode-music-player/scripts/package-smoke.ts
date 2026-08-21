@@ -233,6 +233,7 @@ const scheduleUpdates = () => {
   updatesScheduled = true
   updateTimers.push(setTimeout(() => publishSnapshot(), 100))
   updateTimers.push(setTimeout(() => publishArtwork(), 300))
+  updateTimers.push(setTimeout(() => publishSnapshot(), 500))
 }
 
 const player = () => ({
@@ -398,6 +399,18 @@ export default {
       )
     if (!expanded.includes("Build ·") || !expanded.includes("shift+tab agents"))
       throw new Error("compact row replaced adjacent OpenCode content")
+    const firstProgress = expanded.match(/\b2:\d{2}\b/)?.[0]
+    await Bun.sleep(1_300)
+    const advanced = capturePane()
+    const secondProgress = advanced.match(/\b2:\d{2}\b/)?.[0]
+    if (!firstProgress || !secondProgress || firstProgress === secondProgress)
+      throw new Error("playing progress did not advance between snapshots")
+    if (
+      !advanced.includes("Artwork unavailable") ||
+      advanced.includes("Loading artwork") ||
+      occurrences(advanced, "SMOKE COMPACT TRACK MARKER") !== 2
+    )
+      throw new Error("clock updates disturbed settled player presentation")
 
     await terminateTmux()
     await writeFile(
