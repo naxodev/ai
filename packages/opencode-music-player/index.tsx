@@ -18,6 +18,7 @@ type SeekIntent = {
 
 export type Controller = {
   session: SessionStore
+  subscribe: (listener: (session: SessionStore) => void) => () => void
   openApp: () => Promise<void>
   refreshAll: () => Promise<void>
   playPause: () => Promise<void>
@@ -87,7 +88,7 @@ export function createController(
   context: Context,
   dependencies: ControllerDependencies = controllerDependencies,
 ): Controller {
-  const [session, setSession] = context.storage.memory<SessionStore>(
+  const [session, setSessionStore] = context.storage.memory<SessionStore>(
     "music-player.session.v6",
     {
       initial: {
@@ -98,6 +99,17 @@ export function createController(
       },
     },
   )
+  const sessionListeners = new Set<(session: SessionStore) => void>()
+  const setSession = (update: (draft: SessionStore) => void) => {
+    setSessionStore(update)
+    for (const listener of [...sessionListeners]) {
+      try {
+        listener(session)
+      } catch {
+        // One mounted presentation cannot block controller state.
+      }
+    }
+  }
   const loadingOwner = crypto.randomUUID()
   const media = dependencies.createSessionMedia()
   let disposed = false
@@ -301,6 +313,11 @@ export function createController(
 
   return {
     session,
+    subscribe(listener) {
+      sessionListeners.add(listener)
+      listener(session)
+      return () => sessionListeners.delete(listener)
+    },
     refreshAll,
     async openApp() {
       if (!isActive()) return
@@ -334,6 +351,7 @@ export function createController(
       for (const resolve of [...pending]) settle(resolve)
       void media.dispose().catch(() => {})
       setLoadingOwner(false)
+      sessionListeners.clear()
     },
   }
 }
@@ -435,6 +453,7 @@ export function createMusicPlayerPlugin(options?: {
             <SidebarPlayer
               context={context}
               state={ctrl.session}
+              subscribe={ctrl.subscribe}
               onPlayPause={() => void ctrl.playPause()}
               onNext={() => void ctrl.next()}
               onPrev={() => void ctrl.prev()}

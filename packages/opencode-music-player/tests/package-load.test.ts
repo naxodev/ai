@@ -154,8 +154,14 @@ test("setup rerenders fixed slots from one host session", async () => {
       fetched_at: Date.now(),
     },
   })
+  const sessionListeners = new Set<(state: typeof session) => void>()
   const controller = {
     session,
+    subscribe(listener: (state: typeof session) => void) {
+      sessionListeners.add(listener)
+      listener(session)
+      return () => sessionListeners.delete(listener)
+    },
     openApp: async () => {},
     refreshAll: async () => {},
     playPause: async () => {},
@@ -223,6 +229,7 @@ test("setup rerenders fixed slots from one host session", async () => {
     },
   }
   setSession("player", replacement.player)
+  for (const listener of sessionListeners) listener(session)
   await app.waitForFrame((frame) => frame.includes("Async track"))
   expect(registered).toEqual(["session.composer.top", "sidebar.content"])
 

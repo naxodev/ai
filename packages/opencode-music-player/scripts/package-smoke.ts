@@ -209,7 +209,7 @@ console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-musi
   const tuiEntry = join(packageDir, "tui.tsx")
   const originalEntry = join(packageDir, "index.original.tsx")
   await rename(packageEntry, originalEntry)
-  const fixtureSource = `import { appendFileSync } from "node:fs"
+  const fixtureSource = `import { appendFileSync, existsSync } from "node:fs"
 import { createController, createMusicPlayerPlugin } from "./index.original.tsx"
 
 const track = {
@@ -229,12 +229,15 @@ const artwork = {
   cells: [[{ upper: "#7aa2f7", lower: "#1a1b26" }]],
 }
 let playing = true
+const exercisePlaybackTransitions = playing
 let progressMs = 123000
 let publishSnapshot = () => {}
 let publishArtwork = () => {}
 const mountedSlots = new Set()
 const updateTimers = []
 let updatesScheduled = false
+let pausePublished = false
+let resumePublished = false
 
 const scheduleUpdates = () => {
   if (updatesScheduled || mountedSlots.size < 2) return
@@ -251,8 +254,33 @@ const scheduleUpdates = () => {
     setTimeout(() => {
       progressMs = 125000
       publishSnapshot()
+      appendFileSync(process.env.OPENCODE_MUSIC_FINAL_SNAPSHOT, "")
     }, 700),
   )
+  if (exercisePlaybackTransitions) {
+    updateTimers.push(
+      setInterval(() => {
+        if (
+          !pausePublished &&
+          existsSync(process.env.OPENCODE_MUSIC_PAUSE_TRIGGER)
+        ) {
+          pausePublished = true
+          progressMs = 130000
+          playing = false
+          publishSnapshot()
+        }
+        if (
+          pausePublished &&
+          !resumePublished &&
+          existsSync(process.env.OPENCODE_MUSIC_RESUME_TRIGGER)
+        ) {
+          resumePublished = true
+          playing = true
+          publishSnapshot()
+        }
+      }, 50),
+    )
+  }
 }
 
 const player = () => ({
@@ -357,6 +385,9 @@ export default {
     JSON.stringify({ plugins: [tuiEntry] }),
   )
   const graphicsTrace = join(root, "native-graphics.bin")
+  const finalSnapshotMarker = join(root, "final-snapshot")
+  const pauseTrigger = join(root, "pause-trigger")
+  const resumeTrigger = join(root, "resume-trigger")
   await writeFile(graphicsTrace, "")
   const env = {
     ...process.env,
@@ -370,6 +401,9 @@ export default {
     OPENCODE_DISABLE_AUTOUPDATE: "1",
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_MUSIC_GRAPHICS_TRACE: graphicsTrace,
+    OPENCODE_MUSIC_FINAL_SNAPSHOT: finalSnapshotMarker,
+    OPENCODE_MUSIC_PAUSE_TRIGGER: pauseTrigger,
+    OPENCODE_MUSIC_RESUME_TRIGGER: resumeTrigger,
   }
   const openCodeCommand = [
     openCodeBinary,
@@ -409,8 +443,9 @@ export default {
   const waitForPane = async (
     description: string,
     predicate: (pane: string) => boolean,
+    attempts = 100,
   ) => {
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       const pane = capturePane()
       if (predicate(pane)) return pane
       await Bun.sleep(200)
@@ -428,13 +463,20 @@ export default {
         !pane.includes("Finishing startup")
       )
     })
+  const waitForFile = async (description: string, path: string) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (await Bun.file(path).exists()) return
+      await Bun.sleep(100)
+    }
+    throw new Error(`timed out waiting for ${description}`)
+  }
 
   try {
     launchTui()
     await waitForPlayer()
     if (!tmux("has-session", "-t", session).success)
       throw new Error("OpenCode exited after rendering plugin UI")
-    const expanded = await waitForPane("settled expanded player", (pane) =>
+    await waitForPane("settled expanded player", (pane) =>
       Boolean(
         pane.includes("Smoke album") &&
         !pane.includes("Loading artwork") &&
@@ -444,9 +486,11 @@ export default {
         pane.includes("shift+tab agents"),
       ),
     )
-    const firstProgress = expanded.match(/\b2:\d{2}\b/)?.[0]
+    await waitForFile("final playback snapshot", finalSnapshotMarker)
+    const finalSnapshotPane = capturePane()
+    const firstProgress = finalSnapshotPane.match(/\b2:\d{2}\b/)?.[0]
     if (!firstProgress) throw new Error("expanded player omitted progress")
-    await waitForPane("progress between snapshots", (pane) => {
+    const advanced = await waitForPane("progress between snapshots", (pane) => {
       const progress = pane.match(/\b2:\d{2}\b/)?.[0]
       return Boolean(
         progress &&
@@ -455,15 +499,73 @@ export default {
         occurrences(pane, "SMOKE COMPACT TRACK MARKER") === 2,
       )
     })
+    const waveform = (pane: string) =>
+      (() => {
+        const lines = pane.split("\n")
+        const progressIndex = lines.findIndex((line) =>
+          /[━─]+●[━─]+/.test(line.slice(-40)),
+        )
+        return progressIndex >= 2
+          ? lines[progressIndex - 2]!.slice(-40)
+          : undefined
+      })()
+    const firstWaveform = waveform(advanced)
+    if (!firstWaveform) throw new Error("expanded player omitted waveform")
+    await waitForPane(
+      "waveform animation between snapshots",
+      (pane) => {
+        const next = waveform(pane)
+        return Boolean(next && next !== firstWaveform)
+      },
+      10,
+    )
+    await writeFile(pauseTrigger, "")
+    const pausedInPlace = await waitForPane(
+      "in-place playback pause",
+      (pane) => /\b2:10\s+4:05\b/.test(pane) && occurrences(pane, "▶") >= 2,
+    )
+    let previousPausedWaveform = waveform(pausedInPlace)
+    let stablePausedFrames = 0
+    const settledPause = await waitForPane(
+      "settled paused waveform",
+      (pane) => {
+        const current = waveform(pane)
+        if (current === undefined) return false
+        if (current === previousPausedWaveform) stablePausedFrames++
+        else stablePausedFrames = 0
+        previousPausedWaveform = current
+        return stablePausedFrames >= 4
+      },
+    )
+    const pausedWaveform = waveform(settledPause)
+    await writeFile(resumeTrigger, "")
+    await waitForPane("in-place playback resume", (pane) => {
+      const nextWaveform = waveform(pane)
+      return Boolean(
+        /\b2:11\s+4:05\b/.test(pane) &&
+        occurrences(pane, "⏸") >= 2 &&
+        nextWaveform &&
+        nextWaveform !== pausedWaveform,
+      )
+    })
     const graphics = Buffer.from(
       await Bun.file(graphicsTrace).arrayBuffer(),
     ).toString("latin1")
     const transmissions = occurrences(graphics, "a=T")
     const imageDeletes = occurrences(graphics, "a=d,d=I")
+    await Bun.sleep(1_000)
+    const settledGraphics = Buffer.from(
+      await Bun.file(graphicsTrace).arrayBuffer(),
+    ).toString("latin1")
     if (transmissions !== 1)
       throw new Error(`native artwork transmitted ${transmissions} times`)
     if (imageDeletes !== 2)
       throw new Error(`native artwork image was deleted ${imageDeletes} times`)
+    if (
+      occurrences(settledGraphics, "a=T") !== transmissions ||
+      occurrences(settledGraphics, "a=d,d=I") !== imageDeletes
+    )
+      throw new Error("native artwork changed after presentation settled")
 
     await terminateTmux()
     await writeFile(
