@@ -3,7 +3,10 @@ import { Effect, Result } from "effect"
 import { asVerdict, parseFrontMatter } from "../domain/frontmatter.ts"
 import { abs, phaseDir, rel } from "../domain/paths.ts"
 import { nextAfter, toolAllowed } from "../domain/state-machine.ts"
-import { extractVerifyCommands } from "../domain/verify-commands.ts"
+import {
+  extractVerifyBlocks,
+  formatVerifyCommand,
+} from "../domain/verify-commands.ts"
 import {
   ArtifactInvalid,
   GateRefused,
@@ -86,8 +89,8 @@ export const commitWorkflow = (
       })
     }
     const pkgText = yield* fs.readFile(pkgAbs)
-    const cmds = extractVerifyCommands(pkgText)
-    if (!cmds.length) {
+    const blocks = extractVerifyBlocks(pkgText)
+    if (!blocks.length) {
       return yield* new ArtifactInvalid({
         artifact: pkgRel,
         message: "no verify commands found in phase package (need ```sh block)",
@@ -96,7 +99,7 @@ export const commitWorkflow = (
 
     const cfg = yield* config.load(root)
     const verifyTimeout = cfg.timeouts_ms.verify ?? 900_000
-    const verify = yield* vcs.runVerify(root, cmds, verifyTimeout)
+    const verify = yield* vcs.runVerify(root, blocks, verifyTimeout)
 
     const vlog = path.join(path.dirname(reviewAbs), "verify.log")
     yield* fs.mkdir(path.dirname(vlog), { recursive: true })
@@ -104,7 +107,7 @@ export const commitWorkflow = (
 
     if (!verify.ok) {
       return yield* new VerifyFailed({
-        commands: cmds,
+        commands: blocks.map(formatVerifyCommand),
         outputs: [verify.log.slice(-2000)],
         // `outputs` is a tail — point the caller at the full log on disk.
         verify_log: rel(vlog, root),
