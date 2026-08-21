@@ -222,6 +222,7 @@ const track = {
   artwork_loading: true,
 }
 let playing = true
+let progressMs = 123000
 let publishSnapshot = () => {}
 let publishArtwork = () => {}
 const mountedSlots = new Set()
@@ -233,13 +234,18 @@ const scheduleUpdates = () => {
   updatesScheduled = true
   updateTimers.push(setTimeout(() => publishSnapshot(), 100))
   updateTimers.push(setTimeout(() => publishArtwork(), 300))
-  updateTimers.push(setTimeout(() => publishSnapshot(), 500))
+  updateTimers.push(
+    setTimeout(() => {
+      progressMs = 124000
+      publishSnapshot()
+    }, 500),
+  )
 }
 
 const player = () => ({
   track,
   is_playing: playing,
-  progress_ms: 123000,
+  progress_ms: progressMs,
   shuffle: false,
   repeat: "off",
   device: null,
@@ -361,56 +367,57 @@ export default {
         `tmux new-session failed: ${stripAnsi(launched.stderr.toString())}`,
       )
   }
-  const waitForPlayer = async () => {
-    for (let attempt = 0; attempt < 80; attempt++) {
+  const waitForPane = async (
+    description: string,
+    predicate: (pane: string) => boolean,
+  ) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
       const pane = capturePane()
+      if (predicate(pane)) return pane
+      await Bun.sleep(200)
+    }
+    throw new Error(`timed out waiting for ${description}`)
+  }
+  const waitForPlayer = () =>
+    waitForPane("music player startup", (pane) => {
       const compact = pane.replaceAll(/\s/g, "")
-      if (
+      return (
         compact.includes("SMOKECOMPACTTRACKMARKER") &&
         compact.includes("SMOKECOMPACTARTISTMARKER") &&
         pane.includes("Build ·") &&
-        pane.includes("shift+tab agents")
+        pane.includes("shift+tab agents") &&
+        !pane.includes("Finishing startup")
       )
-        return
-      if (attempt === 79) throw new Error("timed out waiting for music player")
-      await Bun.sleep(250)
-    }
-  }
+    })
 
   try {
     launchTui()
     await waitForPlayer()
-    await Bun.sleep(500)
     if (!tmux("has-session", "-t", session).success)
       throw new Error("OpenCode exited after rendering plugin UI")
-    const expanded = capturePane()
-    if (!expanded.includes("Smoke album"))
-      throw new Error("expanded sidebar did not render its track metadata")
-    if (
-      !expanded.includes("Artwork unavailable") ||
-      expanded.includes("Loading artwork")
+    const expanded = await waitForPane("settled expanded player", (pane) =>
+      Boolean(
+        pane.includes("Smoke album") &&
+        pane.includes("Artwork unavailable") &&
+        !pane.includes("Loading artwork") &&
+        occurrences(pane, "SMOKE COMPACT TRACK MARKER") === 2 &&
+        occurrences(pane, "⏸") >= 2 &&
+        pane.includes("Build ·") &&
+        pane.includes("shift+tab agents"),
+      ),
     )
-      throw new Error("expanded sidebar did not settle delayed artwork")
-    if (occurrences(expanded, "SMOKE COMPACT TRACK MARKER") !== 2)
-      throw new Error("expanded host did not render track in both real slots")
-    if (occurrences(expanded, "⏸") < 2)
-      throw new Error(
-        "expanded sidebar and compact bar disagreed on playing state",
-      )
-    if (!expanded.includes("Build ·") || !expanded.includes("shift+tab agents"))
-      throw new Error("compact row replaced adjacent OpenCode content")
     const firstProgress = expanded.match(/\b2:\d{2}\b/)?.[0]
-    await Bun.sleep(1_300)
-    const advanced = capturePane()
-    const secondProgress = advanced.match(/\b2:\d{2}\b/)?.[0]
-    if (!firstProgress || !secondProgress || firstProgress === secondProgress)
-      throw new Error("playing progress did not advance between snapshots")
-    if (
-      !advanced.includes("Artwork unavailable") ||
-      advanced.includes("Loading artwork") ||
-      occurrences(advanced, "SMOKE COMPACT TRACK MARKER") !== 2
-    )
-      throw new Error("clock updates disturbed settled player presentation")
+    if (!firstProgress) throw new Error("expanded player omitted progress")
+    await waitForPane("progress between snapshots", (pane) => {
+      const progress = pane.match(/\b2:\d{2}\b/)?.[0]
+      return Boolean(
+        progress &&
+        progress !== firstProgress &&
+        pane.includes("Artwork unavailable") &&
+        !pane.includes("Loading artwork") &&
+        occurrences(pane, "SMOKE COMPACT TRACK MARKER") === 2,
+      )
+    })
 
     await terminateTmux()
     await writeFile(
@@ -419,47 +426,46 @@ export default {
     )
     launchTui()
     await waitForPlayer()
-    await Bun.sleep(500)
-    const paused = capturePane()
-    if (
-      occurrences(paused, "▶") < 2 ||
-      occurrences(paused, "SMOKE COMPACT TRACK MARKER") !== 2
+    await waitForPane(
+      "settled paused player",
+      (pane) =>
+        occurrences(pane, "▶") >= 2 &&
+        occurrences(pane, "SMOKE COMPACT TRACK MARKER") === 2 &&
+        /\b2:04\s+4:05\b/.test(pane) &&
+        pane.includes("Artwork unavailable") &&
+        !pane.includes("Loading artwork"),
     )
-      throw new Error(
-        "expanded sidebar and compact bar disagreed on paused state",
-      )
 
     tmux("send-keys", "-t", session, "C-x")
     await Bun.sleep(100)
     tmux("send-keys", "-t", session, "b")
-    await Bun.sleep(300)
-    const collapsed = capturePane()
-    if (collapsed.includes("Smoke album"))
-      throw new Error("sidebar remained visible after session.sidebar.toggle")
-    if (!collapsed.includes("SMOKE COMPACT TRACK MARKER"))
-      throw new Error("compact app row disappeared after sidebar collapse")
-    if (occurrences(collapsed, "▶") !== 1)
-      throw new Error("collapsed wide layout duplicated or lost its paused row")
+    await waitForPane(
+      "collapsed sidebar",
+      (pane) =>
+        !pane.includes("Smoke album") &&
+        pane.includes("SMOKE COMPACT TRACK MARKER") &&
+        occurrences(pane, "▶") === 1,
+    )
 
     tmux("resize-window", "-t", session, "-x", "24", "-y", "40")
-    await Bun.sleep(300)
-    const narrow = capturePane()
-    if (narrow.includes("SMOKE COMPACT ARTIST MARKER"))
-      throw new Error("compact artist did not yield at narrow width")
-    if (!narrow.includes("▶") || !narrow.includes("SMOKE"))
-      throw new Error("narrow compact row lost its marker or title")
-    if (narrow.includes("SMOKE COMPACT TRACK MARKER"))
-      throw new Error("narrow compact title did not truncate")
-    if (occurrences(narrow, "▶") !== 1)
-      throw new Error("narrow compact layout duplicated its row")
+    await waitForPane(
+      "narrow compact layout",
+      (pane) =>
+        !pane.includes("SMOKE COMPACT ARTIST MARKER") &&
+        pane.includes("▶") &&
+        pane.includes("SMOKE") &&
+        !pane.includes("SMOKE COMPACT TRACK MARKER") &&
+        occurrences(pane, "▶") === 1,
+    )
 
     tmux("resize-window", "-t", session, "-x", "5", "-y", "40")
-    await Bun.sleep(300)
-    const smallest = capturePane()
-    if (!smallest.includes("▶") || smallest.includes("SMOKE"))
-      throw new Error("smallest compact layout did not reduce to its marker")
-    if (occurrences(smallest, "▶") !== 1)
-      throw new Error("smallest compact layout duplicated its row")
+    await waitForPane(
+      "smallest compact layout",
+      (pane) =>
+        pane.includes("▶") &&
+        !pane.includes("SMOKE") &&
+        occurrences(pane, "▶") === 1,
+    )
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     throw new Error(
