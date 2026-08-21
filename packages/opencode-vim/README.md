@@ -57,7 +57,8 @@ The package intentionally ships TypeScript and TSX source because this OpenCode 
 
 | Keys                            | Action                                          |
 | ------------------------------- | ----------------------------------------------- |
-| `escape`, `ctrl+[`              | Enter normal mode                               |
+| `escape`, `ctrl+[` in insert    | Enter normal mode                               |
+| `escape` in normal              | Cancel pending Vim input or the OpenCode action |
 | `i`, `a`, `A`, `I`              | Enter insert mode                               |
 | `o`, `O`                        | Open a line and enter insert mode               |
 | `ctrl+o`                        | Run one normal-mode command from insert mode    |
@@ -89,7 +90,9 @@ The package intentionally ships TypeScript and TSX source because this OpenCode 
 | `>`, `<` in visual mode         | Indent or outdent selected lines                |
 | `u`, `ctrl+r`                   | Undo or redo one Vim command                    |
 | `J`                             | Join lines                                      |
-| `return`, `ctrl+return`         | Use native host submission; newline in insert   |
+| `return` in insert              | Insert a newline                                |
+| `return` in normal              | Submit with the native OpenCode binding         |
+| `ctrl+return` in insert         | Submit with the native OpenCode binding         |
 | `:`                             | Open the EX command dialog                      |
 | `/`                             | Open the session timeline                       |
 | `[`, `]`                        | Move the session view by half a page            |

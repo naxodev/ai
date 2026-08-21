@@ -253,7 +253,10 @@ export function transition(state: VimState, key: string): Transition {
       }
     }
     if (key === "ctrl+return") {
-      return { consume: false, actions: [] }
+      return {
+        consume: true,
+        actions: [{ type: "command", id: "input.submit" }],
+      }
     }
     if (key === "ctrl+o") {
       clearPending(state)
@@ -292,8 +295,9 @@ function transitionNormal(state: VimState, key: string): Transition {
       clearPending(state)
       return { consume: true, actions: [{ type: "mode", mode: "insert" }] }
     }
+    const consume = hasPendingInput(state)
     clearPending(state)
-    return { consume: true, actions: [] }
+    return { consume, actions: [] }
   }
 
   if (state.pending.type === "prefix" && state.pending.prefix === "replace") {
