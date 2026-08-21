@@ -1,8 +1,6 @@
 import * as path from "node:path"
 import { Cause, Clock, Effect, Exit, Result } from "effect"
-import { effectivePaneStyle, supportsFloating } from "../domain/herdr.ts"
 import {
-  abs,
   packageRoot,
   phaseDir,
   planPath,
@@ -110,8 +108,8 @@ function herdrAfterRollback(
 }
 
 /**
- * Write task file, open interactive harness TUI in a Herdr pane (or a
- * floating oneshot popup), wait until idle, submit a short pointer prompt.
+ * Write task file, open an interactive harness TUI in a reusable Herdr pane,
+ * wait until idle, then submit a short pointer prompt.
  * Refusals are tagged failures only — never ok:false ToolResults.
  */
 export const dispatchWorkflow = (
@@ -345,57 +343,13 @@ export const dispatchWorkflow = (
       })
     }
 
-    const paneStyle = effectivePaneStyle(cfg.pane_style, role)
-    let roleCmd: string[] | null = null
-    let profileFingerprint: string | null = null
-
-    // Everything that can be checked without a task path runs before any
-    // artifact mutation. Only the pane/script launch race remains afterward.
-    if (herdrAvailability !== "unavailable") {
-      if (paneStyle.style === "floating") {
-        const version = yield* herdr.version
-        if (!supportsFloating(version)) {
-          return yield* new HerdrError({
-            message:
-              "floating panes need herdr >= 0.7.4 — run `herdr update`, or set pane_style=regular",
-          })
-        }
-        if (!(yield* herdr.hasApneaPlugin)) {
-          return yield* new HerdrError({
-            message: `apnea herdr plugin not linked. Run /apnea setup, or: herdr plugin link ${livePackageRoot}/herdr-plugin`,
-          })
-        }
-        if (state.pending_floating_exit) {
-          const prevExitAbs = abs(state.pending_floating_exit, root)
-          if (!(yield* fs.exists(prevExitAbs))) {
-            return yield* new GateRefused({
-              gate: "floating_in_flight",
-              message:
-                "floating oneshot already in flight (popup still open). Call workflow_wait, or dismiss the popup and re-dispatch after it exits",
-              details: {
-                pending_artifact: state.pending_artifact,
-                pending_floating_exit: state.pending_floating_exit,
-              },
-            })
-          }
-        }
-        const cmdResult = yield* Effect.result(
-          config.resolveRoleCmd(cfg, role, "oneshot"),
-        )
-        if (Result.isFailure(cmdResult)) {
-          return yield* new HerdrError({
-            message: `floating dispatch requires cmd_oneshot on the role profile: ${cmdResult.failure.message}`,
-          })
-        }
-        roleCmd = cmdResult.success
-      } else {
-        roleCmd = yield* config.resolveRoleCmd(cfg, role, "interactive")
-        profileFingerprint = JSON.stringify([
-          cfg.roles[role]?.profile ?? null,
-          roleCmd,
-        ])
-      }
-    }
+    // Resolve the interactive command before mutating artifacts. Apnea never
+    // falls back to a profile's oneshot command, even outside Herdr.
+    const roleCmd = yield* config.resolveRoleCmd(cfg, role, "interactive")
+    const profileFingerprint = JSON.stringify([
+      cfg.roles[role]?.profile ?? null,
+      roleCmd,
+    ])
 
     if (role === "reviewer") {
       state.reviewer_tree_fingerprint = yield* vcsSvc.treeFingerprint(
@@ -451,8 +405,6 @@ export const dispatchWorkflow = (
 
     let launch: Record<string, unknown> = {
       mode: ROLE_MODE[role],
-      pane_style: cfg.pane_style,
-      pane_style_effective: paneStyle.effective,
     }
 
     const rollbackLaunch = (restoreState = true) =>
@@ -466,14 +418,6 @@ export const dispatchWorkflow = (
             }
           })
         yield* attempt("remove task", fs.remove(taskFile))
-        yield* attempt(
-          "remove floating script",
-          fs.remove(taskFile.replace(/\.md$/, ".sh")),
-        )
-        yield* attempt(
-          "remove floating exit marker",
-          fs.remove(taskFile.replace(/\.md$/, ".exit")),
-        )
         yield* attempt("remove replacement artifact", fs.remove(artifactAbs))
         if (backupAbs != null) {
           yield* attempt(
@@ -505,7 +449,6 @@ export const dispatchWorkflow = (
     markPending(preparedAt)
     state.pending_pane_id = null
     state.pending_pane_label = null
-    state.pending_floating_exit = null
     const preparedState = yield* Effect.exit(store.save(state, root))
     if (Exit.isFailure(preparedState)) {
       const persistenceError = new HerdrError({
@@ -544,127 +487,67 @@ export const dispatchWorkflow = (
       )
     }
 
-    if (paneStyle.style === "floating") {
-      const cmd = roleCmd!
-      const scriptAbs = taskFile.replace(/\.md$/, ".sh")
-      const exitAbs = taskFile.replace(/\.md$/, ".exit")
-      // Drop stale exit marker so wait cannot see a previous run's code.
-      yield* fs.remove(exitAbs)
-      const scriptWritten = yield* Effect.result(
-        herdr.writeFloatingTaskScript(scriptAbs, root, cmd, prompt, exitAbs),
-      )
-      if (Result.isFailure(scriptWritten)) {
-        const rollbackErrors = yield* rollbackLaunch()
-        return yield* herdrAfterRollback(
-          scriptWritten.failure,
-          {
-            task_attempted: taskRef.task,
-            artifact: artifactRel,
-          },
-          rollbackErrors,
-        )
-      }
-      // Popups have no pane id — liveness is the exit file; leave role_panes alone.
-      state.pending_pane_id = null
-      state.pending_pane_label = null
-      state.pending_floating_exit = rel(exitAbs, root)
-      yield* store.save(state, root)
-      const opened = yield* Effect.result(
-        herdr.openFloatingPane(scriptAbs, root),
-      )
-      if (Result.isFailure(opened)) {
+    // Interactive TUI: open harness, wait idle, submit pointer via pane run.
+    const cmd = roleCmd
+    const remembered = state.role_panes[role] ?? null
+    const prefer =
+      remembered?.profile_fingerprint === profileFingerprint ? remembered : null
+    const launched = yield* Effect.result(
+      herdr.runInteractivePrompt(role, cmd, prompt, prefer),
+    )
+    if (Result.isFailure(launched)) {
+      if (launched.failure.details?.delivery === "unknown") {
+        const paneId = String(launched.failure.details.pane_id)
+        const paneLabel = String(launched.failure.details.pane_label)
+        state.pending_pane_id = paneId
+        state.pending_pane_label = paneLabel
+        state.role_panes[role] = {
+          pane_id: paneId,
+          label: paneLabel,
+          profile_fingerprint: profileFingerprint,
+        }
+        yield* store.save(state, root)
         return yield* new HerdrError({
-          message: opened.failure.message,
-          ...(opened.failure.command !== undefined
-            ? { command: opened.failure.command }
+          message: launched.failure.message,
+          ...(launched.failure.command !== undefined
+            ? { command: launched.failure.command }
             : {}),
           details: {
-            ...(opened.failure.details ?? {}),
-            delivery: "unknown",
+            ...(launched.failure.details ?? {}),
             task_attempted: taskRef.task,
             artifact: artifactRel,
             pending_preserved: true,
           },
         })
       }
-      launch = {
-        mode: "oneshot",
-        pane_style: cfg.pane_style,
-        pane_style_effective: "floating",
-        script: rel(scriptAbs, root),
-        exit: rel(exitAbs, root),
-        cmd,
-        prompt,
-      }
-    } else {
-      // Interactive TUI: open harness, wait idle, submit pointer via pane run.
-      const cmd = roleCmd!
-      const remembered = state.role_panes[role] ?? null
-      const prefer =
-        remembered?.profile_fingerprint === profileFingerprint
-          ? remembered
-          : null
-      const launched = yield* Effect.result(
-        herdr.runInteractivePrompt(role, cmd, prompt, prefer),
+      const rollbackErrors = yield* rollbackLaunch()
+      return yield* herdrAfterRollback(
+        launched.failure,
+        {
+          task_attempted: taskRef.task,
+          artifact: artifactRel,
+        },
+        rollbackErrors,
       )
-      if (Result.isFailure(launched)) {
-        if (launched.failure.details?.delivery === "unknown") {
-          const paneId = String(launched.failure.details.pane_id)
-          const paneLabel = String(launched.failure.details.pane_label)
-          state.pending_pane_id = paneId
-          state.pending_pane_label = paneLabel
-          state.pending_floating_exit = null
-          state.role_panes[role] = {
-            pane_id: paneId,
-            label: paneLabel,
-            profile_fingerprint: profileFingerprint,
-          }
-          yield* store.save(state, root)
-          return yield* new HerdrError({
-            message: launched.failure.message,
-            ...(launched.failure.command !== undefined
-              ? { command: launched.failure.command }
-              : {}),
-            details: {
-              ...(launched.failure.details ?? {}),
-              task_attempted: taskRef.task,
-              artifact: artifactRel,
-              pending_preserved: true,
-            },
-          })
-        }
-        const rollbackErrors = yield* rollbackLaunch()
-        return yield* herdrAfterRollback(
-          launched.failure,
-          {
-            task_attempted: taskRef.task,
-            artifact: artifactRel,
-          },
-          rollbackErrors,
-        )
-      }
-      const r = launched.success
-      launch = {
-        mode: "interactive",
-        pane_id: r.pane_id,
-        label: r.label,
-        reused: r.reused,
-        cmd,
-        prompt,
-        pane_style: cfg.pane_style,
-        pane_style_effective: paneStyle.effective,
-        prompt_accepted: r.prompt_accepted,
-        prompt_attempts: r.prompt_attempts,
-        last_status: r.last_status ?? null,
-      }
-      state.pending_pane_id = r.pane_id
-      state.pending_pane_label = r.label
-      state.pending_floating_exit = null
-      state.role_panes[role] = {
-        pane_id: r.pane_id,
-        label: r.label,
-        profile_fingerprint: profileFingerprint,
-      }
+    }
+    const r = launched.success
+    launch = {
+      mode: "interactive",
+      pane_id: r.pane_id,
+      label: r.label,
+      reused: r.reused,
+      cmd,
+      prompt,
+      prompt_accepted: r.prompt_accepted,
+      prompt_attempts: r.prompt_attempts,
+      last_status: r.last_status ?? null,
+    }
+    state.pending_pane_id = r.pane_id
+    state.pending_pane_label = r.label
+    state.role_panes[role] = {
+      pane_id: r.pane_id,
+      label: r.label,
+      profile_fingerprint: profileFingerprint,
     }
 
     // After the launch, not before it: `runInteractivePrompt` blocks in

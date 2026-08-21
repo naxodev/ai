@@ -21,19 +21,6 @@ export function deepMergeProfiles(
   return out
 }
 
-/**
- * Carry a valid user pane_style preference forward. Setup never writes the
- * key when absent, and never invents values — only preserves exact "regular"
- * or "floating". Invalid prev values are dropped.
- */
-export function preservePaneStyle(
-  prev: Record<string, unknown>,
-): "regular" | "floating" | undefined {
-  const v = prev.pane_style
-  if (v === "regular" || v === "floating") return v
-  return undefined
-}
-
 export function buildProfiles(has: Detected): Record<string, unknown> {
   const profiles: Record<string, unknown> = {}
 
@@ -119,8 +106,6 @@ export function buildGlobalConfig(opts: {
     )
   }
 
-  const preservedPaneStyle = preservePaneStyle(prev)
-
   const globalConfig: Record<string, unknown> = {
     profiles: nextProfiles,
     roles: force || !prev.roles ? roles : prev.roles,
@@ -133,11 +118,6 @@ export function buildGlobalConfig(opts: {
           // values wait/commit actually use cannot drift apart.
           { ...DEFAULT_TIMEOUTS },
   }
-  // Preserve user opt-in only — never introduce pane_style when absent.
-  if (preservedPaneStyle !== undefined) {
-    globalConfig.pane_style = preservedPaneStyle
-  }
-
   return globalConfig
 }
 

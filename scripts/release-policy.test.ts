@@ -19,6 +19,8 @@ describe("release policy", () => {
       typeof ReleaseClient
     >[0]
     config.version!.preVersionCommand = ""
+    config.version!.conventionalCommits = false
+    config.version!.currentVersionResolver = "disk"
 
     const { projectsVersionData } = await new ReleaseClient(
       config,
@@ -34,22 +36,29 @@ describe("release policy", () => {
     })
 
     expect(Object.keys(projectsVersionData)).toEqual(["apnea"])
-    expect(projectsVersionData.apnea?.newVersion).toBe("0.1.1")
+    expect(projectsVersionData.apnea?.newVersion).toBe("0.2.1")
   })
 
-  test("a coordinated incompatible release preserves the prepared core range", async () => {
+  test("a coordinated incompatible release preserves the installable staged state", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "nx-release-policy-"))
     temporaryWorkspaces.push(workspace)
 
     const coreManifest = {
       name: "@naxodev/apnea",
-      version: "0.1.0",
+      version: "0.2.0",
     }
     const adapterManifest = {
       name: "@naxodev/pi-apnea",
       version: "0.1.0",
       dependencies: { "@naxodev/apnea": "^0.2.0" },
     }
+    expect(
+      Bun.semver.satisfies(
+        coreManifest.version,
+        adapterManifest.dependencies["@naxodev/apnea"],
+      ),
+      "the staged core must satisfy the adapter before Nx versions the adapter",
+    ).toBe(true)
     const fixtureFiles: Record<string, unknown> = {
       "package.json": {
         name: "release-policy-fixture",

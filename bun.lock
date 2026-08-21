@@ -13,7 +13,7 @@
     },
     "packages/apnea": {
       "name": "@naxodev/apnea",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "bin": {
         "apnea": "./dist/cli.js",
       },
@@ -82,7 +82,7 @@
       "name": "@naxodev/pi-apnea",
       "version": "0.1.0",
       "dependencies": {
-        "@naxodev/apnea": "^0.1.0",
+        "@naxodev/apnea": "^0.2.0",
       },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "0.84.0",

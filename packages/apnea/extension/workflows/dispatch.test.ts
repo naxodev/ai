@@ -11,12 +11,17 @@ import { fakeHerdrLayer } from "../test/fake-herdr.ts"
 import { fakeVcsLayer } from "../test/fake-vcs.ts"
 import { itEffect } from "../test/it-effect.ts"
 import { RunStoreLive } from "../services/run-store.ts"
+import {
+  applyProjectConfig,
+  decodeGlobalConfig,
+  decodeProjectConfig,
+} from "../schema/config.ts"
 import { briefFiles } from "../test/briefs.ts"
 import { dispatchWorkflow } from "./dispatch.ts"
 
 const ROOT = "/proj"
 
-const FLOATING_CFG: ApneaConfig = {
+const INTERACTIVE_CFG: ApneaConfig = {
   profiles: { pi: { cmd_interactive: ["pi"], cmd_oneshot: ["pi", "-p"] } },
   roles: {
     planner: { profile: "pi" },
@@ -25,20 +30,12 @@ const FLOATING_CFG: ApneaConfig = {
   },
   review_round_cap: 3,
   timeouts_ms: { verify: 900_000 },
-  pane_style: "floating",
 }
 
-/** Floating dispatch with no cmd_oneshot → the resolveRoleCmd refusal at the floating branch. */
-const FLOATING_NO_ONESHOT: ApneaConfig = {
-  ...FLOATING_CFG,
-  profiles: { pi: { cmd_interactive: ["pi"] } },
-}
-
-/** Regular dispatch with no cmd_interactive → the resolveRoleCmd refusal at the interactive branch. */
+/** Apnea dispatch cannot use a profile that only supports oneshot workflows. */
 const NO_INTERACTIVE_CFG: ApneaConfig = {
-  ...FLOATING_CFG,
+  ...INTERACTIVE_CFG,
   profiles: { pi: { cmd_oneshot: ["pi", "-p"] } },
-  pane_style: "regular",
 }
 
 function baseState(overrides: Partial<RunState> = {}): RunState {
@@ -57,7 +54,6 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     pending_role: null,
     pending_pane_id: null,
     pending_pane_label: null,
-    pending_floating_exit: null,
     pending_started_at: null,
     pending_deadline_ms: null,
     pending_nudged_at: null,
@@ -143,7 +139,6 @@ async function runDispatch(
       },
       review_round_cap: 3,
       timeouts_ms: { planning: 1_500_000 },
-      pane_style: "regular",
     },
   })
   await Effect.runPromise(
@@ -370,7 +365,6 @@ describe("dispatchWorkflow (fake layers)", () => {
           },
           review_round_cap: 3,
           timeouts_ms: {},
-          pane_style: "regular",
         },
       })
       const commandChanged = layerOf(commandChangedFs, {
@@ -383,7 +377,6 @@ describe("dispatchWorkflow (fake layers)", () => {
           },
           review_round_cap: 3,
           timeouts_ms: {},
-          pane_style: "regular",
         },
       })
       return Effect.gen(function* () {
@@ -549,186 +542,93 @@ describe("dispatchWorkflow (fake layers)", () => {
   )
 
   itEffect(
-    "floating with herdr < 0.7.4 → HerdrError with the exact frozen message",
+    "legacy floating project config cannot change any role from reusable interactive dispatch",
     () => {
-      const fsFake = seedFs(baseState({ step: "planning" }))
-      const { layer, fakeFs } = layerOf(fsFake, {
-        herdr: { enabled: true, version: [0, 7, 3] },
-        cfg: FLOATING_CFG,
-      })
-      return Effect.gen(function* () {
-        const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
-        const e = expectFailure(r, "HerdrError")
-        expect(e.message).toBe(
-          "floating panes need herdr >= 0.7.4 — run `herdr update`, or set pane_style=regular",
-        )
-        expect(taskFiles(fakeFs)).toEqual([])
-      }).pipe(Effect.provide(layer))
-    },
-  )
-
-  itEffect("floating with plugin missing → HerdrError", () => {
-    // state.package_root deliberately differs from the injected live root:
-    // the suggested `herdr plugin link` command must name the LIVE package
-    // root. Interpolating the frozen state value told users hit by the
-    // stale-root bug to link a plugin directory that does not exist.
-    const fsFake = seedFs(
-      baseState({ step: "planning", package_root: "/stale" }),
-      {
-        ...briefFiles("/live-pkg"),
-      },
-    )
-    const { layer, fakeFs } = layerOf(fsFake, {
-      herdr: { enabled: true, version: [0, 7, 4], hasPlugin: false },
-      cfg: FLOATING_CFG,
-    })
-    return Effect.gen(function* () {
-      const r = yield* Effect.result(
-        dispatchWorkflow({ kind: "plan" }, ROOT, {
-          packageRoot: () => "/live-pkg",
-        }),
-      )
-      const e = expectFailure(r, "HerdrError")
-      expect(e.message).toContain("apnea herdr plugin not linked")
-      expect(e.message).toContain("herdr plugin link /live-pkg/herdr-plugin")
-      expect(taskFiles(fakeFs)).toEqual([])
-
-      const out = toToolResult(e)
-      expect(out.ok).toBe(false)
-      expect(out.data?.task).toBeUndefined()
-    }).pipe(Effect.provide(layer))
-  })
-
-  itEffect(
-    "floating while a prior oneshot is still in flight → GateRefused floating_in_flight",
-    () => {
-      const fsFake = seedFs(
-        baseState({
-          step: "planning",
-          pending_floating_exit: ".apnea/tasks/plan-p1-r1-111.exit",
-        }),
-      )
-      const { layer, fakeFs } = layerOf(fsFake, {
-        herdr: { enabled: true, version: [0, 7, 4], hasPlugin: true },
-        cfg: FLOATING_CFG,
-      })
-      return Effect.gen(function* () {
-        const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
-        const e = expectFailure(r, "GateRefused")
-        expect(e.gate).toBe("floating_in_flight")
-        expect(e.details?.pending_artifact).toBeNull()
-        expect(e.details?.pending_floating_exit).toBe(
-          ".apnea/tasks/plan-p1-r1-111.exit",
-        )
-        expect(taskFiles(fakeFs)).toEqual([])
-      }).pipe(Effect.provide(layer))
-    },
-  )
-
-  itEffect(
-    "floating happy path writes script, opens pane, sets pending_floating_exit, leaves role_panes untouched",
-    () => {
-      const fsFake = seedFs(baseState({ step: "planning" }))
-      const { layer, fakeFs, herdr } = layerOf(fsFake, {
-        herdr: { enabled: true, version: [0, 7, 4], hasPlugin: true },
-        cfg: FLOATING_CFG,
-      })
-      return Effect.gen(function* () {
-        const result = yield* dispatchWorkflow({ kind: "plan" }, ROOT)
-        expect(result.ok).toBe(true)
-        if (result.ok) {
-          expect(result.data?.launch).toMatchObject({
-            pane_style_effective: "floating",
-          })
-        }
-        expect(herdr.scripts.length).toBe(1)
-        expect(herdr.openedPanes.length).toBe(1)
-        const saved = savedState(fakeFs)
-        expect(saved.pending_floating_exit).not.toBeNull()
-        expect(saved.pending_pane_id).toBeNull()
-        expect(saved.role_panes).toEqual({})
-      }).pipe(Effect.provide(layer))
-    },
-  )
-
-  itEffect("floating with no cmd_oneshot refuses before writing a task", () => {
-    const fsFake = seedFs(baseState({ step: "planning" }))
-    const { layer, fakeFs } = layerOf(fsFake, {
-      herdr: { enabled: true, version: [0, 7, 4], hasPlugin: true },
-      cfg: FLOATING_NO_ONESHOT,
-    })
-    return Effect.gen(function* () {
-      const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
-      const e = expectFailure(r, "HerdrError")
-      expect(e.message).toContain("cmd_oneshot")
-      expect(taskFiles(fakeFs)).toEqual([])
-    }).pipe(Effect.provide(layer))
-  })
-
-  itEffect("floating script write failure rolls back the task", () => {
-    const fsFake = seedFs(baseState({ step: "planning" }))
-    const { layer, fakeFs } = layerOf(fsFake, {
-      herdr: {
-        enabled: true,
-        version: [0, 7, 4],
-        hasPlugin: true,
-        failWriteScript: new HerdrError({ message: "disk full" }),
-      },
-      cfg: FLOATING_CFG,
-    })
-    return Effect.gen(function* () {
-      const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
-      const e = expectFailure(r, "HerdrError")
-      expect(e.message).toBe("disk full")
-      expect(e.details?.rolled_back).toBe(true)
-      expect(taskFiles(fakeFs)).toEqual([])
-    }).pipe(Effect.provide(layer))
-  })
-
-  itEffect(
-    "floating open failure preserves pending ownership because delivery is ambiguous",
-    () => {
-      const artifact = `${ROOT}/.apnea/artifacts/plan.md`
-      const existingTask = `${ROOT}/.apnea/tasks/plan-p1-r1-0.md`
-      const fsFake = seedFs(baseState({ step: "planning" }), {
-        [artifact]: "prior plan",
-        [existingTask]: "prior task",
-      })
-      const { layer, fakeFs } = layerOf(fsFake, {
-        herdr: {
-          enabled: true,
-          version: [0, 7, 4],
-          hasPlugin: true,
-          failOpenPane: new HerdrError({ message: "popup already open" }),
+      const global = decodeGlobalConfig({
+        profiles: {
+          pi: {
+            cmd_interactive: ["pi", "--interactive"],
+            cmd_oneshot: ["pi", "-p"],
+          },
         },
-        cfg: FLOATING_CFG,
+        roles: INTERACTIVE_CFG.roles,
       })
+      const project = decodeProjectConfig({ pane_style: "floating" })
+      if (global._tag === "Failure" || project._tag === "Failure") {
+        throw new Error("legacy config fixture must decode")
+      }
+      const cfg = applyProjectConfig(global.success, project.success)
+      const cases = [
+        {
+          step: "planning" as const,
+          kind: "plan" as const,
+          role: "planner" as const,
+        },
+        {
+          step: "plan_review" as const,
+          kind: "plan_review" as const,
+          role: "reviewer" as const,
+        },
+        {
+          step: "coding" as const,
+          kind: "code" as const,
+          role: "coder" as const,
+        },
+      ]
+
       return Effect.gen(function* () {
-        const r = yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT))
-        const e = expectFailure(r, "HerdrError")
-        expect(e.message).toBe("popup already open")
-        expect(e.details).toMatchObject({
-          artifact: ".apnea/artifacts/plan.md",
-          delivery: "unknown",
-          pending_preserved: true,
-        })
-        expect(e.details?.task_attempted).toMatch(
-          /^\.apnea\/tasks\/plan-p1-r1-\d+\.md$/,
-        )
-        expect(savedState(fakeFs).pending_artifact).toBe(
-          ".apnea/artifacts/plan.md",
-        )
-        expect(taskFiles(fakeFs)).toHaveLength(2)
-      }).pipe(Effect.provide(layer))
+        for (const testCase of cases) {
+          const remembered = {
+            pane_id: `pane-${testCase.role}`,
+            label: `apnea:${testCase.role}:existing`,
+            profile_fingerprint: '["pi",["pi","--interactive"]]',
+          }
+          const fsFake = seedFs(
+            baseState({
+              step: testCase.step,
+              role_panes: { [testCase.role]: remembered },
+            }),
+          )
+          const testLayer = layerOf(fsFake, {
+            cfg,
+            herdr: {
+              interactive: {
+                pane_id: remembered.pane_id,
+                label: remembered.label,
+                reused: true,
+                prompt_accepted: true,
+                prompt_attempts: 1,
+                last_status: "working",
+              },
+            },
+          })
+          const result = yield* dispatchWorkflow(
+            { kind: testCase.kind },
+            ROOT,
+          ).pipe(Effect.provide(testLayer.layer))
+          expect(testLayer.herdr.interactiveCalls).toHaveLength(1)
+          expect(testLayer.herdr.interactiveCalls[0]).toMatchObject({
+            role: testCase.role,
+            cmd: ["pi", "--interactive"],
+            prefer: remembered,
+          })
+          expect(result.data?.launch).toMatchObject({
+            mode: "interactive",
+            reused: true,
+          })
+          const launch = result.data?.launch as Record<string, unknown>
+          expect("pane_style" in launch).toBe(false)
+        }
+      })
     },
   )
 
   itEffect(
-    "interactive with no cmd_interactive refuses before writing a task",
+    "oneshot-only profile refuses before writing a task even without Herdr",
     () => {
       const fsFake = seedFs(baseState({ step: "planning" }))
       const { layer, fakeFs } = layerOf(fsFake, {
-        herdr: { enabled: true },
+        herdr: { enabled: false },
         cfg: NO_INTERACTIVE_CFG,
       })
       return Effect.gen(function* () {

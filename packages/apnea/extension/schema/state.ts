@@ -48,8 +48,6 @@ export const RunStateSchema = Schema.Struct({
   // optional on Encoded so legacy fixtures without pane fields still decode
   pending_pane_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
   pending_pane_label: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  /** Mirrored in `schemas/state.schema.json`; drift is caught by schema.test.ts. */
-  pending_floating_exit: Schema.optionalKey(Schema.NullOr(Schema.String)),
   pending_started_at: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   pending_deadline_ms: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   pending_nudged_at: Schema.optionalKey(Schema.NullOr(Schema.Number)),
@@ -69,6 +67,22 @@ export function decodeRunState(
   json: unknown,
   path = "state.json",
 ): Result.Result<RunState, StateCorrupt> {
+  if (
+    json !== null &&
+    typeof json === "object" &&
+    !Array.isArray(json) &&
+    "pending_floating_exit" in json &&
+    json.pending_floating_exit !== null
+  ) {
+    return Result.fail(
+      new StateCorrupt({
+        path,
+        message:
+          'this run has an active legacy floating dispatch, but floating dispatch was removed; dismiss or terminate the old popup first, then run `apnea abandon` and `apnea start "<goal>"`',
+      }),
+    )
+  }
+
   const decoded = Schema.decodeUnknownResult(RunStateSchema)(json)
   if (Result.isFailure(decoded)) {
     return Result.fail(
@@ -95,7 +109,6 @@ export function decodeRunState(
     pending_role: d.pending_role,
     pending_pane_id: d.pending_pane_id ?? null,
     pending_pane_label: d.pending_pane_label ?? null,
-    pending_floating_exit: d.pending_floating_exit ?? null,
     pending_started_at: d.pending_started_at ?? null,
     pending_deadline_ms: d.pending_deadline_ms ?? null,
     pending_nudged_at: d.pending_nudged_at ?? null,

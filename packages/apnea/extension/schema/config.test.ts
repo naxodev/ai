@@ -6,7 +6,7 @@ import {
   applyProjectConfig,
   decodeGlobalConfig,
   decodeProjectConfig,
-  PaneStyleSchema,
+  resolveRoleCmdResult,
   validateRoleBindings,
 } from "./config.ts"
 
@@ -25,7 +25,6 @@ const base: ApneaConfig = {
   },
   review_round_cap: 3,
   timeouts_ms: { verify: 900_000, coding: 2_700_000 },
-  pane_style: "regular",
 }
 
 const baseRawGlobal = {
@@ -37,76 +36,48 @@ const baseRawGlobal = {
   },
 }
 
-describe("pane_style", () => {
-  // Existing users who never heard of this key must see zero behavior change.
-  test("omitted everywhere defaults to regular", () => {
-    const r = decodeGlobalConfig(baseRawGlobal)
-    expect(Result.isSuccess(r)).toBe(true)
-    if (Result.isSuccess(r)) expect(r.success.pane_style).toBe("regular")
-  })
-
-  test("global floating is respected", () => {
-    const r = decodeGlobalConfig({ ...baseRawGlobal, pane_style: "floating" })
-    expect(Result.isSuccess(r)).toBe(true)
-    if (Result.isSuccess(r)) expect(r.success.pane_style).toBe("floating")
-  })
-
-  // Project UX preference must win over global in both directions.
-  test("project overlay wins both directions", () => {
-    const fromRegular = applyProjectConfig(
-      { ...base, pane_style: "regular" },
-      { pane_style: "floating" },
-    )
-    expect(fromRegular.pane_style).toBe("floating")
-
-    const fromFloating = applyProjectConfig(
-      { ...base, pane_style: "floating" },
-      { pane_style: "regular" },
-    )
-    expect(fromFloating.pane_style).toBe("regular")
-  })
-
-  // An unrelated project config must not silently reset the preference.
-  test("project silent on the key inherits global", () => {
-    const floatingBase: ApneaConfig = { ...base, pane_style: "floating" }
-    expect(applyProjectConfig(floatingBase, {}).pane_style).toBe("floating")
-    expect(
-      applyProjectConfig(floatingBase, { review_round_cap: 2 }).pane_style,
-    ).toBe("floating")
-  })
-
-  // Orchestrator runs unattended — a typo must fail at config load, not mid-run.
-  // Message text is Schema-generated, so assert *containment* of the key name
-  // and of each allowed value derived from `PaneStyleSchema.literals`, rather
-  // than matching the message shape.
-  test("invalid value fails decode naming pane_style", () => {
-    const g = decodeGlobalConfig({ ...baseRawGlobal, pane_style: "tiled" })
-    const ge = expectFailure(g, "ConfigError")
-    expect(ge.message).toContain("pane_style")
-    for (const allowed of PaneStyleSchema.literals) {
-      expect(ge.message).toContain(allowed)
-    }
-
-    const gBool = decodeGlobalConfig({ ...baseRawGlobal, pane_style: true })
-    const gBoolE = expectFailure(gBool, "ConfigError")
-    expect(gBoolE.message).toContain("pane_style")
-    for (const allowed of PaneStyleSchema.literals) {
-      expect(gBoolE.message).toContain(allowed)
-    }
-
-    const p = decodeProjectConfig({ pane_style: "tiled" })
-    const pe = expectFailure(p, "ConfigError")
-    expect(pe.message).toContain("pane_style")
-    for (const allowed of PaneStyleSchema.literals) {
-      expect(pe.message).toContain(allowed)
+describe("legacy pane_style migration", () => {
+  test("global regular and floating values decode but disappear", () => {
+    for (const pane_style of ["regular", "floating"] as const) {
+      const r = decodeGlobalConfig({ ...baseRawGlobal, pane_style })
+      expect(Result.isSuccess(r)).toBe(true)
+      if (Result.isSuccess(r)) expect("pane_style" in r.success).toBe(false)
     }
   })
 
-  // pane_style is a UX preference, not a forbidden project key.
-  test("project pane_style is not rejected as unknown", () => {
-    const r = decodeProjectConfig({ pane_style: "floating" })
-    expect(Result.isSuccess(r)).toBe(true)
-    if (Result.isSuccess(r)) expect(r.success.pane_style).toBe("floating")
+  test("invalid global legacy values still fail", () => {
+    for (const pane_style of ["tiled", true, null]) {
+      const error = expectFailure(
+        decodeGlobalConfig({ ...baseRawGlobal, pane_style }),
+        "ConfigError",
+      )
+      expect(error.message).toContain("pane_style")
+      expect(error.message).toContain("regular")
+      expect(error.message).toContain("floating")
+    }
+  })
+
+  test("project regular and floating values decode but disappear", () => {
+    for (const pane_style of ["regular", "floating"] as const) {
+      const r = decodeProjectConfig({ pane_style, review_round_cap: 2 })
+      expect(Result.isSuccess(r)).toBe(true)
+      if (Result.isSuccess(r)) {
+        expect(r.success.review_round_cap).toBe(2)
+        expect("pane_style" in r.success).toBe(false)
+      }
+    }
+  })
+
+  test("invalid project legacy values still fail", () => {
+    for (const pane_style of ["tiled", true, null]) {
+      const error = expectFailure(
+        decodeProjectConfig({ pane_style }),
+        "ConfigError",
+      )
+      expect(error.message).toContain("pane_style")
+      expect(error.message).toContain("regular")
+      expect(error.message).toContain("floating")
+    }
   })
 })
 
@@ -129,19 +100,16 @@ describe("applyProjectConfig", () => {
     expect(merged.timeouts_ms.coding).toBe(2_700_000)
   })
 
-  test("review_round_cap and pane_style fall back to base when absent", () => {
+  test("review_round_cap falls back to base when absent", () => {
     const merged = applyProjectConfig(base, {})
     expect(merged.review_round_cap).toBe(3)
-    expect(merged.pane_style).toBe("regular")
   })
 
-  test("review_round_cap and pane_style taken from overlay when present", () => {
+  test("review_round_cap is taken from overlay when present", () => {
     const merged = applyProjectConfig(base, {
       review_round_cap: 5,
-      pane_style: "floating",
     })
     expect(merged.review_round_cap).toBe(5)
-    expect(merged.pane_style).toBe("floating")
   })
 
   // Out-of-range overlay values fall back rather than propagate: a project
@@ -201,6 +169,21 @@ describe("out-of-range numbers degrade instead of failing the decode", () => {
 })
 
 describe("validateRoleBindings", () => {
+  test("explicit oneshot resolution remains available to external workflows", () => {
+    const external = resolveRoleCmdResult(
+      {
+        ...base,
+        roles: { ...base.roles, reviewer: { profile: "claude" } },
+      },
+      "reviewer",
+      "oneshot",
+    )
+    expect(Result.isSuccess(external)).toBe(true)
+    if (Result.isSuccess(external)) {
+      expect(external.success).toEqual(["claude", "-p"])
+    }
+  })
+
   test("success returns cfg unchanged", () => {
     const r = validateRoleBindings(base)
     expect(Result.isSuccess(r)).toBe(true)

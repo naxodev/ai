@@ -12,8 +12,6 @@ export type Role = "orchestrator" | "planner" | "reviewer" | "coder"
 
 export type RoleMode = "oneshot" | "interactive"
 
-export type PaneStyle = "regular" | "floating"
-
 export type Verdict = "APPROVED" | "CHANGES_REQUIRED"
 
 export type ReworkTarget = "code" | "phase_package"
@@ -34,7 +32,6 @@ export interface ApneaConfig {
   roles: Record<string, RoleBinding>
   review_round_cap: number
   timeouts_ms: Record<string, number>
-  pane_style: PaneStyle
 }
 
 export interface RunState {
@@ -57,12 +54,6 @@ export interface RunState {
   pending_pane_id: string | null
   /** Label of that pane (apnea:role:unique) */
   pending_pane_label: string | null
-  /**
-   * Relative path to the floating oneshot exit-status file (written when the
-   * popup worker process ends). Null for regular panes. Herdr popups have no
-   * pane id — this is how wait detects death without hanging until timeout.
-   */
-  pending_floating_exit: string | null
   /**
    * Epoch ms when the in-flight dispatch was launched. Null when idle.
    * Persisted so a chunked `workflow_wait` measures elapsed time from the

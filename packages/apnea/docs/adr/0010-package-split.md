@@ -16,7 +16,7 @@ Both adapters bind the operation registry exported by `@naxodev/apnea`. The Pi a
 
 The core exposes only the operation registry, result formatting, command parsing, resource-root lookup, and the `ApneaHostAdapter` launch hooks. Pi supplies those hooks when it creates its registry.
 
-`@naxodev/pi-apnea` depends on `@naxodev/apnea` with `^0.1.0`. Compatible core patch releases flow through that range. An incompatible host interface change requires coordinated minor releases of both packages.
+The current incompatible `@naxodev/pi-apnea` line depends on `@naxodev/apnea` with `^0.2.0`. Compatible core patch releases flow through that range. For an incompatible line, the core manifest is pre-staged at the new minor so the workspace remains installable while Nx coordinates the adapter's minor release.
 
 ## Consequences
 

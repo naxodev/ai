@@ -5,7 +5,6 @@ import {
   deepMergeProfiles,
   detectionNotes,
   pickRoles,
-  preservePaneStyle,
   type Detected,
 } from "./setup.ts"
 
@@ -20,17 +19,6 @@ function detected(overrides: Partial<Detected> = {}): Detected {
     ...overrides,
   }
 }
-
-describe("preservePaneStyle", () => {
-  // Setup must never silently drop a user's floating opt-in on re-run (or --force).
-  test("prev floating/regular survive; absent stays absent; invalid dropped", () => {
-    expect(preservePaneStyle({ pane_style: "floating" })).toBe("floating")
-    expect(preservePaneStyle({ pane_style: "regular" })).toBe("regular")
-    expect(preservePaneStyle({})).toBeUndefined()
-    expect(preservePaneStyle({ pane_style: "tiled" })).toBeUndefined()
-    expect(preservePaneStyle({ pane_style: 1 })).toBeUndefined()
-  })
-})
 
 describe("deepMergeProfiles", () => {
   test("existing keys win over incoming; new keys are added", () => {
@@ -136,27 +124,13 @@ describe("buildGlobalConfig", () => {
     })
   })
 
-  test("pane_style absent when prev has none, present when valid, dropped when garbage", () => {
-    const absent = buildGlobalConfig({
-      has: detected(),
-      prev: {},
-      force: false,
-    })
-    expect("pane_style" in absent).toBe(false)
-
-    const present = buildGlobalConfig({
+  test("retired global keys are not copied into regenerated config", () => {
+    const config = buildGlobalConfig({
       has: detected(),
       prev: { pane_style: "floating" },
       force: false,
     })
-    expect(present.pane_style).toBe("floating")
-
-    const garbage = buildGlobalConfig({
-      has: detected(),
-      prev: { pane_style: "tiled" },
-      force: false,
-    })
-    expect("pane_style" in garbage).toBe(false)
+    expect("pane_style" in config).toBe(false)
   })
 })
 

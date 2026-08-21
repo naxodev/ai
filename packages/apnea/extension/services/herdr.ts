@@ -1,13 +1,8 @@
 import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
 import { Clock, Context, Effect, Layer, Option, Result } from "effect"
-import {
-  floatingTaskScriptBody,
-  parseHerdrVersion,
-  shellJoin,
-} from "../domain/herdr.ts"
+import { shellJoin } from "../domain/herdr.ts"
 import { HerdrError } from "../errors.ts"
 import type { ApneaHostAdapter } from "../host-adapter.ts"
 import { neutralHostAdapter } from "../host-adapter.ts"
@@ -33,8 +28,6 @@ export interface HerdrService {
   readonly enabled: Effect.Effect<boolean>
   /** Dispatch preflight that distinguishes a stale pane from CLI failures. */
   readonly availability: Effect.Effect<HerdrAvailability, HerdrError>
-  readonly version: Effect.Effect<[number, number, number] | null>
-  readonly hasApneaPlugin: Effect.Effect<boolean>
   readonly paneGet: (paneId: string) => Effect.Effect<PaneInfo>
   readonly paneRun: (
     paneId: string,
@@ -50,20 +43,6 @@ export interface HerdrService {
     prompt: string,
     prefer: RolePaneRef | null,
   ) => Effect.Effect<InteractiveLaunch, HerdrError>
-  readonly writeFloatingTaskScript: (
-    scriptAbs: string,
-    root: string,
-    cmd: string[],
-    prompt: string,
-    exitFileAbs: string,
-  ) => Effect.Effect<void, HerdrError>
-  readonly openFloatingPane: (
-    taskScriptAbs: string,
-    root: string,
-  ) => Effect.Effect<void, HerdrError>
-  readonly linkPlugin: (
-    dir: string,
-  ) => Effect.Effect<{ ok: boolean; raw: string }>
 }
 
 export class Herdr extends Context.Service<Herdr, HerdrService>()(
@@ -118,11 +97,8 @@ function isExecutableFile(abs: string): boolean {
 }
 
 /**
- * Resolve a oneshot binary against the orchestrator environment.
- * Floating plugin popups get a stripped PATH (no ~/.local/bin etc.), so bare
- * names like `claude` exit 127 unless we bake an absolute path into the script.
- * Walks PATH directly — no `which` subprocess (which itself vanishes when PATH
- * is overridden for tests or minimal envs).
+ * Resolve a binary against the current environment. Walks PATH directly so
+ * setup detection does not depend on a separate `which` executable.
  */
 export function resolveExecutable(
   bin: string,
@@ -139,36 +115,6 @@ export function resolveExecutable(
     if (isExecutableFile(candidate)) return candidate
   }
   return null
-}
-
-/**
- * PATH for floating plugin panes: orchestrator PATH plus common user-local
- * bin dirs so child tools the oneshot agent spawns still resolve.
- */
-export function floatingPanePath(
-  base: string = process.env.PATH ?? "",
-  home: string = os.homedir(),
-): string {
-  const extras = [
-    path.join(home, ".local", "bin"),
-    path.join(home, ".bun", "bin"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-  ]
-  const parts = base.split(path.delimiter).filter(Boolean)
-  const seen = new Set(parts)
-  for (const extra of extras) {
-    if (seen.has(extra)) continue
-    try {
-      if (fs.statSync(extra).isDirectory()) {
-        parts.push(extra)
-        seen.add(extra)
-      }
-    } catch {
-      // skip missing dirs
-    }
-  }
-  return parts.join(path.delimiter)
 }
 
 function herdrEnabledSync(): boolean {
@@ -307,24 +253,6 @@ function paneSendKeysSync(paneId: string, keys: string[]): void {
   if (!r.ok) {
     throw new HerdrError({ message: `herdr pane send-keys failed: ${r.raw}` })
   }
-}
-
-function herdrVersionSync(): [number, number, number] | null {
-  return parseHerdrVersion(herdrCli(["--version"]).raw)
-}
-
-function hasApneaPluginSync(): boolean {
-  const r = herdrCli(["plugin", "list", "--plugin", "apnea", "--json"])
-  const json = r.json
-  if (json) {
-    const res = resultOf(json)
-    const plugins = (res?.plugins as Array<Record<string, unknown>>) ?? []
-    if (plugins.some((p) => p.plugin_id === "apnea" || p.id === "apnea")) {
-      return true
-    }
-  }
-  // Fallback when JSON shape is unexpected but the id still appears in output.
-  return /"(?:plugin_id|id)"\s*:\s*"apnea"/.test(r.raw)
 }
 
 function paneForegroundNamesSync(paneId: string): string[] {
@@ -739,9 +667,8 @@ function runInteractivePromptImpl(
 }
 
 /**
- * Thin Herdr service: pane lifecycle, interactive-prompt dispatch, and
- * floating-oneshot popups. Depends on nothing (spawns + node:fs directly,
- * like `VcsLive`'s `run`).
+ * Thin Herdr service for pane lifecycle and interactive-prompt dispatch.
+ * Depends on nothing, like `VcsLive`'s `run`.
  */
 export const makeHerdrLive = (hostAdapter: ApneaHostAdapter) =>
   Layer.effect(
@@ -754,10 +681,6 @@ export const makeHerdrLive = (hostAdapter: ApneaHostAdapter) =>
           try: herdrAvailabilitySync,
           catch: toHerdrError,
         }),
-
-        version: Effect.sync(herdrVersionSync),
-
-        hasApneaPlugin: Effect.sync(hasApneaPluginSync),
 
         paneGet: (paneId) => Effect.sync(() => paneGetSync(paneId)),
 
@@ -774,85 +697,6 @@ export const makeHerdrLive = (hostAdapter: ApneaHostAdapter) =>
 
         runInteractivePrompt: (...args) =>
           runInteractivePromptImpl(hostAdapter, ...args),
-
-        writeFloatingTaskScript: (scriptAbs, root, cmd, prompt, exitFileAbs) =>
-          Effect.try({
-            try: () => {
-              if (cmd.length === 0) {
-                throw new HerdrError({
-                  message:
-                    "floating oneshot cmd is empty; set cmd_oneshot on the role profile",
-                })
-              }
-              const bin = cmd[0]
-              if (bin === undefined || bin === "") {
-                throw new HerdrError({
-                  message:
-                    "floating oneshot binary is empty; set cmd_oneshot on the role profile",
-                })
-              }
-              const resolved = resolveExecutable(bin)
-              if (!resolved) {
-                throw new HerdrError({
-                  message: `floating oneshot binary "${bin}" not found on PATH; use an absolute cmd_oneshot or set pane_style=regular`,
-                })
-              }
-              const resolvedCmd = [resolved, ...cmd.slice(1)]
-              // No `exec`: EXIT trap must run after the oneshot exits (Hangup
-              // included). End-of-options `--` before the prompt so variadic
-              // flags like Claude's `--allowedTools <tools...>` cannot swallow
-              // the prompt as another tool.
-              const body = floatingTaskScriptBody({
-                root,
-                resolvedCmd,
-                prompt,
-                exitFileAbs,
-              })
-              fs.writeFileSync(scriptAbs, body, "utf8")
-              fs.chmodSync(scriptAbs, 0o755)
-            },
-            catch: toHerdrError,
-          }),
-
-        openFloatingPane: (taskScriptAbs, _root) =>
-          Effect.try({
-            try: () => {
-              const r = herdrCli([
-                "plugin",
-                "pane",
-                "open",
-                "--plugin",
-                "apnea",
-                "--entrypoint",
-                "worker",
-                "--placement",
-                "popup",
-                "--env",
-                `APNEA_TASK_SCRIPT=${taskScriptAbs}`,
-                "--env",
-                `PATH=${floatingPanePath()}`,
-              ])
-              if (!r.ok) {
-                const raw = r.raw.trim()
-                if (/popup already open/i.test(raw)) {
-                  throw new HerdrError({
-                    message:
-                      "floating popup already open — herdr allows only one; dismiss it or workflow_wait for the in-flight oneshot before dispatching again",
-                  })
-                }
-                throw new HerdrError({
-                  message: `herdr plugin pane open failed: ${raw || r.raw}`,
-                })
-              }
-            },
-            catch: toHerdrError,
-          }),
-
-        linkPlugin: (dir) =>
-          Effect.sync(() => {
-            const r = herdrCli(["plugin", "link", dir])
-            return { ok: r.ok, raw: r.raw }
-          }),
       }),
     ),
   )

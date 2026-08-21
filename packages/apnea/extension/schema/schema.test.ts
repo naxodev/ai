@@ -27,7 +27,6 @@ const fullState = {
   pending_role: "coder" as const,
   pending_pane_id: "p1",
   pending_pane_label: "apnea:coder:abc",
-  pending_floating_exit: null,
   role_panes: {
     coder: {
       pane_id: "p1",
@@ -49,7 +48,6 @@ describe("RunStateSchema", () => {
     if (Result.isSuccess(r)) {
       expect(r.success.slug).toBe("demo")
       expect(r.success.pending_pane_id).toBe("p1")
-      expect(r.success.pending_floating_exit).toBeNull()
       expect(r.success.role_panes.coder?.pane_id).toBe("p1")
     }
   })
@@ -68,7 +66,7 @@ describe("RunStateSchema", () => {
       last_error: null,
       pending_artifact: null,
       pending_role: null,
-      // no pending_pane_*, pending_floating_exit, role_panes
+      // no pending_pane_* or role_panes
       package_root: "/x",
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
@@ -79,7 +77,6 @@ describe("RunStateSchema", () => {
     if (Result.isSuccess(r)) {
       expect(r.success.pending_pane_id).toBeNull()
       expect(r.success.pending_pane_label).toBeNull()
-      expect(r.success.pending_floating_exit).toBeNull()
       expect(r.success.role_panes).toEqual({})
       expect(r.success.phase_package_rework).toBe(false)
     }
@@ -93,6 +90,37 @@ describe("RunStateSchema", () => {
     expect(Result.isSuccess(r)).toBe(true)
     if (Result.isSuccess(r)) {
       expect(r.success.role_panes.coder?.profile_fingerprint).toBeNull()
+    }
+  })
+
+  test("a null legacy floating exit field decodes and is not retained", () => {
+    const r = decodeRunState({ ...fullState, pending_floating_exit: null })
+    expect(Result.isSuccess(r)).toBe(true)
+    if (Result.isSuccess(r)) {
+      expect("pending_floating_exit" in r.success).toBe(false)
+    }
+  })
+
+  test("an active legacy floating dispatch fails instead of resuming its old deadline", () => {
+    const r = decodeRunState({
+      ...fullState,
+      pending_floating_exit: ".apnea/tasks/old.exit",
+    })
+    expect(Result.isFailure(r)).toBe(true)
+    if (Result.isFailure(r)) {
+      expect(r.failure.message).toContain("floating dispatch was removed")
+      expect(r.failure.message).toContain("`apnea abandon`")
+      expect(r.failure.message).toContain('`apnea start "<goal>"`')
+      const popupInstruction = r.failure.message.indexOf(
+        "dismiss or terminate the old popup",
+      )
+      expect(popupInstruction).toBeGreaterThanOrEqual(0)
+      expect(popupInstruction).toBeLessThan(
+        r.failure.message.indexOf("`apnea abandon`"),
+      )
+      expect(r.failure.message.indexOf("`apnea abandon`")).toBeLessThan(
+        r.failure.message.indexOf('`apnea start "<goal>"`'),
+      )
     }
   })
 
@@ -127,10 +155,24 @@ describe("RunStateSchema", () => {
     const jsonPath = path.join(repoRoot, "schemas/state.schema.json")
     const doc = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as {
       properties: Record<string, unknown>
+      required?: string[]
     }
-    const jsonKeys = Object.keys(doc.properties).sort()
+    const deprecatedMigrationProperties = ["pending_floating_exit"]
+    const jsonKeys = Object.keys(doc.properties)
+      .filter((key) => !deprecatedMigrationProperties.includes(key))
+      .sort()
     const schemaKeys = Object.keys(RunStateSchema.fields).sort()
     expect(schemaKeys).toEqual(jsonKeys)
+    expect(
+      Object.keys(doc.properties).filter((key) =>
+        deprecatedMigrationProperties.includes(key),
+      ),
+    ).toEqual(deprecatedMigrationProperties)
+    expect(doc.properties.pending_floating_exit).toMatchObject({
+      type: "null",
+      deprecated: true,
+    })
+    expect(doc.required).not.toContain("pending_floating_exit")
   })
 })
 
@@ -141,12 +183,13 @@ describe("config schemas", () => {
         pi: { cmd_interactive: ["pi"] },
       },
       roles: { planner: { profile: "pi" } },
-      pane_style: "regular",
+      pane_style: "floating",
     })
     expect(Result.isSuccess(r)).toBe(true)
     if (Result.isSuccess(r)) {
       expect(r.success.profiles.pi?.cmd_interactive).toEqual(["pi"])
       expect(r.success.review_round_cap).toBe(3)
+      expect("pane_style" in r.success).toBe(false)
     }
   })
 
@@ -169,9 +212,22 @@ describe("config schemas", () => {
     const doc = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as {
       properties: Record<string, unknown>
     }
-    const jsonKeys = Object.keys(doc.properties).sort()
+    const deprecatedMigrationProperties = ["pane_style"]
+    const jsonKeys = Object.keys(doc.properties)
+      .filter((key) => !deprecatedMigrationProperties.includes(key))
+      .sort()
     const schemaKeys = Object.keys(GlobalConfigSchema.fields).sort()
     expect(schemaKeys).toEqual(jsonKeys)
+    expect(
+      Object.keys(doc.properties).filter((key) =>
+        deprecatedMigrationProperties.includes(key),
+      ),
+    ).toEqual(deprecatedMigrationProperties)
+    expect(doc.properties.pane_style).toMatchObject({
+      type: "string",
+      enum: ["regular", "floating"],
+      deprecated: true,
+    })
   })
 })
 

@@ -4,7 +4,6 @@ import {
   DEFAULT_TIMEOUTS,
   ROLE_MODE,
   type ApneaConfig,
-  type PaneStyle,
   type Profile,
   type Role,
   type RoleMode,
@@ -21,8 +20,6 @@ const RoleBindingSchema = Schema.Struct({
   profile: Schema.String.check(Schema.isMinLength(1)),
 })
 
-export const PaneStyleSchema = Schema.Literals(["regular", "floating"] as const)
-
 /**
  * Mirrors `schemas/config.schema.json` top-level keys.
  *
@@ -35,7 +32,6 @@ export const GlobalConfigSchema = Schema.Struct({
   roles: Schema.optional(Schema.Record(Schema.String, RoleBindingSchema)),
   review_round_cap: Schema.optional(Schema.Number),
   timeouts_ms: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
-  pane_style: Schema.optional(PaneStyleSchema),
 })
 
 const PROJECT_KNOWN = new Set([
@@ -63,7 +59,6 @@ export const ProjectConfigSchema = Schema.Struct({
   review_round_cap: Schema.optional(Schema.Number),
   timeouts_ms: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   isolation: Schema.optional(Schema.Literal("shared_cwd")),
-  pane_style: Schema.optional(PaneStyleSchema),
 })
 
 function configFail(
@@ -97,6 +92,16 @@ export function decodeGlobalConfig(
   const obj = objR.success
 
   if (
+    "pane_style" in obj &&
+    obj.pane_style !== "regular" &&
+    obj.pane_style !== "floating"
+  ) {
+    return configFail(
+      `invalid legacy pane_style=${JSON.stringify(obj.pane_style)}; expected "regular" or "floating"`,
+    )
+  }
+
+  if (
     "isolation" in obj &&
     obj.isolation !== undefined &&
     obj.isolation !== "shared_cwd"
@@ -119,7 +124,8 @@ export function decodeGlobalConfig(
     }
   }
 
-  const decoded = Schema.decodeUnknownResult(GlobalConfigSchema)(obj)
+  const { pane_style: _legacy, ...globalConfig } = obj
+  const decoded = Schema.decodeUnknownResult(GlobalConfigSchema)(globalConfig)
   if (Result.isFailure(decoded)) {
     return configFail(decoded.failure.message)
   }
@@ -150,11 +156,6 @@ export function decodeGlobalConfig(
     }
   }
 
-  const pane_style: PaneStyle =
-    d.pane_style === "regular" || d.pane_style === "floating"
-      ? d.pane_style
-      : "regular"
-
   return Result.succeed({
     profiles,
     roles,
@@ -163,7 +164,6 @@ export function decodeGlobalConfig(
         ? d.review_round_cap
         : 3,
     timeouts_ms: timeouts,
-    pane_style,
   })
 }
 
@@ -178,6 +178,18 @@ export function decodeProjectConfig(
   if (Result.isFailure(objR)) return configFail(objR.failure.message)
 
   const obj = objR.success
+
+  // Legacy project configs may contain this retired preference. Validate it
+  // before stripping it so typos still fail instead of becoming silent no-ops.
+  if (
+    "pane_style" in obj &&
+    obj.pane_style !== "regular" &&
+    obj.pane_style !== "floating"
+  ) {
+    return configFail(
+      `invalid legacy pane_style=${JSON.stringify(obj.pane_style)}; expected "regular" or "floating"`,
+    )
+  }
 
   for (const key of Object.keys(obj)) {
     if (PROJECT_FORBIDDEN.has(key)) {
@@ -214,9 +226,13 @@ export function decodeProjectConfig(
     }
   }
 
-  const decoded = Schema.decodeUnknownResult(ProjectConfigSchema)(obj, {
-    onExcessProperty: "error",
-  })
+  const { pane_style: _legacy, ...projectConfig } = obj
+  const decoded = Schema.decodeUnknownResult(ProjectConfigSchema)(
+    projectConfig,
+    {
+      onExcessProperty: "error",
+    },
+  )
   if (Result.isFailure(decoded)) {
     return configFail(decoded.failure.message)
   }
@@ -251,8 +267,6 @@ export function applyProjectConfig(
         ? overlay.review_round_cap
         : cfg.review_round_cap,
     timeouts_ms: timeouts,
-    pane_style:
-      overlay.pane_style !== undefined ? overlay.pane_style : cfg.pane_style,
   }
 }
 

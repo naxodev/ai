@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/apnea",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Host-neutral multi-role workflow engine and standalone Bun CLI",
   "license": "MIT",
   "author": "Nacho Vazquez",
@@ -39,7 +39,6 @@
     "docs/adr",
     "docs/protocol",
     "extension",
-    "herdr-plugin",
     "schemas",
     "!extension/**/*.test.ts",
     "!extension/test"

@@ -24,7 +24,7 @@ Two phases, e.g. “CLI that greets by name + `--json` flag,” small enough to 
 | 3   | Code CHANGES_REQUIRED | Live follow-up into existing coder pane; new `round-N` code-review; then APPROVED                                                 |
 | 4   | APPROVED + nits       | One review with `nits` field; commit still proceeds                                                                               |
 | 5   | Kill-and-resume       | Kill coder pane mid-phase; human reconciles per protocol (artifact present? ingest : re-dispatch same round); continue to success |
-| 6   | Mixed harness         | Planner/reviewer Claude oneshot; coder Pi interactive                                                                             |
+| 6   | Mixed harness         | Planner/reviewer Claude interactive; coder Pi interactive                                                                         |
 
 ## Hard rules during the gate
 

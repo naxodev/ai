@@ -22,7 +22,6 @@ const DEFAULT_CFG: ApneaConfig = {
   },
   review_round_cap: 3,
   timeouts_ms: { verify: 900_000 },
-  pane_style: "regular",
 }
 
 /** Config layer whose load succeeds with cfg (or fails with failLoad). */

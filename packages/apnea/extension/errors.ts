@@ -52,7 +52,7 @@ export class VcsError extends Schema.TaggedErrorClass<VcsError>()("VcsError", {
   command: Schema.optional(Schema.String),
 }) {}
 
-/** Herdr CLI / pane / floating failure. */
+/** Herdr CLI or pane failure. */
 export class HerdrError extends Schema.TaggedErrorClass<HerdrError>()(
   "HerdrError",
   {

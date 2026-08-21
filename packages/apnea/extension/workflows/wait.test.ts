@@ -42,7 +42,6 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     pending_role: null,
     pending_pane_id: null,
     pending_pane_label: null,
-    pending_floating_exit: null,
     pending_started_at: null,
     pending_deadline_ms: null,
     pending_nudged_at: null,
@@ -123,7 +122,6 @@ function makeConfig(timeouts_ms?: Record<string, number>): ApneaConfig {
     },
     review_round_cap: 3,
     timeouts_ms: timeouts_ms ?? { default: 900_000 },
-    pane_style: "regular",
   }
 }
 
@@ -436,63 +434,6 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
         const result = yield* Effect.result(Fiber.join(fiber))
         expectFailure(result, "WaitAborted")
         expect(savedState(fakeFs).last_error).toBe("workflow_wait aborted")
-      }).pipe(Effect.provide(layer))
-    },
-  )
-
-  itEffect(
-    "floating exit code 129 with no artifact → HerdrError after the flush window, hint mentions Hangup",
-    () => {
-      const exitRel = ".apnea/tasks/plan-p1-r1-1.exit"
-      const state = baseState({
-        step: "planning",
-        pending_artifact: ".apnea/artifacts/plan.md",
-        pending_role: "planner",
-        pending_floating_exit: exitRel,
-      })
-      const fsFake = seedFs(state, { [`${ROOT}/${exitRel}`]: "129\n" })
-      const { layer, fakeFs } = layerOf(fsFake)
-      return Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
-          waitWorkflow({ poll_ms: 500 }, ROOT),
-        )
-        yield* TestClock.adjust(2_100) // past the 2000ms flush window
-        const result = yield* Effect.result(Fiber.join(fiber))
-        const e = expectFailure(result, "HerdrError")
-        expect(e.details?.exit_code).toBe(129)
-        expect(String(e.details?.hint)).toMatch(/Hangup/i)
-        expect(savedState(fakeFs).pending_floating_exit).toBeNull()
-      }).pipe(Effect.provide(layer))
-    },
-  )
-
-  itEffect(
-    "floating exit while the artifact lands inside the flush window → success (the window exists precisely for this race)",
-    () => {
-      const exitRel = ".apnea/tasks/plan-p1-r1-1.exit"
-      const artifactPath = `${ROOT}/.apnea/artifacts/plan.md`
-      const state = baseState({
-        step: "planning",
-        pending_artifact: ".apnea/artifacts/plan.md",
-        pending_role: "planner",
-        pending_floating_exit: exitRel,
-      })
-      const fsFake = seedFs(state, { [`${ROOT}/${exitRel}`]: "0\n" })
-      const { layer, fakeFs } = layerOf(fsFake)
-      return Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(
-          waitWorkflow({ poll_ms: 500 }, ROOT),
-        )
-        yield* TestClock.adjust(500)
-        // Oneshot finishes writing just as the process exits — well inside
-        // the 2000ms flush window.
-        fsFake.files.set(artifactPath, "---\nstatus: done\n---\nbody")
-        yield* TestClock.adjust(1_000)
-        const result = yield* Fiber.join(fiber)
-        expect(result.ok).toBe(true)
-        if (result.ok) {
-          expect(result.data?.step).toBe("plan_review")
-        }
       }).pipe(Effect.provide(layer))
     },
   )
@@ -1419,8 +1360,6 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
         Herdr.of({
           enabled: Effect.succeed(true),
           availability: Effect.succeed("available"),
-          version: Effect.succeed(null),
-          hasApneaPlugin: Effect.succeed(true),
           paneGet: () => Effect.succeed({ ok: true, agent_status: "idle" }),
           // Never resolves: models `tryNudge` blocked on its herdr
           // subprocess, so the abort below lands mid-call rather than
@@ -1437,9 +1376,6 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
               prompt_attempts: 1,
               last_status: "working",
             }),
-          writeFloatingTaskScript: () => Effect.void,
-          openFloatingPane: () => Effect.void,
-          linkPlugin: () => Effect.succeed({ ok: true, raw: "" }),
         }),
       )
       const layer = Layer.mergeAll(
