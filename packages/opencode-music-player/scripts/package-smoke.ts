@@ -209,7 +209,8 @@ console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-musi
   const tuiEntry = join(packageDir, "tui.tsx")
   const originalEntry = join(packageDir, "index.original.tsx")
   await rename(packageEntry, originalEntry)
-  const fixtureSource = `import { createController, createMusicPlayerPlugin } from "./index.original.tsx"
+  const fixtureSource = `import { appendFileSync } from "node:fs"
+import { createController, createMusicPlayerPlugin } from "./index.original.tsx"
 
 const track = {
   uri: "system:smoke-track",
@@ -220,6 +221,12 @@ const track = {
   duration_ms: 245000,
   artwork: null,
   artwork_loading: true,
+}
+const artwork = {
+  id: "smoke-cover",
+  png_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  accent: "#7aa2f7",
+  cells: [[{ upper: "#7aa2f7", lower: "#1a1b26" }]],
 }
 let playing = true
 let progressMs = 123000
@@ -239,6 +246,12 @@ const scheduleUpdates = () => {
       progressMs = 124000
       publishSnapshot()
     }, 500),
+  )
+  updateTimers.push(
+    setTimeout(() => {
+      progressMs = 125000
+      publishSnapshot()
+    }, 700),
   )
 }
 
@@ -276,7 +289,7 @@ const plugin = createMusicPlayerPlugin({
               album: track.album,
               duration_ms: track.duration_ms,
             },
-            artwork: null,
+            artwork,
             duration_ms: track.duration_ms,
           })
           return () => { publishArtwork = () => {} }
@@ -290,8 +303,24 @@ const plugin = createMusicPlayerPlugin({
 export default {
   ...plugin,
   async setup(context) {
+    const graphicsTrace = process.env.OPENCODE_MUSIC_GRAPHICS_TRACE
+    const fixtureRenderer = new Proxy(context.renderer, {
+      get(target, property) {
+        if (property === "capabilities")
+          return { ...target.capabilities, kitty_graphics: true }
+        if (property === "stdout") return {}
+        if (property === "realStdoutWrite")
+          return (data) => {
+            appendFileSync(graphicsTrace, data)
+            return true
+          }
+        const value = Reflect.get(target, property)
+        return typeof value === "function" ? value.bind(target) : value
+      },
+    })
     const fixtureContext = {
       ...context,
+      renderer: fixtureRenderer,
       ui: {
         ...context.ui,
         slot(claim) {
@@ -327,6 +356,8 @@ export default {
     join(config, "cli.json"),
     JSON.stringify({ plugins: [tuiEntry] }),
   )
+  const graphicsTrace = join(root, "native-graphics.bin")
+  await writeFile(graphicsTrace, "")
   const env = {
     ...process.env,
     XDG_CONFIG_HOME: join(root, "xdg", "config"),
@@ -338,10 +369,18 @@ export default {
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_DISABLE_AUTOUPDATE: "1",
     OPENCODE_DISABLE_MODELS_FETCH: "1",
+    OPENCODE_MUSIC_GRAPHICS_TRACE: graphicsTrace,
   }
-  const command = [openCodeBinary, "--standalone", "--log-level", "error", root]
+  const openCodeCommand = [
+    openCodeBinary,
+    "--standalone",
+    "--log-level",
+    "error",
+    root,
+  ]
     .map(shellQuote)
     .join(" ")
+  const command = `exec ${openCodeCommand}`
   const launchTui = () => {
     const launched = Bun.spawnSync(
       [
@@ -398,7 +437,6 @@ export default {
     const expanded = await waitForPane("settled expanded player", (pane) =>
       Boolean(
         pane.includes("Smoke album") &&
-        pane.includes("Artwork unavailable") &&
         !pane.includes("Loading artwork") &&
         occurrences(pane, "SMOKE COMPACT TRACK MARKER") === 2 &&
         occurrences(pane, "⏸") >= 2 &&
@@ -413,11 +451,19 @@ export default {
       return Boolean(
         progress &&
         progress !== firstProgress &&
-        pane.includes("Artwork unavailable") &&
         !pane.includes("Loading artwork") &&
         occurrences(pane, "SMOKE COMPACT TRACK MARKER") === 2,
       )
     })
+    const graphics = Buffer.from(
+      await Bun.file(graphicsTrace).arrayBuffer(),
+    ).toString("latin1")
+    const transmissions = occurrences(graphics, "a=T")
+    const imageDeletes = occurrences(graphics, "a=d,d=I")
+    if (transmissions !== 1)
+      throw new Error(`native artwork transmitted ${transmissions} times`)
+    if (imageDeletes !== 2)
+      throw new Error(`native artwork image was deleted ${imageDeletes} times`)
 
     await terminateTmux()
     await writeFile(
@@ -431,8 +477,7 @@ export default {
       (pane) =>
         occurrences(pane, "▶") >= 2 &&
         occurrences(pane, "SMOKE COMPACT TRACK MARKER") === 2 &&
-        /\b2:04\s+4:05\b/.test(pane) &&
-        pane.includes("Artwork unavailable") &&
+        /\b2:05\s+4:05\b/.test(pane) &&
         !pane.includes("Loading artwork"),
     )
 

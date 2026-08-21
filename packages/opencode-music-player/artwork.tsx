@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { BoxRenderable } from "@opentui/core"
+import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { For, onCleanup, onMount } from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import type { Artwork } from "./types.ts"
@@ -26,13 +26,33 @@ import {
 type Context = Plugin.Context
 const tmuxOffsetCache = createTmuxOffsetCache()
 const nativeArtworkImageId = kittyImageId("opencode-music-player:artwork")
-let latestNativeArtworkOwner = 0
+type NativeArtworkRuntime = {
+  latestOwner: number
+  state: NativeArtworkState
+  identity: string
+}
+const defaultOwnershipScope = { latestOwner: 0 }
+const nativeArtworkRuntimes = new WeakMap<CliRenderer, NativeArtworkRuntime>()
+
+function nativeArtworkRuntime(renderer: CliRenderer): NativeArtworkRuntime {
+  const existing = nativeArtworkRuntimes.get(renderer)
+  if (existing) return existing
+  const created = {
+    latestOwner: 0,
+    state: { transmitted: 0, placement: null },
+    identity: "",
+  }
+  nativeArtworkRuntimes.set(renderer, created)
+  return created
+}
 
 export type NativeArtworkOwnership = { isCurrent: () => boolean }
 
-export function claimNativeArtworkOwnership(): NativeArtworkOwnership {
-  const owner = ++latestNativeArtworkOwner
-  return { isCurrent: () => owner === latestNativeArtworkOwner }
+export function claimNativeArtworkOwnership(
+  scope: { latestOwner: number } = defaultOwnershipScope,
+): NativeArtworkOwnership {
+  const owner = ++scope.latestOwner
+  return { isCurrent: () => owner === scope.latestOwner }
 }
 
 export function cleanupNativeArtwork(
@@ -78,10 +98,10 @@ function copyState(next: NativeArtworkState): NativeArtworkState {
 }
 
 export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
-  const ownership = claimNativeArtworkOwnership()
+  const renderer = props.context.renderer
+  const runtime = nativeArtworkRuntime(renderer)
+  const ownership = claimNativeArtworkOwnership(runtime)
   let container: BoxRenderable | undefined
-  let state: NativeArtworkState = { transmitted: 0, placement: null }
-  let artworkIdentity = ""
   let paintPending = false
   let disposed = false
 
@@ -127,18 +147,18 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   }
 
   const commitPlan = (plan: NativeArtworkPlacementPlan) => {
-    state = copyState(plan.nextState)
+    runtime.state = copyState(plan.nextState)
   }
 
   const paintNativeImage = () => {
     if (!ownership.isCurrent()) return
-    if (artworkIdentity !== props.artwork.id) {
-      artworkIdentity = props.artwork.id
+    if (runtime.identity !== props.artwork.id) {
+      runtime.identity = props.artwork.id
       writeGraphics(
         props.context.renderer,
         kittyDelete(legacyImageIdForResolvedArtwork(props.artwork)),
       )
-      state = { transmitted: 0, placement: null }
+      runtime.state = { transmitted: 0, placement: null }
     }
     const kittySupported = supportsKittyGraphics(props.context)
     const slotValid =
@@ -163,7 +183,7 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
     const height = slot?.height ?? 0
 
     const plan = planNativeArtworkPlacement({
-      state,
+      state: runtime.state,
       imageId,
       x,
       y,
@@ -191,10 +211,15 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   onCleanup(() => {
     disposed = true
     props.context.renderer.off("frame", scheduleNativeImage)
-    // Clear even if this owner unmounts before its first native paint.
-    cleanupNativeArtwork(ownership, () => {
-      writeGraphics(props.context.renderer, kittyDelete(nativeArtworkImageId))
-    })
+    // A replacement mount claims ownership before the next task runs.
+    setTimeout(() => {
+      cleanupNativeArtwork(ownership, () => {
+        if (!renderer.isDestroyed)
+          writeGraphics(renderer, kittyDelete(nativeArtworkImageId))
+        runtime.state = { transmitted: 0, placement: null }
+        runtime.identity = ""
+      })
+    }, 0)
   })
 
   return (
