@@ -5,11 +5,13 @@ import {
   createMemo,
   createSignal,
   onCleanup,
+  onMount,
 } from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import {
   MouseButton,
   type BoxRenderable,
+  type TextNodeRenderable,
   type TextRenderable,
 } from "@opentui/core"
 import { waveformSeedKey } from "@naxodev/music-core"
@@ -21,7 +23,6 @@ export type UiState = {
   loading: boolean
   error: string | null
   player: import("./types.ts").PlayerState | null
-  clock_ms?: number
 }
 
 type Theme = Context["theme"]
@@ -320,30 +321,52 @@ function liveProgress(player: UiState["player"], now = Date.now()): number {
   )
 }
 
+function progressSegments(progress: number, duration: number, width: number) {
+  if (duration <= 0) return { left: "", thumb: "", right: "─".repeat(width) }
+  const ratio = Math.max(0, Math.min(1, progress / duration))
+  const track = width - 1
+  const filled = Math.max(0, Math.min(track, Math.round(ratio * track)))
+  return {
+    left: "━".repeat(filled),
+    thumb: Icon.scrub,
+    right: "─".repeat(Math.max(0, track - filled)),
+  }
+}
+
 function ProgressBar(props: {
   theme: Theme
-  progress: number
+  player: UiState["player"]
   duration: number
   width?: number
   accent?: string | undefined
   onSeek: (positionMs: number) => void
 }) {
   let bar: BoxRenderable | undefined
+  let leftNode: TextNodeRenderable | undefined
+  let thumbNode: TextNodeRenderable | undefined
+  let rightNode: TextNodeRenderable | undefined
   const width = () => Math.max(8, props.width ?? 28)
-  const rendered = createMemo(() => {
-    const w = width()
-    if (props.duration <= 0) {
-      return { left: "", thumb: "", right: "─".repeat(w) }
-    }
-    const ratio = Math.max(0, Math.min(1, props.progress / props.duration))
-    // leave 1 cell for thumb
-    const track = w - 1
-    const filled = Math.max(0, Math.min(track, Math.round(ratio * track)))
-    return {
-      left: "━".repeat(filled),
-      thumb: Icon.scrub,
-      right: "─".repeat(Math.max(0, track - filled)),
-    }
+  const rendered = () =>
+    progressSegments(liveProgress(props.player), props.duration, width())
+  const paint = () => {
+    const next = rendered()
+    if (leftNode) leftNode.children = [next.left]
+    if (thumbNode) thumbNode.children = [next.thumb]
+    if (rightNode) rightNode.children = [next.right]
+  }
+
+  createEffect(() => {
+    void props.player
+    void props.duration
+    void props.width
+    paint()
+  })
+  onMount(() => {
+    paint()
+    const timer = setInterval(() => {
+      if (props.player?.is_playing) paint()
+    }, 1_000)
+    onCleanup(() => clearInterval(timer))
   })
 
   return (
@@ -367,6 +390,7 @@ function ProgressBar(props: {
     >
       <text>
         <span
+          ref={(element) => (leftNode = element)}
           style={{
             fg: props.accent ?? props.theme.text.action.primary.default,
           }}
@@ -374,15 +398,44 @@ function ProgressBar(props: {
           {rendered().left}
         </span>
         <span
+          ref={(element) => (thumbNode = element)}
           style={{
             fg: props.accent ?? props.theme.text.action.primary.default,
           }}
         >
           {rendered().thumb}
         </span>
-        <span style={{ fg: props.theme.text.subdued }}>{rendered().right}</span>
+        <span
+          ref={(element) => (rightNode = element)}
+          style={{ fg: props.theme.text.subdued }}
+        >
+          {rendered().right}
+        </span>
       </text>
     </box>
+  )
+}
+
+function LiveElapsed(props: { theme: Theme; player: UiState["player"] }) {
+  let text: TextRenderable | undefined
+  const paint = () => {
+    if (text) text.content = formatMs(liveProgress(props.player))
+  }
+  createEffect(() => {
+    void props.player
+    paint()
+  })
+  onMount(() => {
+    paint()
+    const timer = setInterval(() => {
+      if (props.player?.is_playing) paint()
+    }, 1_000)
+    onCleanup(() => clearInterval(timer))
+  })
+  return (
+    <text ref={(element) => (text = element)} fg={props.theme.text.subdued}>
+      {formatMs(liveProgress(props.player))}
+    </text>
   )
 }
 
@@ -467,9 +520,6 @@ export function SidebarPlayer(props: {
   const track = createMemo(() => player()?.track)
   const playing = createMemo(() => !!player()?.is_playing)
 
-  const progress = createMemo(() =>
-    liveProgress(player(), props.state.clock_ms),
-  )
   const duration = createMemo(() => track()?.duration_ms ?? 0)
 
   return (
@@ -559,14 +609,14 @@ export function SidebarPlayer(props: {
         <box flexDirection="column" gap={0} overflow="hidden">
           <ProgressBar
             theme={theme()}
-            progress={progress()}
+            player={player()}
             duration={duration()}
             width={24}
             accent={track()?.artwork?.accent}
             onSeek={props.onSeek}
           />
           <box flexDirection="row" justifyContent="space-between">
-            <text fg={theme().text.subdued}>{formatMs(progress())}</text>
+            <LiveElapsed theme={theme()} player={player()} />
             <text fg={theme().text.subdued}>{formatMs(duration())}</text>
           </box>
         </box>
