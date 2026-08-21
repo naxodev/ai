@@ -143,9 +143,23 @@ function harness(
      * A function lets a test flip the foreground between polls, the same
      * way `agentStatus` already can. */
     foreground?: string[] | (() => string[])
+    interactiveReused?: boolean
+    paneOutput?: string | null
+    failPaneRead?: HerdrError
   } = {},
 ) {
-  const state = baseState({ step: "planning" })
+  const state = baseState({
+    step: "planning",
+    role_panes: opts.interactiveReused
+      ? {
+          planner: {
+            pane_id: "pane-1",
+            label: "apnea:planner:fake",
+            profile_fingerprint: '["pi",["pi"]]',
+          },
+        }
+      : {},
+  })
   const fsFake = seedFs(state)
   const cfg = makeConfig(opts.timeouts_ms)
   const { layer, fakeFs, herdr } = layerOf(fsFake, {
@@ -156,6 +170,8 @@ function harness(
       ...(opts.failPaneRun
         ? { failPaneRun: new HerdrError({ message: "pane run failed" }) }
         : {}),
+      ...(opts.paneOutput !== undefined ? { paneOutput: opts.paneOutput } : {}),
+      ...(opts.failPaneRead ? { failPaneRead: opts.failPaneRead } : {}),
       pane: () => ({
         ok: true,
         agent_status:
@@ -166,7 +182,7 @@ function harness(
       interactive: {
         pane_id: "pane-1",
         label: "apnea:planner:fake",
-        reused: false,
+        reused: opts.interactiveReused ?? false,
         prompt_accepted: true,
         prompt_attempts: 1,
         last_status: "working",
@@ -477,6 +493,114 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
         if (result.ok) {
           expect(result.data?.step).toBe("plan_review")
         }
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "new and reused regular panes reporting done fail immediately with best-effort output — terminal exit is a broken role/artifact contract, not an idle stall",
+    () => {
+      const artifact = ".apnea/artifacts/plan.md"
+      const cases = [
+        {
+          reused: false,
+          paneOutput: "planner exited after a failed write\n",
+          failPaneRead: undefined,
+        },
+        {
+          reused: true,
+          paneOutput: null,
+          failPaneRead: new HerdrError({ message: "pane read failed" }),
+        },
+      ]
+      return Effect.gen(function* () {
+        for (const testCase of cases) {
+          const t = harness({
+            agentStatus: "done",
+            interactiveReused: testCase.reused,
+            paneOutput: testCase.paneOutput,
+            ...(testCase.failPaneRead
+              ? { failPaneRead: testCase.failPaneRead }
+              : {}),
+          })
+          yield* Effect.gen(function* () {
+            const dispatched = yield* t.dispatch("plan")
+            expect(dispatched.data?.launch).toMatchObject({
+              reused: testCase.reused,
+            })
+            expect(t.herdr.interactiveCalls[0]?.prefer == null).toBe(
+              !testCase.reused,
+            )
+
+            const fiber = yield* Effect.forkChild(
+              waitWorkflow({ poll_ms: 1_000, budget_ms: 90_000 }, ROOT),
+            )
+            // The role deadline is 15 minutes away. A terminal status must
+            // resolve on its first observation, not enter the 60s idle ladder.
+            yield* TestClock.adjust(1)
+            expect(fiber.pollUnsafe()).toBeDefined()
+
+            const result = yield* Effect.result(Fiber.join(fiber))
+            const error = expectFailure(result, "HerdrError")
+            expect(error.message).toContain("role/artifact contract")
+            expect(error.details).toMatchObject({
+              pane_id: "pane-1",
+              role: "planner",
+              artifact,
+              last_agent_status: "done",
+              transcript_command:
+                "herdr pane read pane-1 --source recent-unwrapped --lines 80 --format text",
+              pane_output: testCase.paneOutput,
+            })
+            expect(t.herdr.paneReads).toEqual(["pane-1"])
+            expect(t.herdr.paneRuns).toHaveLength(0)
+            expect(t.state().pending_final_grace).toBe(false)
+          }).pipe(Effect.provide(t.layer))
+        }
+      })
+    },
+  )
+
+  itEffect(
+    "an artifact completed as done is observed advances successfully — the terminal contract check must re-read before failing",
+    () => {
+      const artifact = ".apnea/artifacts/phase-01/round-1/coder-result.md"
+      const artifactPath = `${ROOT}/${artifact}`
+      const state = baseState({
+        step: "coding",
+        pending_artifact: artifact,
+        pending_role: "coder",
+        pending_pane_id: "pane-1",
+        pending_started_at: 0,
+        pending_deadline_ms: 900_000,
+      })
+      const fsFake = seedFs(state, {
+        [artifactPath]: "---\nstatus: working\n---\nstill writing",
+      })
+      const { layer } = layerOf(fsFake, {
+        herdr: {
+          enabled: true,
+          pane: () => {
+            // The first artifact read saw incomplete front matter. Model the
+            // writer's final rename becoming visible with the terminal status.
+            fsFake.files.set(
+              artifactPath,
+              "---\nstatus: done\n---\nfinished body",
+            )
+            return { ok: true, agent_status: "done" }
+          },
+        },
+      })
+      return Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          waitWorkflow({ poll_ms: 1_000, budget_ms: 90_000 }, ROOT),
+        )
+        yield* TestClock.adjust(1)
+        expect(fiber.pollUnsafe()).toBeDefined()
+
+        const result = yield* Fiber.join(fiber)
+        expect(result.ok).toBe(true)
+        expect(result.data?.step).toBe("code_review")
       }).pipe(Effect.provide(layer))
     },
   )
@@ -1302,6 +1426,7 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
           // subprocess, so the abort below lands mid-call rather than
           // before or after it.
           paneRun: () => Effect.never,
+          paneReadRecent: () => Effect.succeed(null),
           paneForegroundNames: () => Effect.succeed([]),
           runInteractivePrompt: () =>
             Effect.succeed({

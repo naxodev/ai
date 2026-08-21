@@ -30,6 +30,8 @@ export type FakeHerdrOptions = {
    * "never attempted" (e.g. `tryNudge` in wait.ts must not skip the attempt).
    */
   failPaneRun?: HerdrError
+  paneOutput?: string | null
+  failPaneRead?: HerdrError
   /**
    * Advances the `TestClock` by this many ms before `runInteractivePrompt`
    * returns, modelling the real `waitAgentReady` block (services/herdr.ts,
@@ -42,6 +44,7 @@ export type FakeHerdrOptions = {
 
 export type FakeHerdrRecorder = {
   paneRuns: Array<{ paneId: string; command: string }>
+  paneReads: string[]
   scripts: Array<{
     scriptAbs: string
     cmd: string[]
@@ -65,6 +68,7 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
 } {
   const recorder: FakeHerdrRecorder = {
     paneRuns: [],
+    paneReads: [],
     scripts: [],
     openedPanes: [],
     interactiveCalls: [],
@@ -105,6 +109,15 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
         if (opts.failPaneRun) {
           return yield* opts.failPaneRun
         }
+      }),
+
+    paneReadRecent: (paneId) =>
+      Effect.gen(function* () {
+        recorder.paneReads.push(paneId)
+        if (opts.failPaneRead) {
+          return yield* opts.failPaneRead
+        }
+        return opts.paneOutput ?? null
       }),
 
     paneForegroundNames: () =>

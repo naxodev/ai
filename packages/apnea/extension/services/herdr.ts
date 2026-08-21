@@ -40,6 +40,9 @@ export interface HerdrService {
     paneId: string,
     command: string,
   ) => Effect.Effect<void, HerdrError>
+  readonly paneReadRecent: (
+    paneId: string,
+  ) => Effect.Effect<string | null, HerdrError>
   readonly paneForegroundNames: (paneId: string) => Effect.Effect<string[]>
   readonly runInteractivePrompt: (
     role: string,
@@ -66,6 +69,18 @@ export interface HerdrService {
 export class Herdr extends Context.Service<Herdr, HerdrService>()(
   "apnea/Herdr",
 ) {}
+
+export const paneReadRecentArgs = (paneId: string): string[] => [
+  "pane",
+  "read",
+  paneId,
+  "--source",
+  "recent-unwrapped",
+  "--lines",
+  "80",
+  "--format",
+  "text",
+]
 
 function herdrCli(args: string[]): { ok: boolean; json: unknown; raw: string } {
   const r = spawnSync("herdr", args, {
@@ -201,6 +216,27 @@ function paneGetSync(paneId: string): PaneInfo {
 
 function paneAliveSync(paneId: string): boolean {
   return paneGetSync(paneId).ok
+}
+
+function paneReadRecentSync(paneId: string): string {
+  const args = paneReadRecentArgs(paneId)
+  const r = spawnSync("herdr", args, {
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  })
+  if (r.status !== 0 || r.error) {
+    const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.error?.message ?? ""}`
+      .trim()
+      .split(/\r?\n/)
+      .slice(-80)
+      .join("\n")
+    throw new HerdrError({
+      message: `herdr pane read failed for ${paneId}${output ? `: ${output}` : ""}`,
+      command: shellJoin(["herdr", ...args]),
+      ...(output ? { details: { output } } : {}),
+    })
+  }
+  return r.stdout ?? ""
 }
 
 /** Prefer right on wide panes, down on tall/narrow ones. */
@@ -726,6 +762,12 @@ export const makeHerdrLive = (hostAdapter: ApneaHostAdapter) =>
         paneGet: (paneId) => Effect.sync(() => paneGetSync(paneId)),
 
         paneRun,
+
+        paneReadRecent: (paneId) =>
+          Effect.try({
+            try: () => paneReadRecentSync(paneId),
+            catch: toHerdrError,
+          }),
 
         paneForegroundNames: (paneId) =>
           Effect.sync(() => paneForegroundNamesSync(paneId)),
