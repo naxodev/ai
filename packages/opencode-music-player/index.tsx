@@ -1,7 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode-ai/plugin/tui"
 import { createSessionSystemMedia, openNowPlayingApp } from "./system-media.ts"
-import { isMac, mergeArtworkCompletion, type SessionMedia } from "./types.ts"
+import {
+  isMac,
+  mergeArtworkCompletion,
+  mergePlayerSnapshot,
+  type SessionMedia,
+} from "./types.ts"
 import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
 
 type Context = Plugin.Context
@@ -90,6 +95,7 @@ export function createController(
         loadingOwners: [],
         error: null,
         player: null,
+        clock_ms: Date.now(),
       },
     },
   )
@@ -112,8 +118,20 @@ export function createController(
   let activeSeek: SeekIntent | null = null
   let latestSeek: SeekIntent | null = null
   const pending = new Set<() => void>()
-
   const isActive = () => !disposed
+  let clockTimer: ReturnType<typeof setInterval> | null = null
+  const syncClock = () => {
+    if (clockTimer) clearInterval(clockTimer)
+    clockTimer = null
+    if (!isActive() || !session.player?.is_playing) return
+    clockTimer = setInterval(() => {
+      if (!isActive()) return
+      setSession((draft) => {
+        draft.clock_ms = Date.now()
+      })
+    }, 1_000)
+  }
+
   const publishError = () => {
     if (!isActive()) return
     const message =
@@ -222,7 +240,9 @@ export function createController(
         return
       setSession((draft) => {
         draft.player = player
+        draft.clock_ms = Date.now()
       })
+      syncClock()
     } catch (error) {
       if (isActive() && generation === lifecycleGeneration)
         setTransportError(errMsg(error))
@@ -239,6 +259,7 @@ export function createController(
         setSession((draft) => {
           draft.player = optimisticPlayerState(draft.player, nextPlaying)
         })
+        syncClock()
       },
     ).finally(() => {
       playbackOperations--
@@ -270,8 +291,10 @@ export function createController(
       receivedSnapshot = true
       snapshotEpoch++
       setSession((draft) => {
-        draft.player = event.state
+        draft.player = mergePlayerSnapshot(draft.player, event.state)
+        draft.clock_ms = Date.now()
       })
+      syncClock()
       return
     }
     if (event?.type === "lifecycle") {
@@ -327,6 +350,7 @@ export function createController(
       activeSeek?.resolves.splice(0).forEach((resolve) => resolve())
       activeSeek = null
       for (const resolve of [...pending]) settle(resolve)
+      if (clockTimer) clearInterval(clockTimer)
       void media.dispose().catch(() => {})
       setLoadingOwner(false)
     },
@@ -414,6 +438,7 @@ export function createMusicPlayerPlugin(options?: {
         void ctrl.session.loading
         void ctrl.session.error
         void ctrl.session.player
+        void ctrl.session.clock_ms
       }
       const unsubApp = context.ui.slot({
         append: "session.composer.top",

@@ -5,7 +5,6 @@ import {
   createMemo,
   createSignal,
   onCleanup,
-  onMount,
 } from "solid-js"
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import {
@@ -22,6 +21,7 @@ export type UiState = {
   loading: boolean
   error: string | null
   player: import("./types.ts").PlayerState | null
+  clock_ms?: number
 }
 
 type Theme = Context["theme"]
@@ -311,12 +311,12 @@ export function CompactPlayer(props: {
   )
 }
 
-function liveProgress(player: UiState["player"]): number {
+function liveProgress(player: UiState["player"], now = Date.now()): number {
   if (!player?.track) return 0
   if (!player.is_playing) return player.progress_ms
   return Math.min(
     player.track.duration_ms,
-    player.progress_ms + (Date.now() - player.fetched_at),
+    player.progress_ms + (Math.max(now, player.fetched_at) - player.fetched_at),
   )
 }
 
@@ -467,29 +467,9 @@ export function SidebarPlayer(props: {
   const track = createMemo(() => player()?.track)
   const playing = createMemo(() => !!player()?.is_playing)
 
-  const [tick, setTick] = createSignal(0)
-  onMount(() => {
-    let id: ReturnType<typeof setInterval> | null = null
-    const sync = () => {
-      const on = !!props.state.player?.is_playing
-      if (on && !id) id = setInterval(() => setTick((t) => t + 1), 1000)
-      else if (!on && id) {
-        clearInterval(id)
-        id = null
-      }
-    }
-    sync()
-    const watch = setInterval(sync, 400)
-    onCleanup(() => {
-      if (id) clearInterval(id)
-      clearInterval(watch)
-    })
-  })
-
-  const progress = createMemo(() => {
-    tick()
-    return liveProgress(player())
-  })
+  const progress = createMemo(() =>
+    liveProgress(player(), props.state.clock_ms),
+  )
   const duration = createMemo(() => track()?.duration_ms ?? 0)
 
   return (

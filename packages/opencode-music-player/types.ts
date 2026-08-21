@@ -113,3 +113,35 @@ export function mergeArtworkCompletion(
     },
   }
 }
+
+/** Keep host-local artwork presentation across playback-only snapshots. */
+export function mergePlayerSnapshot(
+  player: PlayerState | null,
+  snapshot: PlayerState,
+): PlayerState {
+  const current = player?.track
+  const next = snapshot.track
+  if (
+    !current ||
+    !next ||
+    current.name !== next.name ||
+    current.artists !== next.artists ||
+    current.album !== next.album ||
+    (current.duration_ms > 0 &&
+      next.duration_ms > 0 &&
+      current.duration_ms !== next.duration_ms) ||
+    (current.artwork === null && current.artwork_loading !== false)
+  ) {
+    return snapshot
+  }
+  return {
+    ...snapshot,
+    track: {
+      ...next,
+      artwork: next.artwork ?? current.artwork,
+      artwork_loading: false,
+      duration_ms:
+        next.duration_ms > 0 ? next.duration_ms : current.duration_ms,
+    },
+  }
+}
