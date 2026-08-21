@@ -1,11 +1,6 @@
 import * as path from "node:path"
 import { Effect, Result } from "effect"
-import { supportsFloating } from "../domain/herdr.ts"
-import {
-  globalConfigPath,
-  packageRoot,
-  projectConfigPath,
-} from "../domain/paths.ts"
+import { globalConfigPath, projectConfigPath } from "../domain/paths.ts"
 import {
   buildGlobalConfig,
   detectionNotes,
@@ -16,7 +11,6 @@ import { ConfigError, type AppError } from "../errors.ts"
 import { ok, type ToolResult } from "../result.ts"
 import { decodeGlobalConfig } from "../schema/config.ts"
 import { FileSystem } from "../services/file-system.ts"
-import { Herdr } from "../services/herdr.ts"
 
 export type SetupParams = {
   /** Write .apnea/config.json role bindings in cwd */
@@ -78,81 +72,6 @@ export type SetupDeps = {
   materializeRoleAgentDir: () => string | null
 }
 
-export type ProvisionResult = {
-  copied: string | null // dest dir, or null when skipped
-  linked: boolean // true only when we ran `herdr plugin link` OK
-  already_linked: boolean
-  notes: string[]
-}
-
-/**
- * Copy the package's herdr-plugin into a stable config-local path and, when
- * herdr is new enough and the plugin isn't already linked, run
- * `herdr plugin link`. Never fails — every branch is a note.
- */
-export const provisionHerdrPlugin = (opts: {
-  srcDir: string // packageRoot()/herdr-plugin
-  destDir: string // dirname(globalConfigPath())/herdr-plugin
-  version: [number, number, number] | null // herdr.version
-}): Effect.Effect<ProvisionResult, never, FileSystem | Herdr> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem
-    const herdr = yield* Herdr
-    const notes: string[] = []
-
-    const srcExists = yield* fs.exists(opts.srcDir)
-    if (!srcExists) {
-      notes.push("herdr-plugin missing from package — reinstall @naxodev/apnea")
-      return { copied: null, linked: false, already_linked: false, notes }
-    }
-
-    yield* fs.copyDir(opts.srcDir, opts.destDir)
-    const runTask = path.join(opts.destDir, "scripts", "run-task.sh")
-    if (yield* fs.exists(runTask)) {
-      yield* fs.chmod(runTask, 0o755)
-    }
-
-    if (!supportsFloating(opts.version)) {
-      const ver =
-        opts.version == null
-          ? "unknown"
-          : `${opts.version[0]}.${opts.version[1]}.${opts.version[2]}`
-      notes.push(
-        `herdr ${ver} < 0.7.4 — floating panes unavailable; run \`herdr update\`, then re-run /apnea setup`,
-      )
-      return {
-        copied: opts.destDir,
-        linked: false,
-        already_linked: false,
-        notes,
-      }
-    }
-
-    if (yield* herdr.hasApneaPlugin) {
-      return {
-        copied: opts.destDir,
-        linked: false,
-        already_linked: true,
-        notes,
-      }
-    }
-
-    const linkResult = yield* herdr.linkPlugin(opts.destDir)
-    if (!linkResult.ok) {
-      notes.push(
-        `herdr plugin link failed: ${linkResult.raw.trim() || "(no output)"}`,
-      )
-      return {
-        copied: opts.destDir,
-        linked: false,
-        already_linked: false,
-        notes,
-      }
-    }
-
-    return { copied: opts.destDir, linked: true, already_linked: false, notes }
-  })
-
 /**
  * Deterministic Apnea setup: detect binaries, write global profiles
  * (and optional project role bindings). Never writes cmd into project config.
@@ -161,10 +80,9 @@ export const setupWorkflow = (
   params: SetupParams,
   root: string,
   deps: SetupDeps,
-): Effect.Effect<ToolResult, AppError, FileSystem | Herdr> =>
+): Effect.Effect<ToolResult, AppError, FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem
-    const herdr = yield* Herdr
 
     const readJsonSafe = (
       filePath: string,
@@ -241,20 +159,6 @@ export const setupWorkflow = (
       )
     }
 
-    let herdrPlugin: ProvisionResult | null = null
-    let herdrVer: string | null = null
-    if (has.herdr) {
-      const version = yield* herdr.version
-      herdrVer =
-        version == null ? null : `${version[0]}.${version[1]}.${version[2]}`
-      herdrPlugin = yield* provisionHerdrPlugin({
-        srcDir: path.join(packageRoot(), "herdr-plugin"),
-        destDir: path.join(path.dirname(globalConfigPath()), "herdr-plugin"),
-        version,
-      })
-      missing.push(...herdrPlugin.notes)
-    }
-
     let agentsMdPath: string | null = null
     if (params.agents_md) {
       const target = path.join(root, "AGENTS.md")
@@ -286,16 +190,5 @@ export const setupWorkflow = (
     if (params.agents_md) {
       data.agents_md = agentsMdPath
     }
-    if (has.herdr) {
-      data.herdr_version = herdrVer
-      data.herdr_plugin = herdrPlugin
-        ? {
-            copied: herdrPlugin.copied,
-            linked: herdrPlugin.linked,
-            already_linked: herdrPlugin.already_linked,
-          }
-        : null
-    }
-
     return ok(`wrote global config ${gPath}`, data)
   })

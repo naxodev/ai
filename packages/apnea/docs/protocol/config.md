@@ -52,8 +52,6 @@ Unknown keys and unimplemented values (`isolation: "worktree"`) **hard-error** a
     "coder": { "profile": "pi-grok" },
   },
   "review_round_cap": 3,
-  // "regular" (default) or "floating"; omit the key to keep the default
-  "pane_style": "regular",
   "timeouts_ms": {
     "planning": 1500000,
     "plan_review": 900000,
@@ -129,29 +127,16 @@ a slow test run can read `idle` for a minute. The nudge is one-shot, so a false 
 105000ms, leaving roughly 15000ms of margin under a 120000ms shell. Raise one and you must raise
 the other.
 
-## Pane style
-
-`pane_style` controls how role dispatches appear in Herdr:
-
-- Values: `"regular"` | `"floating"`. Default is `"regular"` — **omitting the key changes nothing**.
-- Allowed in global config and overridable per project.
-- `"floating"` applies to **planner/reviewer oneshot dispatches only**. It requires herdr ≥ 0.7.4 **and** the linked `apnea` plugin (provisioned by `/apnea setup`). The popup is **session-modal**: it takes keyboard input until the worker exits, and dismissing it early kills the dispatch.
-- Floating oneshot scripts resolve `cmd_oneshot[0]` to an **absolute path** in the orchestrator environment and pass an augmented `PATH` into the popup. Bare names must be findable via the orchestrator's `PATH` (e.g. `~/.local/bin`); otherwise dispatch fails immediately instead of the popup exiting 127. Prefer absolute `cmd_oneshot` if your orchestrator process has a stripped PATH.
-- **Lifecycle (single popup):** herdr allows only one popup. Dispatch refuses while a prior floating oneshot is still live. The worker writes an exit-status file; `workflow_wait` fails closed when the popup dies without a complete artifact (instead of hanging until timeout). A second open while a popup is up surfaces `popup already open` immediately.
-- Interactive roles (orchestrator, coder) always use regular panes; the dispatch result reports `pane_style_effective: "regular (interactive role)"`.
-- Misconfiguration (old herdr, missing plugin, missing `cmd_oneshot`, unresolved oneshot binary) fails fast at dispatch with an actionable error.
-- Non-goal: per-role `pane_style` is future work. Setup never writes or flips this key — it only preserves a valid existing value on re-run.
-
 ## Role modes (fixed)
 
-By default every worker role launches the **interactive** harness TUI so you can watch it in Herdr. With `pane_style: "floating"`, planner and reviewer instead run their profile's **`cmd_oneshot`** inside the popup (those profiles therefore need `cmd_oneshot` for floating — dispatch preflight errors otherwise). Interactive roles always stay on `cmd_interactive`.
+Every worker role launches the **interactive** harness TUI in a reusable Herdr pane. Apnea dispatch always resolves `cmd_interactive`; a profile that only has `cmd_oneshot` cannot satisfy any role. `cmd_oneshot` remains part of the profile contract for manual and external workflows.
 
-| Role         | Required profile capability                                         |
-| ------------ | ------------------------------------------------------------------- |
-| orchestrator | `cmd_interactive`                                                   |
-| planner      | `cmd_interactive` (and `cmd_oneshot` when `pane_style: "floating"`) |
-| reviewer     | `cmd_interactive` (and `cmd_oneshot` when `pane_style: "floating"`) |
-| coder        | `cmd_interactive`                                                   |
+| Role         | Required profile capability |
+| ------------ | --------------------------- |
+| orchestrator | `cmd_interactive`           |
+| planner      | `cmd_interactive`           |
+| reviewer     | `cmd_interactive`           |
+| coder        | `cmd_interactive`           |
 
 Binding a role to a profile missing the required capability → **hard-error**.
 

@@ -107,8 +107,7 @@ export function findPackageRootFrom(startDir: string): string | null {
 }
 
 /**
- * Package root — the directory holding `briefs/`, `herdr-plugin/`, and our
- * own `package.json`.
+ * Package root — the directory holding `briefs/` and our own `package.json`.
  *
  * Found by walking up and reading each `package.json`, NOT by counting
  * directory levels. The level count differs for every way this code runs, and

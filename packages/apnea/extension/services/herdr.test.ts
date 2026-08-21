@@ -1,10 +1,4 @@
-/**
- * Real HerdrLive, temp dir, no herdr CLI on PATH — only the file-based
- * floating-script surface is exercised here (pane/interactive methods need a
- * live herdr and are covered by the floating-dispatch smoke test instead).
- */
 import { afterEach, describe, expect, test } from "bun:test"
-import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -12,12 +6,9 @@ import { Effect, Fiber, Result } from "effect"
 import { TestClock } from "effect/testing"
 import { HerdrError } from "../errors.ts"
 import {
-  Herdr,
-  HerdrLive,
   type PromptProbes,
   cleanupFailedInteractiveLaunch,
   ensurePromptSubmitted,
-  floatingPanePath,
   paneReadRecentArgs,
   probeHerdrAvailability,
   resolveExecutable,
@@ -36,83 +27,6 @@ function tmp(): string {
   return d
 }
 
-describe("HerdrLive.writeFloatingTaskScript", () => {
-  // A mis-quoted or unresolved binary silently 127s inside a popup with a
-  // stripped PATH — this must fail loud at dispatch time instead.
-  test("resolves a bare binary via PATH, writes mode 0o755, and records the exit code when run", async () => {
-    const d = tmp()
-    const bin = path.join(d, "pi")
-    fs.writeFileSync(bin, "#!/bin/sh\nexit 42\n")
-    fs.chmodSync(bin, 0o755)
-
-    const script = path.join(d, "task.sh")
-    const exitFile = path.join(d, "task.exit")
-    const prevPath = process.env.PATH
-    process.env.PATH = d
-    try {
-      await Effect.runPromise(
-        Effect.gen(function* () {
-          const herdr = yield* Herdr
-          yield* herdr.writeFloatingTaskScript(
-            script,
-            d,
-            ["pi", "-p"],
-            "hi",
-            exitFile,
-          )
-        }).pipe(Effect.provide(HerdrLive)),
-      )
-    } finally {
-      process.env.PATH = prevPath
-    }
-
-    const body = fs.readFileSync(script, "utf8")
-    // bare `pi` must become an absolute path so popup PATH cannot 127 it
-    expect(body).toContain(`${bin} -p `)
-    expect(body).not.toMatch(/(?:^|\s)pi -p /)
-    const mode = fs.statSync(script).mode & 0o777
-    expect(mode & 0o100).toBeTruthy() // owner-executable
-
-    const r = spawnSync("bash", [script], { encoding: "utf8" })
-    expect(r.status).toBe(42)
-    expect(fs.readFileSync(exitFile, "utf8").trim()).toBe("42")
-  })
-
-  test("missing binary → HerdrError, no file written", async () => {
-    const d = tmp()
-    const script = path.join(d, "task.sh")
-    const exitFile = path.join(d, "task.exit")
-    const prevPath = process.env.PATH
-    process.env.PATH = d // empty of matching bins
-    try {
-      const result = await Effect.runPromise(
-        Effect.gen(function* () {
-          const herdr = yield* Herdr
-          return yield* Effect.result(
-            herdr.writeFloatingTaskScript(
-              script,
-              d,
-              ["no-such-harness"],
-              "hi",
-              exitFile,
-            ),
-          )
-        }).pipe(Effect.provide(HerdrLive)),
-      )
-      expect(Result.isFailure(result)).toBe(true)
-      if (Result.isFailure(result)) {
-        expect(result.failure._tag).toBe("HerdrError")
-        expect(result.failure.message).toMatch(
-          /floating oneshot binary "no-such-harness" not found/,
-        )
-      }
-    } finally {
-      process.env.PATH = prevPath
-    }
-    expect(fs.existsSync(script)).toBe(false)
-  })
-})
-
 describe("paneReadRecentArgs", () => {
   test("pins the shared 80-line recent-unwrapped text request", () => {
     expect(paneReadRecentArgs("pane-7")).toEqual([
@@ -130,7 +44,7 @@ describe("paneReadRecentArgs", () => {
 })
 
 describe("resolveExecutable", () => {
-  // Bare names must resolve in the orchestrator env before the popup PATH strips them.
+  // Setup must find configured tools without relying on a separate `which`.
   test("resolves absolute executable paths and rejects missing ones", () => {
     const d = tmp()
     const bin = path.join(d, "fake-claude")
@@ -354,16 +268,5 @@ describe("clock purity", () => {
       })
       .join("\n")
     expect(code).not.toContain("Date.now(")
-  })
-})
-
-describe("floatingPanePath", () => {
-  test("appends existing user-local bins without dropping base PATH", () => {
-    const d = tmp()
-    const localBin = path.join(d, ".local", "bin")
-    fs.mkdirSync(localBin, { recursive: true })
-    const out = floatingPanePath("/usr/bin:/bin", d)
-    expect(out.startsWith("/usr/bin:/bin")).toBe(true)
-    expect(out.split(path.delimiter)).toContain(localBin)
   })
 })

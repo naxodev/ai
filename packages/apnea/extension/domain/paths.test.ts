@@ -55,7 +55,6 @@ describe("packageRoot", () => {
     const root = packageRoot()
     expect(path.isAbsolute(root)).toBe(true)
     expect(fs.existsSync(path.join(root, "briefs", "planner.md"))).toBe(true)
-    expect(fs.existsSync(path.join(root, "herdr-plugin"))).toBe(true)
   })
 
   // The bundle layout is the one that broke, and it is the one
@@ -147,7 +146,7 @@ describe("packageRoot", () => {
         JSON.stringify({ name: PACKAGE_NAME }),
       )
       // Stopping at the first package.json found would return `dir` and send
-      // briefs/ and herdr-plugin/ into the consumer's own project.
+      // brief lookups into the consumer's own project.
       expect(findPackageRootFrom(path.join(self, "dist"))).toBe(self)
     } finally {
       cleanup()

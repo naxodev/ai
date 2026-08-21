@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Layer } from "effect"
 import { statePath } from "../domain/paths.ts"
+import { expectFailure } from "../test/expect-failure.ts"
 import { makeFakeFileSystem } from "../test/fake-file-system.ts"
 import { itEffect } from "../test/it-effect.ts"
 import { RunStore, RunStoreLive } from "./run-store.ts"
@@ -26,7 +27,6 @@ const sampleState = {
   pending_role: null,
   pending_pane_id: null,
   pending_pane_label: null,
-  pending_floating_exit: null,
   pending_started_at: null,
   pending_deadline_ms: null,
   pending_nudged_at: null,
@@ -78,10 +78,40 @@ describe("RunStore (fake FileSystem)", () => {
       expect(s).not.toBeNull()
       expect(s!.pending_pane_id).toBeNull()
       expect(s!.pending_pane_label).toBeNull()
-      expect(s!.pending_floating_exit).toBeNull()
       expect(s!.role_panes).toEqual({})
     }).pipe(Effect.provide(layer))
   })
+
+  itEffect(
+    "active legacy floating work refuses load with restart guidance",
+    () => {
+      const root = "/proj"
+      const p = statePath(root)
+      const active = {
+        ...sampleState,
+        pending_artifact: ".apnea/artifacts/plan.md",
+        pending_role: "planner",
+        pending_floating_exit: ".apnea/tasks/plan.exit",
+        pending_deadline_ms: 900_000,
+      }
+      const { layer } = withFake({ [p]: JSON.stringify(active) })
+      return Effect.gen(function* () {
+        const store = yield* RunStore
+        const result = yield* Effect.result(store.load(root))
+        const error = expectFailure(result, "StateCorrupt")
+        expect(error.message).toContain("floating dispatch was removed")
+        expect(error.message).toContain("dismiss or terminate the old popup")
+        expect(error.message).toContain("`apnea abandon`")
+        expect(error.message).toContain('`apnea start "<goal>"`')
+        expect(
+          error.message.indexOf("dismiss or terminate the old popup"),
+        ).toBeLessThan(error.message.indexOf("`apnea abandon`"))
+        expect(error.message.indexOf("`apnea abandon`")).toBeLessThan(
+          error.message.indexOf('`apnea start "<goal>"`'),
+        )
+      }).pipe(Effect.provide(layer))
+    },
+  )
 
   itEffect("garbage JSON → StateCorrupt", () => {
     const root = "/proj"

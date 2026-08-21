@@ -29,7 +29,7 @@ Run these commands inside Pi:
 /apnea status
 ```
 
-`setup` creates global profiles in `~/.config/apnea/config.json` and links the Herdr plugin when Herdr is available. `start` begins one workflow against the current working copy. `status` reports the current step and next legal operation.
+`setup` creates global profiles in `~/.config/apnea/config.json`. `start` begins one workflow against the current working copy. `status` reports the current step and next legal operation.
 
 The shorter `/apnea-start` and `/apnea-status` aliases are also available. See the [Apnea CLI and operation reference](../apnea/README.md#cli-reference) for the shared command surface and exit behavior.
 
@@ -41,7 +41,7 @@ Apnea executes repository-controlled text through configured agent CLIs and can 
 
 ## Versioning
 
-Compatible core patch releases flow through the `^0.1.0` dependency range. Incompatible host interface changes require coordinated minor releases of both packages.
+This incompatible adapter line requires core `^0.2.0`. Compatible core patch releases flow through that range. Future incompatible host interface changes require coordinated minor releases of both packages.
 
 ## Contributing
 

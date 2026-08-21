@@ -34,9 +34,13 @@
     "last_error": { "type": ["string", "null"] },
     "pending_artifact": { "type": ["string", "null"] },
     "pending_role": { "type": ["string", "null"] },
+    "pending_floating_exit": {
+      "type": "null",
+      "deprecated": true,
+      "description": "Deprecated migration-only field. Missing or null values migrate; active non-null legacy floating runs must be abandoned."
+    },
     "pending_pane_id": { "type": ["string", "null"] },
     "pending_pane_label": { "type": ["string", "null"] },
-    "pending_floating_exit": { "type": ["string", "null"] },
     "pending_started_at": { "type": ["integer", "null"] },
     "pending_deadline_ms": { "type": ["integer", "null"] },
     "pending_nudged_at": { "type": ["integer", "null"] },

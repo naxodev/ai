@@ -67,7 +67,7 @@ nits: | # optional; never blocks alone
 ---
 ```
 
-Pane markers are human decoration. Herdr `agent_status` is liveness (dead pane / hung oneshot without artifact → escalate).
+Pane markers are human decoration. Herdr `agent_status` is liveness (dead pane without artifact → escalate).
 
 ## Rework
 

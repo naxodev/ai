@@ -20,8 +20,7 @@ only rebinds roles to profile names that already exist.
   `dist/cli.js` with a `#!/usr/bin/env bun` shebang, and npm does not enforce the `engines.bun`
   key. If you install `@naxodev/apnea` globally with only `node` on `PATH`, the `apnea` command
   will fail on first invocation — this is the most likely first-run failure for a new user.
-- **herdr**, for pane-based dispatch. The optional `floating` pane style additionally needs
-  **herdr ≥ 0.7.4** plus the linked plugin (see [`docs/protocol/config.md`](docs/protocol/config.md)).
+- **herdr**, for reusable interactive pane dispatch.
 - **jj or git.** Per [ADR 0007](docs/adr/0007-jj-first-commits.md), if neither is present
   auto-commit is refused.
 - **At least one agent CLI** — `pi`, `claude`, or `codex`.
@@ -53,8 +52,7 @@ Optionally put it on `PATH`, e.g. `ln -s "$(pwd)/dist/cli.js" ~/.local/bin/apnea
 
 ## Sixty-second quickstart
 
-1. `apnea setup` — writes global profiles to `~/.config/apnea/config.json` (and the herdr
-   `apnea` plugin, if herdr is present).
+1. `apnea setup` — writes global profiles to `~/.config/apnea/config.json`.
 2. `apnea start "<goal>"` — starts a run against your working copy.
 3. `apnea status` — a read-only snapshot of where the run stands and what to call next.
 
@@ -109,14 +107,14 @@ See [`docs/protocol/config.md`](docs/protocol/config.md) for the budget-floor ar
 ### Setup flags
 
 ```text
-/apnea setup              # ~/.config/apnea/config.json from PATH (+ herdr apnea plugin when herdr is present)
+/apnea setup              # ~/.config/apnea/config.json from PATH
 /apnea setup --project    # also .apnea/config.json role→profile only
 /apnea setup --agents-md  # also write/refresh an AGENTS.md loop primer at the repo root
 ```
 
-`pane_style` (`regular` default, `floating` opt-in) lives in config; floating needs herdr ≥ 0.7.4
-
-- the linked plugin — see [`docs/protocol/config.md`](docs/protocol/config.md).
+After upgrading from a version with floating panes, old copied
+`~/.config/apnea/herdr-plugin` files are inert. Apnea does not unlink or delete them; remove that
+directory manually if you no longer need it.
 
 The `@naxodev/pi-apnea` adapter applies Pi-specific role launch behavior. The core package remains
 host-neutral.
@@ -129,8 +127,8 @@ UI in v1.**
 **What you can rely on:** the loop, the artifact contract, and the CLI are implemented, and the
 extension suite is green — CI runs it on every pull request.
 
-**What may still change:** the command surface and config shape may move before `1.0`. This is
-`0.1.0` — breaking changes will land in minor bumps, not patches.
+**What may still change:** the command surface and config shape may move before `1.0`. Breaking
+changes will land in minor bumps, not patches.
 
 **Non-goals for v1:** worktrees, parallel coders, push/PR automation, memory store, native
 CLAUDE.md injection, force-approve, config UI.

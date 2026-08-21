@@ -12,17 +12,12 @@ import {
 export type FakeHerdrOptions = {
   enabled?: boolean
   availability?: "available" | "unavailable" | HerdrError
-  version?: [number, number, number] | null
-  hasPlugin?: boolean
   /** Function so a test can flip a pane's status between polls. */
   pane?: (paneId: string) => PaneInfo
   /** Function so a test can flip the foreground process list between polls,
    * the same way `pane` already does for status. */
   foreground?: string[] | (() => string[])
   interactive?: InteractiveLaunch | HerdrError
-  failWriteScript?: HerdrError
-  failOpenPane?: HerdrError
-  linkResult?: { ok: boolean; raw: string }
   /**
    * `paneRun` fails with this error. The send is still recorded in
    * `recorder.paneRuns` first — a real failed `herdr pane run` still reaches
@@ -45,20 +40,12 @@ export type FakeHerdrOptions = {
 export type FakeHerdrRecorder = {
   paneRuns: Array<{ paneId: string; command: string }>
   paneReads: string[]
-  scripts: Array<{
-    scriptAbs: string
-    cmd: string[]
-    prompt: string
-    exitFileAbs: string
-  }>
-  openedPanes: string[]
   interactiveCalls: Array<{
     role: string
     cmd: string[]
     prompt: string
     prefer: RolePaneRef | null
   }>
-  linkedPlugins: string[]
 }
 
 /** Scriptable Herdr layer that records calls for assertions. */
@@ -69,10 +56,7 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
   const recorder: FakeHerdrRecorder = {
     paneRuns: [],
     paneReads: [],
-    scripts: [],
-    openedPanes: [],
     interactiveCalls: [],
-    linkedPlugins: [],
   }
 
   const service: HerdrService = {
@@ -87,12 +71,6 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
         (opts.enabled === false ? "unavailable" : "available")
       )
     }),
-
-    version: Effect.sync(() =>
-      opts.version === undefined ? [0, 7, 4] : opts.version,
-    ),
-
-    hasApneaPlugin: Effect.sync(() => opts.hasPlugin ?? true),
 
     paneGet: (paneId) =>
       Effect.sync(() =>
@@ -150,28 +128,6 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
             last_status: "working",
           }
         )
-      }),
-
-    writeFloatingTaskScript: (scriptAbs, _root, cmd, prompt, exitFileAbs) =>
-      Effect.gen(function* () {
-        if (opts.failWriteScript) {
-          return yield* opts.failWriteScript
-        }
-        recorder.scripts.push({ scriptAbs, cmd, prompt, exitFileAbs })
-      }),
-
-    openFloatingPane: (taskScriptAbs) =>
-      Effect.gen(function* () {
-        if (opts.failOpenPane) {
-          return yield* opts.failOpenPane
-        }
-        recorder.openedPanes.push(taskScriptAbs)
-      }),
-
-    linkPlugin: (dir) =>
-      Effect.sync(() => {
-        recorder.linkedPlugins.push(dir)
-        return opts.linkResult ?? { ok: true, raw: "linked" }
       }),
   }
 

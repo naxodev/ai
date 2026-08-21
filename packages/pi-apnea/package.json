@@ -60,7 +60,7 @@
     "smoke:package": "bun scripts/package-smoke.ts"
   },
   "dependencies": {
-    "@naxodev/apnea": "^0.1.0"
+    "@naxodev/apnea": "^0.2.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0"

@@ -90,8 +90,6 @@ extension/workflows/setup.ts
 extension/workflows/start.ts
 extension/workflows/status.ts
 extension/workflows/wait.ts
-herdr-plugin/herdr-plugin.toml
-herdr-plugin/scripts/run-task.sh
 package.json
 schemas/artifact-frontmatter.md
 schemas/config.schema.json

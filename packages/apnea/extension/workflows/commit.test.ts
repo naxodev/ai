@@ -28,7 +28,6 @@ function baseState(over: Partial<RunState> = {}): RunState {
     pending_role: null,
     pending_pane_id: null,
     pending_pane_label: null,
-    pending_floating_exit: null,
     pending_started_at: null,
     pending_deadline_ms: null,
     pending_nudged_at: null,
