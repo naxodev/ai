@@ -11,15 +11,19 @@ const deferred = <T>() => {
 }
 const flush = () => Promise.resolve().then(() => Promise.resolve())
 
-function context() {
+function context(
+  session = { loading: false, error: null, player: null as any },
+) {
   const toasts: unknown[] = []
   return {
+    session,
     toasts,
     context: {
       storage: {
-        memory: () => {
-          throw new Error("live playback state must not use host storage")
-        },
+        memory: () => [
+          session,
+          (update: (draft: typeof session) => void) => update(session),
+        ],
       },
       ui: { toast: { show: (toast: unknown) => toasts.push(toast) } },
     },
@@ -171,4 +175,45 @@ test("disposal settles held work once and leaves another session client healthy"
   controllerB.dispose()
   await flush()
   expect(second.value.disposals).toBe(1)
+})
+
+test("disposing an old controller preserves a newer controller's loading state", async () => {
+  const sharedSession = { loading: false, error: null, player: null as any }
+  const firstHost = context(sharedSession)
+  const secondHost = context(sharedSession)
+  const first = client("old")
+  const second = client("new")
+  const firstGate = deferred<void>()
+  const secondGate = deferred<void>()
+  first.value.gate = firstGate.promise
+  second.value.gate = secondGate.promise
+  const create = (host: ReturnType<typeof context>, value: any) =>
+    createController(host.context as any, {
+      createSessionMedia: () =>
+        createSessionSystemMedia({
+          createClient: async () => value,
+          resolveArtworkDetails: async (_key, target) => ({
+            artwork: null,
+            duration_ms: target.duration_ms,
+          }),
+        }),
+    })
+  const oldController = create(firstHost, first.value)
+  const newController = create(secondHost, second.value)
+  await flush()
+
+  const oldOperation = oldController.playPause()
+  const newOperation = newController.playPause()
+  expect(sharedSession.loading).toBeTrue()
+
+  oldController.dispose()
+  await oldOperation
+  expect(sharedSession.loading).toBeTrue()
+
+  secondGate.resolve()
+  await newOperation
+  expect(sharedSession.loading).toBeFalse()
+
+  firstGate.resolve()
+  newController.dispose()
 })

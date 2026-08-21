@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
+import { createStore } from "solid-js/store"
 import { createMusicPlayerPlugin } from "../index.tsx"
 import plugin from "../index.tsx"
 import { createSessionSystemMedia } from "../system-media.ts"
@@ -18,6 +19,11 @@ test("production session adapter is shared by both slots and disposes only its c
   let clientFactories = 0
   let disposals = 0
   const slots = new Map<SlotName, Slot>()
+  const session = {
+    loading: false,
+    error: null as string | null,
+    player: null as any,
+  }
   const client: any = {
     daemonInstanceId: "daemon",
     selectedRevision: 1,
@@ -80,9 +86,10 @@ test("production session adapter is shared by both slots and disposes only its c
   }
   const context = {
     storage: {
-      memory: () => {
-        throw new Error("live playback state must not use host storage")
-      },
+      memory: () => [
+        session,
+        (update: (draft: typeof session) => void) => update(session),
+      ],
     },
     ui: {
       toast: { show: () => {} },
@@ -113,59 +120,42 @@ test("production session adapter is shared by both slots and disposes only its c
   expect(backendFactories).toBe(1)
   expect(clientFactories).toBe(1)
   expect([...slots.keys()]).toEqual(["session.composer.top", "sidebar.content"])
+  expect(session.error).toBe("daemon fallback")
   cleanup?.()
   await Promise.resolve()
   expect(disposals).toBe(1)
 })
 
-test("setup shares one session and persistent keymap across sidebar remounts", async () => {
+test("setup rerenders fixed slots from one host session", async () => {
   let constructed = 0
   let disposed = 0
   let unsubscriptions = 0
   let keymapLayers = 0
   const registered: string[] = []
   const slots = new Map<SlotName, Slot>()
-  const sessionReads: Array<{ view: string; identity: object }> = []
-  let mountedView = ""
-  const session = new Proxy(
-    {
-      loading: false,
-      error: null,
-      player: {
-        track: {
-          uri: "shared",
-          id: "shared",
-          name: "Shared session track",
-          artists: "Shared artist",
-          album: "Shared album",
-          duration_ms: 1000,
-          artwork: null,
-        },
-        is_playing: true,
-        progress_ms: 0,
-        shuffle: false,
-        repeat: "off" as const,
-        device: null,
-        fetched_at: Date.now(),
+  const [session, setSession] = createStore({
+    loading: false,
+    error: null,
+    player: {
+      track: {
+        uri: "shared",
+        id: "shared",
+        name: "Shared session track",
+        artists: "Shared artist",
+        album: "Shared album",
+        duration_ms: 1000,
+        artwork: null,
       },
+      is_playing: true,
+      progress_ms: 0,
+      shuffle: false,
+      repeat: "off" as const,
+      device: null,
+      fetched_at: Date.now(),
     },
-    {
-      get(target, property, receiver) {
-        if (property === "player") {
-          sessionReads.push({ view: mountedView, identity: receiver })
-        }
-        return Reflect.get(target, property, receiver)
-      },
-    },
-  )
-  const sessionListeners = new Set<(state: typeof session) => void>()
+  })
   const controller = {
     session,
-    subscribe(listener: (state: typeof session) => void) {
-      sessionListeners.add(listener)
-      listener(session)
-      return () => sessionListeners.delete(listener)
-    },
     openApp: async () => {},
     refreshAll: async () => {},
     playPause: async () => {},
@@ -218,7 +208,6 @@ test("setup shares one session and persistent keymap across sidebar remounts", a
   expect(constructed).toBe(1)
   expect(registered).toEqual(["session.composer.top", "sidebar.content"])
 
-  mountedView = "app"
   const app = await testRender(
     () => slots.get("session.composer.top")!({ sessionID: "one" }),
     { width: 80, height: 4 },
@@ -233,27 +222,22 @@ test("setup shares one session and persistent keymap across sidebar remounts", a
       is_playing: false,
     },
   }
-  for (const listener of sessionListeners) listener(replacement)
+  setSession("player", replacement.player)
   await app.waitForFrame((frame) => frame.includes("Async track"))
+  expect(registered).toEqual(["session.composer.top", "sidebar.content"])
 
-  mountedView = "sidebar-first"
   const firstSidebar = await testRender(
     () => slots.get("sidebar.content")!({ sessionID: "one" }),
     { width: 40, height: 24 },
   )
   firstSidebar.renderer.destroy()
 
-  mountedView = "sidebar-second"
   const secondSidebar = await testRender(
     () => slots.get("sidebar.content")!({ sessionID: "one" }),
     { width: 40, height: 24 },
   )
   secondSidebar.renderer.destroy()
 
-  for (const view of ["app", "sidebar-first", "sidebar-second"]) {
-    expect(sessionReads.some((read) => read.view === view)).toBeTrue()
-  }
-  for (const read of sessionReads) expect(read.identity).toBe(session)
   expect(constructed).toBe(1)
   expect(keymapLayers).toBe(1)
 

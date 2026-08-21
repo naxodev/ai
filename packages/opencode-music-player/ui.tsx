@@ -7,7 +7,6 @@ import {
   onCleanup,
   onMount,
 } from "solid-js"
-import { createStore, reconcile } from "solid-js/store"
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import {
   MouseButton,
@@ -23,19 +22,6 @@ export type UiState = {
   loading: boolean
   error: string | null
   player: import("./types.ts").PlayerState | null
-}
-
-type UiStateSubscribe = (listener: (state: UiState) => void) => () => void
-
-function reactiveUiState(
-  state: UiState,
-  subscribe: UiStateSubscribe | undefined,
-): UiState {
-  if (!subscribe) return state
-  const [local, setLocal] = createStore<UiState>({ ...state })
-  const unsubscribe = subscribe((next) => setLocal(reconcile({ ...next })))
-  onCleanup(unsubscribe)
-  return local
 }
 
 type Theme = Context["theme"]
@@ -224,16 +210,14 @@ export function compactPresentation(
 export function CompactPlayer(props: {
   context: Context
   state: UiState
-  subscribe?: UiStateSubscribe
   onPlayPause: () => void
   onSeek: (positionMs: number) => void
 }) {
   const theme = () => props.context.theme
-  const state = reactiveUiState(props.state, props.subscribe)
   let row: BoxRenderable | undefined
   let content: TextRenderable | undefined
   let allocatedWidth = Number.MAX_SAFE_INTEGER
-  const track = createMemo(() => state.player?.track)
+  const track = createMemo(() => props.state.player?.track)
   const renderLine = () => {
     const current = track()
     if (!current) return ""
@@ -241,7 +225,7 @@ export function CompactPlayer(props: {
       allocatedWidth,
       current.name,
       current.artists,
-      !!state.player?.is_playing,
+      !!props.state.player?.is_playing,
     )
     const padding = " ".repeat(display.padding)
     return `${padding}${display.marker}${
@@ -279,7 +263,7 @@ export function CompactPlayer(props: {
           overflow="hidden"
           onMouseDown={(event) => {
             if (event.button !== MouseButton.LEFT) return
-            const current = state.player?.track
+            const current = props.state.player?.track
             if (!current || !row) return
 
             const seekWidth = compactSeekRegionWidth(row.width)
@@ -288,7 +272,7 @@ export function CompactPlayer(props: {
               row.width,
               current.name,
               current.artists,
-              !!state.player?.is_playing,
+              !!props.state.player?.is_playing,
             ).padding
             if (cell === markerCell) {
               event.preventDefault()
@@ -473,15 +457,13 @@ function IconBtn(props: {
 export function SidebarPlayer(props: {
   context: Context
   state: UiState
-  subscribe?: UiStateSubscribe
   onPlayPause: () => void
   onNext: () => void
   onPrev: () => void
   onSeek: (positionMs: number) => void
 }) {
   const theme = () => props.context.theme
-  const state = reactiveUiState(props.state, props.subscribe)
-  const player = createMemo(() => state.player)
+  const player = createMemo(() => props.state.player)
   const track = createMemo(() => player()?.track)
   const playing = createMemo(() => !!player()?.is_playing)
 
@@ -489,7 +471,7 @@ export function SidebarPlayer(props: {
   onMount(() => {
     let id: ReturnType<typeof setInterval> | null = null
     const sync = () => {
-      const on = !!state.player?.is_playing
+      const on = !!props.state.player?.is_playing
       if (on && !id) id = setInterval(() => setTick((t) => t + 1), 1000)
       else if (!on && id) {
         clearInterval(id)
@@ -526,7 +508,7 @@ export function SidebarPlayer(props: {
       gap={1}
       flexShrink={0}
     >
-      <Show when={state.error}>
+      <Show when={props.state.error}>
         {(err) => <text fg={theme().text.feedback.error.default}>{err()}</text>}
       </Show>
 
@@ -562,7 +544,7 @@ export function SidebarPlayer(props: {
         when={track()}
         fallback={
           <text fg={theme().text.subdued}>
-            {state.loading ? "Syncing…" : "Nothing playing"}
+            {props.state.loading ? "Syncing…" : "Nothing playing"}
           </text>
         }
       >
