@@ -5,20 +5,21 @@ import {
   isFlat,
   sameTrackIdentity,
   stepEngine,
+  waveformSeedKey,
   type WaveEngine,
 } from "@naxodev/music-core"
-import {
-  For,
-  createEffect,
-  createMemo,
-  createSignal,
-  onCleanup,
-} from "solid-js"
+import { onCleanup, onMount } from "solid-js"
+import { StyledText, fg, type TextRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import type { PlayerState } from "./types.ts"
 
 type Context = Plugin.Context
 type Theme = Context["theme"]
+
+export type PlayerPresentationSource = {
+  current: () => PlayerState | null
+  subscribe: (listener: (player: PlayerState | null) => void) => () => void
+}
 
 export type WaveformScheduler = {
   setInterval: (callback: () => void, ms: number) => unknown
@@ -149,18 +150,26 @@ function blockChar(level: number): string {
 
 export function Waveform(props: {
   theme: Theme
-  player: PlayerState | null
-  trackIdentity: string
+  source: PlayerPresentationSource
   bars?: number
   /** Kept for API compatibility; both variants render one clean row. */
   variant?: "mini" | "hero"
   rows?: number
 }) {
   const barCount = () => props.bars ?? (props.variant === "hero" ? 48 : 16)
-  const [rendered, setRendered] = createSignal<{
-    player: PlayerState
-    engine: WaveEngine
-  } | null>(null)
+  let text: TextRenderable | undefined
+  const paint = (player: PlayerState, engine: WaveEngine) => {
+    if (!text) return
+    const playing = player.is_playing
+    text.content = new StyledText(
+      Array.from({ length: barCount() }, (_, index) => {
+        const level = displayLevel(engine.levels[index] ?? 0, index, playing)
+        return fg(blueFor(level, playing || level > 0.05, props.theme))(
+          blockChar(level),
+        )
+      }),
+    )
+  }
   const coordinator = createWaveformCoordinator({
     now: () => Date.now(),
     scheduler: {
@@ -169,37 +178,28 @@ export function Waveform(props: {
         clearInterval(timer as ReturnType<typeof setInterval>),
     },
     intervalMs: props.variant === "hero" ? 48 : 64,
-    render: (player, engine) => setRendered({ player, engine }),
-    clear: () => setRendered(null),
+    render: paint,
+    clear: () => {
+      if (text) text.content = " ".repeat(barCount())
+    },
   })
 
-  createEffect(() => {
-    coordinator.setInput(props.player, props.trackIdentity, barCount())
+  const update = (player: PlayerState | null) => {
+    coordinator.setInput(
+      player,
+      player?.track ? waveformSeedKey(player.track.name, player.track.id) : "",
+      barCount(),
+    )
     coordinator.frame()
-  })
-  onCleanup(() => coordinator.dispose())
-
-  const cells = createMemo(() => {
-    const current = rendered()
-    const n = barCount()
-    const levels = current?.engine.levels ?? new Float64Array(n)
-    const playing = current?.player.is_playing ?? false
-    const out: { ch: string; fg: ReturnType<typeof blueFor> }[] = []
-    for (let i = 0; i < n; i++) {
-      const level = displayLevel(levels[i] ?? 0, i, playing)
-      out.push({
-        ch: blockChar(level),
-        fg: blueFor(level, playing || level > 0.05, props.theme),
-      })
-    }
-    return out
+  }
+  const unsubscribe = props.source.subscribe(update)
+  onMount(() => coordinator.frame())
+  onCleanup(() => {
+    unsubscribe()
+    coordinator.dispose()
   })
 
   return (
-    <text>
-      <For each={cells()}>
-        {(cell) => <span style={{ fg: cell.fg }}>{cell.ch}</span>}
-      </For>
-    </text>
+    <text ref={(element) => (text = element)}>{" ".repeat(barCount())}</text>
   )
 }

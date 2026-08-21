@@ -14,10 +14,9 @@ import {
   type TextNodeRenderable,
   type TextRenderable,
 } from "@opentui/core"
-import { waveformSeedKey } from "@naxodev/music-core"
 import { formatMs } from "./types.ts"
 import { AlbumArtwork } from "./artwork.tsx"
-import { Waveform } from "./waveform.tsx"
+import { Waveform, type PlayerPresentationSource } from "./waveform.tsx"
 
 export type UiState = {
   loading: boolean
@@ -27,6 +26,7 @@ export type UiState = {
 
 type Theme = Context["theme"]
 type Context = Plugin.Context
+type UiStateSubscribe = (listener: (state: UiState) => void) => () => void
 
 /** Text presentation keeps media symbols single-cell on emoji fonts. */
 const t = (s: string) => s + "\uFE0E"
@@ -335,8 +335,7 @@ function progressSegments(progress: number, duration: number, width: number) {
 
 function ProgressBar(props: {
   theme: Theme
-  player: UiState["player"]
-  duration: number
+  source: PlayerPresentationSource
   width?: number
   accent?: string | undefined
   onSeek: (positionMs: number) => void
@@ -346,8 +345,14 @@ function ProgressBar(props: {
   let thumbNode: TextNodeRenderable | undefined
   let rightNode: TextNodeRenderable | undefined
   const width = () => Math.max(8, props.width ?? 28)
-  const rendered = () =>
-    progressSegments(liveProgress(props.player), props.duration, width())
+  const rendered = () => {
+    const player = props.source.current()
+    return progressSegments(
+      liveProgress(player),
+      player?.track?.duration_ms ?? 0,
+      width(),
+    )
+  }
   const paint = () => {
     const next = rendered()
     if (leftNode) leftNode.children = [next.left]
@@ -355,18 +360,15 @@ function ProgressBar(props: {
     if (rightNode) rightNode.children = [next.right]
   }
 
-  createEffect(() => {
-    void props.player
-    void props.duration
-    void props.width
-    paint()
-  })
   onMount(() => {
-    paint()
+    const unsubscribe = props.source.subscribe(() => paint())
     const timer = setInterval(() => {
-      if (props.player?.is_playing) paint()
+      if (props.source.current()?.is_playing) paint()
     }, 1_000)
-    onCleanup(() => clearInterval(timer))
+    onCleanup(() => {
+      unsubscribe()
+      clearInterval(timer)
+    })
   })
 
   return (
@@ -380,7 +382,7 @@ function ProgressBar(props: {
         const position = seekPositionForCell(
           event.x - bar.x,
           bar.width,
-          props.duration,
+          props.source.current()?.track?.duration_ms ?? 0,
         )
         if (position === null) return
         event.preventDefault()
@@ -416,25 +418,27 @@ function ProgressBar(props: {
   )
 }
 
-function LiveElapsed(props: { theme: Theme; player: UiState["player"] }) {
+function LiveElapsed(props: {
+  theme: Theme
+  source: PlayerPresentationSource
+}) {
   let text: TextRenderable | undefined
   const paint = () => {
-    if (text) text.content = formatMs(liveProgress(props.player))
+    if (text) text.content = formatMs(liveProgress(props.source.current()))
   }
-  createEffect(() => {
-    void props.player
-    paint()
-  })
   onMount(() => {
-    paint()
+    const unsubscribe = props.source.subscribe(() => paint())
     const timer = setInterval(() => {
-      if (props.player?.is_playing) paint()
+      if (props.source.current()?.is_playing) paint()
     }, 1_000)
-    onCleanup(() => clearInterval(timer))
+    onCleanup(() => {
+      unsubscribe()
+      clearInterval(timer)
+    })
   })
   return (
     <text ref={(element) => (text = element)} fg={props.theme.text.subdued}>
-      {formatMs(liveProgress(props.player))}
+      {formatMs(liveProgress(props.source.current()))}
     </text>
   )
 }
@@ -510,12 +514,45 @@ function IconBtn(props: {
 export function SidebarPlayer(props: {
   context: Context
   state: UiState
+  subscribe?: UiStateSubscribe
   onPlayPause: () => void
   onNext: () => void
   onPrev: () => void
   onSeek: (positionMs: number) => void
 }) {
   const theme = () => props.context.theme
+  let latestPlayer = props.state.player
+  const presentationListeners = new Set<(player: UiState["player"]) => void>()
+  const publishPlayer = (player: UiState["player"]) => {
+    latestPlayer = player
+    for (const listener of [...presentationListeners]) {
+      try {
+        listener(player)
+      } catch {
+        // One presentation widget cannot block its siblings.
+      }
+    }
+  }
+  const source: PlayerPresentationSource = {
+    current: () => latestPlayer,
+    subscribe(listener) {
+      presentationListeners.add(listener)
+      try {
+        listener(latestPlayer)
+      } catch {
+        // Initial presentation failure remains isolated to this widget.
+      }
+      return () => presentationListeners.delete(listener)
+    },
+  }
+  createEffect(() => publishPlayer(props.state.player))
+  const unsubscribeSession = props.subscribe?.((state) =>
+    publishPlayer(state.player),
+  )
+  onCleanup(() => {
+    unsubscribeSession?.()
+    presentationListeners.clear()
+  })
   const player = createMemo(() => props.state.player)
   const track = createMemo(() => player()?.track)
   const playing = createMemo(() => !!player()?.is_playing)
@@ -594,29 +631,20 @@ export function SidebarPlayer(props: {
       </Show>
 
       <box flexDirection="row" justifyContent="center" overflow="hidden">
-        <Waveform
-          theme={theme()}
-          player={player()}
-          trackIdentity={
-            track() ? waveformSeedKey(track()!.name, track()!.id) : ""
-          }
-          bars={24}
-          variant="hero"
-        />
+        <Waveform theme={theme()} source={source} bars={24} variant="hero" />
       </box>
 
       <Show when={track() && duration() > 0}>
         <box flexDirection="column" gap={0} overflow="hidden">
           <ProgressBar
             theme={theme()}
-            player={player()}
-            duration={duration()}
+            source={source}
             width={24}
             accent={track()?.artwork?.accent}
             onSeek={props.onSeek}
           />
           <box flexDirection="row" justifyContent="space-between">
-            <LiveElapsed theme={theme()} player={player()} />
+            <LiveElapsed theme={theme()} source={source} />
             <text fg={theme().text.subdued}>{formatMs(duration())}</text>
           </box>
         </box>
