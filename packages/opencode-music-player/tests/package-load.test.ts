@@ -18,11 +18,6 @@ test("production session adapter is shared by both slots and disposes only its c
   let clientFactories = 0
   let disposals = 0
   const slots = new Map<SlotName, Slot>()
-  const session = {
-    loading: false,
-    error: null as string | null,
-    player: null as any,
-  }
   const client: any = {
     daemonInstanceId: "daemon",
     selectedRevision: 1,
@@ -85,10 +80,9 @@ test("production session adapter is shared by both slots and disposes only its c
   }
   const context = {
     storage: {
-      memory: () => [
-        session,
-        (update: (draft: typeof session) => void) => update(session),
-      ],
+      memory: () => {
+        throw new Error("live playback state must not use host storage")
+      },
     },
     ui: {
       toast: { show: () => {} },
@@ -119,7 +113,6 @@ test("production session adapter is shared by both slots and disposes only its c
   expect(backendFactories).toBe(1)
   expect(clientFactories).toBe(1)
   expect([...slots.keys()]).toEqual(["session.composer.top", "sidebar.content"])
-  expect(session.error).toBe("daemon fallback")
   cleanup?.()
   await Promise.resolve()
   expect(disposals).toBe(1)
