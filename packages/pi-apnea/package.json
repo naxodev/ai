@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/pi-apnea",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi adapter for the Apnea multi-role workflow",
   "license": "MIT",
   "author": "Nacho Vazquez",
