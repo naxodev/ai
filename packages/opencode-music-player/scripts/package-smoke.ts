@@ -173,7 +173,8 @@ try {
       "bun",
       "-e",
       `const plugin = (await import("@naxodev/opencode-music-player")).default
-if (plugin.id !== "music-player" || typeof plugin.setup !== "function") throw new Error("invalid plugin export")
+const tui = (await import("@naxodev/opencode-music-player/tui")).default
+if (plugin.id !== "music-player" || typeof plugin.setup !== "function" || tui !== plugin) throw new Error("invalid plugin export")
 await import("@naxodev/music-core")
 console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-music-player"), core: import.meta.resolve("@naxodev/music-core") }))`,
     ],

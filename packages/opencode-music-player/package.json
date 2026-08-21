@@ -26,13 +26,17 @@
     "now-playing",
     "media-control"
   ],
-  "exports": "./index.tsx",
+  "exports": {
+    ".": "./index.tsx",
+    "./tui": "./tui.tsx"
+  },
   "files": [
     "CHANGELOG.md",
     "artwork-placement.ts",
     "artwork.ts",
     "artwork.tsx",
     "index.tsx",
+    "tui.tsx",
     "kitty-graphics.ts",
     "ui.tsx",
     "system-media.ts",
