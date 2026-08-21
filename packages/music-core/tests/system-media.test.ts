@@ -1315,6 +1315,51 @@ describe("media-control stream subscription", () => {
     expect(state?.is_playing).toBe(true)
   })
 
+  test("volatile sparse media-control IDs preserve pause and resume progress", async () => {
+    let now = 1_000_000
+    let playing = true
+    let providerId = 0
+    const backend = createSystemMedia({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      now: () => now,
+      run: async (command) =>
+        command[1] === "get"
+          ? {
+              ok: true,
+              out: JSON.stringify({
+                contentItemIdentifier: `volatile-${++providerId}`,
+                title: "Sparse Song",
+                artist: "Sparse Artist",
+                playing,
+                playbackRate: playing ? 1 : 0,
+              }),
+            }
+          : { ok: true, out: "" },
+    })
+
+    expect((await backend.player())?.progress_ms).toBe(0)
+    now += 10_000
+    expect((await backend.player())?.progress_ms).toBe(10_000)
+
+    playing = false
+    now += 2_000
+    const paused = await backend.player()
+    now += 5_000
+    const stillPaused = await backend.player()
+
+    expect(paused).toMatchObject({ is_playing: false, progress_ms: 12_000 })
+    expect(stillPaused).toMatchObject({
+      is_playing: false,
+      progress_ms: 12_000,
+    })
+
+    playing = true
+    now += 1_000
+    const resumed = await backend.player()
+    expect(resumed).toMatchObject({ is_playing: true, progress_ms: 12_000 })
+  })
+
   test("two backends keep independent sampled and transport-mutated clocks", async () => {
     const leftSample = {
       contentItemIdentifier: "left-id",

@@ -372,6 +372,40 @@ describe("syncFromSample", () => {
     expect(resumed).toEqual({ progress_ms: 10_000, is_playing: true })
   })
 
+  test("a sparse volatile provider id preserves an unknown-duration clock", () => {
+    const clock = createPlaybackClock()
+    sample(clock, {
+      key: trackKey("Song", "Artist", "playing-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 0,
+      playing: true,
+      rate: 1,
+      now: 1_000_000,
+    })
+    const paused = sample(clock, {
+      key: trackKey("Song", "Artist", "paused-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 0,
+      playing: false,
+      rate: 0,
+      now: 1_010_000,
+    })
+    const resumed = sample(clock, {
+      key: trackKey("Song", "Artist", "resumed-id"),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: 0,
+      playing: true,
+      rate: 1,
+      now: 1_020_000,
+    })
+
+    expect(paused).toEqual({ progress_ms: 10_000, is_playing: false })
+    expect(resumed).toEqual({ progress_ms: 10_000, is_playing: true })
+  })
+
   test("a changed provider id and known duration resets an otherwise matching recording", () => {
     const clock = createPlaybackClock()
     sample(clock, {

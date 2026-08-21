@@ -51,6 +51,7 @@ function sameTrackKeyIdentity(
   right: string,
   leftDurationMs: number,
   rightDurationMs: number,
+  allowSparseVolatileId: boolean,
 ): boolean {
   const leftParts = left.split("\0")
   const rightParts = right.split("\0")
@@ -84,7 +85,7 @@ function sameTrackKeyIdentity(
     leftArtist === rightArtist
   ) {
     if (leftId && rightId && leftId !== rightId) {
-      return leftDurationKnown && rightDurationKnown
+      return (leftDurationKnown && rightDurationKnown) || allowSparseVolatileId
     }
     return true
   }
@@ -166,6 +167,7 @@ export function createPlaybackClock(): PlaybackClock {
             key,
             clockDurationMs,
             duration_ms,
+            !hasReported,
           )
         : false
 
