@@ -156,7 +156,12 @@ test("startup timing resolves through the tagged config boundary", async () => {
         maxDelayMs: 40,
       }),
     ),
-  ).resolves.toEqual({ attempts: 3, initialDelayMs: 10, maxDelayMs: 40 })
+  ).resolves.toEqual({
+    attempts: 3,
+    initialDelayMs: 10,
+    maxDelayMs: 40,
+    handshakeTimeoutMs: 1_000,
+  })
   await expect(
     resolveConfig({
       socketPath: "/tmp/music-session-config.sock",
@@ -236,6 +241,7 @@ test("startup timing resolves through the tagged config boundary", async () => {
     [{ attempts: 0 }, "startup.attempts"],
     [{ initialDelayMs: Number.POSITIVE_INFINITY }, "startup.initialDelayMs"],
     [{ initialDelayMs: 41, maxDelayMs: 40 }, "startup.maxDelayMs"],
+    [{ handshakeTimeoutMs: 0 }, "startup.handshakeTimeoutMs"],
   ] as const) {
     await expect(
       Effect.runPromise(resolveMusicSessionStartup(settings)),
@@ -2714,7 +2720,12 @@ test("startup bounds a silent occupied endpoint without replacing it", async () 
             runtime,
             clientId: "silent-occupied",
             hostKind: "test",
-            startup: { attempts: 3, initialDelayMs: 10, maxDelayMs: 20 },
+            startup: {
+              attempts: 3,
+              initialDelayMs: 10,
+              maxDelayMs: 20,
+              handshakeTimeoutMs: 20,
+            },
           }).pipe(Effect.provideService(Clock.Clock, clock), Effect.forkScoped)
           yield* Effect.promise(() => accepted)
           const observed = yield* Fiber.join(acquisition).pipe(

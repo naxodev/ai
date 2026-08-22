@@ -1208,7 +1208,7 @@ export const connectOrStartMusicSessionEffect = (
             }),
     })
   return Effect.gen(function* () {
-    const { attempts, initialDelayMs, maxDelayMs } =
+    const { attempts, initialDelayMs, maxDelayMs, handshakeTimeoutMs } =
       yield* resolveMusicSessionStartup(options.startup)
     const lease = yield* Ref.make<StartupMarkerLease | undefined>(undefined)
     const launched = yield* Ref.make<MusicSessionDaemonLaunch | undefined>(
@@ -1253,7 +1253,7 @@ export const connectOrStartMusicSessionEffect = (
         }),
       ).pipe(
         Effect.timeoutOrElse({
-          duration: Duration.millis(maxDelayMs),
+          duration: Duration.millis(handshakeTimeoutMs),
           orElse: () =>
             Effect.fail(
               new MusicSessionStartupError({

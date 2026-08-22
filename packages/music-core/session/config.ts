@@ -102,6 +102,7 @@ export type MusicSessionStartupOptions = {
   attempts?: number
   initialDelayMs?: number
   maxDelayMs?: number
+  handshakeTimeoutMs?: number
 }
 
 export type MusicSessionOptions = {
@@ -134,7 +135,12 @@ export const defaults = {
   pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
   // Long enough for a freshly launched local client to negotiate hello.
   idleGraceMs: 30_000,
-  startup: { attempts: 8, initialDelayMs: 25, maxDelayMs: 1_000 },
+  startup: {
+    attempts: 8,
+    initialDelayMs: 25,
+    maxDelayMs: 1_000,
+    handshakeTimeoutMs: 1_000,
+  },
 } as const
 
 export type ResolvedMusicSessionOptions = {
@@ -195,6 +201,10 @@ export const resolveMusicSessionStartup = Effect.fn(
     "startup.maxDelayMs",
     options.maxDelayMs ?? defaults.startup.maxDelayMs,
   )
+  const handshakeTimeoutMs = yield* positiveSafeInteger(
+    "startup.handshakeTimeoutMs",
+    options.handshakeTimeoutMs ?? defaults.startup.handshakeTimeoutMs,
+  )
   if (maxDelayMs < initialDelayMs)
     return yield* Effect.fail(
       new MusicSessionConfigError({
@@ -203,7 +213,7 @@ export const resolveMusicSessionStartup = Effect.fn(
         message: "must be greater than or equal to startup.initialDelayMs",
       }),
     )
-  return { attempts, initialDelayMs, maxDelayMs }
+  return { attempts, initialDelayMs, maxDelayMs, handshakeTimeoutMs }
 })
 
 const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
@@ -486,6 +496,13 @@ export const layerFromConfig = Layer.effect(
           defaults.startup.maxDelayMs,
         ),
       ),
+      startupHandshakeTimeoutMs: number(
+        "startup.handshakeTimeoutMs",
+        optionalNumber(
+          "MUSIC_SESSION_STARTUP_HANDSHAKE_TIMEOUT_MS",
+          defaults.startup.handshakeTimeoutMs,
+        ),
+      ),
     })
     const resolved = yield* resolve({
       ...(options.socketPath ? { socketPath: options.socketPath } : {}),
@@ -510,6 +527,7 @@ export const layerFromConfig = Layer.effect(
         attempts: options.startupAttempts,
         initialDelayMs: options.startupInitialDelayMs,
         maxDelayMs: options.startupMaxDelayMs,
+        handshakeTimeoutMs: options.startupHandshakeTimeoutMs,
       },
     })
     return MusicSessionConfig.of({ options: resolved })
