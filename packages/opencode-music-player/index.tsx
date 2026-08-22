@@ -32,37 +32,6 @@ export type ControllerDependencies = {
   createSessionMedia: () => SessionMedia
 }
 
-/** Apply successful daemon transport state until the next authoritative replay. */
-export function optimisticPlayerState(
-  player: SessionStore["player"],
-  playing: boolean,
-  now = Date.now(),
-): SessionStore["player"] {
-  if (!player) return player
-  const progress = player.is_playing
-    ? Math.min(
-        player.track?.duration_ms || Number.POSITIVE_INFINITY,
-        Math.max(0, player.progress_ms + (now - player.fetched_at)),
-      )
-    : player.progress_ms
-  return {
-    ...player,
-    progress_ms: progress,
-    is_playing: playing,
-    fetched_at: now,
-  }
-}
-
-export function optimisticSeekPlayerState(
-  player: SessionStore["player"],
-  positionMs: number,
-  now = Date.now(),
-): SessionStore["player"] {
-  const target = seekTarget(positionMs, player?.track?.duration_ms)
-  if (!player?.track || target === null) return player
-  return { ...player, progress_ms: target, fetched_at: now }
-}
-
 function seekTarget(positionMs: number, durationMs?: number): number | null {
   if (
     !Number.isFinite(positionMs) ||
@@ -122,8 +91,6 @@ export function createController(
   } = { message: null, source: undefined }
   let transportError: string | null = null
   let receivedSnapshot = false
-  // An authority fence for optimistic UI projection, not a host sampling lane.
-  let snapshotEpoch = 0
   let playbackTarget: boolean | undefined
   let playbackOperations = 0
   let activeSeek: SeekIntent | null = null
@@ -170,13 +137,9 @@ export function createController(
     updateLoading()
   }
 
-  const runCommand = (
-    command: () => Promise<unknown>,
-    afterSuccess?: () => void,
-  ) => {
+  const runCommand = (command: () => Promise<unknown>) => {
     if (!isActive()) return Promise.resolve()
     const generation = lifecycleGeneration
-    const commandSnapshotEpoch = snapshotEpoch
     return new Promise<void>((resolve) => {
       pending.add(resolve)
       updateLoading()
@@ -191,8 +154,6 @@ export function createController(
           () => {
             if (!isActive() || generation !== lifecycleGeneration) return
             if (transportError !== null) setTransportError(null)
-            // A later daemon snapshot is authoritative over command optimism.
-            if (snapshotEpoch === commandSnapshotEpoch) afterSuccess?.()
           },
           (error) => {
             if (!isActive() || generation !== lifecycleGeneration) return
@@ -207,17 +168,7 @@ export function createController(
 
   const runSeek = (intent: SeekIntent) => {
     activeSeek = intent
-    const operation = runCommand(
-      () => media.seek(intent.positionMs),
-      () => {
-        setSession((draft) => {
-          draft.player = optimisticSeekPlayerState(
-            draft.player,
-            intent.positionMs,
-          )
-        })
-      },
-    )
+    const operation = runCommand(() => media.seek(intent.positionMs))
     void operation.then(() => {
       if (activeSeek !== intent) return
       activeSeek = null
@@ -250,13 +201,8 @@ export function createController(
     const nextPlaying = !(playbackTarget ?? !!session.player?.is_playing)
     playbackTarget = nextPlaying
     playbackOperations++
-    return runCommand(
-      () => (nextPlaying ? media.play() : media.pause()),
-      () => {
-        setSession((draft) => {
-          draft.player = optimisticPlayerState(draft.player, nextPlaying)
-        })
-      },
+    return runCommand(() =>
+      nextPlaying ? media.play() : media.pause(),
     ).finally(() => {
       playbackOperations--
       if (playbackOperations === 0) playbackTarget = undefined
@@ -285,7 +231,6 @@ export function createController(
     if (!isActive()) return
     if (event?.type === "snapshot") {
       receivedSnapshot = true
-      snapshotEpoch++
       setSession((draft) => {
         draft.player = mergePlayerSnapshot(draft.player, event.state)
       })

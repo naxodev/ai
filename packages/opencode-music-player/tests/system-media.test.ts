@@ -237,6 +237,38 @@ describe("session media facade", () => {
     await media.dispose()
   })
 
+  test("artwork resolution never replaces daemon duration", async () => {
+    const client = new FakeClient()
+    client.state = {
+      ...state("unknown-duration", 5),
+      state: {
+        ...state("unknown-duration", 5).state,
+        track: {
+          ...state("unknown-duration", 5).state.track!,
+          duration_ms: 0,
+        },
+      },
+    }
+    const cover = { id: "cover", png_base64: "", accent: "", cells: [] }
+    const media = createSessionSystemMedia({
+      createClient: async () => client,
+      resolveArtworkDetails: async () => ({
+        artwork: cover,
+        duration_ms: 180_000,
+      }),
+    })
+
+    expect(await media.player()).toMatchObject({
+      track: { duration_ms: 0, artwork_loading: true },
+    })
+    await flush()
+    await flush()
+    expect(await media.player()).toMatchObject({
+      track: { duration_ms: 0, artwork: cover, artwork_loading: false },
+    })
+    await media.dispose()
+  })
+
   test("falls back for all non-available artwork results and bounds distinct jobs", async () => {
     let now = 0
     const client = new FakeClient()

@@ -440,8 +440,6 @@ export function createSessionSystemMedia(
       ...state.state,
       track: {
         ...track,
-        duration_ms:
-          track.duration_ms > 0 ? track.duration_ms : artworkState.duration_ms,
         artwork: artworkState.artwork,
         artwork_loading: artworkState.loading,
       },

@@ -64,7 +64,7 @@ test("artwork completion decorates only the matching recording", () => {
     track: {
       artwork: event.artwork,
       artwork_loading: false,
-      duration_ms: 180_000,
+      duration_ms: 0,
     },
   })
   const knownDuration = {

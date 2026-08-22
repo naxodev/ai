@@ -108,8 +108,6 @@ export function mergeArtworkCompletion(
       ...track,
       artwork: event.artwork,
       artwork_loading: false,
-      duration_ms:
-        track.duration_ms > 0 ? track.duration_ms : event.duration_ms,
     },
   }
 }
@@ -140,8 +138,6 @@ export function mergePlayerSnapshot(
       ...next,
       artwork: next.artwork ?? current.artwork,
       artwork_loading: false,
-      duration_ms:
-        next.duration_ms > 0 ? next.duration_ms : current.duration_ms,
     },
   }
 }
