@@ -45,21 +45,21 @@ function VimHost(props: {
   settings: Settings
   session: VimSessionState
   setSettings: (mutation: (draft: Settings) => void) => Promise<void>
-  hostMode: "normal" | "shell"
+  hostMode(): "normal" | "shell"
+  generation(): number
   writeClipboard(text: string): void
 }) {
   const { register, histories } = props.session
   const target = () => props.context.renderer.currentFocusedEditor
   const [mode, setMode] = createSignal(props.runtime.mode)
   const [pending, setPending] = createSignal(hasPendingInput(props.runtime))
-  const [enabled, setEnabled] = createSignal(props.settings.enabled)
   const hostPrefixKeys = new Set(
     props.context.keymap
       .active()
       .filter((binding) => binding.continues)
       .map((binding) => binding.key.toLowerCase()),
   )
-  const active = () => enabled() && props.hostMode === "normal"
+  const active = () => props.settings.enabled && props.hostMode() === "normal"
   const bindingsActive = () =>
     active() && props.context.keymap.mode.current() === "base"
   const label = () => (active() ? mode().toUpperCase() : "VIM OFF")
@@ -70,6 +70,12 @@ function VimHost(props: {
   let indicator: TextRenderable | undefined
   let activeInsert:
     { editor: EditBufferRenderable; history: VimHistory } | undefined
+  const finalizeActiveInsert = () => {
+    const insert = activeInsert
+    activeInsert = undefined
+    if (insert && !insert.editor.isDestroyed)
+      finalizeInsertSession(insert.editor, insert.history)
+  }
   const historyFor = (editor: EditBufferRenderable) => {
     let history = histories.get(editor)
     if (!history) {
@@ -80,8 +86,7 @@ function VimHost(props: {
   }
   const beginInsertFor = (editor: EditBufferRenderable) => {
     if (activeInsert?.editor !== editor) {
-      if (activeInsert && !activeInsert.editor.isDestroyed)
-        finalizeInsertSession(activeInsert.editor, activeInsert.history)
+      finalizeActiveInsert()
       activeInsert = { editor, history: historyFor(editor) }
     }
     beginInsertSession(editor, activeInsert.history)
@@ -170,7 +175,10 @@ function VimHost(props: {
     runActions(editor, actions, register, props.runtime, history, {
       dispatch: (id) => queueMicrotask(() => props.context.keymap.dispatch(id)),
       openEx: () => {
-        void openExDialog(props.context).catch((error: unknown) => {
+        const generation = props.generation()
+        const isLive = () => props.generation() === generation
+        void openExDialog(props.context, isLive).catch((error: unknown) => {
+          if (!isLive()) return
           const message = error instanceof Error ? error.message : String(error)
           void props.context.ui.dialog
             .alert({ title: "EX command", message })
@@ -200,6 +208,7 @@ function VimHost(props: {
       run: () => handle(key),
     }))
 
+  let toggleQueue = Promise.resolve()
   props.context.keymap.layer(() => ({
     mode: "base",
     target,
@@ -292,17 +301,37 @@ function VimHost(props: {
         palette: true,
         slash: { name: "vim" },
         run: () => {
-          const next = !enabled()
-          void props.setSettings((draft) => {
-            draft.enabled = next
+          const requestedGeneration = props.generation()
+          const operation = toggleQueue.then(async () => {
+            const isLive = () => props.generation() === requestedGeneration
+            if (!isLive()) return
+            const next = !props.settings.enabled
+            try {
+              await props.setSettings((draft) => {
+                draft.enabled = next
+              })
+              if (!isLive()) return
+              if (!next) finalizeActiveInsert()
+              updateIndicator()
+              syncCursor()
+              props.context.ui.toast.show({
+                message: `Vim mode ${next ? "enabled" : "disabled"}`,
+                variant: "info",
+              })
+            } catch (error) {
+              if (!isLive()) return
+              const message =
+                error instanceof Error ? error.message : String(error)
+              updateIndicator()
+              syncCursor()
+              props.context.ui.toast.show({
+                message: `Failed to update Vim mode: ${message}`,
+                variant: "error",
+              })
+            }
           })
-          setEnabled(next)
-          updateIndicator()
-          syncCursor()
-          props.context.ui.toast.show({
-            message: `Vim mode ${next ? "enabled" : "disabled"}`,
-            variant: "info",
-          })
+          toggleQueue = operation.catch(() => {})
+          return operation
         },
       },
     ],
@@ -322,6 +351,7 @@ function VimHost(props: {
   const syncCursor = () => {
     const editor = target()
     if (!editor || editor.isDestroyed || !active()) {
+      finalizeActiveInsert()
       if (mode() === "visual" && focusedEditor && !focusedEditor.isDestroyed)
         focusedEditor.clearSelection()
       focusedEditor = undefined
@@ -348,6 +378,7 @@ function VimHost(props: {
   syncCursor()
   onCleanup(() => {
     clearInterval(cursorTimer)
+    finalizeActiveInsert()
     if (mode() === "visual" && focusedEditor && !focusedEditor.isDestroyed)
       focusedEditor.clearSelection()
     restoreCursors()
@@ -368,6 +399,7 @@ function VimHost(props: {
 export default Plugin.define({
   id: "vimcode-v2",
   setup(context) {
+    let generation = 0
     const startMode: VimMode =
       context.options.startMode === "normal" ? "normal" : "insert"
     const configuredClipboard = context.options.clipboard
@@ -427,12 +459,14 @@ export default Plugin.define({
           setRuntime={setRuntime}
           settings={settings}
           setSettings={setSettings}
-          hostMode={slot.mode}
+          hostMode={() => slot.mode}
+          generation={() => generation}
           writeClipboard={writeClipboard}
         />
       ),
     })
     return () => {
+      generation++
       writeClipboard.dispose()
       unsubscribe()
     }

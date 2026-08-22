@@ -109,18 +109,21 @@ export function resolveExCommand(
 
 export async function openExDialog(
   context: Pick<Context, "keymap" | "ui">,
+  isLive: () => boolean = () => true,
 ): Promise<void> {
   const input = await context.ui.dialog.prompt({
     title: "EX command",
     description: "Run an available OpenCode slash command",
     placeholder: ":command [arguments]",
   })
+  if (!isLive()) return
   if (input === undefined) return
 
   const parsed = parseExCommand(input)
   if (!parsed) return
 
   const resolution = resolveExCommand(parsed, context.keymap.commands())
+  if (!isLive()) return
   if (resolution.type === "match") {
     context.keymap.dispatch(resolution.id, resolution.arguments)
     return
@@ -132,5 +135,6 @@ export async function openExDialog(
       : resolution.type === "unsupported-shell"
         ? "Shell commands are unsupported by this plugin."
         : `Unknown command: ${parsed.name}`
+  if (!isLive()) return
   await context.ui.dialog.alert({ title: "EX command", message })
 }

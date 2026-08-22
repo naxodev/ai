@@ -125,15 +125,6 @@ class SemanticEditor implements VimEditor {
     this.selection = { start: Math.min(start, end), end: Math.max(start, end) }
   }
 
-  setSelectionInclusive(start: number, end: number) {
-    this.selectionAnchor = start
-    this.inclusiveSelection = true
-    this.selection = {
-      start: Math.min(start, end),
-      end: nextGrapheme(this.plainText, Math.max(start, end)),
-    }
-  }
-
   clearSelection() {
     const selected = this.selection !== null
     this.selection = null

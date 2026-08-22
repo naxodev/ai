@@ -38,6 +38,19 @@ export type VimHistory = {
   changeSession: ChangeSession | null
 }
 
+// A thousand complete changes keeps practical undo depth without unbounded prompt retention.
+const HISTORY_DEPTH = 1_000
+
+function trimSnapshots(stack: Snapshot[]) {
+  if (stack.length > HISTORY_DEPTH)
+    stack.splice(0, stack.length - HISTORY_DEPTH)
+}
+
+function pushSnapshot(stack: Snapshot[], snapshot: Snapshot) {
+  stack.push(snapshot)
+  trimSnapshots(stack)
+}
+
 export function createVimHistory(text = ""): VimHistory {
   return {
     undo: [],
@@ -89,7 +102,7 @@ export function finalizeInsertSession(editor: VimEditor, history: VimHistory) {
     exit.text !== session.baseline.text ||
     session.baseline.text !== session.before.text
   ) {
-    history.undo.push(session.before)
+    pushSnapshot(history.undo, session.before)
     history.redo.length = 0
     history.lastChange = {
       actions: session.actions.map((action) => ({ ...action })),
@@ -116,7 +129,6 @@ export interface VimEditor {
   hasSelection(): boolean
   getSelection(): { start: number; end: number } | null
   setSelection(start: number, end: number): void
-  setSelectionInclusive(start: number, end: number): void
   clearSelection(): boolean
   moveCursorLeft(options?: { select?: boolean }): boolean
   moveCursorRight(options?: { select?: boolean }): boolean
@@ -179,6 +191,17 @@ function nextGraphemeStart(text: string, offset: number, limit = text.length) {
   return Math.min(advanceGraphemes(text, offset, 1, limit), limit)
 }
 
+function setGraphemeInclusiveSelection(
+  editor: VimEditor,
+  start: number,
+  end: number,
+) {
+  editor.setSelection(
+    Math.min(start, end),
+    nextGraphemeStart(editor.plainText, Math.max(start, end)),
+  )
+}
+
 function selectionAnchor(editor: VimEditor) {
   const selection = editor.getSelection()
   if (!selection) return editor.cursorOffset
@@ -188,7 +211,7 @@ function selectionAnchor(editor: VimEditor) {
 }
 
 function selectTo(editor: VimEditor, target: number) {
-  editor.setSelectionInclusive(selectionAnchor(editor), target)
+  setGraphemeInclusiveSelection(editor, selectionAnchor(editor), target)
   editor.cursorOffset = target
 }
 
@@ -208,7 +231,7 @@ function renderVisualEndpoints(
       lineBounds(editor.plainText, active).start,
     )
     editor.setSelection(first, lineRange(editor.plainText, last, 1).end)
-  } else editor.setSelectionInclusive(anchor, active)
+  } else setGraphemeInclusiveSelection(editor, anchor, active)
   editor.cursorOffset = active
 }
 
@@ -1099,7 +1122,7 @@ function applyOperatorMotion(
     !/\s/u.test(editor.plainText[editor.cursorOffset] ?? "")
   if (changeWord) {
     const target = endOfWord(editor.plainText, editor.cursorOffset, count, true)
-    editor.setSelectionInclusive(original, target)
+    setGraphemeInclusiveSelection(editor, original, target)
     editor.cursorOffset = target
   } else move(editor, key, count, true, percentage)
   if (
@@ -1360,7 +1383,7 @@ export function runActions(
       isolated.undo.length > 0 ||
       isolated.changeSession !== null
     ) {
-      history.undo.push(before)
+      pushSnapshot(history.undo, before)
       history.redo.length = 0
     }
     history.currentText = editor.plainText
@@ -1671,18 +1694,20 @@ export function runActions(
     }
     if (action.type === "undo") {
       historyAction = true
+      trimSnapshots(history.undo)
       const snapshot = history.undo.pop()
       if (snapshot) {
-        history.redo.push(snapshotOf(editor))
+        pushSnapshot(history.redo, snapshotOf(editor))
         editor.setText(snapshot.text)
         editor.cursorOffset = snapshot.cursor
       }
     }
     if (action.type === "redo") {
       historyAction = true
+      trimSnapshots(history.redo)
       const snapshot = history.redo.pop()
       if (snapshot) {
-        history.undo.push(snapshotOf(editor))
+        pushSnapshot(history.undo, snapshotOf(editor))
         editor.setText(snapshot.text)
         editor.cursorOffset = snapshot.cursor
       }
@@ -1991,7 +2016,11 @@ export function runActions(
           const range = lineRange(editor.plainText, editor.cursorOffset, 1)
           editor.setSelection(range.start, range.end)
         } else
-          editor.setSelectionInclusive(editor.cursorOffset, editor.cursorOffset)
+          setGraphemeInclusiveSelection(
+            editor,
+            editor.cursorOffset,
+            editor.cursorOffset,
+          )
       } else if (editor.hasSelection()) editor.clearSelection()
       else if (action.mode === "normal" && !action.oneShot)
         editor.moveCursorLeft()
@@ -2012,7 +2041,7 @@ export function runActions(
     !history.changeSession &&
     (editor.plainText !== before.text || successfulChange)
   ) {
-    history.undo.push(semanticUndo ?? before)
+    pushSnapshot(history.undo, semanticUndo ?? before)
     history.redo.length = 0
     const action = semanticVisualAction ?? actions.find(repeatableAction)
     if (action) history.lastChange = { actions: [{ ...action }] }

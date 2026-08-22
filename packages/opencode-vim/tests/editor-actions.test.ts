@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { EditBufferRenderable, TextareaRenderable } from "@opentui/core"
+import { createTestRenderer } from "@opentui/core/testing"
 import { createClipboardWriter } from "../clipboard.ts"
 import {
   beginInsertSession,
@@ -37,13 +39,6 @@ class FakeEditor implements VimEditor {
     this.selection = { start: Math.min(start, end), end: Math.max(start, end) }
   }
 
-  setSelectionInclusive(start: number, end: number) {
-    this.selection = {
-      start: Math.min(start, end),
-      end: Math.max(start, end) + 1,
-    }
-  }
-
   clearSelection() {
     const hadSelection = this.selection !== null
     this.selection = null
@@ -56,7 +51,11 @@ class FakeEditor implements VimEditor {
       0,
       Math.min(this.plainText.length, start + delta),
     )
-    if (select) this.setSelectionInclusive(start, this.cursorOffset)
+    if (select)
+      this.setSelection(
+        Math.min(start, this.cursorOffset),
+        Math.max(start, this.cursorOffset) + 1,
+      )
     return this.cursorOffset !== start
   }
 
@@ -144,6 +143,45 @@ function run(
 }
 
 describe("editor action adapter", () => {
+  test("deletes a complete emoji selected through the pinned EditBufferRenderable", async () => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 3 })
+    const editor = new TextareaRenderable(renderer, {
+      id: "emoji-editor",
+      initialValue: "a😀b",
+    })
+    expect(editor).toBeInstanceOf(EditBufferRenderable)
+    editor.cursorOffset = 1
+    const runtime = createVimState("visual")
+    runtime.visual = { kind: "character", anchor: 1, active: 1 }
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+
+    try {
+      runActions(
+        editor,
+        [{ type: "mode", mode: "visual", linewise: false }],
+        register,
+        runtime,
+        history,
+        mutableEffects(runtime),
+      )
+      runActions(
+        editor,
+        [{ type: "visual-operator", operator: "delete", linewise: false }],
+        register,
+        runtime,
+        history,
+        mutableEffects(runtime),
+      )
+
+      expect(editor.plainText).toBe("ab")
+      expect(register.value).toBe("😀")
+    } finally {
+      editor.destroy()
+      renderer.destroy()
+    }
+  })
+
   test("line bounds distinguish offset zero, newline edges, and the trailing empty line", () => {
     expect(lineBounds("\na\n", 0)).toEqual({ start: 0, end: 0 })
     expect(lineBounds("\na\n", 1)).toEqual({ start: 1, end: 2 })
@@ -407,7 +445,7 @@ describe("editor action adapter", () => {
     editor.cursorOffset = 4
     const runtime = createVimState("visual")
     runtime.visual = { kind: "character", anchor: 4, active: 4 }
-    editor.setSelectionInclusive(4, 4)
+    editor.setSelection(4, 5)
     const history = createVimHistory(editor.plainText)
     const register = { value: "", linewise: false }
     const actionEffects = mutableEffects(runtime)
@@ -570,7 +608,7 @@ describe("editor action adapter", () => {
   test("reversed visual word objects keep the original anchor and active direction", () => {
     const editor = new FakeEditor("one two")
     editor.cursorOffset = 4
-    editor.setSelectionInclusive(5, 4)
+    editor.setSelection(4, 6)
     const state = createVimState("visual")
     state.visual = { kind: "character", anchor: 5, active: 4 }
 
@@ -602,7 +640,7 @@ describe("editor action adapter", () => {
   test("visual paste records deletion shape for dot instead of another paste", () => {
     const editor = new FakeEditor("abcdef")
     editor.cursorOffset = 2
-    editor.setSelectionInclusive(1, 2)
+    editor.setSelection(1, 3)
     const state = createVimState("visual")
     state.visual = { kind: "character", anchor: 1, active: 2 }
     const history = createVimHistory(editor.plainText)
@@ -643,7 +681,7 @@ describe("editor action adapter", () => {
     ]) {
       const editor = new FakeEditor("abc")
       editor.cursorOffset = 1
-      editor.setSelectionInclusive(0, 1)
+      editor.setSelection(0, 2)
       const state = createVimState("visual")
       state.visual = { kind: "character", anchor: 0, active: 1 }
       runActions(
@@ -677,7 +715,7 @@ describe("editor action adapter", () => {
 
     const join = new FakeEditor("abcdef")
     join.cursorOffset = 3
-    join.setSelectionInclusive(2, 3)
+    join.setSelection(2, 4)
     const joinState = createVimState("visual")
     joinState.visual = { kind: "character", anchor: 2, active: 3 }
     runActions(
@@ -726,7 +764,7 @@ describe("editor action adapter", () => {
     expect(first.selection).toBeNull()
 
     second.cursorOffset = 1
-    second.setSelectionInclusive(1, 4)
+    second.setSelection(1, 5)
     syncVisualState(second, state, actionEffects, false)
     expect(state.visual).toEqual({
       kind: "character",
@@ -829,6 +867,77 @@ describe("editor action adapter", () => {
       actionEffects,
     )
     expect(editor.plainText).toBe("bcdef")
+  })
+
+  test("evicts the oldest undo snapshot after the practical history limit", () => {
+    const editor = new FakeEditor("a")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+
+    for (let index = 0; index <= 1_000; index++) {
+      editor.cursorOffset = 0
+      runActions(
+        editor,
+        [{ type: "replace", text: index % 2 === 0 ? "b" : "a", count: 1 }],
+        register,
+        runtime,
+        history,
+        actionEffects,
+      )
+    }
+
+    expect(history.undo).toHaveLength(1_000)
+    expect(history.undo[0]?.text).toBe("b")
+  })
+
+  test("trims oversized history retained from an earlier plugin generation", () => {
+    const editor = new FakeEditor("a")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+    for (let index = 0; index < 1_200; index++)
+      history.undo.push({ text: String(index), cursor: 0, selection: null })
+
+    runActions(
+      editor,
+      [{ type: "replace", text: "b", count: 1 }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+
+    expect(history.undo).toHaveLength(1_000)
+    expect(history.undo[0]?.text).toBe("201")
+    expect(history.undo.at(-1)?.text).toBe("a")
+  })
+
+  test("normalizes oversized retained history before undo and redo", () => {
+    const editor = new FakeEditor("current")
+    const runtime = createVimState("normal")
+    const history = createVimHistory(editor.plainText)
+    const register = { value: "", linewise: false }
+    const actionEffects = mutableEffects(runtime)
+    for (let index = 0; index < 1_200; index++) {
+      const snapshot = { text: String(index), cursor: 0, selection: null }
+      history.undo.push(snapshot)
+      history.redo.push(snapshot)
+    }
+
+    runActions(
+      editor,
+      [{ type: "undo" }, { type: "redo" }],
+      register,
+      runtime,
+      history,
+      actionEffects,
+    )
+
+    expect(history.undo.length).toBeLessThanOrEqual(1_000)
+    expect(history.redo.length).toBeLessThanOrEqual(1_000)
   })
 
   test("captures host insert text between public mode transitions", () => {
