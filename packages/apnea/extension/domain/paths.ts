@@ -21,17 +21,8 @@ export function projectConfigPath(root = cwd()): string {
   return path.join(apneaRoot(root), "config.json")
 }
 
-function homedir(): string {
-  // Env first so an overridden HOME still wins (Bun's os.homedir() reads the
-  // passwd entry and ignores $HOME), then the passwd entry as the floor.
-  // Never "": an empty home makes globalConfigPath() cwd-relative, i.e. the
-  // *project* repo would be read as the trusted global config — the one place
-  // profiles/cmd_interactive are honoured. node:os is a pure read here.
-  return process.env.HOME || process.env.USERPROFILE || os.homedir()
-}
-
-export function globalConfigPath(): string {
-  return path.join(homedir(), ".config", "apnea", "config.json")
+export function globalConfigPath(home = os.homedir()): string {
+  return path.join(home, ".config", "apnea", "config.json")
 }
 
 export function artifactsDir(root = cwd()): string {

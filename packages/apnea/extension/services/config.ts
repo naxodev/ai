@@ -67,9 +67,9 @@ export const ConfigLive = Layer.effect(
         let cfg = gDecoded.success
 
         const pPath = projectConfigPath(root)
-        const pPresent = yield* fs.exists(pPath)
+        const pPresent = yield* fs.projectPathExists(root, pPath)
         if (pPresent) {
-          const pText = yield* fs.readFile(pPath)
+          const pText = yield* fs.readProjectFile(root, pPath)
           const pRaw = yield* parseJson(pText, pPath)
           const pDecoded = decodeProjectConfig(pRaw)
           if (Result.isFailure(pDecoded)) {

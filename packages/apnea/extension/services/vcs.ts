@@ -1,5 +1,18 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
+import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { Context, Effect, Layer } from "effect"
@@ -14,11 +27,14 @@ import { FileSystem } from "./file-system.ts"
 
 export interface VcsService {
   readonly detect: (root: string) => Effect.Effect<VcsBackend | null>
-  readonly isDirty: (root: string, vcs: VcsBackend) => Effect.Effect<boolean>
+  readonly isDirty: (
+    root: string,
+    vcs: VcsBackend,
+  ) => Effect.Effect<boolean, VcsError>
   readonly treeFingerprint: (
     root: string,
     vcs: VcsBackend,
-  ) => Effect.Effect<string>
+  ) => Effect.Effect<string, VcsError>
   readonly ensureGitBranch: (
     root: string,
     slug: string,
@@ -31,7 +47,7 @@ export interface VcsService {
   readonly setBookmarkAtTerminus: (
     root: string,
     slug: string,
-  ) => Effect.Effect<void>
+  ) => Effect.Effect<void, VcsError>
   readonly runVerify: (
     root: string,
     blocks: readonly VerifyBlock[],
@@ -45,18 +61,344 @@ function run(
   cmd: string,
   args: string[],
   cwd: string,
+  env?: NodeJS.ProcessEnv,
 ): { ok: boolean; stdout: string; stderr: string; code: number } {
   const r = spawnSync(cmd, args, {
     cwd,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
+    env: env === undefined ? undefined : { ...process.env, ...env },
   })
   return {
     ok: r.status === 0,
     stdout: (r.stdout ?? "").toString(),
-    stderr: (r.stderr ?? "").toString(),
+    stderr: (r.stderr ?? r.error?.message ?? "").toString(),
     code: r.status ?? 1,
   }
+}
+
+function runRaw(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+): { ok: boolean; stdout: Buffer; stderr: string; code: number } {
+  const result = spawnSync(cmd, args, {
+    cwd,
+    encoding: null,
+    maxBuffer: 10 * 1024 * 1024,
+    env: env === undefined ? undefined : { ...process.env, ...env },
+  })
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout ?? Buffer.alloc(0),
+    stderr: (result.stderr ?? result.error?.message ?? "").toString("utf8"),
+    code: result.status ?? 1,
+  }
+}
+
+type CommandResult = ReturnType<typeof run>
+export type VcsCommandRunner = typeof run
+export type VcsRawCommandRunner = typeof runRaw
+
+const APNEA_ICASE_PATHSPEC = ":(icase).apnea"
+const APNEA_ICASE_EXCLUDES = [
+  ":(exclude,icase).apnea",
+  ":(exclude,icase).apnea/**",
+]
+const JJ_APNEA_ICASE = "root-prefix-glob-i:.apnea"
+const JJ_NOT_APNEA_ICASE = `~${JJ_APNEA_ICASE}`
+export const UNTRACKED_FINGERPRINT_MAX_BYTES = 256 * 1024 * 1024
+export const UNTRACKED_FINGERPRINT_TIMEOUT_MS = 10_000
+
+function requireCommand(
+  result: CommandResult,
+  command: string,
+): Effect.Effect<CommandResult, VcsError> {
+  return result.ok
+    ? Effect.succeed(result)
+    : Effect.fail(
+        new VcsError({
+          message: `${command} failed: ${result.stderr || result.stdout}`,
+          command,
+        }),
+      )
+}
+
+function requireRawCommand(
+  result: ReturnType<VcsRawCommandRunner>,
+  command: string,
+): Effect.Effect<ReturnType<VcsRawCommandRunner>, VcsError> {
+  return result.ok
+    ? Effect.succeed(result)
+    : Effect.fail(
+        new VcsError({
+          message: `${command} failed: ${result.stderr}`,
+          command,
+        }),
+      )
+}
+
+function splitNullBuffers(value: Buffer): Buffer[] {
+  const parts: Buffer[] = []
+  let start = 0
+  for (let index = 0; index < value.length; index++) {
+    if (value[index] !== 0) continue
+    if (index > start) parts.push(value.subarray(start, index))
+    start = index + 1
+  }
+  if (start < value.length) parts.push(value.subarray(start))
+  return parts
+}
+
+function digest(parts: readonly (string | Buffer)[]): string {
+  if (parts.every((part) => part.length === 0)) return ""
+  const hash = createHash("sha256")
+  for (const part of parts) hash.update(part)
+  return hash.digest("hex")
+}
+
+function rejectCaseFoldedApneaAlias(
+  root: string,
+): Effect.Effect<void, VcsError> {
+  return Effect.try({
+    try: () => {
+      const alias = readdirSync(root).find(
+        (name) => name.toLowerCase() === ".apnea" && name !== ".apnea",
+      )
+      if (alias !== undefined) {
+        throw new VcsError({
+          message: `refusing case-insensitive .apnea alias at repository root: ${alias}`,
+        })
+      }
+    },
+    catch: (error) =>
+      error instanceof VcsError
+        ? error
+        : new VcsError({
+            message: `could not inspect repository root for .apnea aliases: ${error instanceof Error ? error.message : String(error)}`,
+          }),
+  })
+}
+
+type FingerprintLimits = {
+  readonly maxBytes: number
+  readonly timeoutMs: number
+}
+
+export function fingerprintUntrackedFiles(
+  root: string,
+  files: readonly (string | Buffer)[],
+  limits: FingerprintLimits = {
+    maxBytes: UNTRACKED_FINGERPRINT_MAX_BYTES,
+    timeoutMs: UNTRACKED_FINGERPRINT_TIMEOUT_MS,
+  },
+): Effect.Effect<string, VcsError> {
+  return Effect.try({
+    try: () => {
+      if (files.length === 0) return ""
+      if (
+        !Number.isFinite(limits.maxBytes) ||
+        limits.maxBytes < 0 ||
+        !Number.isFinite(limits.timeoutMs) ||
+        limits.timeoutMs < 0
+      ) {
+        throw new VcsError({ message: "invalid untracked fingerprint limits" })
+      }
+      const startedAt = Date.now()
+      const hash = createHash("sha256")
+      const buffer = Buffer.allocUnsafe(64 * 1024)
+      let totalBytes = 0
+
+      const account = (bytes: number) => {
+        totalBytes += bytes
+        if (totalBytes > limits.maxBytes) {
+          throw new VcsError({
+            message: `untracked fingerprint byte limit exceeded (${limits.maxBytes} bytes)`,
+          })
+        }
+        if (Date.now() - startedAt > limits.timeoutMs) {
+          throw new VcsError({
+            message: `untracked fingerprint timed out after ${limits.timeoutMs}ms`,
+          })
+        }
+      }
+
+      for (const file of files) {
+        const rawFile = Buffer.isBuffer(file) ? file : Buffer.from(file)
+        const components = splitNullBuffers(
+          Buffer.from(rawFile.map((byte) => (byte === 0x2f ? 0 : byte))),
+        )
+        if (
+          rawFile.length === 0 ||
+          rawFile[0] === 0x2f ||
+          components.some(
+            (component) =>
+              component.length === 2 &&
+              component[0] === 0x2e &&
+              component[1] === 0x2e,
+          )
+        ) {
+          throw new VcsError({
+            message: `invalid untracked path from VCS: ${rawFile.toString("hex")}`,
+          })
+        }
+        const absolute = Buffer.concat([
+          Buffer.from(`${path.resolve(root)}${path.sep}`),
+          rawFile,
+        ])
+        const display = rawFile.toString("hex")
+        const before = lstatSync(absolute)
+        hash.update(rawFile)
+        hash.update("\0")
+        if (before.isSymbolicLink()) {
+          const target = readlinkSync(absolute, { encoding: "buffer" })
+          const after = lstatSync(absolute)
+          if (
+            !after.isSymbolicLink() ||
+            after.dev !== before.dev ||
+            after.ino !== before.ino ||
+            after.mtimeMs !== before.mtimeMs ||
+            after.ctimeMs !== before.ctimeMs
+          ) {
+            throw new VcsError({
+              message: `untracked symlink changed while fingerprinting (hex path): ${display}`,
+            })
+          }
+          account(target.length)
+          hash.update("symlink\0")
+          hash.update(target)
+          hash.update("\0")
+          continue
+        }
+        if (!before.isFile()) {
+          throw new VcsError({
+            message: `untracked fingerprints accept only regular files or symlinks (hex path): ${display}`,
+          })
+        }
+
+        let descriptor: number | undefined
+        try {
+          descriptor = openSync(
+            absolute,
+            process.platform === "win32"
+              ? "r"
+              : fsConstants.O_RDONLY |
+                  fsConstants.O_NOFOLLOW |
+                  fsConstants.O_NONBLOCK,
+          )
+          const opened = fstatSync(descriptor)
+          if (
+            !opened.isFile() ||
+            opened.dev !== before.dev ||
+            opened.ino !== before.ino
+          ) {
+            throw new VcsError({
+              message: `untracked file changed while fingerprinting (hex path): ${display}`,
+            })
+          }
+          if (opened.size > limits.maxBytes - totalBytes) {
+            throw new VcsError({
+              message: `untracked fingerprint byte limit exceeded (${limits.maxBytes} bytes)`,
+            })
+          }
+          hash.update("file\0")
+          for (;;) {
+            const bytes = readSync(descriptor, buffer, 0, buffer.length, null)
+            if (bytes === 0) break
+            account(bytes)
+            hash.update(buffer.subarray(0, bytes))
+          }
+          const after = fstatSync(descriptor)
+          if (
+            after.size !== opened.size ||
+            after.mtimeMs !== opened.mtimeMs ||
+            after.ctimeMs !== opened.ctimeMs
+          ) {
+            throw new VcsError({
+              message: `untracked file changed while fingerprinting (hex path): ${display}`,
+            })
+          }
+          hash.update("\0")
+        } finally {
+          if (descriptor !== undefined) closeSync(descriptor)
+        }
+      }
+      return hash.digest("hex")
+    },
+    catch: (error) =>
+      error instanceof VcsError
+        ? error
+        : new VcsError({
+            message: `could not fingerprint untracked files: ${error instanceof Error ? error.message : String(error)}`,
+          }),
+  })
+}
+
+export function treeFingerprintWithCommand(
+  root: string,
+  vcs: VcsBackend,
+  runCommand: VcsCommandRunner,
+  runRawCommand: VcsRawCommandRunner = runRaw,
+): Effect.Effect<string, VcsError> {
+  return Effect.gen(function* () {
+    if (vcs === "jj") {
+      const command = `jj diff --git --color=never -- ${JJ_NOT_APNEA_ICASE}`
+      const result = yield* requireCommand(
+        runCommand(
+          "jj",
+          ["diff", "--git", "--color=never", "--", JJ_NOT_APNEA_ICASE],
+          root,
+        ),
+        command,
+      )
+      return digest([result.stdout])
+    }
+    const pathspec = ["--", ".", ...APNEA_ICASE_EXCLUDES]
+    const staged = yield* requireCommand(
+      runCommand(
+        "git",
+        ["diff", "--binary", "--no-ext-diff", "--cached", ...pathspec],
+        root,
+      ),
+      "git diff --cached",
+    )
+    const unstaged = yield* requireCommand(
+      runCommand(
+        "git",
+        ["diff", "--binary", "--no-ext-diff", ...pathspec],
+        root,
+      ),
+      "git diff",
+    )
+    const untracked = yield* requireRawCommand(
+      runRawCommand(
+        "git",
+        ["ls-files", "--others", "--exclude-standard", "-z", ...pathspec],
+        root,
+      ),
+      "git ls-files --others",
+    )
+    const untrackedFingerprint = yield* fingerprintUntrackedFiles(
+      root,
+      splitNullBuffers(untracked.stdout),
+    )
+    if (
+      staged.stdout.length === 0 &&
+      unstaged.stdout.length === 0 &&
+      untrackedFingerprint.length === 0
+    ) {
+      return ""
+    }
+    return digest([
+      "staged\0",
+      staged.stdout,
+      "\0unstaged\0",
+      unstaged.stdout,
+      "\0untracked\0",
+      untrackedFingerprint,
+    ])
+  })
 }
 
 function verificationError(
@@ -362,18 +704,179 @@ export function filterAppPaths(summary: string): string {
       if (!t) return false
       // git porcelain: XY path
       if (/^.. /.test(line)) {
-        const p = line.slice(3).replace(/^"|"$/g, "")
+        const p = line.slice(3).replace(/^"|"$/g, "").toLowerCase()
         return !p.startsWith(".apnea/") && !p.includes("/.apnea/")
       }
       // jj summary often: M path / A path
       const m = t.match(/^[A-Z]+\s+(.+)$/)
       if (m) {
-        const p = m[1]!
+        const p = m[1]!.toLowerCase()
         return !p.startsWith(".apnea/") && !p.includes("/.apnea/")
       }
-      return !t.includes(".apnea/")
+      return !t.toLowerCase().includes(".apnea/")
     })
     .join("\n")
+}
+
+export function gitCommitPhaseWithCommand(
+  root: string,
+  message: string,
+  runCommand: VcsCommandRunner = run,
+): Effect.Effect<string, VcsError> {
+  return Effect.gen(function* () {
+    yield* rejectCaseFoldedApneaAlias(root)
+    const trackedRuntime = yield* requireCommand(
+      runCommand("git", ["ls-files", "-z", "--", APNEA_ICASE_PATHSPEC], root),
+      `git ls-files -- ${APNEA_ICASE_PATHSPEC}`,
+    )
+    const stagedRuntime = yield* requireCommand(
+      runCommand(
+        "git",
+        ["diff", "--cached", "--name-only", "-z", "--", APNEA_ICASE_PATHSPEC],
+        root,
+      ),
+      `git diff --cached --name-only -- ${APNEA_ICASE_PATHSPEC}`,
+    )
+    if (trackedRuntime.stdout.length > 0 || stagedRuntime.stdout.length > 0) {
+      return yield* new VcsError({
+        message: "refusing commit: .apnea is already tracked or staged",
+        command: "git ls-files/diff --cached with :(icase).apnea pathspec",
+      })
+    }
+
+    const head = yield* requireCommand(
+      runCommand("git", ["rev-parse", "--verify", "HEAD"], root),
+      "git rev-parse --verify HEAD",
+    )
+    const branch = yield* requireCommand(
+      runCommand("git", ["symbolic-ref", "-q", "HEAD"], root),
+      "git symbolic-ref -q HEAD",
+    )
+    const temporary = yield* Effect.try({
+      try: () => mkdtempSync(path.join(tmpdir(), "apnea-index-")),
+      catch: (error) =>
+        new VcsError({
+          message: `could not create isolated Git index: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+    })
+    const index = path.join(temporary, "index")
+    const indexEnv = { GIT_INDEX_FILE: index }
+    try {
+      yield* requireCommand(
+        runCommand("git", ["read-tree", head.stdout.trim()], root, indexEnv),
+        "git read-tree HEAD",
+      )
+      yield* requireCommand(
+        runCommand(
+          "git",
+          ["add", "-A", "--", ".", ...APNEA_ICASE_EXCLUDES],
+          root,
+          indexEnv,
+        ),
+        "git add with isolated index",
+      )
+      yield* rejectCaseFoldedApneaAlias(root)
+      const isolatedRuntime = yield* requireCommand(
+        runCommand(
+          "git",
+          ["ls-files", "-z", "--", APNEA_ICASE_PATHSPEC],
+          root,
+          indexEnv,
+        ),
+        "git ls-files isolated index",
+      )
+      if (isolatedRuntime.stdout.length > 0) {
+        return yield* new VcsError({
+          message: "refusing commit: isolated tree contains .apnea",
+        })
+      }
+      const tree = yield* requireCommand(
+        runCommand("git", ["write-tree"], root, indexEnv),
+        "git write-tree",
+      )
+      const treeRuntime = yield* requireCommand(
+        runCommand(
+          "git",
+          ["ls-tree", "-r", "--name-only", "-z", tree.stdout.trim()],
+          root,
+        ),
+        "git ls-tree isolated tree",
+      )
+      if (
+        treeRuntime.stdout
+          .split("\0")
+          .filter(Boolean)
+          .some((file) => file.split("/", 1)[0]!.toLowerCase() === ".apnea")
+      ) {
+        return yield* new VcsError({
+          message: "refusing commit: written tree contains .apnea",
+        })
+      }
+
+      const signing = runCommand(
+        "git",
+        ["config", "--bool", "commit.gpgsign"],
+        root,
+      )
+      if (!signing.ok && signing.code !== 1) {
+        return yield* new VcsError({
+          message: signing.stderr || signing.stdout,
+          command: "git config --bool commit.gpgsign",
+        })
+      }
+      const commitArgs = [
+        "commit-tree",
+        tree.stdout.trim(),
+        "-p",
+        head.stdout.trim(),
+        "-m",
+        message,
+        ...(signing.ok && signing.stdout.trim() === "true" ? ["-S"] : []),
+      ]
+      const committed = yield* requireCommand(
+        runCommand("git", commitArgs, root),
+        "git commit-tree",
+      )
+      const currentBranch = yield* requireCommand(
+        runCommand("git", ["symbolic-ref", "-q", "HEAD"], root),
+        "git symbolic-ref -q HEAD",
+      )
+      if (currentBranch.stdout.trim() !== branch.stdout.trim()) {
+        return yield* new VcsError({
+          message: "current Git branch changed before commit update",
+          command: "git symbolic-ref -q HEAD",
+        })
+      }
+
+      // The real index must match the validated tree before the branch can move.
+      yield* requireCommand(
+        runCommand("git", ["read-tree", committed.stdout.trim()], root),
+        "git read-tree committed tree",
+      )
+      yield* requireCommand(
+        runCommand(
+          "git",
+          [
+            "update-ref",
+            branch.stdout.trim(),
+            committed.stdout.trim(),
+            head.stdout.trim(),
+          ],
+          root,
+        ),
+        "git update-ref (compare-and-swap)",
+      )
+    } finally {
+      yield* Effect.try({
+        try: () => rmSync(temporary, { recursive: true, force: true }),
+        catch: (error) =>
+          new VcsError({
+            message: `could not remove isolated Git index: ${error instanceof Error ? error.message : String(error)}`,
+          }),
+      })
+    }
+    return "git commit-tree + update-ref"
+  })
 }
 
 export const VcsLive = Layer.effect(
@@ -391,17 +894,16 @@ export const VcsLive = Layer.effect(
     const treeFingerprint = (
       root: string,
       vcs: VcsBackend,
-    ): Effect.Effect<string> =>
-      Effect.sync(() => {
-        if (vcs === "jj") {
-          const r = run("jj", ["diff", "--summary"], root)
-          return filterAppPaths(r.stdout)
-        }
-        const r = run("git", ["status", "--porcelain"], root)
-        return filterAppPaths(r.stdout)
+    ): Effect.Effect<string, VcsError> =>
+      Effect.gen(function* () {
+        yield* rejectCaseFoldedApneaAlias(root)
+        return yield* treeFingerprintWithCommand(root, vcs, run)
       })
 
-    const isDirty = (root: string, vcs: VcsBackend): Effect.Effect<boolean> =>
+    const isDirty = (
+      root: string,
+      vcs: VcsBackend,
+    ): Effect.Effect<boolean, VcsError> =>
       Effect.gen(function* () {
         const fp = yield* treeFingerprint(root, vcs)
         return fp.trim().length > 0
@@ -454,53 +956,55 @@ export const VcsLive = Layer.effect(
       message: string,
     ): Effect.Effect<string, VcsError> =>
       Effect.gen(function* () {
+        yield* rejectCaseFoldedApneaAlias(root)
         if (vcs === "jj") {
-          const d = yield* Effect.sync(() =>
-            run("jj", ["describe", "-m", message], root),
+          const trackedRuntime = yield* requireCommand(
+            run("jj", ["file", "list", "-r", "@-", "--", JJ_APNEA_ICASE], root),
+            `jj file list -r @- -- ${JJ_APNEA_ICASE}`,
           )
-          if (!d.ok) {
+          if (trackedRuntime.stdout.trim()) {
             return yield* new VcsError({
-              message: d.stderr || d.stdout,
-              command: "jj describe",
+              message:
+                "refusing commit: .apnea exists in the committed parent snapshot",
+              command: `jj file list -r @- -- ${JJ_APNEA_ICASE}`,
             })
           }
-          const n = yield* Effect.sync(() => run("jj", ["new"], root))
-          if (!n.ok) {
+          const committed = run(
+            "jj",
+            ["commit", "-m", message, "--", JJ_NOT_APNEA_ICASE],
+            root,
+          )
+          if (!committed.ok) {
             return yield* new VcsError({
-              message: n.stderr || n.stdout,
-              command: "jj new",
+              message: committed.stderr || committed.stdout,
+              command: `jj commit -- ${JJ_NOT_APNEA_ICASE}`,
             })
           }
-          return "jj describe + new"
+          return "jj commit"
         }
-        const add = yield* Effect.sync(() => run("git", ["add", "-A"], root))
-        if (!add.ok) {
-          return yield* new VcsError({
-            message: add.stderr,
-            command: "git add -A",
-          })
-        }
-        const c = yield* Effect.sync(() =>
-          run("git", ["commit", "-m", message], root),
-        )
-        if (!c.ok) {
-          return yield* new VcsError({
-            message: c.stderr || c.stdout,
-            command: "git commit",
-          })
-        }
-        return "git commit"
+        return yield* gitCommitPhaseWithCommand(root, message)
       })
 
     const setBookmarkAtTerminus = (
       root: string,
       slug: string,
-    ): Effect.Effect<void> =>
-      Effect.sync(() => {
+    ): Effect.Effect<void, VcsError> =>
+      Effect.gen(function* () {
         const name = `apnea/${slug}`
         const r = run("jj", ["bookmark", "set", name, "-r", "@-"], root)
         if (!r.ok) {
-          run("jj", ["bookmark", "create", name, "-r", "@-"], root)
+          const fallback = run(
+            "jj",
+            ["bookmark", "create", name, "-r", "@-"],
+            root,
+          )
+          if (!fallback.ok) {
+            return yield* new VcsError({
+              message:
+                fallback.stderr || fallback.stdout || r.stderr || r.stdout,
+              command: `jj bookmark set ${name} -r @-`,
+            })
+          }
         }
       })
 

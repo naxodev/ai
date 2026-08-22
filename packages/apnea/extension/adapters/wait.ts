@@ -7,6 +7,7 @@ import {
   type WaitHooks,
   type WaitParams,
 } from "../workflows/wait.ts"
+import { withRepositoryLock } from "../services/operation-lock.ts"
 
 export async function workflowWait(
   params: WaitParams,
@@ -14,7 +15,10 @@ export async function workflowWait(
   hooks: WaitHooks = {},
 ): Promise<ToolResult> {
   return runToolResult(
-    waitWorkflow(params, process.cwd(), hooks),
+    withRepositoryLock(
+      process.cwd(),
+      waitWorkflow(params, process.cwd(), hooks),
+    ),
     makeAppLive(hostAdapter),
   )
 }

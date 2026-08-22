@@ -1,9 +1,13 @@
-import { describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { Effect, Exit, Layer } from "effect"
 import { statePath } from "../domain/paths.ts"
 import { expectFailure } from "../test/expect-failure.ts"
 import { makeFakeFileSystem } from "../test/fake-file-system.ts"
 import { itEffect } from "../test/it-effect.ts"
+import { FileSystemLive } from "./file-system.ts"
 import { RunStore, RunStoreLive } from "./run-store.ts"
 
 function withFake(initial: Record<string, string> = {}) {
@@ -189,4 +193,32 @@ describe("RunStore (fake FileSystem)", () => {
       expect(Exit.isFailure(exit)).toBe(true)
     }).pipe(Effect.provide(layer))
   })
+})
+
+const realRoots: string[] = []
+
+afterEach(() => {
+  for (const root of realRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("RunStore.save never follows a symlinked .apnea directory", async () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "apnea-store-symlink-"))
+  realRoots.push(parent)
+  const root = path.join(parent, "project")
+  const outside = path.join(parent, "outside")
+  fs.mkdirSync(root)
+  fs.mkdirSync(outside)
+  fs.symlinkSync(outside, path.join(root, ".apnea"))
+
+  await expect(
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* RunStore
+        yield* store.save(sampleState, root)
+      }).pipe(Effect.provide(Layer.provideMerge(RunStoreLive, FileSystemLive))),
+    ),
+  ).rejects.toThrow("symlink")
+  expect(fs.readdirSync(outside)).toEqual([])
 })

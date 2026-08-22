@@ -278,11 +278,11 @@ export const waitWorkflow = (
     }
     const requireVerdict = kind === "plan_review" || kind === "code_review"
 
-    const readArtifact = (): Effect.Effect<FrontMatter | null> =>
+    const readArtifact = (): Effect.Effect<FrontMatter | null, AppError> =>
       Effect.gen(function* () {
-        const present = yield* fs.exists(artifactAbs)
+        const present = yield* fs.projectPathExists(root, artifactAbs)
         if (!present) return null
-        const text = yield* fs.readFile(artifactAbs)
+        const text = yield* fs.readProjectFile(root, artifactAbs)
         return parseFrontMatter(text)
       })
 
@@ -422,7 +422,10 @@ export const waitWorkflow = (
      * without the second chance. `pending_final_grace` already makes the
      * deadline rung one-shot per run, so forcing it cannot spam a pane.
      */
-    const tryNudge = (why: string, force = false): Effect.Effect<void> =>
+    const tryNudge = (
+      why: string,
+      force = false,
+    ): Effect.Effect<void, AppError> =>
       Effect.gen(function* () {
         if (
           (nudged && !force) ||

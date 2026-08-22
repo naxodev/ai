@@ -52,6 +52,18 @@ export class VcsError extends Schema.TaggedError<VcsError>()("VcsError", {
   command: Schema.optional(Schema.String),
 }) {}
 
+/** Another live Apnea process owns the repository mutation lock. */
+export class OperationLocked extends Schema.TaggedError<OperationLocked>()(
+  "OperationLocked",
+  {
+    message: Schema.String,
+    repository: Schema.String,
+    lock_path: Schema.String,
+    reason: Schema.String,
+    pid: Schema.Number,
+  },
+) {}
+
 /** Herdr CLI or pane failure. */
 export class HerdrError extends Schema.TaggedError<HerdrError>()("HerdrError", {
   message: Schema.String,
@@ -116,6 +128,7 @@ export type AppError =
   | ConfigError
   | StateCorrupt
   | VcsError
+  | OperationLocked
   | HerdrError
   | GateRefused
   | WaitTimeout
@@ -130,6 +143,7 @@ const APP_ERROR_TAG_LIST = [
   "ConfigError",
   "StateCorrupt",
   "VcsError",
+  "OperationLocked",
   "HerdrError",
   "GateRefused",
   "WaitTimeout",
@@ -200,6 +214,15 @@ export function toToolResult(e: AppError): ToolErr {
     case "VcsError":
       return err(e.message, {
         data: e.command !== undefined ? { command: e.command } : undefined,
+      })
+    case "OperationLocked":
+      return err(e.message, {
+        data: {
+          repository: e.repository,
+          lock_path: e.lock_path,
+          reason: e.reason,
+          pid: e.pid,
+        },
       })
     case "HerdrError":
       return err(e.message, {

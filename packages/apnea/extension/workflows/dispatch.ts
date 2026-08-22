@@ -359,12 +359,12 @@ export const dispatchWorkflow = (
     }
 
     // clear-before-dispatch
-    yield* fs.mkdir(path.dirname(artifactAbs), { recursive: true })
+    yield* fs.mkdirProject(root, path.dirname(artifactAbs))
     let backupAbs: string | null = null
-    if (yield* fs.exists(artifactAbs)) {
+    if (yield* fs.projectPathExists(root, artifactAbs)) {
       const backupMillis = yield* Clock.currentTimeMillis
       backupAbs = `${artifactAbs}.bak.${backupMillis}`
-      yield* fs.rename(artifactAbs, backupAbs)
+      yield* fs.renameProjectFile(root, artifactAbs, backupAbs)
     }
 
     const artifactRel = rel(artifactAbs, root)
@@ -382,14 +382,14 @@ export const dispatchWorkflow = (
       tasksDir(root),
       `${params.kind}-p${state.phase_index}-r${round}-${taskFileMillis}.md`,
     )
-    while (yield* fs.exists(taskFile)) {
+    while (yield* fs.projectPathExists(root, taskFile)) {
       taskFileMillis += 1
       taskFile = path.join(
         tasksDir(root),
         `${params.kind}-p${state.phase_index}-r${round}-${taskFileMillis}.md`,
       )
     }
-    yield* fs.writeFile(taskFile, body)
+    yield* fs.writeProjectFile(root, taskFile, body)
     const taskRef = {
       task: rel(taskFile, root),
       artifact: artifactRel,
@@ -410,19 +410,25 @@ export const dispatchWorkflow = (
     const rollbackLaunch = (restoreState = true) =>
       Effect.gen(function* () {
         const errors: string[] = []
-        const attempt = (label: string, operation: Effect.Effect<void>) =>
+        const attempt = (
+          label: string,
+          operation: Effect.Effect<void, unknown>,
+        ) =>
           Effect.gen(function* () {
             const exit = yield* Effect.exit(operation)
             if (Exit.isFailure(exit)) {
               errors.push(`${label}: ${Cause.pretty(exit.cause)}`)
             }
           })
-        yield* attempt("remove task", fs.remove(taskFile))
-        yield* attempt("remove replacement artifact", fs.remove(artifactAbs))
+        yield* attempt("remove task", fs.removeProjectFile(root, taskFile))
+        yield* attempt(
+          "remove replacement artifact",
+          fs.removeProjectFile(root, artifactAbs),
+        )
         if (backupAbs != null) {
           yield* attempt(
             "restore prior artifact",
-            fs.rename(backupAbs, artifactAbs),
+            fs.renameProjectFile(root, backupAbs, artifactAbs),
           )
         }
         if (restoreState) {

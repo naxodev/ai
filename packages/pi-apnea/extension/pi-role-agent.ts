@@ -293,8 +293,7 @@ export function defaultSourceAgentDir(): string {
 }
 
 export function defaultRoleAgentDir(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || os.homedir()
-  return path.join(home, ".config", "apnea", "pi-role-agent")
+  return path.join(os.homedir(), ".config", "apnea", "pi-role-agent")
 }
 
 function symlinkOrCopy(src: string, dest: string): void {

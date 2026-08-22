@@ -10,23 +10,24 @@ import {
 } from "./paths.ts"
 
 describe("globalConfigPath", () => {
-  test("follows HOME when set", () => {
-    const prev = process.env.HOME
-    process.env.HOME = "/tmp/apnea-home"
+  test("uses os.homedir instead of HOME or USERPROFILE", () => {
+    const home = process.env.HOME
+    const userProfile = process.env.USERPROFILE
+    process.env.HOME = "/tmp/untrusted-apnea-home"
+    process.env.USERPROFILE = "/tmp/untrusted-apnea-profile"
     try {
       expect(globalConfigPath()).toBe(
-        path.join("/tmp/apnea-home", ".config", "apnea", "config.json"),
+        path.join(os.homedir(), ".config", "apnea", "config.json"),
       )
     } finally {
-      if (prev === undefined) delete process.env.HOME
-      else process.env.HOME = prev
+      if (home === undefined) delete process.env.HOME
+      else process.env.HOME = home
+      if (userProfile === undefined) delete process.env.USERPROFILE
+      else process.env.USERPROFILE = userProfile
     }
   })
 
-  // An env-only lookup returns "" without HOME (launchd/systemd/`env -i`),
-  // making this path cwd-relative — i.e. the *project repo* would be read as
-  // the trusted global config, the one place profiles/cmd_interactive are
-  // honoured. A cloned repo could then spawn its own cmd_interactive.
+  // The trusted global path must remain absolute in stripped environments.
   test("stays absolute when HOME and USERPROFILE are both unset", () => {
     const home = process.env.HOME
     const userProfile = process.env.USERPROFILE

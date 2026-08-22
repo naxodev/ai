@@ -12,6 +12,32 @@ export interface FileSystemService {
     destination: string,
     content: string,
   ) => Effect.Effect<void, ConfigError>
+  readonly writeTrustedGlobalFile: (
+    accountHome: string,
+    destination: string,
+    content: string,
+  ) => Effect.Effect<void, ConfigError>
+  readonly readProjectFile: (
+    root: string,
+    source: string,
+  ) => Effect.Effect<string, ConfigError>
+  readonly projectPathExists: (
+    root: string,
+    destination: string,
+  ) => Effect.Effect<boolean, ConfigError>
+  readonly mkdirProject: (
+    root: string,
+    destination: string,
+  ) => Effect.Effect<void, ConfigError>
+  readonly renameProjectFile: (
+    root: string,
+    from: string,
+    to: string,
+  ) => Effect.Effect<void, ConfigError>
+  readonly removeProjectFile: (
+    root: string,
+    destination: string,
+  ) => Effect.Effect<void, ConfigError>
   readonly rename: (from: string, to: string) => Effect.Effect<void>
   readonly exists: (path: string) => Effect.Effect<boolean>
   readonly mkdir: (
@@ -31,6 +57,167 @@ export class FileSystem extends Context.Service<
   FileSystemService
 >()("apnea/FileSystem") {}
 
+function secureProjectPath(root: string, destination: string): string {
+  const lexicalRoot = path.resolve(root)
+  const lexicalTarget = path.resolve(destination)
+  const relative = path.relative(lexicalRoot, lexicalTarget)
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new ConfigError({
+      message: "project file destination must be below project root",
+      path: lexicalTarget,
+    })
+  }
+
+  const projectRoot = fs.realpathSync(lexicalRoot)
+  const target = path.join(projectRoot, relative)
+  let current = projectRoot
+  const components = relative.split(path.sep)
+  for (const [index, component] of components.entries()) {
+    current = path.join(current, component)
+    try {
+      const stat = fs.lstatSync(current)
+      if (stat.isSymbolicLink()) {
+        throw new ConfigError({
+          message: `refusing symlink below project root: ${current}`,
+          path: current,
+        })
+      }
+      if (index < components.length - 1 && !stat.isDirectory()) {
+        throw new ConfigError({
+          message: `project path component is not a safe directory: ${current}`,
+          path: current,
+        })
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+  }
+  return target
+}
+
+function createProjectDirectories(root: string, destination: string): void {
+  const target = secureProjectPath(root, destination)
+  const projectRoot = fs.realpathSync(path.resolve(root))
+  const relative = path.relative(projectRoot, target)
+  let current = projectRoot
+  for (const component of relative.split(path.sep)) {
+    current = path.join(current, component)
+    try {
+      const stat = fs.lstatSync(current)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new ConfigError({
+          message: `project path component is not a safe directory: ${current}`,
+          path: current,
+        })
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      fs.mkdirSync(current, { mode: 0o700 })
+    }
+  }
+}
+
+function trustedGlobalPath(accountHome: string, destination: string): string {
+  const lexicalHome = path.resolve(accountHome)
+  const lexicalTarget = path.resolve(destination)
+  const relative = path.relative(lexicalHome, lexicalTarget)
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new ConfigError({
+      message: "trusted global file destination must be below account home",
+      path: lexicalTarget,
+    })
+  }
+
+  const home = fs.realpathSync(lexicalHome)
+  const target = path.join(home, relative)
+  let current = home
+  const components = relative.split(path.sep)
+  for (const [index, component] of components.entries()) {
+    current = path.join(current, component)
+    try {
+      const stat = fs.lstatSync(current)
+      if (stat.isSymbolicLink()) {
+        throw new ConfigError({
+          message: `refusing symlink below trusted account home: ${current}`,
+          path: current,
+        })
+      }
+      if (index < components.length - 1 && !stat.isDirectory()) {
+        throw new ConfigError({
+          message: `trusted global path component is not a safe directory: ${current}`,
+          path: current,
+        })
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+  }
+  return target
+}
+
+function createTrustedGlobalDirectories(
+  accountHome: string,
+  destination: string,
+): void {
+  const target = trustedGlobalPath(accountHome, destination)
+  const home = fs.realpathSync(path.resolve(accountHome))
+  const relative = path.relative(home, target)
+  let current = home
+  for (const component of relative.split(path.sep)) {
+    current = path.join(current, component)
+    try {
+      const stat = fs.lstatSync(current)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new ConfigError({
+          message: `trusted global path component is not a safe directory: ${current}`,
+          path: current,
+        })
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      fs.mkdirSync(current)
+    }
+  }
+}
+
+function projectEffect<A>(operation: () => A): Effect.Effect<A, ConfigError> {
+  return Effect.try({ try: operation, catch: (error) => error }).pipe(
+    Effect.catch((error) =>
+      error instanceof ConfigError ? Effect.fail(error) : Effect.die(error),
+    ),
+  )
+}
+
+function fsyncParentDirectory(target: string): void {
+  let descriptor: number | undefined
+  try {
+    descriptor = fs.openSync(path.dirname(target), fs.constants.O_RDONLY)
+    fs.fsyncSync(descriptor)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    // POSIX permits EINVAL/ENOTSUP for unsupported directory fsync. Windows
+    // additionally rejects directory descriptors with EISDIR/EPERM.
+    const unsupported =
+      ["EINVAL", "ENOTSUP", "EOPNOTSUPP"].includes(code ?? "") ||
+      (process.platform === "win32" && ["EISDIR", "EPERM"].includes(code ?? ""))
+    if (!unsupported) {
+      throw error
+    }
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor)
+  }
+}
+
 export const FileSystemLive = Layer.succeed(
   FileSystem,
   FileSystem.of({
@@ -49,89 +236,95 @@ export const FileSystemLive = Layer.succeed(
       }).pipe(Effect.orDie),
 
     writeProjectFile: (root, destination, content) =>
-      Effect.try({
-        try: () => {
-          const projectRoot = path.resolve(root)
-          const target = path.resolve(destination)
-          const relative = path.relative(projectRoot, target)
-          if (
-            relative === "" ||
-            relative === ".." ||
-            relative.startsWith(`..${path.sep}`) ||
-            path.isAbsolute(relative)
-          ) {
+      projectEffect(() => {
+        const target = secureProjectPath(root, destination)
+        if (path.resolve(path.dirname(destination)) !== path.resolve(root)) {
+          createProjectDirectories(root, path.dirname(destination))
+        }
+
+        const temporary = path.join(
+          path.dirname(target),
+          `.${path.basename(target)}.${randomUUID()}.tmp`,
+        )
+        let descriptor: number | undefined
+        try {
+          descriptor = fs.openSync(temporary, "wx", 0o600)
+          fs.writeFileSync(descriptor, content, "utf8")
+          fs.fsyncSync(descriptor)
+          fs.closeSync(descriptor)
+          descriptor = undefined
+          fs.renameSync(temporary, target)
+          fsyncParentDirectory(target)
+        } finally {
+          if (descriptor !== undefined) fs.closeSync(descriptor)
+          fs.rmSync(temporary, { force: true })
+        }
+      }),
+
+    writeTrustedGlobalFile: (accountHome, destination, content) =>
+      projectEffect(() => {
+        const target = trustedGlobalPath(accountHome, destination)
+        createTrustedGlobalDirectories(accountHome, path.dirname(destination))
+
+        let mode = 0o666
+        let preserveMode = false
+        try {
+          const existing = fs.lstatSync(target)
+          if (existing.isSymbolicLink() || !existing.isFile()) {
             throw new ConfigError({
-              message: "project file destination must be below project root",
+              message: `trusted global destination is not a safe regular file: ${target}`,
               path: target,
             })
           }
+          mode = existing.mode & 0o777
+          preserveMode = true
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+        }
 
-          const components = relative.split(path.sep)
-          let current = projectRoot
-          for (const component of components.slice(0, -1)) {
-            current = path.join(current, component)
-            try {
-              const stat = fs.lstatSync(current)
-              if (stat.isSymbolicLink()) {
-                throw new ConfigError({
-                  message: `refusing symlink below project root: ${current}`,
-                  path: current,
-                })
-              }
-              if (!stat.isDirectory()) {
-                throw new ConfigError({
-                  message: `project path component is not a directory: ${current}`,
-                  path: current,
-                })
-              }
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-                throw error
-              fs.mkdirSync(current)
-            }
-          }
+        const temporary = path.join(
+          path.dirname(target),
+          `.${path.basename(target)}.${randomUUID()}.tmp`,
+        )
+        let descriptor: number | undefined
+        try {
+          descriptor = fs.openSync(temporary, "wx", mode)
+          if (preserveMode) fs.fchmodSync(descriptor, mode)
+          fs.writeFileSync(descriptor, content, "utf8")
+          fs.fsyncSync(descriptor)
+          fs.closeSync(descriptor)
+          descriptor = undefined
+          fs.renameSync(temporary, target)
+          fsyncParentDirectory(target)
+        } finally {
+          if (descriptor !== undefined) fs.closeSync(descriptor)
+          fs.rmSync(temporary, { force: true })
+        }
+      }),
 
-          try {
-            if (fs.lstatSync(target).isSymbolicLink()) {
-              throw new ConfigError({
-                message: `refusing symlink destination: ${target}`,
-                path: target,
-              })
-            }
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-          }
-
-          const temporary = path.join(
-            path.dirname(target),
-            `.${path.basename(target)}.${randomUUID()}.tmp`,
-          )
-          let descriptor: number | undefined
-          try {
-            descriptor = fs.openSync(
-              temporary,
-              fs.constants.O_WRONLY |
-                fs.constants.O_CREAT |
-                fs.constants.O_EXCL |
-                fs.constants.O_NOFOLLOW,
-              0o600,
-            )
-            fs.writeFileSync(descriptor, content, "utf8")
-            fs.fsyncSync(descriptor)
-            fs.closeSync(descriptor)
-            descriptor = undefined
-            fs.renameSync(temporary, target)
-          } finally {
-            if (descriptor !== undefined) fs.closeSync(descriptor)
-            fs.rmSync(temporary, { force: true })
-          }
-        },
-        catch: (e) => e,
-      }).pipe(
-        Effect.catch((error) =>
-          error instanceof ConfigError ? Effect.fail(error) : Effect.die(error),
-        ),
+    readProjectFile: (root, source) =>
+      projectEffect(() =>
+        fs.readFileSync(secureProjectPath(root, source), "utf8"),
       ),
+
+    projectPathExists: (root, destination) =>
+      projectEffect(() => fs.existsSync(secureProjectPath(root, destination))),
+
+    mkdirProject: (root, destination) =>
+      projectEffect(() => createProjectDirectories(root, destination)),
+
+    renameProjectFile: (root, from, to) =>
+      projectEffect(() => {
+        const source = secureProjectPath(root, from)
+        const destination = secureProjectPath(root, to)
+        createProjectDirectories(root, path.dirname(to))
+        fs.renameSync(source, destination)
+      }),
+
+    removeProjectFile: (root, destination) =>
+      projectEffect(() => {
+        fs.rmSync(secureProjectPath(root, destination), { force: true })
+      }),
 
     rename: (from, to) =>
       Effect.try({
