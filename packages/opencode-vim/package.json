@@ -62,7 +62,7 @@
     "@opencode-ai/plugin": "0.0.0-next-17444",
     "@opentui/core": "0.5.3",
     "@opentui/solid": "0.5.3",
-    "solid-js": "1.9.12"
+    "solid-js": "1.9.15"
   },
   "devDependencies": {
     "@opencode-ai/theme": "0.0.0-next-17444",
