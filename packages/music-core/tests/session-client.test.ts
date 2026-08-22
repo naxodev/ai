@@ -832,6 +832,45 @@ test("reconnecting acquisition reports a supervisor defect instead of hanging", 
   )
 })
 
+test("reconnecting cleanup defects cannot block terminal settlement", async () => {
+  const generation = scriptedGeneration("broken-adoption")
+  const broken: MusicSessionClient = {
+    ...generation.client,
+    subscribeStatus: () => {
+      throw new Error("adoption defect")
+    },
+    dispose: () => {
+      throw new Error("cleanup defect")
+    },
+  }
+
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make()
+        const failed = yield* createReconnectingMusicSessionClientEffect(
+          { clientId: "cleanup-defect", hostKind: "test" },
+          { connect: () => Effect.succeed(broken) },
+        ).pipe(
+          Effect.timeout("1 hour"),
+          Effect.flip,
+          Effect.provideService(Clock.Clock, clock),
+          Effect.forkScoped,
+        )
+
+        yield* Effect.yieldNow
+        yield* clock.adjust("1 day")
+
+        expect(yield* Fiber.join(failed)).toMatchObject({
+          code: "CONNECTION_LOST",
+          retryable: false,
+          message: "adoption defect",
+        })
+      }),
+    ),
+  )
+})
+
 test("reconnecting disposal disposes a late Promise discovery client", async () => {
   const scope = await Effect.runPromise(Scope.make())
   const first = scriptedGeneration("generation-a")

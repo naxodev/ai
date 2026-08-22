@@ -1508,10 +1508,19 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
   }
   #release(active: ActiveGeneration | undefined, dispose = false) {
     if (!active) return
-    active.unsubscribeStatus()
-    active.unsubscribeState()
-    active.unsubscribeTerminal()
-    if (dispose) active.client.dispose()
+    for (const unsubscribe of [
+      active.unsubscribeStatus,
+      active.unsubscribeState,
+      active.unsubscribeTerminal,
+    ]) {
+      try {
+        unsubscribe()
+      } catch {}
+    }
+    if (dispose)
+      try {
+        active.client.dispose()
+      } catch {}
   }
   #reserve(client: MusicSessionClient) {
     const reserved = this.#modify((current) =>
@@ -1792,7 +1801,9 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     })
     if (!transition.changed) return
     this.#release(transition.active, true)
-    transition.pending?.dispose()
+    try {
+      transition.pending?.dispose()
+    } catch {}
     this.#notify(new Set(transition.listeners), { type: "terminal", error })
     Deferred.doneUnsafe(this.#initial, Effect.fail(error))
   }
