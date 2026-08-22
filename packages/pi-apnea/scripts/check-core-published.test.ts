@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { checkCorePublished } from "./check-core-published.ts"
+import {
+  NPM_VIEW_TIMEOUT_MS,
+  checkCorePublished,
+  queryNpmVersions,
+} from "./check-core-published.ts"
 
 async function manifest(range: string): Promise<{
   path: string
@@ -18,6 +22,17 @@ async function manifest(range: string): Promise<{
 }
 
 describe("checkCorePublished", () => {
+  test("bounds each npm view request", async () => {
+    let timeoutMs: number | undefined
+    const versions = await queryNpmVersions(async (_args, options) => {
+      timeoutMs = options.timeoutMs
+      return { exitCode: 0, stdout: '["0.1.0","0.2.0"]', stderr: "" }
+    })
+
+    expect(versions).toEqual(["0.1.0", "0.2.0"])
+    expect(timeoutMs).toBe(NPM_VIEW_TIMEOUT_MS)
+  })
+
   test("accepts a published core version that satisfies the manifest range", async () => {
     const fixture = await manifest("^0.1.0")
     try {

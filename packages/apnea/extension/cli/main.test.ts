@@ -2,13 +2,20 @@ import { describe, expect, test } from "bun:test"
 import { DISPATCH_KINDS } from "../domain/state-machine.ts"
 import { OPERATIONS } from "../registry.ts"
 import { buildParams } from "./main.ts"
-import { parseFlags } from "./parse.ts"
+import { parseOperationArgs } from "./parse.ts"
 
 /** Runs argv through the same tokenizer the CLI uses before handing off to
  * `buildParams`, so these tests exercise the real flag/positional split. */
 function build(verb: string, action: string | null, argv: string[]) {
-  const { flags, values, rest } = parseFlags(argv)
-  return buildParams(verb, action, flags, values, rest)
+  const parsed = parseOperationArgs(action ?? verb, argv, { surface: "cli" })
+  if (!parsed.ok) return parsed
+  return buildParams(
+    verb,
+    action,
+    parsed.flags,
+    parsed.values,
+    parsed.positional,
+  )
 }
 
 describe("buildParams: argument shape per verb", () => {
@@ -116,7 +123,7 @@ describe("resume/abandon route to the start operation", () => {
   // verb through as `action` — this is the seam that makes that translation
   // correct instead of accidentally re-running a fresh `start`.
   test("resume", () => {
-    expect(build("start", "resume", ["ignored", "positional"])).toEqual({
+    expect(build("start", "resume", [])).toEqual({
       ok: true,
       params: { action: "resume" },
     })
@@ -156,14 +163,10 @@ describe("wait: --timeout is an alias for --budget", () => {
     })
   })
 
-  // budget_ms: num("budget") ?? num("timeout") — budget wins when both are
-  // given. If this ever flipped, a caller migrating from --timeout to
-  // --budget mid-script would get silently overridden by a stale --timeout.
-  test("budget takes precedence over timeout when both are given", () => {
-    expect(build("wait", null, ["--budget=1000", "--timeout=2000"])).toEqual({
-      ok: true,
-      params: { poll_ms: undefined, budget_ms: 1000 },
-    })
+  test("conflicting aliases are refused", () => {
+    expect(build("wait", null, ["--budget=1000", "--timeout=2000"]).ok).toBe(
+      false,
+    )
   })
 })
 
@@ -189,13 +192,7 @@ describe("wait: an invalid numeric flag is refused, not silently defaulted", () 
     if (!r.ok) expect(r.message).toContain("--timeout=soon")
   })
 
-  // `--budget=` (no value) means "forgot to pass one", not "budget of zero
-  // milliseconds" — a 0ms budget would be indistinguishable from a typo but
-  // behave very differently (the wait workflow would refuse it outright).
-  test("empty --budget= is treated as not provided, not as zero", () => {
-    expect(build("wait", null, ["--budget="])).toEqual({
-      ok: true,
-      params: { poll_ms: undefined, budget_ms: undefined },
-    })
+  test("empty --budget= is refused, not treated as a default", () => {
+    expect(build("wait", null, ["--budget="]).ok).toBe(false)
   })
 })

@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
+import {
+  runBoundedCommand,
+  type BoundedCommandRunner,
+} from "./bounded-process.ts"
 
 const CORE_PACKAGE = "@naxodev/apnea"
+export const NPM_VIEW_TIMEOUT_MS = 30_000
 
 export type CorePublishGateOptions = {
   manifestPath: string
@@ -46,15 +51,20 @@ export async function checkCorePublished(
   )
 }
 
-async function queryNpmVersions(): Promise<string[]> {
-  const result = Bun.spawnSync(
+export async function queryNpmVersions(
+  run: BoundedCommandRunner = runBoundedCommand,
+): Promise<string[]> {
+  const result = await run(
     ["npm", "view", CORE_PACKAGE, "versions", "--json"],
-    { stdout: "pipe", stderr: "pipe" },
+    {
+      label: `npm view ${CORE_PACKAGE}`,
+      timeoutMs: NPM_VIEW_TIMEOUT_MS,
+    },
   )
-  if (!result.success) {
-    throw new Error(result.stderr.toString().trim() || "npm view failed")
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || "npm view failed")
   }
-  const value = JSON.parse(result.stdout.toString()) as unknown
+  const value = JSON.parse(result.stdout) as unknown
   if (typeof value === "string") return [value]
   if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
     return value

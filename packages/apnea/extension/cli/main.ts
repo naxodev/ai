@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { parseFlags, parseNumFlag } from "./parse.ts"
+import { parseFlags, parseNumFlag, parseOperationArgs } from "./parse.ts"
 import {
   EXIT_ERROR,
   EXIT_USAGE,
@@ -48,14 +48,18 @@ function printUsageError(message: string, json: boolean): void {
 
 export async function main(argv: string[]): Promise<number> {
   const [verbRaw, ...rest] = argv
-  const { flags, values, rest: positional } = parseFlags(rest)
-  const json = flags.has("json")
+  const json = parseFlags(rest).flags.has("json")
 
   if (!verbRaw) {
     printUsageError("usage: apnea <command> [args] [--json]", json)
     return EXIT_USAGE
   }
   if (verbRaw === "help" || verbRaw === "--help") {
+    const parsed = parseOperationArgs("help", rest, { surface: "cli" })
+    if (!parsed.ok) {
+      printUsageError(parsed.message, json)
+      return EXIT_USAGE
+    }
     console.log(usage())
     return 0
   }
@@ -67,6 +71,13 @@ export async function main(argv: string[]): Promise<number> {
     printUsageError(`unknown command: ${verbRaw}`, json)
     return EXIT_USAGE
   }
+
+  const parsed = parseOperationArgs(verbRaw, rest, { surface: "cli" })
+  if (!parsed.ok) {
+    printUsageError(parsed.message, json)
+    return EXIT_USAGE
+  }
+  const { flags, values, positional } = parsed
 
   const built = buildParams(
     op.verb,
