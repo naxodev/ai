@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/opencode-music-player",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "macOS system Now Playing controls for the OpenCode 2 TUI",
   "license": "MIT",
   "author": {
