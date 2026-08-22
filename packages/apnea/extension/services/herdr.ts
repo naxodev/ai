@@ -9,6 +9,8 @@ import { neutralHostAdapter } from "../host-adapter.ts"
 
 export type PaneInfo = {
   ok: boolean
+  /** True only when Herdr explicitly reports that this pane does not exist. */
+  missing?: boolean
   agent_status?: string
   label?: string
   agent?: string
@@ -149,7 +151,12 @@ function herdrAvailabilitySync(): HerdrAvailability {
 
 function paneGetSync(paneId: string): PaneInfo {
   const r = herdrCli(["pane", "get", paneId])
-  if (!r.ok) return { ok: false }
+  if (!r.ok) {
+    return {
+      ok: false,
+      missing: /pane_not_found|pane not found/i.test(r.raw),
+    }
+  }
   const res = resultOf(r.json)
   const pane = (res?.pane as Record<string, unknown>) ?? {}
   return {

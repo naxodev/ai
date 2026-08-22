@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect"
+import { Effect, Exit, Layer, Result } from "effect"
 import { TestClock } from "effect/testing"
 import { describe, expect, test } from "bun:test"
 import { statePath } from "../domain/paths.ts"
@@ -18,6 +18,7 @@ import {
 } from "../schema/config.ts"
 import { briefFiles } from "../test/briefs.ts"
 import { dispatchWorkflow } from "./dispatch.ts"
+import { waitWorkflow } from "./wait.ts"
 
 const ROOT = "/proj"
 
@@ -52,6 +53,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     last_error: null,
     pending_artifact: null,
     pending_role: null,
+    pending_delivery: null,
     pending_pane_id: null,
     pending_pane_label: null,
     pending_started_at: null,
@@ -64,7 +66,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: null,
     current_code_review: null,
-    phase_package_rework: false,
+    required_rework: null,
     ...overrides,
   }
 }
@@ -216,21 +218,26 @@ describe("dispatchWorkflow (fake layers)", () => {
     },
   )
 
-  itEffect("rework:true on code bumps phase-01/code_review by one", () => {
-    const fsFake = seedFs(
-      baseState({ step: "coding", rounds: { "phase-01/code_review": 2 } }),
-    )
-    const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
-    return Effect.gen(function* () {
-      const result = yield* dispatchWorkflow(
-        { kind: "code", rework: true },
-        ROOT,
+  itEffect(
+    "required code rework advances when the deprecated flag is omitted",
+    () => {
+      const fsFake = seedFs(
+        baseState({
+          step: "coding",
+          rounds: { "phase-01/code_review": 2 },
+          required_rework: "code",
+        }),
       )
-      expect(result.ok).toBe(true)
-      if (result.ok) expect(result.data?.round).toBe(3)
-      expect(savedState(fakeFs).rounds["phase-01/code_review"]).toBe(3)
-    }).pipe(Effect.provide(layer))
-  })
+      const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+      return Effect.gen(function* () {
+        const result = yield* dispatchWorkflow({ kind: "code" }, ROOT)
+        expect(result.ok).toBe(true)
+        if (result.ok) expect(result.data?.round).toBe(3)
+        expect(savedState(fakeFs).rounds["phase-01/code_review"]).toBe(3)
+        expect(savedState(fakeFs).required_rework).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
 
   itEffect(
     "a non-rework code dispatch does not bump the round (round inflation would burn the cap)",
@@ -247,6 +254,21 @@ describe("dispatchWorkflow (fake layers)", () => {
       }).pipe(Effect.provide(layer))
     },
   )
+
+  itEffect("rework:true without persisted ownership refuses", () => {
+    const state = baseState({ step: "planning" })
+    const fsFake = seedFs(state)
+    const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan", rework: true }, ROOT),
+      )
+      const error = expectFailure(result, "GateRefused")
+      expect(error.gate).toBe("rework")
+      expect(savedState(fakeFs)).toEqual(state)
+      expect(taskFiles(fakeFs)).toEqual([])
+    }).pipe(Effect.provide(layer))
+  })
 
   itEffect("round over review_round_cap → GateRefused round_cap", () => {
     const fsFake = seedFs(
@@ -328,6 +350,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(herdr.interactiveCalls.length).toBe(1)
         const saved = savedState(fakeFs)
         expect(saved.pending_pane_id).toBe("pane-42")
+        expect(saved.pending_delivery).toBe("interactive")
         expect(saved.role_panes.planner).toEqual({
           pane_id: "pane-42",
           label: "apnea:planner:abc",
@@ -460,7 +483,7 @@ describe("dispatchWorkflow (fake layers)", () => {
             ".apnea/artifacts/phase-01/round-1/phase-package.md",
           current_code_review:
             ".apnea/artifacts/phase-01/round-1/code-review.md",
-          phase_package_rework: true,
+          required_rework: "phase_package",
         }),
         { [oldPackage]: "old package" },
       )
@@ -475,7 +498,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(fakeFs.files.get(oldPackage)).toBe("old package")
         const saved = savedState(fakeFs)
         expect(saved.rounds["phase-01/code_review"]).toBe(2)
-        expect(saved.phase_package_rework).toBe(false)
+        expect(saved.required_rework).toBeNull()
       }).pipe(Effect.provide(layer))
     },
   )
@@ -490,7 +513,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         current_phase_package:
           ".apnea/artifacts/phase-01/round-3/phase-package.md",
         current_code_review: ".apnea/artifacts/phase-01/round-3/code-review.md",
-        phase_package_rework: true,
+        required_rework: "phase_package",
       })
       const fsFake = seedFs(state, { [oldPackage]: "prior package" })
       const before = new Map(fsFake.files)
@@ -504,7 +527,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(fakeFs.files).toEqual(before)
         const saved = savedState(fakeFs)
         expect(saved.rounds["phase-01/code_review"]).toBe(3)
-        expect(saved.phase_package_rework).toBe(true)
+        expect(saved.required_rework).toBe("phase_package")
         expect(saved.current_phase_package).toBe(
           ".apnea/artifacts/phase-01/round-3/phase-package.md",
         )
@@ -512,6 +535,545 @@ describe("dispatchWorkflow (fake layers)", () => {
       }).pipe(Effect.provide(layer))
     },
   )
+
+  itEffect("plan rework advances without the deprecated assertion", () => {
+    const fsFake = seedFs(
+      baseState({
+        step: "planning",
+        rounds: { plan_review: 1 },
+        required_rework: "plan",
+      }),
+    )
+    const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+    return Effect.gen(function* () {
+      const result = yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+      expect(result.data?.round).toBe(2)
+      expect(savedState(fakeFs).required_rework).toBeNull()
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect(
+    "legacy ambiguous planning accepts one explicit rework assertion",
+    () => {
+      const { required_rework: _requiredRework, ...legacy } = baseState({
+        step: "planning",
+        rounds: { plan_review: 1 },
+      })
+      const fsFake = makeFakeFileSystem({
+        [statePath(ROOT)]: `${JSON.stringify(legacy, null, 2)}\n`,
+        ...briefFiles("/pkg"),
+      })
+      const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+      return Effect.gen(function* () {
+        const result = yield* dispatchWorkflow(
+          { kind: "plan", rework: true },
+          ROOT,
+        )
+        expect(result.data?.round).toBe(2)
+        expect(savedState(fakeFs).required_rework).toBeNull()
+        expect(savedState(fakeFs).rounds.plan_review).toBe(2)
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "completed legacy package rework followed by ordinary coding does not advance again",
+    () => {
+      const { required_rework: _requiredRework, ...legacy } = baseState({
+        step: "coding",
+        rounds: { "phase-01/code_review": 2 },
+        current_phase_package:
+          ".apnea/artifacts/phase-01/round-2/phase-package.md",
+        current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+      })
+      const fsFake = makeFakeFileSystem({
+        [statePath(ROOT)]: `${JSON.stringify(legacy, null, 2)}\n`,
+        ...briefFiles("/pkg"),
+      })
+      const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+      return Effect.gen(function* () {
+        const result = yield* dispatchWorkflow({ kind: "code" }, ROOT)
+        expect(result.data?.round).toBe(2)
+        expect(savedState(fakeFs).rounds["phase-01/code_review"]).toBe(2)
+        expect(savedState(fakeFs).required_rework).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect("explicit legacy code assertion advances exactly once", () => {
+    const { required_rework: _requiredRework, ...legacy } = baseState({
+      step: "coding",
+      rounds: { "phase-01/code_review": 1 },
+      current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+    })
+    const fsFake = makeFakeFileSystem({
+      [statePath(ROOT)]: `${JSON.stringify(legacy, null, 2)}\n`,
+      ...briefFiles("/pkg"),
+    })
+    const { layer, fakeFs } = layerOf(fsFake, { herdr: { enabled: false } })
+    return Effect.gen(function* () {
+      const result = yield* dispatchWorkflow(
+        { kind: "code", rework: true },
+        ROOT,
+      )
+      expect(result.data?.round).toBe(2)
+      expect(savedState(fakeFs).rounds["phase-01/code_review"]).toBe(2)
+      expect(savedState(fakeFs).required_rework).toBeNull()
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect(
+    "explicit redelivery reuses prepared ownership and the same round exactly once",
+    () => {
+      const fsFake = seedFs(
+        baseState({
+          step: "coding",
+          rounds: { "phase-01/code_review": 1 },
+          required_rework: "code",
+        }),
+      )
+      const first = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const initial = yield* dispatchWorkflow({ kind: "code" }, ROOT)
+        expect(initial.data?.round).toBe(2)
+        expect(savedState(fsFake).required_rework).toBeNull()
+        expect(savedState(fsFake).rounds["phase-01/code_review"]).toBe(2)
+
+        const ordinary = yield* Effect.result(
+          dispatchWorkflow({ kind: "code" }, ROOT),
+        )
+        expect(expectFailure(ordinary, "GateRefused").gate).toBe(
+          "dispatch_pending",
+        )
+
+        const artifact = `${ROOT}/${savedState(fsFake).pending_artifact}`
+        fsFake.files.set(artifact, "incomplete prior output")
+        const redelivery = layerOf(fsFake, {
+          cfg: { ...INTERACTIVE_CFG, review_round_cap: 1 },
+          herdr: {
+            availability: "available",
+            pane: () => ({ ok: false, missing: true }),
+          },
+        })
+        const result = yield* dispatchWorkflow(
+          { kind: "code", redeliver: true },
+          ROOT,
+        ).pipe(Effect.provide(redelivery.layer))
+        expect(result.data?.round).toBe(2)
+        expect(result.data?.artifact).toBe(
+          ".apnea/artifacts/phase-01/round-2/coder-result.md",
+        )
+        expect(savedState(fsFake).required_rework).toBeNull()
+        expect(savedState(fsFake).rounds["phase-01/code_review"]).toBe(2)
+        expect(taskFiles(fsFake)).toHaveLength(2)
+        expect(
+          [...fsFake.files.entries()].some(
+            ([path, body]) =>
+              path.startsWith(`${artifact}.bak.`) &&
+              body === "incomplete prior output",
+          ),
+        ).toBe(true)
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect(
+    "manual dispatch requires explicit redelivery and keeps its round",
+    () => {
+      const fsFake = seedFs(baseState({ step: "planning" }))
+      const first = layerOf(fsFake, { herdr: { enabled: false } })
+      return Effect.gen(function* () {
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+        expect(savedState(fsFake).pending_delivery).toBe("manual")
+        const result = yield* dispatchWorkflow(
+          { kind: "plan", redeliver: true },
+          ROOT,
+        )
+        expect(result.data?.round).toBe(1)
+        expect(taskFiles(fsFake)).toHaveLength(2)
+        expect(savedState(fsFake).pending_pane_id).toBeNull()
+        expect(savedState(fsFake).pending_delivery).toBe("manual")
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect(
+    "interactive prepared ownership refuses redelivery when launch acceptance cannot be persisted",
+    () => {
+      let stateWrites = 0
+      const fsFake = makeFakeFileSystem(
+        {
+          [statePath(ROOT)]: `${JSON.stringify(
+            baseState({ step: "planning" }),
+            null,
+            2,
+          )}\n`,
+          ...briefFiles("/pkg"),
+        },
+        {
+          failWrite: (path) => {
+            if (path !== statePath(ROOT)) return null
+            stateWrites += 1
+            return stateWrites === 2
+              ? new Error("final interactive state save failed")
+              : null
+          },
+        },
+      )
+      const first = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const initial = yield* Effect.exit(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        expect(Exit.isFailure(initial)).toBe(true)
+        expect(stateWrites).toBe(2)
+        expect(first.herdr.interactiveCalls).toHaveLength(1)
+        expect(savedState(fsFake).pending_artifact).toBe(
+          ".apnea/artifacts/plan.md",
+        )
+        expect(savedState(fsFake).pending_delivery).toBe("interactive")
+        expect(savedState(fsFake).pending_pane_id).toBeNull()
+
+        const retry = layerOf(fsFake, {
+          herdr: { availability: "available" },
+        })
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT).pipe(
+            Effect.provide(retry.layer),
+          ),
+        )
+        const failure = expectFailure(result, "GateRefused")
+        expect(failure.gate).toBe("redelivery")
+        expect(failure.message).toContain("ambiguous")
+        expect(retry.herdr.interactiveCalls).toHaveLength(0)
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect("legacy null-pane ownership refuses ambiguous redelivery", () => {
+    const { pending_delivery: _pendingDelivery, ...legacy } = baseState({
+      step: "planning",
+      pending_artifact: ".apnea/artifacts/plan.md",
+      pending_role: "planner",
+    })
+    const fsFake = makeFakeFileSystem({
+      [statePath(ROOT)]: `${JSON.stringify(legacy, null, 2)}\n`,
+      ...briefFiles("/pkg"),
+    })
+    const { layer, herdr } = layerOf(fsFake)
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT),
+      )
+      const failure = expectFailure(result, "GateRefused")
+      expect(failure.gate).toBe("redelivery")
+      expect(failure.message).toContain("ambiguous")
+      expect(herdr.interactiveCalls).toHaveLength(0)
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect(
+    "complete dead-pane artifact refuses redelivery without mutation or launch",
+    () => {
+      const fsFake = seedFs(baseState({ step: "planning" }))
+      const first = layerOf(fsFake)
+      return Effect.gen(function* () {
+        yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+        const artifact = `${ROOT}/${savedState(fsFake).pending_artifact}`
+        const complete = "---\nstatus: done\n---\nFinished plan.\n"
+        fsFake.files.set(artifact, complete)
+        const tasksBefore = taskFiles(fsFake)
+        let paneChecks = 0
+
+        const retry = layerOf(fsFake, {
+          herdr: {
+            availability: "available",
+            pane: () => {
+              paneChecks += 1
+              return { ok: false, missing: true }
+            },
+          },
+        })
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT).pipe(
+            Effect.provide(retry.layer),
+          ),
+        )
+        const failure = expectFailure(result, "GateRefused")
+        expect(failure.gate).toBe("redelivery")
+        expect(failure.message).toContain("workflow_wait")
+        expect(failure.details).toMatchObject({
+          artifact: ".apnea/artifacts/plan.md",
+          kind: "plan",
+          next: "workflow_wait",
+        })
+        expect(fsFake.files.get(artifact)).toBe(complete)
+        expect(taskFiles(fsFake)).toEqual(tasksBefore)
+        expect(paneChecks).toBe(0)
+        expect(retry.herdr.interactiveCalls).toHaveLength(0)
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect(
+    "review status done without verdict remains incomplete and reaches liveness validation",
+    () => {
+      const fsFake = seedFs(baseState({ step: "code_review" }))
+      const first = layerOf(fsFake)
+      return Effect.gen(function* () {
+        yield* dispatchWorkflow({ kind: "code_review" }, ROOT)
+        const artifact = `${ROOT}/${savedState(fsFake).pending_artifact}`
+        const incomplete = "---\nstatus: done\n---\nMissing verdict.\n"
+        fsFake.files.set(artifact, incomplete)
+        let paneChecks = 0
+
+        const retry = layerOf(fsFake, {
+          herdr: {
+            availability: "available",
+            pane: () => {
+              paneChecks += 1
+              return { ok: true, agent_status: "working" }
+            },
+          },
+        })
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "code_review", redeliver: true }, ROOT).pipe(
+            Effect.provide(retry.layer),
+          ),
+        )
+        const failure = expectFailure(result, "GateRefused")
+        expect(failure.gate).toBe("redelivery")
+        expect(failure.message).toContain("prior pane is working")
+        expect(fsFake.files.get(artifact)).toBe(incomplete)
+        expect(paneChecks).toBe(1)
+        expect(retry.herdr.interactiveCalls).toHaveLength(0)
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect("complete manual artifact refuses explicit redelivery", () => {
+    const fsFake = seedFs(baseState({ step: "planning" }))
+    const manual = layerOf(fsFake, { herdr: { enabled: false } })
+    return Effect.gen(function* () {
+      yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+      const artifact = `${ROOT}/${savedState(fsFake).pending_artifact}`
+      const complete = "---\nstatus: done\n---\nFinished manually.\n"
+      fsFake.files.set(artifact, complete)
+
+      const result = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT),
+      )
+      const failure = expectFailure(result, "GateRefused")
+      expect(failure.gate).toBe("redelivery")
+      expect(failure.details?.next).toBe("workflow_wait")
+      expect(fsFake.files.get(artifact)).toBe(complete)
+      expect(taskFiles(fsFake)).toHaveLength(1)
+      expect(manual.herdr.interactiveCalls).toHaveLength(0)
+    }).pipe(Effect.provide(manual.layer))
+  })
+
+  itEffect(
+    "redelivery completion guard matches wait advance eligibility for review frontmatter",
+    () => {
+      const cases = [
+        {
+          name: "approved plan review",
+          kind: "plan_review" as const,
+          step: "plan_review" as const,
+          frontmatter: "status: done\nverdict: APPROVED",
+          advances: true,
+        },
+        {
+          name: "changes-required plan review",
+          kind: "plan_review" as const,
+          step: "plan_review" as const,
+          frontmatter: "status: done\nverdict: CHANGES_REQUIRED",
+          advances: true,
+        },
+        {
+          name: "plan review carrying rework",
+          kind: "plan_review" as const,
+          step: "plan_review" as const,
+          frontmatter: "status: done\nverdict: CHANGES_REQUIRED\nrework: code",
+          advances: false,
+        },
+        {
+          name: "approved code review",
+          kind: "code_review" as const,
+          step: "code_review" as const,
+          frontmatter: "status: done\nverdict: APPROVED",
+          advances: true,
+        },
+        {
+          name: "approved code review carrying rework",
+          kind: "code_review" as const,
+          step: "code_review" as const,
+          frontmatter: "status: done\nverdict: APPROVED\nrework: code",
+          advances: false,
+        },
+        {
+          name: "changes-required code review without target",
+          kind: "code_review" as const,
+          step: "code_review" as const,
+          frontmatter: "status: done\nverdict: CHANGES_REQUIRED",
+          advances: true,
+        },
+        {
+          name: "changes-required code review targeting code",
+          kind: "code_review" as const,
+          step: "code_review" as const,
+          frontmatter: "status: done\nverdict: CHANGES_REQUIRED\nrework: code",
+          advances: true,
+        },
+        {
+          name: "changes-required code review targeting phase package",
+          kind: "code_review" as const,
+          step: "code_review" as const,
+          frontmatter:
+            "status: done\nverdict: CHANGES_REQUIRED\nrework: phase_package",
+          advances: true,
+        },
+        {
+          name: "changes-required code review with unknown target",
+          kind: "code_review" as const,
+          step: "code_review" as const,
+          frontmatter:
+            "status: done\nverdict: CHANGES_REQUIRED\nrework: planner",
+          advances: false,
+        },
+      ]
+
+      return Effect.gen(function* () {
+        for (const testCase of cases) {
+          const artifact =
+            testCase.kind === "plan_review"
+              ? ".apnea/artifacts/plan-review/round-1.md"
+              : ".apnea/artifacts/phase-01/round-1/code-review.md"
+          const state = baseState({
+            step: testCase.step,
+            rounds:
+              testCase.kind === "plan_review"
+                ? { plan_review: 1 }
+                : { "phase-01/code_review": 1 },
+            pending_artifact: artifact,
+            pending_role: "reviewer",
+            pending_delivery: "interactive",
+            pending_pane_id: "pane-reviewer",
+            pending_pane_label: "apnea:reviewer:existing",
+          })
+          const files = {
+            [`${ROOT}/${artifact}`]: `---\n${testCase.frontmatter}\n---\nReview body.\n`,
+          }
+          const redeliveryFs = seedFs(state, files)
+          const waitFs = seedFs(state, files)
+          const redelivery = layerOf(redeliveryFs, {
+            herdr: {
+              availability: "available",
+              pane: () => ({ ok: true, agent_status: "working" }),
+            },
+          })
+          const waiting = layerOf(waitFs)
+
+          const guardResult = yield* Effect.result(
+            dispatchWorkflow(
+              { kind: testCase.kind, redeliver: true },
+              ROOT,
+            ).pipe(Effect.provide(redelivery.layer)),
+          )
+          const waitResult = yield* Effect.result(
+            waitWorkflow({}, ROOT).pipe(Effect.provide(waiting.layer)),
+          )
+          const guardRoutesToWait =
+            Result.isFailure(guardResult) &&
+            guardResult.failure._tag === "GateRefused" &&
+            guardResult.failure.details?.next === "workflow_wait"
+
+          expect(guardRoutesToWait, testCase.name).toBe(testCase.advances)
+          expect(Result.isSuccess(waitResult), testCase.name).toBe(
+            testCase.advances,
+          )
+        }
+      })
+    },
+  )
+
+  itEffect(
+    "redelivery refuses a mismatched kind and current phase path",
+    () => {
+      const state = baseState({
+        step: "coding",
+        rounds: { "phase-01/code_review": 2 },
+        pending_artifact: ".apnea/artifacts/phase-02/round-2/coder-result.md",
+        pending_role: "coder",
+      })
+      const fsFake = seedFs(state)
+      const { layer, fakeFs } = layerOf(fsFake, {
+        herdr: { availability: "available" },
+      })
+      return Effect.gen(function* () {
+        const wrongKind = yield* Effect.result(
+          dispatchWorkflow({ kind: "phase_package", redeliver: true }, ROOT),
+        )
+        expect(expectFailure(wrongKind, "GateRefused").gate).toBe("redelivery")
+
+        const wrongPhase = yield* Effect.result(
+          dispatchWorkflow({ kind: "code", redeliver: true }, ROOT),
+        )
+        expect(expectFailure(wrongPhase, "GateRefused").gate).toBe("redelivery")
+        expect(savedState(fakeFs)).toEqual(state)
+        expect(taskFiles(fakeFs)).toEqual([])
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect("redelivery refuses live and ambiguous panes", () => {
+    const fsFake = seedFs(baseState({ step: "planning" }))
+    const first = layerOf(fsFake)
+    return Effect.gen(function* () {
+      yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+
+      const live = layerOf(fsFake, {
+        herdr: {
+          availability: "available",
+          pane: () => ({ ok: true, agent_status: "working" }),
+        },
+      })
+      const liveResult = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT).pipe(
+          Effect.provide(live.layer),
+        ),
+      )
+      expect(expectFailure(liveResult, "GateRefused").gate).toBe("redelivery")
+
+      const uncertainLookup = layerOf(fsFake, {
+        herdr: {
+          availability: "available",
+          pane: () => ({ ok: false }),
+        },
+      })
+      const uncertainLookupResult = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT).pipe(
+          Effect.provide(uncertainLookup.layer),
+        ),
+      )
+      expect(expectFailure(uncertainLookupResult, "GateRefused").gate).toBe(
+        "redelivery",
+      )
+
+      const ambiguous = layerOf(fsFake, {
+        herdr: { availability: "unavailable" },
+      })
+      const ambiguousResult = yield* Effect.result(
+        dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT).pipe(
+          Effect.provide(ambiguous.layer),
+        ),
+      )
+      expect(expectFailure(ambiguousResult, "GateRefused").gate).toBe(
+        "redelivery",
+      )
+      expect(taskFiles(fsFake)).toHaveLength(1)
+    }).pipe(Effect.provide(first.layer))
+  })
 
   itEffect(
     "interactive dispatch's legal_next omits dispatch_role — a dispatch is already outstanding",
@@ -538,6 +1100,88 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(result.ok).toBe(true)
         expect(result.legal_next).toEqual(["workflow_wait"])
       }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "redelivery persistence failure restores prior ownership and artifact before launch",
+    () => {
+      let failStateSave = false
+      const fsFake = makeFakeFileSystem(
+        {
+          [statePath(ROOT)]: `${JSON.stringify(
+            baseState({ step: "coding" }),
+            null,
+            2,
+          )}\n`,
+          ...briefFiles("/pkg"),
+        },
+        {
+          failWrite: (path) =>
+            failStateSave && path === statePath(ROOT)
+              ? new Error("redelivery state disk full")
+              : null,
+        },
+      )
+      const first = layerOf(fsFake)
+      return Effect.gen(function* () {
+        yield* dispatchWorkflow({ kind: "code" }, ROOT)
+        const artifact = `${ROOT}/${savedState(fsFake).pending_artifact}`
+        fsFake.files.set(artifact, "incomplete prior output")
+        const before = new Map(fsFake.files)
+        failStateSave = true
+
+        const redelivery = layerOf(fsFake, {
+          herdr: {
+            availability: "available",
+            pane: () => ({ ok: false, missing: true }),
+          },
+        })
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "code", redeliver: true }, ROOT).pipe(
+            Effect.provide(redelivery.layer),
+          ),
+        )
+        expect(expectFailure(result, "HerdrError").message).toContain(
+          "redelivery state disk full",
+        )
+        expect(redelivery.herdr.interactiveCalls).toHaveLength(0)
+        expect(fsFake.files).toEqual(before)
+      }).pipe(Effect.provide(first.layer))
+    },
+  )
+
+  itEffect(
+    "redelivery launch rollback restores prior ownership and artifact",
+    () => {
+      const fsFake = seedFs(baseState({ step: "coding" }))
+      const first = layerOf(fsFake)
+      return Effect.gen(function* () {
+        yield* dispatchWorkflow({ kind: "code" }, ROOT)
+        const artifact = `${ROOT}/${savedState(fsFake).pending_artifact}`
+        fsFake.files.set(artifact, "incomplete prior output")
+        const before = new Map(fsFake.files)
+
+        const redelivery = layerOf(fsFake, {
+          herdr: {
+            availability: "available",
+            pane: () => ({ ok: false, missing: true }),
+            interactive: new HerdrError({
+              message: "redelivery pane split failed",
+              details: { delivery: "not_delivered" },
+            }),
+          },
+        })
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "code", redeliver: true }, ROOT).pipe(
+            Effect.provide(redelivery.layer),
+          ),
+        )
+        expect(expectFailure(result, "HerdrError").message).toBe(
+          "redelivery pane split failed",
+        )
+        expect(fsFake.files).toEqual(before)
+      }).pipe(Effect.provide(first.layer))
     },
   )
 
@@ -648,9 +1292,16 @@ describe("dispatchWorkflow (fake layers)", () => {
     "late interactive launch failure restores the exact pre-dispatch files",
     () => {
       const artifact = `${ROOT}/.apnea/artifacts/plan.md`
-      const fsFake = seedFs(baseState({ step: "planning" }), {
-        [artifact]: "prior plan",
-      })
+      const fsFake = seedFs(
+        baseState({
+          step: "planning",
+          rounds: { plan_review: 1 },
+          required_rework: "plan",
+        }),
+        {
+          [artifact]: "prior plan",
+        },
+      )
       const before = new Map(fsFake.files)
       const { layer, fakeFs } = layerOf(fsFake, {
         herdr: {
@@ -667,6 +1318,7 @@ describe("dispatchWorkflow (fake layers)", () => {
           rolled_back: true,
         })
         expect(fakeFs.files).toEqual(before)
+        expect(savedState(fakeFs).required_rework).toBe("plan")
       }).pipe(Effect.provide(layer))
     },
   )
@@ -757,7 +1409,10 @@ describe("dispatchWorkflow (fake layers)", () => {
     "pending-state persistence failure restores files and never launches a worker",
     () => {
       const artifact = `${ROOT}/.apnea/artifacts/plan.md`
-      const state = baseState()
+      const state = baseState({
+        rounds: { plan_review: 1 },
+        required_rework: "plan",
+      })
       const fsFake = makeFakeFileSystem(
         {
           [statePath(ROOT)]: `${JSON.stringify(state, null, 2)}\n`,
@@ -781,6 +1436,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(fsFake.files.get(artifact)).toBe("prior plan")
         expect(taskFiles(fsFake)).toEqual([])
         expect(savedState(fsFake)).toEqual(state)
+        expect(savedState(fsFake).required_rework).toBe("plan")
       }).pipe(Effect.provide(layer))
     },
   )

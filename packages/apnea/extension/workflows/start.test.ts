@@ -67,6 +67,7 @@ describe("startWorkflow (fake layers)", () => {
         expect(result.data?.next_args).toEqual({ kind: "plan" })
         expect(result.legal_next).toEqual(["dispatch_role", "workflow_wait"])
         expect(result.data?.note).toContain("does not launch roles")
+        expect((result.data?.state as RunState).required_rework).toBeNull()
       }
       expect(vcs.ensureBranches).toEqual([{ root: ROOT, slug: "dirty-ok" }])
     }).pipe(Effect.provide(layer))
@@ -143,6 +144,7 @@ describe("startWorkflow (fake layers)", () => {
       last_error: null,
       pending_artifact: null,
       pending_role: null,
+      pending_delivery: null,
       pending_pane_id: null,
       pending_pane_label: null,
       pending_started_at: null,
@@ -155,7 +157,7 @@ describe("startWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
-      phase_package_rework: false,
+      required_rework: null,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,
@@ -199,6 +201,7 @@ describe("startWorkflow (fake layers)", () => {
       last_error: null,
       pending_artifact: pending,
       pending_role: null,
+      pending_delivery: null,
       pending_pane_id: null,
       pending_pane_label: null,
       pending_started_at: null,
@@ -211,7 +214,7 @@ describe("startWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
-      phase_package_rework: false,
+      required_rework: null,
     })
 
     return Effect.gen(function* () {
@@ -241,7 +244,7 @@ describe("startWorkflow (fake layers)", () => {
       expect(r2.ok).toBe(true)
       if (r2.ok) {
         expect(r2.data?.pending_status).toBe("artifact_missing")
-        expect(r2.data?.hint).toContain("re-dispatch")
+        expect(r2.data?.hint).toContain("redeliver=true")
       }
 
       const noneFs = makeFakeFileSystem({
@@ -276,6 +279,7 @@ describe("statusWorkflow (fake layers)", () => {
       last_error: null,
       pending_artifact: null,
       pending_role: null,
+      pending_delivery: null,
       pending_pane_id: null,
       pending_pane_label: null,
       pending_started_at: null,
@@ -288,7 +292,7 @@ describe("statusWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
-      phase_package_rework: false,
+      required_rework: null,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,
@@ -332,6 +336,7 @@ describe("resetRoundsWorkflow (fake layers)", () => {
       last_error: null,
       pending_artifact: null,
       pending_role: null,
+      pending_delivery: null,
       pending_pane_id: null,
       pending_pane_label: null,
       pending_started_at: null,
@@ -344,7 +349,7 @@ describe("resetRoundsWorkflow (fake layers)", () => {
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
-      phase_package_rework: false,
+      required_rework: null,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,

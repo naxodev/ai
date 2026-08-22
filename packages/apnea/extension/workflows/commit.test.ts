@@ -26,6 +26,7 @@ function baseState(over: Partial<RunState> = {}): RunState {
     last_error: null,
     pending_artifact: null,
     pending_role: null,
+    pending_delivery: null,
     pending_pane_id: null,
     pending_pane_label: null,
     pending_started_at: null,
@@ -38,7 +39,7 @@ function baseState(over: Partial<RunState> = {}): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: ".apnea/artifacts/phase-01/round-1/phase-package.md",
     current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
-    phase_package_rework: false,
+    required_rework: null,
     ...over,
   }
 }

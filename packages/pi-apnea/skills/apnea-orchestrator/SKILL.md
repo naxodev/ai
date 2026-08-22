@@ -44,17 +44,19 @@ Never: `apnea reset-rounds` / `/apnea reset-rounds` (human only - it is not a mo
 start
   → dispatch plan → wait
   → dispatch plan_review → wait
-      CHANGES_REQUIRED → dispatch plan (rework=true) → wait → plan_review …
+      CHANGES_REQUIRED → dispatch plan → wait → plan_review …
       APPROVED → dispatch phase_package → wait
   → dispatch code → wait
   → dispatch code_review → wait
-      CHANGES_REQUIRED → dispatch code (rework=true) → wait → code_review …
+      CHANGES_REQUIRED → dispatch code → wait → code_review …
       APPROVED → workflow_commit_phase
   → more phases? → phase_package …
   → else → dispatch pr_description → wait → done
 ```
 
 Follow `@naxodev/apnea/briefs/orchestrator.md` and `@naxodev/apnea/docs/protocol/overview.md`.
+
+Do not pass `rework` to authorize a new round. `workflow_wait` records the required target in state, and the matching dispatch consumes it. The 0.2.x flag grants authority only for ambiguous version-1 plan or code migration.
 
 ## When Pi tools are absent
 
@@ -80,6 +82,6 @@ Do **not** stop at the first timeout. Investigate and fix:
 2. Prompt stuck in input → `send-keys Enter` or re-`pane run` the pointer.
 3. Idle without artifact → nudge with exact artifact path.
 4. Still working / API retry → `workflow_wait` again.
-5. Pane dead → `dispatch_role` same kind (not rework).
+5. Pane dead → `dispatch_role` same kind with `redeliver=true` (not rework). A live or ambiguous pane must refuse redelivery.
 
 Escalate only after two failed recovery attempts, or on round cap / dirty reviewer tree / illegal step / VCS confusion.

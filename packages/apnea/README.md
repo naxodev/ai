@@ -86,13 +86,25 @@ of them went stale; a reader could not tell which.
 | `start <goal>`        | `workflow_start`        | `[--allow-dirty] [--slug=name]` _(CLI only)_ | start a run                                                    |
 | `resume` / `abandon`  | `workflow_start`        |                                              | resume or abandon                                              |
 | `status`              | `workflow_status`       |                                              | read-only snapshot                                             |
-| `dispatch <kind>`     | `dispatch_role`         | `[--rework]`                                 | launch a role                                                  |
+| `dispatch <kind>`     | `dispatch_role`         | `[--rework] [--redeliver]`                   | launch or explicitly redeliver a role                          |
 | `wait`                | `workflow_wait`         | `[--poll=<ms>] [--budget=<ms>]` _(CLI only)_ | wait for the pending artifact                                  |
 | `commit [message]`    | `workflow_commit_phase` | `[--done]`                                   | verify + commit phase                                          |
 | `reset-rounds <gate>` | —                       | `[--i-am-human]` _(CLI only)_                | **human only**                                                 |
 
 Prefix with `/` inside Pi (`/apnea status`), or run it as a shell command (`apnea status`).
 `/apnea-start` and `/apnea-status` are short aliases.
+
+`--rework` remains through 0.2.x as a deprecated assertion. Persisted review state selects and
+authorizes rework even when callers omit the flag. Caller input grants authority only for
+ambiguous version-1 plan or code migration. `--redeliver` reuses matching pending ownership without
+advancing the round. Use it only after proving the prior pane is dead; a manual dispatch with no
+pane requires the operator to request redelivery explicitly. Apnea persists whether pending work
+crossed a manual or interactive boundary. Interactive ownership without a saved pane id refuses as
+ambiguous. Legacy null-pane ownership has no safe discriminator and also refuses redelivery.
+Before any redelivery checks or mutations, Apnea reads the pending artifact. A complete artifact
+refuses redelivery and directs the caller to `workflow_wait`; review artifacts count as complete only
+with a valid verdict and legal, schema-valid rework metadata. Malformed or incomplete artifacts
+continue through normal liveness validation.
 
 `reset-rounds` is not a Pi tool. It exists only as `apnea reset-rounds` and `/apnea reset-rounds`.
 Only the CLI gates it — it refuses unless stdin/stdout are a terminal and a human retypes the gate

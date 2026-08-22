@@ -267,7 +267,7 @@ export function registerApneaCommands(
             const kind = rest[0] as DispatchKind | undefined
             if (!kind || !DISPATCH_KINDS.includes(kind)) {
               ctx.ui.notify(
-                `Usage: /apnea dispatch <${DISPATCH_KINDS.join("|")}> [--rework]`,
+                `Usage: /apnea dispatch <${DISPATCH_KINDS.join("|")}> [--rework] [--redeliver]`,
                 "error",
               )
               return
@@ -277,6 +277,7 @@ export function registerApneaCommands(
               await run("dispatch", {
                 kind,
                 rework: flags.has("rework"),
+                redeliver: flags.has("redeliver"),
               }),
             )
             return

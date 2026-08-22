@@ -16,6 +16,7 @@ function baseState(): RunState {
     last_error: null,
     pending_artifact: null,
     pending_role: null,
+    pending_delivery: null,
     pending_pane_id: null,
     pending_pane_label: null,
     pending_started_at: null,
@@ -28,7 +29,7 @@ function baseState(): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: null,
     current_code_review: null,
-    phase_package_rework: false,
+    required_rework: null,
   }
 }
 

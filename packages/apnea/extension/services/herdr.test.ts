@@ -195,7 +195,7 @@ describe("ensurePromptSubmitted recovery", () => {
   // Effect.ignore/Effect.option pass defects straight through. If recovery
   // dies here, dispatch_role aborts before `store.save`, so the role agent
   // runs with the prompt while the run has no pending_artifact: workflow_wait
-  // then refuses and a re-dispatch renames the produced artifact to .bak.
+  // then refuses and an explicit redelivery renames the produced artifact.
   test("a dead pane during recovery reports accepted:false instead of dying", async () => {
     const { probes, rec } = fakeProbes({
       workingAfter: "never",
