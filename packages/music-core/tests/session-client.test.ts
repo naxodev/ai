@@ -4111,7 +4111,7 @@ test("malformed negotiated hello result fails once and destroys the socket", asy
         clientId: "invalid-result",
         hostKind: "test",
       }),
-    ).rejects.toMatchObject({ code: "INVALID_REQUEST" })
+    ).rejects.toMatchObject({ code: "CONNECTION_LOST", retryable: false })
     await closed
   } finally {
     await new Promise<void>(
@@ -4259,7 +4259,7 @@ test("impossible negotiated capabilities destroy the client socket", async () =>
           clientId: "bad-capabilities",
           hostKind: "test",
         }),
-      ).rejects.toMatchObject({ code: "INVALID_REQUEST" })
+      ).rejects.toMatchObject({ code: "CONNECTION_LOST", retryable: false })
       await closed
     } finally {
       await new Promise<void>(

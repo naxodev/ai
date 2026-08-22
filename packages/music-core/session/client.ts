@@ -250,7 +250,7 @@ class Client implements MusicSessionClient {
         handshake.resolve()
       } catch {
         this.terminate({
-          code: "INVALID_REQUEST",
+          code: "CONNECTION_LOST",
           message: "invalid hello result",
           retryable: false,
         })
