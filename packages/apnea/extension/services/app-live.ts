@@ -5,6 +5,7 @@ import { FileSystemLive } from "./file-system.ts"
 import { makeHerdrLive } from "./herdr.ts"
 import { RunStoreLive } from "./run-store.ts"
 import { VcsLive } from "./vcs.ts"
+import { ProcessLive } from "./process.ts"
 
 /**
  * Blueprint layer for tool calls. Built freshly on every `Effect.provide`
@@ -18,7 +19,7 @@ export const makeAppLive = (hostAdapter: ApneaHostAdapter) =>
       VcsLive,
       makeHerdrLive(hostAdapter),
     ),
-    FileSystemLive,
+    Layer.merge(FileSystemLive, ProcessLive),
   )
 
 export const AppLive = makeAppLive(neutralHostAdapter)

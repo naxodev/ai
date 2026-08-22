@@ -5,7 +5,11 @@
  * The standalone CLI binds the same registry to argv.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { toolContent } from "@naxodev/apnea"
+import {
+  toolContent,
+  type ExecuteOperation,
+  type Operation,
+} from "@naxodev/apnea"
 import { registerApneaCommands } from "./commands.ts"
 import { executePiOperation, PI_OPERATIONS } from "./runtime.ts"
 
@@ -13,7 +17,15 @@ export default function (pi: ExtensionAPI) {
   // `/apnea …` for humans (autocomplete); tools remain for the model
   registerApneaCommands(pi, PI_OPERATIONS, executePiOperation)
 
-  for (const op of PI_OPERATIONS) {
+  registerApneaTools(pi, PI_OPERATIONS, executePiOperation)
+}
+
+export function registerApneaTools(
+  pi: ExtensionAPI,
+  operations: readonly Operation[],
+  executeOperation: ExecuteOperation,
+): void {
+  for (const op of operations) {
     if (op.tool === null) continue
 
     // wait is the one operation with streaming + abort; Pi's exclusive.
@@ -40,7 +52,7 @@ export default function (pi: ExtensionAPI) {
             // can be interrupted, so it has no host shell timeout to fit
             // inside. The registry handler no longer injects this — only
             // the CLI reaches that, and it must stay bounded.
-            await executePiOperation(
+            await executeOperation(
               op.verb,
               {
                 ...params,
@@ -72,8 +84,32 @@ export default function (pi: ExtensionAPI) {
       description: [op.summary, op.guidance].filter(Boolean).join(" "),
       parameters: op.params,
       executionMode: "sequential",
-      async execute(_id: string, params: Record<string, unknown>) {
-        return toolContent(await executePiOperation(op.verb, params))
+      async execute(
+        _id: string,
+        params: Record<string, unknown>,
+        signal: AbortSignal | undefined,
+        onUpdate:
+          | ((partial: {
+              content: Array<{ type: "text"; text: string }>
+              details: unknown
+            }) => void)
+          | undefined,
+      ) {
+        return toolContent(
+          await executeOperation(op.verb, params, {
+            signal,
+            onUpdate: onUpdate
+              ? (partial) =>
+                  onUpdate({
+                    content: partial.content,
+                    details: {
+                      ok: true,
+                      message: partial.content[0]?.text ?? "",
+                    },
+                  })
+              : undefined,
+          }),
+        )
       },
     })
   }

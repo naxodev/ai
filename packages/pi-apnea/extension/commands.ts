@@ -78,10 +78,14 @@ export function registerApneaCommands(
   operations: readonly Operation[] = PI_OPERATIONS,
   execute: ExecuteOperation = executePiOperation,
 ): void {
-  const run = (verb: string, params: Record<string, unknown>) => {
+  const run = (
+    signal: AbortSignal | undefined,
+    verb: string,
+    params: Record<string, unknown>,
+  ) => {
     const operation = operations.find((candidate) => candidate.verb === verb)
     if (!operation) throw new Error(`Missing Apnea operation: ${verb}`)
-    return execute(operation.verb, params)
+    return execute(operation.verb, params, { signal })
   }
   const kick = (kind: "start" | "resume", goal?: string) => {
     pi.sendUserMessage(orchestratorKickMessage(kind, goal))
@@ -176,7 +180,7 @@ export function registerApneaCommands(
           case "setup":
             notify(
               ctx,
-              await run("setup", {
+              await run(ctx.signal, "setup", {
                 project: flags.has("project"),
                 force: flags.has("force"),
                 agents_md: flags.has("agents-md"),
@@ -195,7 +199,7 @@ export function registerApneaCommands(
               )
               return
             }
-            const r = await run("start", {
+            const r = await run(ctx.signal, "start", {
               goal,
               slug,
               allow_dirty: flags.has("allow-dirty"),
@@ -207,18 +211,24 @@ export function registerApneaCommands(
           }
 
           case "resume": {
-            const r = await run("start", { goal: "", action: "resume" })
+            const r = await run(ctx.signal, "start", {
+              goal: "",
+              action: "resume",
+            })
             notify(ctx, r)
             if (r.ok) kick("resume")
             return
           }
 
           case "abandon":
-            notify(ctx, await run("start", { goal: "", action: "abandon" }))
+            notify(
+              ctx,
+              await run(ctx.signal, "start", { goal: "", action: "abandon" }),
+            )
             return
 
           case "status":
-            notify(ctx, await run("status", {}))
+            notify(ctx, await run(ctx.signal, "status", {}))
             return
 
           case "wait": {
@@ -250,7 +260,7 @@ export function registerApneaCommands(
               )
               return
             }
-            const r = await run("wait", {
+            const r = await run(ctx.signal, "wait", {
               poll_ms: poll.value,
               // Unbounded by default, like the Pi tool in `index.ts`:
               // `/apnea` runs inside Pi, which has no shell timeout, so
@@ -274,7 +284,7 @@ export function registerApneaCommands(
             }
             notify(
               ctx,
-              await run("dispatch", {
+              await run(ctx.signal, "dispatch", {
                 kind,
                 rework: flags.has("rework"),
                 redeliver: flags.has("redeliver"),
@@ -289,7 +299,7 @@ export function registerApneaCommands(
             const message = rest.join(" ").trim() || undefined
             notify(
               ctx,
-              await run("commit", {
+              await run(ctx.signal, "commit", {
                 message,
                 no_remaining_phases: flags.has("done"),
               }),
@@ -303,7 +313,7 @@ export function registerApneaCommands(
               ctx.ui.notify("Usage: /apnea reset-rounds <gate>", "error")
               return
             }
-            notify(ctx, await run("reset-rounds", { gate }))
+            notify(ctx, await run(ctx.signal, "reset-rounds", { gate }))
             return
           }
 
@@ -322,7 +332,8 @@ export function registerApneaCommands(
   // Short aliases that also show in `/` autocomplete
   pi.registerCommand("apnea-status", {
     description: "Apnea: read-only run status (alias of /apnea status)",
-    handler: async (_args, ctx) => notify(ctx, await run("status", {})),
+    handler: async (_args, ctx) =>
+      notify(ctx, await run(ctx.signal, "status", {})),
   })
 
   pi.registerCommand("apnea-start", {
@@ -333,7 +344,7 @@ export function registerApneaCommands(
         ctx.ui.notify("Usage: /apnea-start <goal>", "error")
         return
       }
-      const r = await run("start", { goal, action: "start" })
+      const r = await run(ctx.signal, "start", { goal, action: "start" })
       notify(ctx, r)
       if (r.ok) kick("start", goal)
     },

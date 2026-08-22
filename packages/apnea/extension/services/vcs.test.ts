@@ -15,7 +15,8 @@ import {
 import { spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
-import { Effect, Exit, Layer, Option } from "effect"
+import { Effect, Exit, Fiber, Layer, Option } from "effect"
+import { TestClock } from "effect/testing"
 import { VcsError } from "../errors.ts"
 import {
   extractVerifyBlocks,
@@ -30,17 +31,26 @@ import {
   filterAppPaths,
   fingerprintUntrackedFiles,
   gitCommitPhaseWithCommand,
+  runVerifyWithProcess,
   treeFingerprintWithCommand,
   utf8BytesAfterAppend,
   verifyBlockDisplayByteLength,
 } from "./vcs.ts"
 import { FileSystemLive } from "./file-system.ts"
+import {
+  ProcessLive,
+  ProcessTimeoutError,
+  type ProcessService,
+} from "./process.ts"
 
 function withFake(initial: Record<string, string> = {}) {
   const fake = makeFakeFileSystem(initial)
   // Also mark directories that exist as empty keys via mkdir semantics —
   // exists returns true for dirs. Seed .jj/.git as empty file markers.
-  const layer = Layer.provideMerge(VcsLive, fake.layer)
+  const layer = Layer.provideMerge(
+    VcsLive,
+    Layer.merge(fake.layer, ProcessLive),
+  )
   return { fake, layer }
 }
 
@@ -87,7 +97,11 @@ function commandResult(
 
 function realVcs<A>(effect: Effect.Effect<A, VcsError | never, Vcs>) {
   return Effect.runPromise(
-    effect.pipe(Effect.provide(Layer.provide(VcsLive, FileSystemLive))),
+    effect.pipe(
+      Effect.provide(
+        Layer.provide(VcsLive, Layer.merge(FileSystemLive, ProcessLive)),
+      ),
+    ),
   )
 }
 
@@ -339,7 +353,11 @@ describe("Vcs repository safety", () => {
           path.join(makeProject(), "missing"),
           "git",
         )
-      }).pipe(Effect.provide(Layer.provide(VcsLive, FileSystemLive))),
+      }).pipe(
+        Effect.provide(
+          Layer.provide(VcsLive, Layer.merge(FileSystemLive, ProcessLive)),
+        ),
+      ),
     )
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {
@@ -511,7 +529,11 @@ describe("Vcs repository safety", () => {
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {
         yield* (yield* Vcs).setBookmarkAtTerminus(root, "demo")
-      }).pipe(Effect.provide(Layer.provide(VcsLive, FileSystemLive))),
+      }).pipe(
+        Effect.provide(
+          Layer.provide(VcsLive, Layer.merge(FileSystemLive, ProcessLive)),
+        ),
+      ),
     )
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {
@@ -634,6 +656,53 @@ describe("utf8BytesAfterAppend", () => {
 })
 
 describe("Vcs.runVerify", () => {
+  test("uses one total deadline across every verification block", async () => {
+    const root = makeProject()
+    const timeouts: number[] = []
+    const processService: ProcessService = {
+      run: (options) => {
+        timeouts.push(options.timeoutMs)
+        if (timeouts.length === 1) {
+          return Effect.sleep(600).pipe(
+            Effect.as({ exitCode: 0, stdout: "first\n", stderr: "" }),
+          )
+        }
+        return Effect.sleep(options.timeoutMs).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProcessTimeoutError(
+                options.command,
+                options.timeoutMs,
+                "",
+                "",
+              ),
+            ),
+          ),
+        )
+      },
+    }
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          runVerifyWithProcess(
+            root,
+            [
+              { interpreter: "sh", source: "true" },
+              { interpreter: "sh", source: "true" },
+            ],
+            1_000,
+            processService,
+          ),
+        )
+        yield* TestClock.adjust(1_000)
+        return yield* Fiber.join(fiber)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+
+    expect(timeouts).toEqual([1_000, 400])
+    expect(result.ok).toBe(false)
+  })
+
   test("runs a complete Bash script with functions, locals, heredocs, and an EXIT trap", async () => {
     const root = makeProject()
     const result = await runVerify(root, [
@@ -842,6 +911,53 @@ wait "$child_pid"`,
       expect(await processExited(childPid)).toBe(true)
       expect(existsSync(scriptDirectory)).toBe(false)
       expect(result.log).toContain("verification timed out after 200ms")
+    },
+  )
+
+  test.skipIf(process.platform === "win32")(
+    "interruption kills descendants before removing the verification directory",
+    async () => {
+      const root = makeProject()
+      const directoryFile = path.join(root, "cancel-script-directory.txt")
+      const pidFile = path.join(root, "cancel-child.pid")
+      const { layer } = withFake()
+      const observed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const vcs = yield* Vcs
+          const fiber = yield* Effect.forkChild(
+            vcs.runVerify(
+              root,
+              [
+                {
+                  interpreter: "sh",
+                  source: `dirname "$0" > cancel-script-directory.txt
+(
+  trap '' TERM
+  while :; do :; done
+) &
+printf '%s\n' "$!" > cancel-child.pid
+wait`,
+                },
+              ],
+              10_000,
+            ),
+          )
+          yield* Effect.promise(async () => {
+            for (let attempt = 0; attempt < 100; attempt++) {
+              if (existsSync(directoryFile) && existsSync(pidFile)) return
+              await new Promise((resolve) => setTimeout(resolve, 10))
+            }
+            throw new Error("verification child did not start")
+          })
+          const childPid = Number(readFileSync(pidFile, "utf8").trim())
+          const scriptDirectory = readFileSync(directoryFile, "utf8").trim()
+          yield* Fiber.interrupt(fiber)
+          return { childPid, scriptDirectory }
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(await processExited(observed.childPid)).toBe(true)
+      expect(existsSync(observed.scriptDirectory)).toBe(false)
     },
   )
 

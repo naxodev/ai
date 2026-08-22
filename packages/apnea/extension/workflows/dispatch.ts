@@ -706,14 +706,22 @@ export const dispatchWorkflow = (
     )
     if (Result.isFailure(launched)) {
       if (launched.failure.details?.delivery === "unknown") {
-        const paneId = String(launched.failure.details.pane_id)
-        const paneLabel = String(launched.failure.details.pane_label)
-        state.pending_pane_id = paneId
-        state.pending_pane_label = paneLabel
-        state.role_panes[role] = {
-          pane_id: paneId,
-          label: paneLabel,
-          profile_fingerprint: profileFingerprint,
+        const paneId = launched.failure.details.pane_id
+        const paneLabel = launched.failure.details.pane_label
+        // Only a pane-backed save actually preserves pending ownership; a
+        // split failure never reached the state machine, so claiming
+        // `pending_preserved` here would send operators to redeliver against
+        // ownership that was never written.
+        const preserved =
+          typeof paneId === "string" && typeof paneLabel === "string"
+        if (preserved) {
+          state.pending_pane_id = paneId
+          state.pending_pane_label = paneLabel
+          state.role_panes[role] = {
+            pane_id: paneId,
+            label: paneLabel,
+            profile_fingerprint: profileFingerprint,
+          }
         }
         yield* store.save(state, root)
         return yield* new HerdrError({
@@ -725,7 +733,7 @@ export const dispatchWorkflow = (
             ...(launched.failure.details ?? {}),
             task_attempted: taskRef.task,
             artifact: artifactRel,
-            pending_preserved: true,
+            pending_preserved: preserved,
           },
         })
       }

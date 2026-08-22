@@ -20,5 +20,6 @@ export async function workflowWait(
       waitWorkflow(params, process.cwd(), hooks),
     ),
     makeAppLive(hostAdapter),
+    // waitWorkflow owns signal cancellation so it can preserve WaitAborted.
   )
 }

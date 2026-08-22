@@ -100,6 +100,15 @@ export class WaitAborted extends Schema.TaggedError<WaitAborted>()(
   },
 ) {}
 
+/** A non-wait operation was interrupted by its host cancellation signal. */
+export class OperationAborted extends Schema.TaggedError<OperationAborted>()(
+  "OperationAborted",
+  {
+    operation: Schema.String,
+    details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  },
+) {}
+
 /** Artifact exists but front-matter / shape is invalid. */
 export class ArtifactInvalid extends Schema.TaggedError<ArtifactInvalid>()(
   "ArtifactInvalid",
@@ -133,6 +142,7 @@ export type AppError =
   | GateRefused
   | WaitTimeout
   | WaitAborted
+  | OperationAborted
   | ArtifactInvalid
   | VerifyFailed
 
@@ -148,6 +158,7 @@ const APP_ERROR_TAG_LIST = [
   "GateRefused",
   "WaitTimeout",
   "WaitAborted",
+  "OperationAborted",
   "ArtifactInvalid",
   "VerifyFailed",
 ] as const satisfies readonly AppError["_tag"][]
@@ -252,6 +263,10 @@ export function toToolResult(e: AppError): ToolErr {
     case "WaitAborted":
       return err("workflow_wait aborted (Esc / cancel)", {
         data: { artifact: e.artifact, ...(e.details ?? {}) },
+      })
+    case "OperationAborted":
+      return err(`${e.operation} aborted (signal / cancel)`, {
+        data: { operation: e.operation, ...(e.details ?? {}) },
       })
     case "ArtifactInvalid":
       return err(e.message, { data: { artifact: e.artifact } })

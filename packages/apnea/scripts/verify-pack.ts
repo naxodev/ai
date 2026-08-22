@@ -71,6 +71,7 @@ extension/domain/types.ts
 extension/domain/verify-commands.ts
 extension/errors.ts
 extension/host-adapter.ts
+extension/operation-hooks.ts
 extension/registry.ts
 extension/result.ts
 extension/run-tool.ts
@@ -82,6 +83,7 @@ extension/services/config.ts
 extension/services/file-system.ts
 extension/services/herdr.ts
 extension/services/operation-lock.ts
+extension/services/process.ts
 extension/services/run-store.ts
 extension/services/vcs.ts
 extension/workflows/commit.ts

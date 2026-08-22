@@ -9,6 +9,7 @@ export {
   type Operation,
   type ExecuteOperation,
 } from "./registry.ts"
+export type { OperationHooks } from "./operation-hooks.ts"
 export {
   parseFlags,
   parseNumFlag,
