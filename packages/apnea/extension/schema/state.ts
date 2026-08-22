@@ -47,12 +47,55 @@ const NonNegativeSafeInteger = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
 )
 
+const PendingCommitFields = {
+  id: Schema.String.check(Schema.isMinLength(1)),
+  phase_index: PositiveSafeInteger,
+  message: Schema.String.check(Schema.isMinLength(1)),
+  no_remaining_phases: Schema.Boolean,
+  verify_log: Schema.String.check(Schema.isMinLength(1)),
+}
+
+// Anchor fields flow into git/jj argv, so they get format checks beyond
+// minLength. Exploiting a loose anchor requires state.json write access
+// (game-over elsewhere), but validating costs nothing and removes the class.
+export const GitPendingCommitSchema = Schema.Struct({
+  backend: Schema.Literal("git"),
+  ...PendingCommitFields,
+  branch: Schema.String.check(
+    Schema.isPattern(/^refs\/heads\/apnea\/[A-Za-z0-9._-]+$/),
+  ),
+  parent_commit: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40,64}$/)),
+  tree_id: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40,64}$/)),
+})
+
+export const JjPendingCommitSchema = Schema.Struct({
+  backend: Schema.Literal("jj"),
+  ...PendingCommitFields,
+  change_id: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9]{1,32}$/)),
+  content_fingerprint: Schema.String.check(
+    Schema.isPattern(/^[0-9a-f]{8,64}$/),
+  ),
+})
+
+export const PendingCommitSchema = Schema.Union([
+  GitPendingCommitSchema,
+  JjPendingCommitSchema,
+])
+
 /**
- * Runtime codec for `state.json` (version 1).
- * Missing pane-tracking fields are filled in `decodeRunState` (legacy files).
+ * Runtime codec for `state.json`.
+ *
+ * Input accepts version 1 (files written by 0.2.x) and version 2. Version-1
+ * files must not carry `pending_commit` — that is enforced in
+ * `decodeRunState`, which migrates every decoded state to version 2 with
+ * `pending_commit: null`. Version-2 files must record `pending_commit`
+ * explicitly, so a truncated or hand-edited v2 file fails closed instead of
+ * silently losing a durable commit transaction.
  */
 export const RunStateSchema = Schema.Struct({
-  version: Schema.Literal(1),
+  // v1 on Encoded so legacy files still decode; decodeRunState always
+  // outputs version 2.
+  version: Schema.Union([Schema.Literal(1), Schema.Literal(2)]),
   slug: Schema.String.check(Schema.isMinLength(1)),
   step: StepSchema,
   phase_index: PositiveSafeInteger,
@@ -81,6 +124,9 @@ export const RunStateSchema = Schema.Struct({
   current_phase_package: Schema.NullOr(Schema.String),
   current_code_review: Schema.NullOr(Schema.String),
   required_rework: Schema.optionalKey(RequiredReworkSchema),
+  // optional on Encoded so version-1 files without the key still decode;
+  // presence rules per version are enforced in `decodeRunState`.
+  pending_commit: Schema.optionalKey(Schema.NullOr(PendingCommitSchema)),
 })
 
 export type DecodedRunState = typeof RunStateSchema.Type
@@ -135,6 +181,8 @@ export function decodeRunState(
       : {}
   const hasRequiredRework = raw.required_rework !== undefined
   const hasPendingDelivery = raw.pending_delivery !== undefined
+  const hasPendingCommit =
+    "pending_commit" in raw && raw.pending_commit !== undefined
   const decoded = Schema.decodeUnknownResult(RunStateSchema)(json)
   if (Result.isFailure(decoded)) {
     return Result.fail(
@@ -145,6 +193,61 @@ export function decodeRunState(
     )
   }
   const d = decoded.success
+  // A version-1 writer never emits `pending_commit`; its presence means the
+  // file was mixed across versions. Fail closed instead of guessing.
+  if (d.version === 1 && hasPendingCommit) {
+    return Result.fail(
+      new StateCorrupt({
+        path,
+        message:
+          "pending_commit requires state version 2; refusing version-1 file that carries it",
+      }),
+    )
+  }
+  if (d.version === 2 && !hasPendingCommit) {
+    return Result.fail(
+      new StateCorrupt({
+        path,
+        message:
+          "version-2 state must record pending_commit explicitly; refusing file that omits it",
+      }),
+    )
+  }
+  if (
+    d.pending_commit !== null &&
+    d.pending_commit !== undefined &&
+    d.step !== "committing"
+  ) {
+    return Result.fail(
+      new StateCorrupt({
+        path,
+        message: `pending_commit requires step "committing", found "${d.step}"`,
+      }),
+    )
+  }
+  if (
+    d.pending_commit != null &&
+    d.pending_commit.phase_index !== d.phase_index
+  ) {
+    return Result.fail(
+      new StateCorrupt({
+        path,
+        message: `pending_commit targets phase ${d.pending_commit.phase_index} but state is at phase ${d.phase_index}`,
+      }),
+    )
+  }
+  if (
+    d.pending_commit != null &&
+    !isPersistedArtifactPath(d.pending_commit.verify_log)
+  ) {
+    return Result.fail(
+      new StateCorrupt({
+        path,
+        message:
+          "pending_commit.verify_log must be a repository-relative .apnea/ path",
+      }),
+    )
+  }
   for (const [field, value] of [
     ["pending_artifact", d.pending_artifact],
     ["current_phase_package", d.current_phase_package],
@@ -160,8 +263,10 @@ export function decodeRunState(
     }
   }
   // Backward-compat defaults for state.json files predating pane tracking.
+  // Every decoded state migrates to version 2; the rewrite to disk happens
+  // at the next normal save.
   const state: RunState = {
-    version: 1,
+    version: 2,
     slug: d.slug,
     step: d.step as Step,
     phase_index: d.phase_index,
@@ -200,6 +305,7 @@ export function decodeRunState(
       : raw.phase_package_rework === true
         ? "phase_package"
         : null) as RequiredReworkTarget | null,
+    pending_commit: d.pending_commit ?? null,
   }
   if (
     !hasRequiredRework &&

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { Result } from "effect"
+import { Result, Schema } from "effect"
 import { LEGACY_CODE_REWORK } from "../domain/types.ts"
 import {
   decodeGlobalConfig,
@@ -13,8 +13,37 @@ import { decodeRunState, RunStateSchema } from "./state.ts"
 
 const repoRoot = path.resolve(import.meta.dir, "../..")
 
+function gitPendingCommitFixture() {
+  return {
+    backend: "git" as const,
+    id: "1b4d2f0a-93c7-4c11-9a2f-5e6d8a7b9c01",
+    phase_index: 1,
+    message:
+      "feat: apnea phase 1 (demo)\n\nApnea-Transaction: 1b4d2f0a-93c7-4c11-9a2f-5e6d8a7b9c01",
+    no_remaining_phases: false,
+    verify_log: ".apnea/artifacts/phase-01/round-1/verify.log",
+    branch: "refs/heads/apnea/demo",
+    parent_commit: "a".repeat(40),
+    tree_id: "b".repeat(40),
+  }
+}
+
+function jjPendingCommitFixture() {
+  return {
+    backend: "jj" as const,
+    id: "2c5e3a1b-04d8-5d22-8b3a-6f7e9b8c0d12",
+    phase_index: 1,
+    message:
+      "feat: apnea phase 1 (demo)\n\nApnea-Transaction: 2c5e3a1b-04d8-5d22-0b3a-6f7e9b8c0d12",
+    no_remaining_phases: false,
+    verify_log: ".apnea/artifacts/phase-01/round-1/verify.log",
+    change_id: "qqqvvvuu",
+    content_fingerprint: "deadbeef",
+  }
+}
+
 const fullState = {
-  version: 1 as const,
+  version: 2 as const,
   slug: "demo",
   step: "coding" as const,
   phase_index: 1,
@@ -41,6 +70,7 @@ const fullState = {
   current_phase_package: ".apnea/artifacts/phase-01/round-1/phase-package.md",
   current_code_review: null,
   required_rework: null,
+  pending_commit: null,
 }
 
 describe("RunStateSchema", () => {
@@ -145,12 +175,112 @@ describe("RunStateSchema", () => {
     }
   })
 
-  test("rejects version: 2 and garbage", () => {
+  test("garbage without required fields still fails", () => {
     expect(Result.isFailure(decodeRunState({ version: 2 }))).toBe(true)
     expect(Result.isFailure(decodeRunState("nope"))).toBe(true)
-    expect(Result.isFailure(decodeRunState({ ...fullState, version: 2 }))).toBe(
-      true,
-    )
+    // Version-2 files must record pending_commit explicitly.
+    expect(
+      Result.isFailure(
+        decodeRunState({ ...fullState, version: 2, pending_commit: undefined }),
+      ),
+    ).toBe(true)
+  })
+
+  test("round-trips a durable pending_commit through decode", () => {
+    const r = decodeRunState({
+      ...fullState,
+      step: "committing",
+      current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+      pending_commit: jjPendingCommitFixture(),
+    })
+    expect(Result.isSuccess(r)).toBe(true)
+    if (Result.isSuccess(r)) {
+      expect(r.success.pending_commit?.backend).toBe("jj")
+      expect(r.success.pending_commit?.id).toBe(
+        "2c5e3a1b-04d8-5d22-8b3a-6f7e9b8c0d12",
+      )
+    }
+  })
+
+  test("pending_commit.verify_log must be a repository-relative .apnea path", () => {
+    const r = decodeRunState({
+      ...fullState,
+      step: "committing",
+      pending_commit: {
+        ...gitPendingCommitFixture(),
+        verify_log: "/tmp/v.log",
+      },
+    })
+    expect(Result.isFailure(r)).toBe(true)
+    if (Result.isFailure(r)) {
+      expect(r.failure.message).toContain("verify_log")
+    }
+  })
+
+  test("a version-1 file decodes with null pending_commit and migrates to version 2", () => {
+    // The fixture predates pending_commit: exactly the shape a mid-run
+    // upgrade from 0.2.x encounters on disk. It must load (migration on
+    // load) and the next normal save rewrites it as version 2.
+    const { pending_commit: _pendingCommit, ...v1File } = {
+      ...fullState,
+      version: 1 as const,
+    }
+    const r = decodeRunState(v1File)
+    expect(Result.isSuccess(r)).toBe(true)
+    if (Result.isSuccess(r)) {
+      expect(r.success.version).toBe(2)
+      expect(r.success.pending_commit).toBeNull()
+    }
+  })
+
+  test("a version-1 file carrying pending_commit fails closed", () => {
+    const r = decodeRunState({
+      ...fullState,
+      version: 1,
+      step: "committing",
+      pending_commit: gitPendingCommitFixture(),
+    })
+    expect(Result.isFailure(r)).toBe(true)
+    if (Result.isFailure(r)) {
+      expect(r.failure.message).toContain(
+        "pending_commit requires state version 2",
+      )
+    }
+  })
+
+  test("pending_commit requires step committing and matching phase_index", () => {
+    const mismatchedStep = decodeRunState({
+      ...fullState,
+      step: "coding",
+      pending_commit: jjPendingCommitFixture(),
+    })
+    expect(Result.isFailure(mismatchedStep)).toBe(true)
+    if (Result.isFailure(mismatchedStep)) {
+      expect(mismatchedStep.failure.message).toContain(
+        'requires step "committing"',
+      )
+    }
+
+    const mismatchedPhase = decodeRunState({
+      ...fullState,
+      step: "committing",
+      phase_index: 2,
+      pending_commit: jjPendingCommitFixture(),
+    })
+    expect(Result.isFailure(mismatchedPhase)).toBe(true)
+    if (Result.isFailure(mismatchedPhase)) {
+      expect(mismatchedPhase.failure.message).toContain("targets phase")
+    }
+  })
+
+  test("old-shape (0.2.x) decoding rejects a version-2 file instead of ignoring the marker", () => {
+    // Simulates the previous binary's codec: same fields, version locked to 1.
+    const legacySchema = Schema.Struct({
+      ...RunStateSchema.fields,
+      version: Schema.Literal(1),
+    })
+    const decoded = Schema.decodeUnknownResult(legacySchema)(fullState)
+    expect(Result.isFailure(decoded)).toBe(true)
   })
 
   test.each([

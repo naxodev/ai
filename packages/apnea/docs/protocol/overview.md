@@ -92,6 +92,14 @@ Pane markers are human decoration. Herdr `agent_status` is liveness (dead pane w
 
 - Orchestrator only.
 - `workflow_commit_phase` runs phase package verify commands; non-zero → refuse.
+- Commits are crash-recoverable transactions. After verification, the run
+  prepares the commit and persists a durable `pending_commit` anchor in
+  `state.json` (version 2) before completing it; every commit message body
+  carries an `Apnea-Transaction: <uuid>` trailer line. A later
+  `workflow_commit_phase` call that finds a pending transaction skips gates
+  and verification, completes or recognizes the exact commit once (drift is
+  refused), then advances. Cancellation after the anchor is saved does not
+  undo the transaction.
 - jj: `jj describe` + `jj new` after APPROVED; **bookmark `apnea/<slug>` at terminus**, not start.
 - git: branch `apnea/<slug>` at start; one commit per phase.
 - No push / remote PR in v1. Terminus artifact: `pr-description.md` (planner).

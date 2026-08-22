@@ -17,7 +17,7 @@ function withFake(initial: Record<string, string> = {}) {
 }
 
 const sampleState = {
-  version: 1 as const,
+  version: 2 as const,
   slug: "demo",
   step: "planning" as const,
   phase_index: 1,
@@ -43,6 +43,7 @@ const sampleState = {
   current_phase_package: null,
   current_code_review: null,
   required_rework: null,
+  pending_commit: null,
 }
 
 describe("RunStore (fake FileSystem)", () => {
@@ -147,18 +148,46 @@ describe("RunStore (fake FileSystem)", () => {
     }).pipe(Effect.provide(layer))
   })
 
-  itEffect("version: 2 → StateCorrupt", () => {
-    const root = "/proj"
-    const p = statePath(root)
-    const { layer } = withFake({
-      [p]: JSON.stringify({ ...sampleState, version: 2 }),
-    })
-    return Effect.gen(function* () {
-      const store = yield* RunStore
-      const exit = yield* Effect.exit(store.load(root))
-      expect(Exit.isFailure(exit)).toBe(true)
-    }).pipe(Effect.provide(layer))
-  })
+  itEffect(
+    "a version-1 file migrates on load and the next save writes version 2",
+    () => {
+      const root = "/proj"
+      const p = statePath(root)
+      // A 0.2.x-era file: version 1, no pending_commit key at all.
+      const v1 = { ...sampleState, version: 1 as const }
+      const { pending_commit: _drop, ...v1File } = v1
+      const { fake, layer } = withFake({
+        [p]: `${JSON.stringify(v1File, null, 2)}\n`,
+      })
+      return Effect.gen(function* () {
+        const store = yield* RunStore
+        const loaded = yield* store.load(root)
+        expect(loaded).not.toBeNull()
+        expect(loaded!.version).toBe(2)
+        expect(loaded!.pending_commit).toBeNull()
+        yield* store.save(loaded!, root)
+        const body = JSON.parse(fake.files.get(p)!) as Record<string, unknown>
+        expect(body.version).toBe(2)
+        expect(body.pending_commit).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
+    "version-2 state missing the pending_commit key fails closed",
+    () => {
+      const root = "/proj"
+      const p = statePath(root)
+      const { pending_commit: _drop, ...v2WithoutKey } = sampleState
+      const { layer } = withFake({ [p]: JSON.stringify(v2WithoutKey) })
+      return Effect.gen(function* () {
+        const store = yield* RunStore
+        const result = yield* Effect.result(store.load(root))
+        const error = expectFailure(result, "StateCorrupt")
+        expect(error.message).toContain("must record pending_commit")
+      }).pipe(Effect.provide(layer))
+    },
+  )
 
   itEffect("save writes trailing newline", () => {
     const root = "/proj"

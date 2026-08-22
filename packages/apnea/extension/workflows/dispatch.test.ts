@@ -41,7 +41,7 @@ const NO_INTERACTIVE_CFG: ApneaConfig = {
 
 function baseState(overrides: Partial<RunState> = {}): RunState {
   return {
-    version: 1,
+    version: 2,
     slug: "ex",
     step: "planning",
     phase_index: 1,
@@ -67,6 +67,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     current_phase_package: null,
     current_code_review: null,
     required_rework: null,
+    pending_commit: null,
     ...overrides,
   }
 }

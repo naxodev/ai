@@ -213,6 +213,7 @@ function removeIfOwned(lock: string, token: string): void {
 function acquireLock(
   lock: string,
   resource: string,
+  reclaim?: { graceMs: number; now: () => number },
 ): { lock: string; owner: Owner } {
   ensureLockDirectory(path.dirname(lock))
 
@@ -266,6 +267,16 @@ function acquireLock(
         pid: existing.pid,
       })
     }
+    if (
+      reclaim !== undefined &&
+      lockAgeMs(lock, reclaim.now()) >= reclaim.graceMs &&
+      removeStaleOwner(lock, existing.token)
+    ) {
+      // Dead owner past the freshness grace: a crashed holder. Reclaiming
+      // lets crash-recoverable operations (e.g. a durable commit
+      // transaction) resume instead of wedging behind manual cleanup.
+      continue
+    }
     throw new OperationLocked({
       message:
         `Apnea lock owner pid ${existing.pid} is not live at ${lock}. ` +
@@ -286,15 +297,36 @@ function acquireLock(
   })
 }
 
+/** Age of the lock directory in ms against the injected clock. */
+function lockAgeMs(lock: string, nowMs: number): number {
+  try {
+    return Math.max(0, nowMs - fs.lstatSync(lock).mtimeMs)
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Remove a validated stale owner atomically: the tombstone rename re-checks
+ * the token, so a concurrently refreshed lock is never displaced.
+ */
+function removeStaleOwner(lock: string, token: string): boolean {
+  const tombstone = moveOwnedToTombstone(lock, token)
+  if (tombstone === null) return false
+  fs.rmSync(tombstone, { recursive: true, force: true })
+  return true
+}
+
 function withLock<A, E, R>(
   lock: string,
   resource: string,
   operation: Effect.Effect<A, E, R>,
   waitForRetry?: Effect.Effect<void>,
+  reclaim?: { graceMs: number; now: () => number },
 ): Effect.Effect<A, E | OperationLocked | ConfigError, R> {
   const acquireOnce = () =>
     Effect.try({
-      try: () => acquireLock(lock, resource),
+      try: () => acquireLock(lock, resource, reclaim),
       catch: (error) =>
         error instanceof OperationLocked || error instanceof ConfigError
           ? error
@@ -324,12 +356,36 @@ function withLock<A, E, R>(
   )
 }
 
+/** How long a dead owner's lock must sit untouched before reclaim is safe. */
+export const REPOSITORY_LOCK_RECLAIM_GRACE_MS = 60_000
+
+export type RepositoryLockOptions = {
+  /**
+   * Grace period (ms) a stale lock must age past before a dead owner is
+   * reclaimed. Mitigates PID reuse: a recycled pid looks alive anyway, and
+   * an old lock directory means no live process refreshed it.
+   */
+  readonly staleGraceMs?: number
+  /** Clock seam for tests; defaults to Date.now. */
+  readonly now?: () => number
+}
+
 export function withRepositoryLock<A, E, R>(
   root: string,
   operation: Effect.Effect<A, E, R>,
+  options: RepositoryLockOptions = {},
 ): Effect.Effect<A, E | OperationLocked | ConfigError, R> {
   const repository = canonicalRepository(root)
-  return withLock(repositoryLockPath(repository), repository, operation)
+  return withLock(
+    repositoryLockPath(repository),
+    repository,
+    operation,
+    undefined,
+    {
+      graceMs: options.staleGraceMs ?? REPOSITORY_LOCK_RECLAIM_GRACE_MS,
+      now: options.now ?? (() => Date.now()),
+    },
+  )
 }
 
 export function withGlobalSetupLock<A, E, R>(

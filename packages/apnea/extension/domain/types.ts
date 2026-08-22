@@ -20,6 +20,47 @@ export type ReworkTarget = "code" | "phase_package"
 
 export type RequiredReworkTarget = "plan" | ReworkTarget
 
+/** Fields every pending commit carries regardless of backend. */
+export interface PendingCommitCore {
+  /** Transaction id; appears in the commit message as `Apnea-Transaction: <id>`. */
+  id: string
+  /** Phase whose completion this transaction commits. */
+  phase_index: number
+  /** Full commit message including the `Apnea-Transaction:` trailer line. */
+  message: string
+  /** Whether completion advances to finishing instead of the next phase. */
+  no_remaining_phases: boolean
+  /** Repo-relative `.apnea/` path of the verify log for this phase. */
+  verify_log: string
+}
+
+/** Git anchor captured before any ref moves: the exact commit to create. */
+export interface GitPendingCommit extends PendingCommitCore {
+  backend: "git"
+  /** Full ref (e.g. `refs/heads/apnea/slug`) the commit must land on. */
+  branch: string
+  /** Expected HEAD when completion starts; also the created commit's parent. */
+  parent_commit: string
+  /** Prepared tree id (staged with `.apnea` excluded). */
+  tree_id: string
+}
+
+/** jj anchor captured right after describing `@`. */
+export interface JjPendingCommit extends PendingCommitCore {
+  backend: "jj"
+  /** Change id of the described working-copy change. */
+  change_id: string
+  /** Fingerprint of the change's non-.apnea diff at preparation time. */
+  content_fingerprint: string
+}
+
+/**
+ * Durable record of an in-flight commit. Written after VCS preparation and
+ * before completion, so a crash anywhere afterwards can recognize and finish
+ * the transaction exactly once.
+ */
+export type PendingCommit = GitPendingCommit | JjPendingCommit
+
 /** Internal decode marker for ambiguous version-1 planning state. */
 export const LEGACY_PLAN_REWORK = Symbol("apnea.legacy-plan-rework")
 export const LEGACY_CODE_REWORK = Symbol("apnea.legacy-code-rework")
@@ -43,7 +84,7 @@ export interface ApneaConfig {
 }
 
 export interface RunState {
-  version: 1
+  version: 2
   slug: string
   step: Step
   phase_index: number
@@ -111,6 +152,13 @@ export interface RunState {
   current_code_review: string | null
   /** The exact dispatch that owns the next review round, if any. */
   required_rework: RequiredReworkTarget | null
+  /**
+   * In-flight commit transaction, if any. Set after VCS preparation and
+   * cleared only after completion + bookmark succeed; a crash leaves it
+   * durable so the next `workflow_commit_phase` call resumes that
+   * transaction instead of re-running gates and verification.
+   */
+  pending_commit: PendingCommit | null
   /** Never serialized. An old planning state needs an explicit assertion. */
   [LEGACY_PLAN_REWORK]?: true
   /** Never serialized. Ambiguous old coding state needs an explicit assertion. */
