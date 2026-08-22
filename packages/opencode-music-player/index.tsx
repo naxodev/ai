@@ -37,6 +37,13 @@ export type ControllerDependencies = {
   createSessionMedia: () => SessionMedia
 }
 
+/**
+ * Seeking to the exact duration finishes the track immediately, so a click
+ * near the end of a seek bar would skip songs instead of seeking. Clamp to
+ * just short of the end; skipping is what the next button is for.
+ */
+export const SEEK_END_MARGIN_MS = 1_000
+
 function seekTarget(positionMs: number, durationMs?: number): number | null {
   if (
     !Number.isFinite(positionMs) ||
@@ -45,7 +52,8 @@ function seekTarget(positionMs: number, durationMs?: number): number | null {
     durationMs <= 0
   )
     return null
-  return Math.max(0, Math.min(durationMs, Math.round(positionMs)))
+  const ceiling = Math.max(0, durationMs - SEEK_END_MARGIN_MS)
+  return Math.max(0, Math.min(ceiling, Math.round(positionMs)))
 }
 
 const controllerDependencies: ControllerDependencies = {

@@ -312,6 +312,30 @@ test("play and seek retain daemon state until the next snapshot", async () => {
   view.controller.dispose()
 })
 
+test("bar-edge seeks clamp just short of the track end instead of skipping songs", async () => {
+  const { client, calls } = createClient()
+  const view = harness(client)
+  await flush()
+  // Clicking the last cell maps to the exact duration; seeking there would
+  // finish the track immediately and advance to the next song.
+  await view.controller.seek(180_000)
+  await view.controller.seek(500_000)
+  expect(calls).toEqual(["seek:179000", "seek:179000"])
+  view.controller.dispose()
+})
+
+test("very short tracks clamp end-of-bar seeks to the start rather than negative positions", async () => {
+  const { client, calls } = createClient({
+    ...player("short"),
+    track: { ...player("short").track!, duration_ms: 400 },
+  })
+  const view = harness(client)
+  await flush()
+  await view.controller.seek(400)
+  expect(calls).toEqual(["seek:0"])
+  view.controller.dispose()
+})
+
 test("playback intent survives command success until daemon acknowledgement", async () => {
   const { client, calls } = createClient()
   const gate = deferred<void>()
