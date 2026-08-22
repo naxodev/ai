@@ -10,7 +10,7 @@ import {
 } from "../domain/setup.ts"
 import { ConfigError, type AppError } from "../errors.ts"
 import { ok, type ToolResult } from "../result.ts"
-import { decodeGlobalConfig } from "../schema/config.ts"
+import { decodeGlobalConfig, decodeProjectConfig } from "../schema/config.ts"
 import { FileSystem } from "../services/file-system.ts"
 
 export type SetupParams = {
@@ -87,24 +87,6 @@ export const setupWorkflow = (
   Effect.gen(function* () {
     const fs = yield* FileSystem
 
-    const readJsonSafe = (
-      filePath: string,
-    ): Effect.Effect<Record<string, unknown>> =>
-      Effect.gen(function* () {
-        const present = yield* fs.exists(filePath)
-        if (!present) return {}
-        const text = yield* fs.readFile(filePath)
-        try {
-          const v = JSON.parse(text)
-          if (v && typeof v === "object" && !Array.isArray(v)) {
-            return v as Record<string, unknown>
-          }
-          return {}
-        } catch {
-          return {}
-        }
-      })
-
     const has: Detected = {
       pi: deps.onPath("pi"),
       claude: deps.onPath("claude"),
@@ -124,24 +106,61 @@ export const setupWorkflow = (
     const trustedHome = deps.trustedHome?.() ?? os.homedir()
     const gPath = globalConfigPath(trustedHome)
 
-    const prev = yield* readJsonSafe(gPath)
     const force = params.force === true
+    let replacedMalformedGlobal = false
+    let prev: Record<string, unknown> = {}
+    if (yield* fs.exists(gPath)) {
+      const text = yield* fs.readTrustedGlobalFile(trustedHome, gPath)
+      try {
+        const parsed: unknown = JSON.parse(text)
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("global config must be a JSON object")
+        }
+        prev = parsed as Record<string, unknown>
+      } catch (error) {
+        if (!force) {
+          return yield* new ConfigError({
+            message: `existing global config is malformed; refusing to replace it without --force: ${error instanceof Error ? error.message : String(error)}`,
+            path: gPath,
+          })
+        }
+        replacedMalformedGlobal = true
+      }
+    }
     const globalConfig = buildGlobalConfig({ has, prev, force })
 
     const serialized = `${JSON.stringify(globalConfig, null, 2)}\n`
-    yield* fs.writeTrustedGlobalFile(trustedHome, gPath, serialized)
 
     let projectPath: string | null = null
     if (params.project) {
       const pPath = projectConfigPath(root)
+      if (yield* fs.projectPathExists(root, pPath)) {
+        const text = yield* fs.readProjectFile(root, pPath)
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(text)
+        } catch (error) {
+          return yield* new ConfigError({
+            message: `invalid JSON at ${pPath}: ${error instanceof Error ? error.message : String(error)}`,
+            path: pPath,
+          })
+        }
+        const decoded = decodeProjectConfig(parsed)
+        if (Result.isFailure(decoded)) return yield* decoded.failure
+      }
+      projectPath = pPath
+    }
+
+    yield* fs.writeTrustedGlobalFile(trustedHome, gPath, serialized)
+
+    if (projectPath) {
       // project: roles only — never cmd
       const projectCfg = { roles: pickRoles(has) }
       yield* fs.writeProjectFile(
         root,
-        pPath,
+        projectPath,
         `${JSON.stringify(projectCfg, null, 2)}\n`,
       )
-      projectPath = pPath
     }
 
     const missing = detectionNotes(has)
@@ -171,9 +190,8 @@ export const setupWorkflow = (
       agentsMdPath = target
     }
 
-    // A failed decode after writing is a note, not a failure — a user with a
-    // malformed pre-existing config must still get a written config and an
-    // actionable note, never a hard refusal where today there is none.
+    // Generated defaults can still inherit malformed profile or role shapes
+    // from valid JSON. Report those separately from JSON parse refusals.
     const decoded = decodeGlobalConfig(globalConfig)
     if (Result.isFailure(decoded)) {
       missing.push(
@@ -193,5 +211,11 @@ export const setupWorkflow = (
     if (params.agents_md) {
       data.agents_md = agentsMdPath
     }
-    return ok(`wrote global config ${gPath}`, data)
+    if (replacedMalformedGlobal) data.replaced_malformed_global = true
+    return ok(
+      replacedMalformedGlobal
+        ? `replaced malformed global config ${gPath}`
+        : `wrote global config ${gPath}`,
+      data,
+    )
   })

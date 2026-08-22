@@ -58,7 +58,15 @@ export const RunStoreLive = Layer.effect(
         const p = statePath(root)
         const present = yield* fs.projectPathExists(root, p)
         if (!present) return null
-        const text = yield* fs.readProjectFile(root, p)
+        const text = yield* fs.readProjectFile(root, p).pipe(
+          Effect.mapError(
+            (error) =>
+              new StateCorrupt({
+                path: p,
+                message: error.message,
+              }),
+          ),
+        )
         let json: unknown
         try {
           json = JSON.parse(text)

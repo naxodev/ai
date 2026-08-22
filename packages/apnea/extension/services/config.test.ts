@@ -5,6 +5,7 @@ import { expectFailure } from "../test/expect-failure.ts"
 import { makeFakeFileSystem } from "../test/fake-file-system.ts"
 import { itEffect } from "../test/it-effect.ts"
 import { Config, ConfigLive } from "./config.ts"
+import { PERSISTED_INPUT_MAX_BYTES } from "./file-system.ts"
 
 function withFake(initial: Record<string, string> = {}) {
   const fake = makeFakeFileSystem(initial)
@@ -44,6 +45,36 @@ describe("Config service (fake FileSystem)", () => {
       const e = expectFailure(r, "ConfigError")
       expect(e.message).toContain("invalid JSON")
       expect(e.path).toBe(g)
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("oversized global config → ConfigError", () => {
+    const g = globalConfigPath()
+    const { layer } = withFake({
+      [g]: "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1),
+    })
+    return Effect.gen(function* () {
+      const config = yield* Config
+      const result = yield* Effect.result(config.load("/proj"))
+      const error = expectFailure(result, "ConfigError")
+      expect(error.message).toContain("byte limit")
+      expect(error.path).toBe(g)
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("oversized project config → ConfigError", () => {
+    const g = globalConfigPath()
+    const p = projectConfigPath("/proj")
+    const { layer } = withFake({
+      [g]: validGlobal,
+      [p]: "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1),
+    })
+    return Effect.gen(function* () {
+      const config = yield* Config
+      const result = yield* Effect.result(config.load("/proj"))
+      const error = expectFailure(result, "ConfigError")
+      expect(error.message).toContain("byte limit")
+      expect(error.path).toBe(p)
     }).pipe(Effect.provide(layer))
   })
 

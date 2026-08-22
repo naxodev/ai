@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { DISPATCH_KINDS } from "./state-machine.ts"
-import { timeoutMsForKind } from "./timeouts.ts"
+import { deadlineAfter, timeoutMsForKind } from "./timeouts.ts"
+
+test("deadlineAfter saturates instead of persisting an unsafe integer", () => {
+  expect(deadlineAfter(1_000, Number.MAX_SAFE_INTEGER)).toBe(
+    Number.MAX_SAFE_INTEGER,
+  )
+  expect(deadlineAfter(1_000, 2_000)).toBe(3_000)
+})
 
 describe("timeoutMsForKind", () => {
   test("prefers the step-specific key over default", () => {

@@ -1,5 +1,10 @@
 import { Effect, Layer } from "effect"
-import { FileSystem, type FileSystemService } from "../services/file-system.ts"
+import { ConfigError } from "../errors.ts"
+import {
+  FileSystem,
+  PERSISTED_INPUT_MAX_BYTES,
+  type FileSystemService,
+} from "../services/file-system.ts"
 
 /** In-memory FileSystem for unit tests (paths as exact string keys). */
 export function makeFakeFileSystem(
@@ -26,6 +31,22 @@ export function makeFakeFileSystem(
   for (const [p, content] of Object.entries(initial)) {
     ensureParent(p)
     files.set(p, content)
+  }
+
+  const boundedRead = (path: string, limit: number) => {
+    const value = files.get(path)
+    if (value === undefined) {
+      return Effect.die(new Error(`ENOENT: ${path}`))
+    }
+    if (Buffer.byteLength(value, "utf8") > limit) {
+      return Effect.fail(
+        new ConfigError({
+          message: `persisted input exceeds ${limit} byte limit: ${path}`,
+          path,
+        }),
+      )
+    }
+    return Effect.succeed(value)
   }
 
   const service: FileSystemService = {
@@ -60,12 +81,11 @@ export function makeFakeFileSystem(
         files.set(path, content)
       }),
 
-    readProjectFile: (_root, path) =>
-      Effect.sync(() => {
-        const value = files.get(path)
-        if (value === undefined) throw new Error(`ENOENT: ${path}`)
-        return value
-      }),
+    readTrustedGlobalFile: (_home, path, limit = PERSISTED_INPUT_MAX_BYTES) =>
+      boundedRead(path, limit),
+
+    readProjectFile: (_root, path, limit = PERSISTED_INPUT_MAX_BYTES) =>
+      boundedRead(path, limit),
 
     projectPathExists: (_root, path) =>
       Effect.sync(() => files.has(path) || dirs.has(path)),

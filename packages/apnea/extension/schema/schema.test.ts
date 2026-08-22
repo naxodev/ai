@@ -153,6 +153,60 @@ describe("RunStateSchema", () => {
     )
   })
 
+  test.each([
+    ["phase_index", 0],
+    ["phase_index", 1.5],
+    ["phase_index", Infinity],
+    ["phase_index", Number.MAX_SAFE_INTEGER + 1],
+    ["phase_count_hint", -1],
+    ["phase_count_hint", 0.5],
+    ["pending_started_at", -1],
+    ["pending_deadline_ms", 1.5],
+    ["pending_nudged_at", Infinity],
+  ])("rejects unsafe state numeric %s=%s", (field, value) => {
+    expect(
+      Result.isFailure(decodeRunState({ ...fullState, [field]: value })),
+    ).toBe(true)
+  })
+
+  test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects unsafe round value %s",
+    (round) => {
+      expect(
+        Result.isFailure(
+          decodeRunState({
+            ...fullState,
+            rounds: { "phase-01/code_review": round },
+          }),
+        ),
+      ).toBe(true)
+    },
+  )
+
+  test("accepts safe-integer state boundaries", () => {
+    const result = decodeRunState({
+      ...fullState,
+      phase_count_hint: Number.MAX_SAFE_INTEGER,
+      rounds: { "phase-01/code_review": Number.MAX_SAFE_INTEGER },
+      pending_started_at: 0,
+      pending_deadline_ms: Number.MAX_SAFE_INTEGER,
+      pending_nudged_at: 0,
+    })
+    expect(Result.isSuccess(result)).toBe(true)
+  })
+
+  test.each([
+    ["pending_artifact", "/tmp/artifact.md"],
+    ["pending_artifact", ".apnea/../outside.md"],
+    ["current_phase_package", "../phase-package.md"],
+    ["current_code_review", ".apnea/artifacts/../../review.md"],
+    ["pending_artifact", ".apnea/artifacts/unsafe\0.md"],
+  ])("rejects escaped persisted artifact path %s=%s", (field, value) => {
+    expect(
+      Result.isFailure(decodeRunState({ ...fullState, [field]: value })),
+    ).toBe(true)
+  })
+
   test("legacy state without dispatch-clock fields decodes with defaults", () => {
     // A run started before the resumable-wait change must still load, or
     // upgrading mid-run would strand the user with a corrupt-state error.
@@ -264,6 +318,25 @@ describe("RunStateSchema", () => {
     })
     expect(doc.required).not.toContain("pending_floating_exit")
     expect(doc.required).not.toContain("phase_package_rework")
+  })
+
+  test("published artifact path patterns reject NUL bytes", () => {
+    const jsonPath = path.join(repoRoot, "schemas/state.schema.json")
+    const doc = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as {
+      properties: Record<string, { pattern?: string }>
+    }
+    for (const field of [
+      "pending_artifact",
+      "current_phase_package",
+      "current_code_review",
+    ]) {
+      const pattern = doc.properties[field]?.pattern
+      expect(pattern).toBeDefined()
+      expect(new RegExp(pattern!).test(".apnea/artifacts/unsafe\0.md")).toBe(
+        false,
+      )
+      expect(new RegExp(pattern!).test(".apnea/artifacts/safe.md")).toBe(true)
+    }
   })
 })
 

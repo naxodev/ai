@@ -7,6 +7,7 @@ import { expectFailure } from "../test/expect-failure.ts"
 import { makeFakeFileSystem } from "../test/fake-file-system.ts"
 import { itEffect } from "../test/it-effect.ts"
 import { setupWorkflow, type SetupDeps } from "./setup.ts"
+import { PERSISTED_INPUT_MAX_BYTES } from "../services/file-system.ts"
 
 const ROOT = "/proj"
 
@@ -186,14 +187,20 @@ describe("setupWorkflow (fake FileSystem)", () => {
   )
 
   itEffect(
-    "malformed pre-existing config JSON is treated as absent; setup still succeeds",
+    "malformed pre-existing global JSON is unchanged unless a human forces replacement",
     () => {
       const gPath = globalConfigPath()
-      const fsFake = makeFakeFileSystem({ [gPath]: "{not json" })
+      const malformed = "{not json\n"
+      const fsFake = makeFakeFileSystem({ [gPath]: malformed })
       const { layer } = workflowLayer(fsFake)
       const deps = fakeDeps({ onPath: onPathFrom({ pi: true }) })
       return Effect.gen(function* () {
-        const result = yield* setupWorkflow({}, ROOT, deps)
+        const refused = yield* Effect.result(setupWorkflow({}, ROOT, deps))
+        const error = expectFailure(refused, "ConfigError")
+        expect(error.message).toContain("--force")
+        expect(fsFake.files.get(gPath)).toBe(malformed)
+
+        const result = yield* setupWorkflow({ force: true }, ROOT, deps)
         expect(result.ok).toBe(true)
         const written = JSON.parse(fsFake.files.get(gPath)!)
         expect(written.roles).toEqual({
@@ -202,9 +209,28 @@ describe("setupWorkflow (fake FileSystem)", () => {
           reviewer: { profile: "pi-default" },
           coder: { profile: "pi-grok" },
         })
+        expect(result.data?.replaced_malformed_global).toBe(true)
+        if (result.ok) {
+          expect(result.message).toContain("replaced malformed global config")
+        }
       }).pipe(Effect.provide(layer))
     },
   )
+
+  itEffect("malformed existing project config fails closed", () => {
+    const pPath = projectConfigPath(ROOT)
+    const malformed = "{broken project\n"
+    const fsFake = makeFakeFileSystem({ [pPath]: malformed })
+    const { layer } = workflowLayer(fsFake)
+    const deps = fakeDeps({ onPath: onPathFrom({ pi: true }) })
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        setupWorkflow({ project: true }, ROOT, deps),
+      )
+      expectFailure(result, "ConfigError")
+      expect(fsFake.files.get(pPath)).toBe(malformed)
+    }).pipe(Effect.provide(layer))
+  })
 
   itEffect(
     "materializeRoleAgentDir throwing → role_agent_dir:null + note; setup still ok (a broken agent dir must not brick setup)",
@@ -287,6 +313,22 @@ describe("setupWorkflow (fake FileSystem)", () => {
       }).pipe(Effect.provide(layer))
     },
   )
+
+  itEffect("--agents-md refuses an oversized existing file unchanged", () => {
+    const agentsPath = path.join(ROOT, "AGENTS.md")
+    const existing = "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1)
+    const fsFake = makeFakeFileSystem({ [agentsPath]: existing })
+    const { layer } = workflowLayer(fsFake)
+    const deps = fakeDeps({ onPath: onPathFrom({ pi: true }) })
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        setupWorkflow({ agents_md: true }, ROOT, deps),
+      )
+      const error = expectFailure(result, "ConfigError")
+      expect(error.message).toContain("byte limit")
+      expect(fsFake.files.get(agentsPath)).toBe(existing)
+    }).pipe(Effect.provide(layer))
+  })
 
   itEffect(
     "--agents-md re-run replaces only the marker block, not the whole file",

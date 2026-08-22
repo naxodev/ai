@@ -9,6 +9,10 @@
 
 Unknown keys and unimplemented values (`isolation: "worktree"`) **hard-error** at start.
 
+`review_round_cap` is a safe integer from 1 through 20. Every `timeouts_ms` value is a safe
+integer from 1000 through 9007199254740991. For 0.2 compatibility, a numeric value outside these
+ranges falls back per field instead of rejecting the whole config. Wrong types still hard-error.
+
 ## Global profiles
 
 ```jsonc
@@ -113,9 +117,12 @@ that gets killed. Passing `--budget` explicitly still works at any poll: it is a
 statement that your shell allows a longer call. An explicit budget under the floor is still
 refused.
 
-`poll_ms` must be at least 250ms. Every poll spawns two herdr subprocesses, so a smaller
-interval is a busy-spin rather than a faster wait. `budget_ms` must be finite. The sleep between
-polls is clamped to the remaining budget, so a large `poll_ms` cannot make a call outlive it.
+`poll_ms` must be a safe integer of at least 250ms. Every poll spawns two herdr subprocesses, so a
+smaller interval is a busy-spin rather than a faster wait. `budget_ms` must be a positive safe
+integer. Human flags use JavaScript numeric syntax: hexadecimal and scientific forms are accepted
+when they evaluate to an exact safe integer, while fractional values are refused. The sleep
+between polls is clamped to the remaining budget, so a large `poll_ms` cannot make a call outlive
+it.
 
 The idle nudge and the final grace are independent rungs. A role nudged early for going idle
 still receives its 180000ms grace at the deadline; it just is not prompted twice.
@@ -169,3 +176,8 @@ Project entries that include `cmd`, `cmd_oneshot`, `cmd_interactive`, or `bin` â
 - Optionally write project role bindings
 - Never write `cmd` into project config
 - Point at the manual gate before claiming readiness
+
+Existing global config is merged only after bounded JSON parsing. Malformed global JSON is left
+unchanged unless the human passes `--force`; forced replacement is atomic and reported. Existing
+project config is validated before setup overwrites role bindings and malformed content fails
+closed.

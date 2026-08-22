@@ -8,6 +8,7 @@ import { makeFakeFileSystem } from "../test/fake-file-system.ts"
 import { fakeVcsLayer } from "../test/fake-vcs.ts"
 import { itEffect } from "../test/it-effect.ts"
 import { RunStore, RunStoreLive } from "../services/run-store.ts"
+import { PERSISTED_INPUT_MAX_BYTES } from "../services/file-system.ts"
 import { commitWorkflow } from "./commit.ts"
 
 const ROOT = "/proj"
@@ -133,6 +134,38 @@ describe("commitWorkflow (fake layers)", () => {
       const r = yield* Effect.result(commitWorkflow({}, ROOT))
       const e = expectFailure(r, "ArtifactInvalid")
       expect(e.message).toContain("no verify commands")
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("oversized review fails as ArtifactInvalid", () => {
+    const state = baseState()
+    const reviewAbs = `${ROOT}/${state.current_code_review}`
+    const fs = seedFiles(state, {
+      [reviewAbs]: "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1),
+    })
+    const { layer } = layerOf(fs)
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(commitWorkflow({}, ROOT))
+      const error = expectFailure(result, "ArtifactInvalid")
+      expect(error.artifact).toBe(state.current_code_review!)
+      expect(error.message).toContain("byte limit")
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("oversized phase package fails as ArtifactInvalid", () => {
+    const state = baseState()
+    const reviewAbs = `${ROOT}/${state.current_code_review}`
+    const pkgAbs = `${ROOT}/${state.current_phase_package}`
+    const fs = seedFiles(state, {
+      [reviewAbs]: approvedReview(),
+      [pkgAbs]: "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1),
+    })
+    const { layer } = layerOf(fs)
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(commitWorkflow({}, ROOT))
+      const error = expectFailure(result, "ArtifactInvalid")
+      expect(error.artifact).toBe(state.current_phase_package!)
+      expect(error.message).toContain("byte limit")
     }).pipe(Effect.provide(layer))
   })
 

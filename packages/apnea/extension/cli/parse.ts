@@ -150,10 +150,12 @@ export function parseOperationArgs(
       if (value === undefined)
         return { ok: false, message: `option --${key} requires =<value>` }
       if (numericValues.has(key)) {
+        const numeric = Number(value)
         if (
           value === "" ||
           value.trim() !== value ||
-          !Number.isFinite(Number(value))
+          !Number.isSafeInteger(numeric) ||
+          numeric <= 0
         ) {
           return {
             ok: false,
@@ -196,8 +198,8 @@ export type NumFlag =
 /**
  * Shared by `/apnea` and the CLI so a mistyped `--budget=abc` is refused the
  * same way on both surfaces instead of silently falling back to a default —
- * a scripting agent needs a signal, not a quietly-wrong value. `--key=`
- * Strict human-facing parsing rejects empty numeric values before this helper.
+ * a scripting agent needs a signal, not a quietly-wrong value. This exported
+ * boundary rejects empty and padded values even when called directly.
  */
 export function parseNumFlag(
   values: Map<string, string>,
@@ -205,7 +207,9 @@ export function parseNumFlag(
 ): NumFlag {
   const raw = values.get(key)
   if (raw === undefined) return { ok: true, value: undefined }
-  if (raw === "") return { ok: false, raw }
+  if (raw === "" || raw.trim() !== raw) return { ok: false, raw }
   const n = Number(raw)
-  return Number.isFinite(n) ? { ok: true, value: n } : { ok: false, raw }
+  return Number.isSafeInteger(n) && n > 0
+    ? { ok: true, value: n }
+    : { ok: false, raw }
 }

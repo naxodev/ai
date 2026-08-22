@@ -25,6 +25,10 @@
 
 Package-owned briefs live in the installed package (`briefs/`), not under `.apnea/`.
 
+Persisted artifact references in `state.json` must be repository-relative paths below `.apnea/`.
+Absolute paths and paths containing NULs, empty, `.`, `..`, or backslash components are corrupt
+state. State and artifacts must be regular UTF-8 files no larger than 1 MiB.
+
 ## Front-matter schema
 
 Required on every role-produced artifact:

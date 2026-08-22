@@ -35,7 +35,17 @@ this tool at a repository.
   same-user lock keyed by the canonical account home for its full read/merge/write and role-agent
   materialization. Setup takes this global lock before an optional repository lock. Global config
   replacement is atomic, rejects symlink components, and fsyncs the file and parent directory
-  where the platform supports it.
+  where the platform supports it. Malformed global JSON remains byte-for-byte unchanged unless a
+  human passes `--force`; the result explicitly reports a forced replacement. Malformed project
+  config always fails closed.
+- **Persisted inputs are bounded regular UTF-8 files.** Config, state, setup `AGENTS.md`, and
+  workflow artifacts are opened once and read through the descriptor. Apnea rejects non-regular
+  files, invalid UTF-8, and inputs over 1 MiB before parsing. Descriptor checks avoid a separate
+  stat/read race. Existing project and account-home symlink confinement still applies.
+- **State-owned artifact paths cannot escape the repository.** `pending_artifact`,
+  `current_phase_package`, and `current_code_review` must be relative paths below `.apnea/`.
+  Absolute paths, NULs, backslashes, empty components, and `.` or `..` components make state
+  corrupt.
 - **Project-path checks reject existing symlink components but cannot provide `openat` semantics.**
   Node does not expose a portable directory-descriptor traversal API, so a hostile same-user
   process can still race a checked parent component before the final filesystem operation.

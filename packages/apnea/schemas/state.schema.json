@@ -21,18 +21,33 @@
         "done"
       ]
     },
-    "phase_index": { "type": "integer", "minimum": 0 },
-    "phase_count_hint": { "type": ["integer", "null"], "minimum": 0 },
+    "phase_index": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "phase_count_hint": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
     "rounds": {
       "type": "object",
       "description": "Keys like phase-01/plan_review or phase-01/code_review",
-      "additionalProperties": { "type": "integer", "minimum": 1 }
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
     },
     "vcs": { "type": "string", "enum": ["jj", "git"] },
     "allow_dirty": { "type": "boolean" },
     "goal": { "type": "string" },
     "last_error": { "type": ["string", "null"] },
-    "pending_artifact": { "type": ["string", "null"] },
+    "pending_artifact": {
+      "type": ["string", "null"],
+      "pattern": "^\\.apnea\\/(?!.*\\u0000)(?!\\.(?:/|$)|\\.\\.(?:/|$))(?!.*\\/\\.(?:\\/|$))(?!.*\\/\\.\\.(?:\\/|$))(?!.*\\\\)[^/]+(?:/[^/]+)*$"
+    },
     "pending_role": { "type": ["string", "null"] },
     "pending_delivery": {
       "type": ["string", "null"],
@@ -46,9 +61,21 @@
     },
     "pending_pane_id": { "type": ["string", "null"] },
     "pending_pane_label": { "type": ["string", "null"] },
-    "pending_started_at": { "type": ["integer", "null"] },
-    "pending_deadline_ms": { "type": ["integer", "null"] },
-    "pending_nudged_at": { "type": ["integer", "null"] },
+    "pending_started_at": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "pending_deadline_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "pending_nudged_at": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
     "pending_final_grace": { "type": "boolean" },
     "pending_extended": { "type": "boolean" },
     "role_panes": {
@@ -65,8 +92,14 @@
     },
     "package_root": { "type": "string" },
     "reviewer_tree_fingerprint": { "type": ["string", "null"] },
-    "current_phase_package": { "type": ["string", "null"] },
-    "current_code_review": { "type": ["string", "null"] },
+    "current_phase_package": {
+      "type": ["string", "null"],
+      "pattern": "^\\.apnea\\/(?!.*\\u0000)(?!\\.(?:/|$)|\\.\\.(?:/|$))(?!.*\\/\\.(?:\\/|$))(?!.*\\/\\.\\.(?:\\/|$))(?!.*\\\\)[^/]+(?:/[^/]+)*$"
+    },
+    "current_code_review": {
+      "type": ["string", "null"],
+      "pattern": "^\\.apnea\\/(?!.*\\u0000)(?!\\.(?:/|$)|\\.\\.(?:/|$))(?!.*\\/\\.(?:\\/|$))(?!.*\\/\\.\\.(?:\\/|$))(?!.*\\\\)[^/]+(?:/[^/]+)*$"
+    },
     "required_rework": {
       "type": ["string", "null"],
       "enum": ["plan", "code", "phase_package", null],
