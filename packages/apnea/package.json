@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/apnea",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Host-neutral multi-role workflow engine and standalone Bun CLI",
   "license": "MIT",
   "author": "Nacho Vazquez",

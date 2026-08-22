@@ -36,7 +36,18 @@ describe("release policy", () => {
     })
 
     expect(Object.keys(projectsVersionData)).toEqual(["apnea"])
-    expect(projectsVersionData.apnea?.newVersion).toBe("0.2.1")
+    // Derive the expectation from the manifest so a released version bump
+    // does not break this policy check.
+    const manifest = JSON.parse(
+      await readFile(
+        new URL("../packages/apnea/package.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { version: string }
+    const [major, minor, patch] = manifest.version.split(".").map(Number)
+    expect(projectsVersionData.apnea?.newVersion).toBe(
+      `${major}.${minor}.${patch + 1}`,
+    )
   })
 
   test("a coordinated incompatible release preserves the installable staged state", async () => {
