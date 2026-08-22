@@ -1,4 +1,5 @@
 import {
+  Cause,
   Clock,
   Context,
   Deferred,
@@ -20,7 +21,8 @@ import {
 } from "../types.ts"
 import { mergePlayer } from "../reconcile.ts"
 import { MusicSessionConfig } from "./config.ts"
-import { decodeArtworkResult } from "./protocol.ts"
+import { encodeFrame } from "./framing.ts"
+import { decodeArtworkResult, decodeServerFrame } from "./protocol.ts"
 import type {
   ArtworkIdentity,
   ArtworkResult,
@@ -201,9 +203,14 @@ export const layer = Layer.effect(
         track.duration_ms === identity.duration_ms
       )
     }
-    const lifecycle = yield* Ref.make({
+    const lifecycle = yield* Ref.make<{
+      readonly closed: boolean
+      readonly pending: Set<Job>
+      readonly active: Job | undefined
+    }>({
       closed: false,
       pending: new Set<Job>(),
+      active: undefined,
     })
     // The deadline fiber is intentionally separate from the sampling worker:
     // accepting a sample may replace the next deadline without interrupting the
@@ -223,6 +230,15 @@ export const layer = Layer.effect(
 
     const setStatus = (value: ProviderStatus) =>
       SubscriptionRef.set(statusRef, value)
+    const degrade = (message: string) =>
+      SubscriptionRef.update(statusRef, (current) => ({
+        ...current,
+        kind:
+          current.kind === "unavailable"
+            ? ("unavailable" as const)
+            : ("degraded" as const),
+        message,
+      }))
     // `stateRef.revision` is both the published revision and the authority
     // token. Every publication, including navigation authority invalidation,
     // is one atomic SubscriptionRef transition.
@@ -231,29 +247,45 @@ export const layer = Layer.effect(
       merge: boolean,
       expectedRevision?: number,
     ) {
-      const accepted = yield* SubscriptionRef.modify(stateRef, (previous) => {
+      const outcome = yield* SubscriptionRef.modify(stateRef, (previous) => {
         if (
           expectedRevision !== undefined &&
           previous.revision !== expectedRevision
         )
-          return [false, previous] as const
+          return ["unchanged" as const, previous]
         const next = merge ? mergePlayer(previous.state, state) : state
         // Polling commonly returns the authoritative state unchanged. Such a
         // sample is not an authority transition and must not churn revisions
         // or continually replace an otherwise valid deadline.
         if (!next || (merge && samePlayerState(next, previous.state)))
-          return [false, previous]
-        return [
-          true,
-          {
-            daemonInstanceId,
-            revision: previous.revision + 1,
-            state: next,
-          },
-        ]
+          return ["unchanged" as const, previous]
+        const candidate = {
+          daemonInstanceId,
+          revision: previous.revision + 1,
+          state: next,
+        }
+        let snapshot: RevisionedState
+        let encoded: string
+        try {
+          const decoded = decodeServerFrame({
+            type: "state",
+            snapshot: candidate,
+          })
+          if (decoded.type !== "state") return ["invalid" as const, previous]
+          snapshot = decoded.snapshot
+          encoded = encodeFrame({ type: "state", snapshot })
+        } catch {
+          return ["invalid" as const, previous]
+        }
+        if (Buffer.byteLength(encoded) > config.maxFrameBytes)
+          return ["too-large" as const, previous]
+        return ["accepted" as const, snapshot]
       })
-      if (accepted) yield* restartPoll()
-      return accepted
+      if (outcome === "invalid") yield* degrade("provider state is invalid")
+      if (outcome === "too-large")
+        yield* degrade("provider state exceeds frame limit")
+      if (outcome === "accepted") yield* restartPoll()
+      return outcome === "accepted"
     })
     const advanceAuthority = Effect.fn(
       "MusicSession.Coordinator.advanceAuthority",
@@ -382,29 +414,40 @@ export const layer = Layer.effect(
       Ref.update(lifecycle, (current) => {
         const pending = new Set(current.pending)
         pending.delete(job)
-        return { ...current, pending }
+        return {
+          ...current,
+          pending,
+          active: current.active === job ? undefined : current.active,
+        }
       })
-    const settleDisposed = Effect.gen(function* () {
-      const jobs = yield* Ref.modify(lifecycle, (current) => [
-        current.pending,
-        { closed: true, pending: new Set<Job>() },
-      ])
-      yield* Queue.shutdown(commands)
-      yield* Effect.forEach(
-        jobs,
-        (job) =>
-          Deferred.fail(
-            job.result,
-            commandError("DISPOSED", "command", "coordinator is closed"),
-          ),
-        { discard: true },
-      )
-    })
+    const closeCommands = (
+      failure: (job: Job, potentiallyIssued: boolean) => SessionCommandError,
+    ) =>
+      Effect.gen(function* () {
+        const terminal = yield* Ref.modify(lifecycle, (current) => [
+          { jobs: current.pending, active: current.active },
+          { closed: true, pending: new Set<Job>(), active: undefined },
+        ])
+        yield* Queue.shutdown(commands)
+        yield* Effect.forEach(
+          terminal.jobs,
+          (job) =>
+            Deferred.fail(job.result, failure(job, terminal.active === job)),
+          { discard: true },
+        )
+      })
+    const settleDisposed = closeCommands(() =>
+      commandError("DISPOSED", "command", "coordinator is closed"),
+    )
     yield* Effect.addFinalizer(() => settleDisposed)
 
     const worker = Effect.forever(
       Effect.gen(function* () {
         const job = yield* Queue.take(commands)
+        yield* Ref.update(lifecycle, (current) => ({
+          ...current,
+          active: job,
+        }))
         const snapshot = yield* SubscriptionRef.get(stateRef)
         const action =
           job.action === "toggle"
@@ -481,7 +524,32 @@ export const layer = Layer.effect(
         yield* reconcile(action)
       }),
     )
-    yield* worker.pipe(Effect.forkScoped)
+    yield* worker.pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
+        const defect = Cause.squash(cause)
+        return degrade("command worker failed").pipe(
+          Effect.andThen(
+            closeCommands((_job, potentiallyIssued) =>
+              potentiallyIssued
+                ? commandError(
+                    "PROVIDER_FAILURE",
+                    "command",
+                    "command outcome is indeterminate after worker failure",
+                    defect,
+                  )
+                : commandError(
+                    "DISPOSED",
+                    "command",
+                    "command was not issued because the command lane failed",
+                    defect,
+                  ),
+            ),
+          ),
+        )
+      }),
+      Effect.forkScoped,
+    )
     yield* Effect.forever(
       Queue.take(pollTriggers).pipe(
         Effect.flatMap(() => sample("poll")),
@@ -575,6 +643,15 @@ export const layer = Layer.effect(
             message: "artwork lookup interrupted",
             cause: { cause: new Error("artwork lookup interrupted") },
           })
+          const defectError = (cause: Cause.Cause<ProviderError>) => {
+            const defect = Cause.squash(cause)
+            return new ProviderError({
+              operation: "artwork",
+              message:
+                defect instanceof Error ? defect.message : String(defect),
+              cause: { cause: defect },
+            })
+          }
           const complete = (exit: {
             readonly result?: ArtworkResult
             readonly error?: ProviderError
@@ -641,7 +718,13 @@ export const layer = Layer.effect(
                   }),
                 )
               }),
-              Effect.catchCause(() => complete({ error: interrupted })),
+              Effect.catchCause((cause) =>
+                complete({
+                  error: Cause.hasInterruptsOnly(cause)
+                    ? interrupted
+                    : defectError(cause),
+                }),
+              ),
               Effect.onInterrupt(() => complete({ error: interrupted })),
             )
           yield* Effect.forkIn(coordinatorScope)(workflow)

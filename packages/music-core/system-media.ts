@@ -670,7 +670,12 @@ export function createSystemMedia(
         ])
         if (!r.ok) throw { status: 500, message: r.err } satisfies MusicError
         clock.seek(positionMs, deps.now())
+        return
       }
+      throw {
+        status: 500,
+        message: "install media-control or nowplaying-cli",
+      } satisfies MusicError
     },
   }
 

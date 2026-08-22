@@ -393,13 +393,15 @@ export const layerFromLegacy = (provider: LegacySessionProvider) =>
     SessionProvider,
     Effect.gen(function* () {
       yield* Effect.addFinalizer(() => Effect.sync(() => provider.dispose()))
-      const events = Stream.callback<MusicChangeEvent>((queue) =>
-        Effect.acquireRelease(
-          Effect.sync(() =>
-            provider.subscribe((event) => Queue.offerUnsafe(queue, event)),
+      const events = Stream.callback<MusicChangeEvent>(
+        (queue) =>
+          Effect.acquireRelease(
+            Effect.sync(() =>
+              provider.subscribe((event) => Queue.offerUnsafe(queue, event)),
+            ),
+            (dispose) => Effect.sync(dispose),
           ),
-          (dispose) => Effect.sync(dispose),
-        ),
+        { bufferSize: 1, strategy: "sliding" },
       )
       return SessionProvider.of({
         status: Effect.fn("MusicSession.Provider.status")(function* () {
@@ -448,6 +450,7 @@ export type CoordinatorProviderFixture = {
   readonly blockArtwork: Effect.Effect<void>
   readonly releaseArtwork: Effect.Effect<void>
   readonly failNextArtwork: (cause?: Error) => Effect.Effect<void>
+  readonly dieNextArtwork: (cause?: Error) => Effect.Effect<void>
   readonly setArtworkResult: (result: ArtworkResult) => Effect.Effect<void>
   readonly artworkStarted: Latch.Latch
   readonly artworkStarts: Queue.Dequeue<number>
@@ -456,6 +459,7 @@ export type CoordinatorProviderFixture = {
   readonly failNextSample: (cause?: Error) => Effect.Effect<void>
   readonly returnNullNextSample: Effect.Effect<void>
   readonly failNextTransport: (cause?: Error) => Effect.Effect<void>
+  readonly dieNextTransport: (cause?: Error) => Effect.Effect<void>
   readonly sampleStarted: Latch.Latch
   readonly sampleCompleted: Latch.Latch
   readonly sampleStarts: Queue.Dequeue<number>
@@ -513,7 +517,9 @@ export const makeCoordinatorProviderFixture = (
     const nextSampleFailure = yield* Ref.make<Error | undefined>(undefined)
     const nextSampleNull = yield* Ref.make(false)
     const nextTransportFailure = yield* Ref.make<Error | undefined>(undefined)
+    const nextTransportDefect = yield* Ref.make<Error | undefined>(undefined)
     const nextArtworkFailure = yield* Ref.make<Error | undefined>(undefined)
+    const nextArtworkDefect = yield* Ref.make<Error | undefined>(undefined)
     const artworkResult = yield* Ref.make<ArtworkResult>({
       type: "unavailable",
     })
@@ -580,7 +586,13 @@ export const makeCoordinatorProviderFixture = (
                   Effect.flatMap((failure) =>
                     failure
                       ? Effect.fail(providerError("artwork", failure))
-                      : Ref.get(artworkResult),
+                      : Ref.getAndSet(nextArtworkDefect, undefined).pipe(
+                          Effect.flatMap((defect) =>
+                            defect
+                              ? Effect.die(defect)
+                              : Ref.get(artworkResult),
+                          ),
+                        ),
                   ),
                   Effect.onInterrupt(() =>
                     Ref.update(interruptedArtwork, (count) => count + 1),
@@ -671,7 +683,11 @@ export const makeCoordinatorProviderFixture = (
                       Effect.flatMap((failure) =>
                         failure
                           ? Effect.fail(providerError("transport", failure))
-                          : Effect.void,
+                          : Ref.getAndSet(nextTransportDefect, undefined).pipe(
+                              Effect.flatMap((defect) =>
+                                defect ? Effect.die(defect) : Effect.void,
+                              ),
+                            ),
                       ),
                     ),
                   () => Ref.update(activeTransports, (count) => count - 1),
@@ -696,6 +712,8 @@ export const makeCoordinatorProviderFixture = (
       releaseArtwork: Latch.open(artworkGate).pipe(Effect.asVoid),
       failNextArtwork: (cause = new Error("artwork failed")) =>
         Ref.set(nextArtworkFailure, cause),
+      dieNextArtwork: (cause = new Error("artwork defect")) =>
+        Ref.set(nextArtworkDefect, cause),
       setArtworkResult: (result) => Ref.set(artworkResult, result),
       artworkStarted,
       artworkStarts,
@@ -706,6 +724,8 @@ export const makeCoordinatorProviderFixture = (
       returnNullNextSample: Ref.set(nextSampleNull, true),
       failNextTransport: (cause = new Error("transport failed")) =>
         Ref.set(nextTransportFailure, cause),
+      dieNextTransport: (cause = new Error("transport defect")) =>
+        Ref.set(nextTransportDefect, cause),
       sampleStarted,
       sampleCompleted,
       sampleStarts,
