@@ -159,13 +159,15 @@ jobs:
           PACKAGE: ${{ steps.release.outputs.package }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          for attempt in 1 2 3 4 5; do
+          # npm propagation can exceed 30s (music-core 0.1.2 took ~60s), so
+          # poll long enough that a successful publish never fails the run.
+          for attempt in $(seq 1 30); do
             if [ "$(npm view "$PACKAGE@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
               echo "$PACKAGE@$VERSION is live"
               exit 0
             fi
-            echo "$PACKAGE@$VERSION is not visible yet (attempt $attempt/5)"
-            sleep 5
+            echo "$PACKAGE@$VERSION is not visible yet (attempt $attempt/30)"
+            sleep 10
           done
           echo "::error::$PACKAGE@$VERSION is not visible on npm"
           exit 1
