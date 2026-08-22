@@ -36,12 +36,17 @@ import { ProviderError, SessionProvider } from "./provider.ts"
 export type CommandResult = { readonly action: TransportAction }
 type CommandCode = Extract<
   ProtocolErrorCode,
-  "SERVER_BUSY" | "DISPOSED" | "PROVIDER_FAILURE"
+  "SERVER_BUSY" | "DISPOSED" | "PROVIDER_FAILURE" | "INDETERMINATE_COMMAND"
 >
 export class SessionCommandError extends Schema.TaggedError<SessionCommandError>()(
   "MusicSession.CommandError",
   {
-    code: Schema.Literals(["SERVER_BUSY", "DISPOSED", "PROVIDER_FAILURE"]),
+    code: Schema.Literals([
+      "SERVER_BUSY",
+      "DISPOSED",
+      "PROVIDER_FAILURE",
+      "INDETERMINATE_COMMAND",
+    ]),
     operation: Schema.String,
     message: Schema.String,
     cause: Schema.optional(Schema.Defect()),
@@ -533,7 +538,7 @@ export const layer = Layer.effect(
             closeCommands((_job, potentiallyIssued) =>
               potentiallyIssued
                 ? commandError(
-                    "PROVIDER_FAILURE",
+                    "INDETERMINATE_COMMAND",
                     "command",
                     "command outcome is indeterminate after worker failure",
                     defect,

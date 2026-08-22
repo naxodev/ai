@@ -769,7 +769,7 @@ test("command worker defects close the lane and settle active, queued, and futur
 
         const activeFailure = yield* Fiber.join(active).pipe(Effect.flip)
         expect(activeFailure).toMatchObject({
-          code: "PROVIDER_FAILURE",
+          code: "INDETERMINATE_COMMAND",
           operation: "command",
           message: "command outcome is indeterminate after worker failure",
           cause: { cause: expect.any(Error) },
