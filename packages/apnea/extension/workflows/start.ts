@@ -59,7 +59,7 @@ export const startWorkflow = (
             pendingStatus === "artifact_exists"
               ? "call workflow_wait to ingest pending artifact"
               : pendingStatus === "artifact_missing"
-                ? "offer re-dispatch same round via dispatch_role"
+                ? "offer same-round dispatch_role redeliver=true after proving the prior delivery is dead"
                 : "inspect workflow_status and continue legal next step",
         },
         nextAfter(existing.step),
@@ -112,6 +112,7 @@ export const startWorkflow = (
       last_error: null,
       pending_artifact: null,
       pending_role: null,
+      pending_delivery: null,
       pending_pane_id: null,
       pending_pane_label: null,
       pending_started_at: null,
@@ -124,7 +125,7 @@ export const startWorkflow = (
       reviewer_tree_fingerprint: null,
       current_phase_package: null,
       current_code_review: null,
-      phase_package_rework: false,
+      required_rework: null,
     }
     // The literal above assigns the ladder's fields; this re-asserts them
     // through the shared helper so a rung added there cannot be missed here.

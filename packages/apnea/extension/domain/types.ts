@@ -12,9 +12,17 @@ export type Role = "orchestrator" | "planner" | "reviewer" | "coder"
 
 export type RoleMode = "oneshot" | "interactive"
 
+export type PendingDelivery = "manual" | "interactive"
+
 export type Verdict = "APPROVED" | "CHANGES_REQUIRED"
 
 export type ReworkTarget = "code" | "phase_package"
+
+export type RequiredReworkTarget = "plan" | ReworkTarget
+
+/** Internal decode marker for ambiguous version-1 planning state. */
+export const LEGACY_PLAN_REWORK = Symbol("apnea.legacy-plan-rework")
+export const LEGACY_CODE_REWORK = Symbol("apnea.legacy-code-rework")
 
 export type VcsBackend = "jj" | "git"
 
@@ -50,6 +58,8 @@ export interface RunState {
   pending_artifact: string | null
   /** Role for pending dispatch */
   pending_role: Role | null
+  /** Delivery boundary crossed for the pending dispatch, if known. */
+  pending_delivery: PendingDelivery | null
   /** Herdr pane id for the in-flight dispatch */
   pending_pane_id: string | null
   /** Label of that pane (apnea:role:unique) */
@@ -99,8 +109,12 @@ export interface RunState {
   current_phase_package: string | null
   /** Last code-review path for commit gate */
   current_code_review: string | null
-  /** The next phase-package dispatch must consume planner-owned rework. */
-  phase_package_rework: boolean
+  /** The exact dispatch that owns the next review round, if any. */
+  required_rework: RequiredReworkTarget | null
+  /** Never serialized. An old planning state needs an explicit assertion. */
+  [LEGACY_PLAN_REWORK]?: true
+  /** Never serialized. Ambiguous old coding state needs an explicit assertion. */
+  [LEGACY_CODE_REWORK]?: true
 }
 
 export interface FrontMatter {

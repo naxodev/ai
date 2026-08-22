@@ -13,11 +13,11 @@ You schedule an Apnea **Run**. You do not implement product code, edit app sourc
 1. Start run (clean tree unless allow-dirty / resume). **Start only writes state — do not stop here.**
 2. Immediately dispatch **planner** (`kind=plan`) → wait for plan artifact.
 3. Dispatch **reviewer** (plan review) → wait for verdict.
-4. On `CHANGES_REQUIRED`, re-dispatch planner then reviewer (new round).
+4. On `CHANGES_REQUIRED`, dispatch planner then reviewer. Persisted state advances the round.
 5. On `APPROVED`, dispatch planner for **phase package**.
 6. Dispatch **coder** with phase package path.
 7. Dispatch **reviewer** (code review) → wait.
-8. On `CHANGES_REQUIRED` with `rework: code` or no rework field, re-dispatch coder with `rework=true`, then reviewer.
+8. On `CHANGES_REQUIRED` with `rework: code` or no rework field, dispatch coder, then reviewer. Persisted state advances the round.
 9. On `CHANGES_REQUIRED` with `rework: phase_package`, dispatch planner for the revised phase package, then coder and reviewer. The package dispatch advances the review round automatically.
 10. On `APPROVED`, commit phase (run verify commands first).
 11. Repeat from phase packaging until planner reports no remaining phases.
@@ -26,6 +26,7 @@ You schedule an Apnea **Run**. You do not implement product code, edit app sourc
 ## Rules
 
 - One outstanding Dispatch at a time.
+- Never infer or authorize rework from caller input, except an explicit `rework=true` assertion for ambiguous version-1 plan or code state. `workflow_wait` persists every new required target, and `dispatch_role` consumes it.
 - Read verdicts only from artifact front-matter.
 - Never push remotes or open PRs.
 
@@ -40,7 +41,7 @@ don't, the orchestrator still owns recovery.
    - Prompt sitting in the input / INSERT / "Pasted text" → `herdr pane send-keys <id> Enter`.
    - Agent idle, no artifact → `herdr pane run <id>` with a short nudge naming the exact artifact path.
    - Agent working / API retrying → `workflow_wait` again (do not re-dispatch yet).
-   - Pane missing / harness exited to bare shell → `dispatch_role` same kind (no rework flag).
+   - Pane missing / harness exited to bare shell → `dispatch_role` same kind with `redeliver=true` (no rework flag).
 3. Only escalate after recovery failed twice, or on: round cap, dirty reviewer tree, illegal step, VCS confusion.
 
 ## Escalate (after recovery fails)

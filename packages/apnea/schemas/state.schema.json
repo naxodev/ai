@@ -34,6 +34,11 @@
     "last_error": { "type": ["string", "null"] },
     "pending_artifact": { "type": ["string", "null"] },
     "pending_role": { "type": ["string", "null"] },
+    "pending_delivery": {
+      "type": ["string", "null"],
+      "enum": ["manual", "interactive", null],
+      "description": "Known delivery boundary for pending ownership; null is idle or legacy-ambiguous"
+    },
     "pending_floating_exit": {
       "type": "null",
       "deprecated": true,
@@ -62,6 +67,15 @@
     "reviewer_tree_fingerprint": { "type": ["string", "null"] },
     "current_phase_package": { "type": ["string", "null"] },
     "current_code_review": { "type": ["string", "null"] },
-    "phase_package_rework": { "type": "boolean" }
+    "required_rework": {
+      "type": ["string", "null"],
+      "enum": ["plan", "code", "phase_package", null],
+      "description": "Exact dispatch target that owns the next review round"
+    },
+    "phase_package_rework": {
+      "type": "boolean",
+      "deprecated": true,
+      "description": "Deprecated migration-only field. True migrates to required_rework=phase_package."
+    }
   }
 }

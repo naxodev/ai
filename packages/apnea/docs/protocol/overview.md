@@ -33,7 +33,7 @@ Illegal tool calls refuse with the legal next call named in the error.
 | Tool                    | Purpose                                                                                                                   |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `workflow_start`        | Resolve config; clean-tree check (unless allow-dirty / resume); create git branch or prepare jj; label panes; write state |
-| `dispatch_role`         | Write task file; open live harness TUI in pane; wait idle; submit short pointer; rework-only round increment              |
+| `dispatch_role`         | Write task file; claim pending ownership; consume persisted rework; open live harness TUI and submit a short pointer      |
 | `workflow_wait`         | Wait for artifact front-matter; treat agent-status as liveness only                                                       |
 | `workflow_commit_phase` | Require APPROVED + verify commands (log to `verify.log`) + VCS backend; advance phase                                     |
 | `workflow_status`       | **Read-only** snapshot                                                                                                    |
@@ -73,14 +73,19 @@ Pane markers are human decoration. Herdr `agent_status` is liveness (dead pane w
 
 - **All roles:** live follow-up on the same pane when the harness is still idle; if pane missing or busy → new pane + cold TUI launch, then pointer.
 - Pointer always includes prior artifact paths for context.
-- Round increments **only** after CHANGES_REQUIRED on the same (phase, gate).
-- Crash / timeout / resume: **same round number**, clear-before-dispatch on that path.
+- `workflow_wait` records the exact required target (`plan`, `code`, or `phase_package`) after `CHANGES_REQUIRED`.
+- `dispatch_role` derives round advancement only from that persisted target and consumes it when pending ownership is saved.
+- The deprecated `rework` dispatch parameter remains an assertion through 0.2.x. It grants authority only when migrating ambiguous version-1 planning or coding state.
+- Round increments **only** when the required target is dispatched on the same (phase, gate).
+- Crash / timeout / resume: after proving the prior pane is dead, explicitly dispatch the same kind with `redeliver=true`. It validates pending kind, role, phase, and round, then clears the same artifact without advancing the round. A live or ambiguous pane refuses. Manual/no-Herdr work has no pane proof, so the operator must explicitly request redelivery.
+- Pending ownership records `pending_delivery: manual | interactive`. The prepared save writes this before crossing `runInteractivePrompt`, while the pane id may still be null. Interactive null-pane ownership refuses redelivery because prompt acceptance may have happened before the final save. Version-1 ownership without this field migrates to interactive only when a pane id is already recorded; legacy null-pane ownership remains ambiguous and refuses.
+- Before liveness checks or clear-before-dispatch, redelivery parses the pending artifact with the same acceptance rule as `workflow_wait`. `status: done` completes non-review artifacts; review artifacts also require `verdict: APPROVED | CHANGES_REQUIRED`, legal rework placement, schema-valid rework values, and a valid state transition. Accepted artifacts remain byte-identical and refuse with guidance to call `workflow_wait`. Malformed or incomplete artifacts continue to liveness validation.
 
 ## Resume
 
 1. Re-resolve panes by role label (respawn if needed).
 2. If expected artifact has valid front-matter → ingest and advance.
-3. Else report state; **offer** re-dispatch — never auto-dispatch.
+3. Else report state; **offer** explicit `redeliver=true` after liveness checks — never auto-dispatch.
 4. Skip clean-tree check on resume.
 
 ## Commit

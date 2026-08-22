@@ -40,6 +40,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     last_error: null,
     pending_artifact: null,
     pending_role: null,
+    pending_delivery: null,
     pending_pane_id: null,
     pending_pane_label: null,
     pending_started_at: null,
@@ -52,7 +53,7 @@ function baseState(overrides: Partial<RunState> = {}): RunState {
     reviewer_tree_fingerprint: null,
     current_phase_package: null,
     current_code_review: null,
-    phase_package_rework: false,
+    required_rework: null,
     ...overrides,
   }
 }
@@ -258,6 +259,7 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
         expect(saved.step).toBe("phase_packaging")
         expect(saved.pending_artifact).toBeNull()
         expect(saved.pending_role).toBeNull()
+        expect(saved.pending_delivery).toBeNull()
       }).pipe(Effect.provide(layer))
     },
   )
@@ -315,7 +317,7 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
         expect(result.data?.rework).toBe("phase_package")
         expect(result.legal_next).toEqual(["dispatch_role", "workflow_wait"])
         const saved = savedState(fakeFs)
-        expect(saved.phase_package_rework).toBe(true)
+        expect(saved.required_rework).toBe("phase_package")
         expect(saved.current_phase_package).toBe(pkg)
         expect(saved.current_code_review).toBe(review)
         expect(fakeFs.files.get(`${ROOT}/${pkg}`)).toContain("Original package")
@@ -342,10 +344,116 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
       return Effect.gen(function* () {
         const result = yield* waitWorkflow({}, ROOT)
         expect(result.data?.step).toBe("coding")
-        expect(savedState(fakeFs).phase_package_rework).toBe(false)
+        expect(savedState(fakeFs).required_rework).toBe("code")
       }).pipe(Effect.provide(layer))
     },
   )
+
+  itEffect("an explicit code review target requires code rework", () => {
+    const review = ".apnea/artifacts/phase-01/round-1/code-review.md"
+    const fsFake = seedFs(
+      baseState({
+        step: "code_review",
+        pending_artifact: review,
+        pending_role: "reviewer",
+      }),
+      {
+        [`${ROOT}/${review}`]:
+          "---\nstatus: done\nverdict: CHANGES_REQUIRED\nrework: code\n---\nFix code.",
+      },
+    )
+    const { layer, fakeFs } = layerOf(fsFake)
+    return Effect.gen(function* () {
+      yield* waitWorkflow({}, ROOT)
+      expect(savedState(fakeFs).required_rework).toBe("code")
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect(
+    "an in-flight legacy coder rework advances to review without re-arming code rework",
+    () => {
+      const artifact = ".apnea/artifacts/phase-01/round-2/coder-result.md"
+      const { required_rework: _requiredRework, ...legacyState } = baseState({
+        step: "coding",
+        rounds: { "phase-01/code_review": 2 },
+        pending_artifact: artifact,
+        pending_role: "coder",
+        current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+      })
+      const fsFake = makeFakeFileSystem({
+        [statePath(ROOT)]: `${JSON.stringify(legacyState, null, 2)}\n`,
+        [`${ROOT}/${artifact}`]: "---\nstatus: done\n---\nFixed.",
+      })
+      const { layer, fakeFs } = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const result = yield* waitWorkflow({}, ROOT)
+        expect(result.data?.step).toBe("code_review")
+        expect(savedState(fakeFs).required_rework).toBeNull()
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect("plan review rejection requires plan rework", () => {
+    const review = ".apnea/artifacts/plan-review/round-1.md"
+    const fsFake = seedFs(
+      baseState({
+        step: "plan_review",
+        pending_artifact: review,
+        pending_role: "reviewer",
+      }),
+      {
+        [`${ROOT}/${review}`]:
+          "---\nstatus: done\nverdict: CHANGES_REQUIRED\n---\nRevise plan.",
+      },
+    )
+    const { layer, fakeFs } = layerOf(fsFake)
+    return Effect.gen(function* () {
+      yield* waitWorkflow({}, ROOT)
+      expect(savedState(fakeFs).required_rework).toBe("plan")
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("approved reviews clear stale rework ownership", () => {
+    const review = ".apnea/artifacts/phase-01/round-2/code-review.md"
+    const fsFake = seedFs(
+      baseState({
+        step: "code_review",
+        pending_artifact: review,
+        pending_role: "reviewer",
+        required_rework: "code",
+      }),
+      {
+        [`${ROOT}/${review}`]:
+          "---\nstatus: done\nverdict: APPROVED\n---\nLooks good.",
+      },
+    )
+    const { layer, fakeFs } = layerOf(fsFake)
+    return Effect.gen(function* () {
+      yield* waitWorkflow({}, ROOT)
+      expect(savedState(fakeFs).required_rework).toBeNull()
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("approved plan review clears stale rework ownership", () => {
+    const review = ".apnea/artifacts/plan-review/round-2.md"
+    const fsFake = seedFs(
+      baseState({
+        step: "plan_review",
+        pending_artifact: review,
+        pending_role: "reviewer",
+        required_rework: "plan",
+      }),
+      {
+        [`${ROOT}/${review}`]:
+          "---\nstatus: done\nverdict: APPROVED\n---\nLooks good.",
+      },
+    )
+    const { layer, fakeFs } = layerOf(fsFake)
+    return Effect.gen(function* () {
+      yield* waitWorkflow({}, ROOT)
+      expect(savedState(fakeFs).required_rework).toBeNull()
+    }).pipe(Effect.provide(layer))
+  })
 
   for (const invalid of [
     {

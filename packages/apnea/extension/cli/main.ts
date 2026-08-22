@@ -151,12 +151,16 @@ export function buildParams(
       if (!kind || !DISPATCH_KINDS.includes(kind as never)) {
         return {
           ok: false,
-          message: `usage: apnea dispatch <${DISPATCH_KINDS.join("|")}> [--rework]`,
+          message: `usage: apnea dispatch <${DISPATCH_KINDS.join("|")}> [--rework] [--redeliver]`,
         }
       }
       return {
         ok: true,
-        params: { kind, rework: flags.has("rework") || undefined },
+        params: {
+          kind,
+          rework: flags.has("rework") || undefined,
+          redeliver: flags.has("redeliver") || undefined,
+        },
       }
     }
     case "wait": {

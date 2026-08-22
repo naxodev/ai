@@ -1,6 +1,10 @@
 import * as path from "node:path"
 import { Cause, Clock, Effect, Exit, Result } from "effect"
+import { inferKind } from "../domain/artifact-kind.ts"
+import { parseFrontMatter } from "../domain/frontmatter.ts"
+import { looksLikeShellOnly } from "../domain/herdr.ts"
 import {
+  abs,
   packageRoot,
   phaseDir,
   planPath,
@@ -25,8 +29,13 @@ import {
   type AppError,
 } from "../errors.ts"
 import type { Role } from "../domain/types.ts"
-import { ROLE_MODE } from "../domain/types.ts"
+import {
+  LEGACY_CODE_REWORK,
+  LEGACY_PLAN_REWORK,
+  ROLE_MODE,
+} from "../domain/types.ts"
 import { ok, type ToolResult } from "../result.ts"
+import { validateArtifactCompletion } from "../schema/frontmatter.ts"
 import { Config } from "../services/config.ts"
 import { FileSystem } from "../services/file-system.ts"
 import { Herdr } from "../services/herdr.ts"
@@ -36,8 +45,10 @@ import { Vcs } from "../services/vcs.ts"
 export type DispatchParams = {
   kind: DispatchKind
   task_markdown?: string
-  /** Increment round after CHANGES_REQUIRED (protocol: only then). */
+  /** @deprecated Assertion only. Persisted state owns rework through 0.2.x. */
   rework?: boolean
+  /** Reuse persisted pending ownership after a demonstrably dead delivery. */
+  redeliver?: boolean
 }
 
 function taskBody(opts: {
@@ -134,14 +145,14 @@ export const dispatchWorkflow = (
     const herdr = yield* Herdr
 
     const state = yield* store.require(root)
-    const stateBeforeDispatch = structuredClone(state)
+    const redeliver = params.redeliver === true
 
     const allowed = toolAllowed(state.step, "dispatch_role")
     if (Result.isFailure(allowed)) {
       return yield* allowed.failure
     }
 
-    if (state.pending_artifact != null) {
+    if (state.pending_artifact != null && !redeliver) {
       return yield* new GateRefused({
         gate: "dispatch_pending",
         message:
@@ -153,6 +164,101 @@ export const dispatchWorkflow = (
         },
       })
     }
+    if (state.pending_artifact == null && redeliver) {
+      return yield* new GateRefused({
+        gate: "redelivery",
+        message: "redeliver=true requires an existing pending dispatch",
+      })
+    }
+
+    const role = expectedRole(params.kind)
+    const pendingArtifact = state.pending_artifact
+    if (redeliver && pendingArtifact != null) {
+      const inferred = inferKind(pendingArtifact)
+      if (Result.isFailure(inferred) || inferred.success !== params.kind) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message: `pending artifact does not belong to ${params.kind}`,
+          details: {
+            pending_artifact: pendingArtifact,
+            inferred_kind: Result.isSuccess(inferred)
+              ? inferred.success
+              : "unknown",
+          },
+        })
+      }
+      if (state.pending_role !== role) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message: `pending role does not match ${params.kind}`,
+          details: { pending_role: state.pending_role, expected_role: role },
+        })
+      }
+      const pendingAbs = abs(pendingArtifact, root)
+      if (yield* fs.exists(pendingAbs)) {
+        const frontmatter = parseFrontMatter(yield* fs.readFile(pendingAbs))
+        const completion = validateArtifactCompletion(
+          inferred.success,
+          frontmatter,
+          pendingArtifact,
+        )
+        if (Result.isSuccess(completion) && completion.success !== null) {
+          return yield* new GateRefused({
+            gate: "redelivery",
+            message:
+              "pending artifact is already complete; call workflow_wait instead of redelivering",
+            details: {
+              artifact: pendingArtifact,
+              kind: inferred.success,
+              verdict: completion.success.frontmatter.verdict ?? null,
+              next: "workflow_wait",
+              guidance: "call workflow_wait to ingest the completed artifact",
+            },
+          })
+        }
+      }
+      if (state.pending_delivery === null) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message:
+            "pending delivery mode is unknown; null-pane legacy ownership is ambiguous",
+          details: { pending_delivery: null, liveness: "ambiguous" },
+        })
+      }
+      if (
+        state.pending_delivery === "interactive" &&
+        state.pending_pane_id === null
+      ) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message:
+            "interactive delivery has no persisted pane id; prior acceptance is ambiguous",
+          details: { pending_delivery: "interactive", liveness: "ambiguous" },
+        })
+      }
+      if (
+        state.pending_delivery === "manual" &&
+        state.pending_pane_id !== null
+      ) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message: "manual delivery cannot own an interactive pane",
+          details: {
+            pending_delivery: "manual",
+            pane_id: state.pending_pane_id,
+            liveness: "ambiguous",
+          },
+        })
+      }
+      if (state.required_rework !== null || params.rework === true) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message:
+            "redelivery reuses consumed ownership and cannot start or assert rework",
+          details: { required_rework: state.required_rework },
+        })
+      }
+    }
 
     const kinds = allowedKinds(state.step)
     if (!kinds.includes(params.kind)) {
@@ -163,40 +269,109 @@ export const dispatchWorkflow = (
       })
     }
 
-    // Rework flag validation
-    if (params.rework) {
-      const okRework =
-        (params.kind === "plan" && state.step === "planning") ||
-        (params.kind === "code" && state.step === "coding") ||
-        (params.kind === "phase_package" &&
-          state.step === "phase_packaging" &&
-          state.phase_package_rework) ||
-        (params.kind === "plan_review" && state.step === "plan_review") ||
-        (params.kind === "code_review" && state.step === "code_review")
-      // After CHANGES_REQUIRED, step moves back to planning/coding; rework
-      // dispatch is plan/code with rework=true.
-      if (!okRework && !(params.kind === "plan" || params.kind === "code")) {
-        return yield* new GateRefused({
-          gate: "rework",
-          message:
-            "rework=true only valid for plan/code after CHANGES_REQUIRED, phase_package after package rework, or same-gate re-review",
-        })
-      }
-    }
+    const legacyPlanAssertion =
+      state[LEGACY_PLAN_REWORK] === true &&
+      state.step === "planning" &&
+      params.kind === "plan" &&
+      params.rework === true
+    const legacyCodeAssertion =
+      state[LEGACY_CODE_REWORK] === true &&
+      state.step === "coding" &&
+      params.kind === "code" &&
+      params.rework === true
+    if (legacyPlanAssertion) state.required_rework = "plan"
+    if (legacyCodeAssertion) state.required_rework = "code"
 
-    const role = expectedRole(params.kind)
+    const requiredRework = state.required_rework
+    if (params.rework === true && requiredRework === null) {
+      return yield* new GateRefused({
+        gate: "rework",
+        message:
+          "rework=true is only a deprecated assertion; state has no required rework",
+      })
+    }
+    if (requiredRework !== null && params.kind !== requiredRework) {
+      return yield* new GateRefused({
+        gate: "rework",
+        message: `state requires ${requiredRework} rework before dispatching ${params.kind}`,
+        details: { required_rework: requiredRework },
+      })
+    }
+    const isRework = !redeliver && requiredRework === params.kind
+    const stateBeforeDispatch = structuredClone(state)
+
     const cfg = yield* config.load(root)
     const roleTimeoutMs = timeoutMsForKind(params.kind, cfg.timeouts_ms)
     // Validate the orchestrator's current pane before creating task artifacts.
     // A stale inherited environment is equivalent to running outside Herdr;
     // other CLI failures remain typed errors and stop dispatch.
-    const herdrAvailability = yield* herdr.availability
+    const availability = yield* Effect.result(herdr.availability)
+    if (Result.isFailure(availability)) {
+      if (redeliver && state.pending_pane_id != null) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message: "cannot verify whether the prior pane is still live",
+          details: { pane_id: state.pending_pane_id, liveness: "ambiguous" },
+        })
+      }
+      return yield* availability.failure
+    }
+    const herdrAvailability = availability.success
+
+    if (redeliver && state.pending_pane_id != null) {
+      if (herdrAvailability !== "available") {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message:
+            "cannot prove the prior pane is dead while Herdr is unavailable",
+          details: { pane_id: state.pending_pane_id, liveness: "ambiguous" },
+        })
+      }
+      const pane = yield* Effect.exit(herdr.paneGet(state.pending_pane_id))
+      if (Exit.isFailure(pane)) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message: "cannot verify whether the prior pane is still live",
+          details: { pane_id: state.pending_pane_id, liveness: "ambiguous" },
+        })
+      }
+      if (!pane.value.ok && pane.value.missing !== true) {
+        return yield* new GateRefused({
+          gate: "redelivery",
+          message: "prior pane lookup failed without proof that it is missing",
+          details: { pane_id: state.pending_pane_id, liveness: "ambiguous" },
+        })
+      }
+      if (pane.value.ok && pane.value.agent_status !== "done") {
+        const foreground = yield* Effect.exit(
+          herdr.paneForegroundNames(state.pending_pane_id),
+        )
+        const shellOnly =
+          Exit.isSuccess(foreground) && looksLikeShellOnly(foreground.value)
+        if (!shellOnly) {
+          const status = pane.value.agent_status ?? "unknown"
+          return yield* new GateRefused({
+            gate: "redelivery",
+            message: `prior pane is ${status}; refusing duplicate delivery`,
+            details: {
+              pane_id: state.pending_pane_id,
+              liveness:
+                status === "working" ||
+                status === "blocked" ||
+                status === "idle"
+                  ? "live"
+                  : "ambiguous",
+            },
+          })
+        }
+      }
+    }
 
     // --- Round numbers (increment ONLY on rework after CHANGES_REQUIRED) ---
     let round = 1
     if (params.kind === "plan" || params.kind === "plan_review") {
       const key = roundKey(0, "plan_review")
-      if (params.rework && params.kind === "plan") {
+      if (isRework && params.kind === "plan") {
         // starting a new plan revision after CHANGES_REQUIRED → next review round
         setRound(state, key, getRound(state, key) + 1)
       } else if (!state.rounds[key]) {
@@ -209,12 +384,9 @@ export const dispatchWorkflow = (
       params.kind === "phase_package"
     ) {
       const key = codeReviewRoundKey(state.phase_index)
-      if (params.rework && params.kind === "code") {
+      if (isRework && params.kind === "code") {
         setRound(state, key, getRound(state, key) + 1)
-      } else if (
-        params.kind === "phase_package" &&
-        state.phase_package_rework
-      ) {
+      } else if (isRework && params.kind === "phase_package") {
         setRound(state, key, getRound(state, key) + 1)
       } else if (!state.rounds[key]) {
         setRound(state, key, 1)
@@ -228,6 +400,7 @@ export const dispatchWorkflow = (
         ? roundKey(0, "plan_review")
         : codeReviewRoundKey(state.phase_index)
     if (
+      !redeliver &&
       (params.kind === "plan" ||
         params.kind === "code" ||
         params.kind === "phase_package" ||
@@ -264,7 +437,7 @@ export const dispatchWorkflow = (
         artifactAbs = path.join(d, "phase-package.md")
         extra =
           extra ||
-          (state.phase_package_rework
+          (isRework || (redeliver && state.current_code_review !== null)
             ? `Revise the phase ${state.phase_index} package after code review \`${state.current_code_review}\`. Preserve approved-plan scope and address package findings.`
             : `Emit phase package for phase ${state.phase_index} only from approved plan \`${rel(planPath(root), root)}\`.`)
         break
@@ -302,6 +475,20 @@ export const dispatchWorkflow = (
         artifactAbs = prDescriptionPath(root)
         extra = extra || "Write PR description summarizing all phases."
         break
+    }
+
+    const artifactRel = rel(artifactAbs, root)
+    if (redeliver && artifactRel !== pendingArtifact) {
+      return yield* new GateRefused({
+        gate: "redelivery",
+        message: "pending artifact is not the current phase and round target",
+        details: {
+          pending_artifact: pendingArtifact,
+          expected_artifact: artifactRel,
+          phase_index: state.phase_index,
+          round,
+        },
+      })
     }
 
     // Resolve the brief BEFORE clear-before-dispatch. This block can refuse,
@@ -367,7 +554,6 @@ export const dispatchWorkflow = (
       yield* fs.renameProjectFile(root, artifactAbs, backupAbs)
     }
 
-    const artifactRel = rel(artifactAbs, root)
     const body = taskBody({
       kind: params.kind,
       role,
@@ -440,19 +626,26 @@ export const dispatchWorkflow = (
         return errors
       })
 
-    const markPending = (launchedAt: number): void => {
+    const markPending = (
+      launchedAt: number,
+      delivery: "manual" | "interactive",
+    ): void => {
       state.pending_artifact = artifactRel
       state.pending_role = role
+      state.pending_delivery = delivery
       state.pending_started_at = launchedAt
       state.pending_deadline_ms = launchedAt + roleTimeoutMs
-      if (params.kind === "phase_package") state.phase_package_rework = false
+      if (isRework) state.required_rework = null
       resetRecoveryLadder(state)
     }
 
     // Persist ownership before crossing an external launch boundary. If this
     // process dies after Herdr accepts work, a retry must not start a duplicate.
     const preparedAt = yield* Clock.currentTimeMillis
-    markPending(preparedAt)
+    markPending(
+      preparedAt,
+      herdrAvailability === "unavailable" ? "manual" : "interactive",
+    )
     state.pending_pane_id = null
     state.pending_pane_label = null
     const preparedState = yield* Effect.exit(store.save(state, root))
@@ -561,7 +754,7 @@ export const dispatchWorkflow = (
     // the top of the workflow charged that startup against the role's own
     // deadline and burned wait's 12s liveness grace before the first poll.
     const launchedAt = yield* Clock.currentTimeMillis
-    markPending(launchedAt)
+    markPending(launchedAt, "interactive")
     yield* store.save(state, root)
 
     return ok(

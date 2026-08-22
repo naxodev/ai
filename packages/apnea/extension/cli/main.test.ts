@@ -50,9 +50,9 @@ describe("buildParams: argument shape per verb", () => {
 
   test("dispatch", () => {
     const kind = DISPATCH_KINDS[0]
-    expect(build("dispatch", null, [kind, "--rework"])).toEqual({
+    expect(build("dispatch", null, [kind, "--rework", "--redeliver"])).toEqual({
       ok: true,
-      params: { kind, rework: true },
+      params: { kind, rework: true, redeliver: true },
     })
   })
 

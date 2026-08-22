@@ -1,6 +1,12 @@
 import { Result, Schema } from "effect"
 import { StateCorrupt } from "../errors.ts"
-import type { RunState, Step } from "../domain/types.ts"
+import {
+  LEGACY_CODE_REWORK,
+  LEGACY_PLAN_REWORK,
+  type RequiredReworkTarget,
+  type RunState,
+  type Step,
+} from "../domain/types.ts"
 
 export const StepSchema = Schema.Literals([
   "planning",
@@ -21,6 +27,14 @@ export const RoleSchema = Schema.Literals([
   "reviewer",
   "coder",
 ] as const)
+
+export const RequiredReworkSchema = Schema.NullOr(
+  Schema.Literals(["plan", "code", "phase_package"] as const),
+)
+
+export const PendingDeliverySchema = Schema.NullOr(
+  Schema.Literals(["manual", "interactive"] as const),
+)
 
 const PaneRefSchema = Schema.Struct({
   pane_id: Schema.String,
@@ -45,6 +59,7 @@ export const RunStateSchema = Schema.Struct({
   last_error: Schema.NullOr(Schema.String),
   pending_artifact: Schema.NullOr(Schema.String),
   pending_role: Schema.NullOr(RoleSchema),
+  pending_delivery: Schema.optionalKey(PendingDeliverySchema),
   // optional on Encoded so legacy fixtures without pane fields still decode
   pending_pane_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
   pending_pane_label: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -58,10 +73,20 @@ export const RunStateSchema = Schema.Struct({
   reviewer_tree_fingerprint: Schema.NullOr(Schema.String),
   current_phase_package: Schema.NullOr(Schema.String),
   current_code_review: Schema.NullOr(Schema.String),
-  phase_package_rework: Schema.optionalKey(Schema.Boolean),
+  required_rework: Schema.optionalKey(RequiredReworkSchema),
 })
 
 export type DecodedRunState = typeof RunStateSchema.Type
+
+function hasMatchingPendingCoderDispatch(d: DecodedRunState): boolean {
+  const phase = String(d.phase_index).padStart(2, "0")
+  const round = d.rounds[`phase-${phase}/code_review`] ?? 1
+  return (
+    d.pending_role === "coder" &&
+    d.pending_artifact ===
+      `.apnea/artifacts/phase-${phase}/round-${round}/coder-result.md`
+  )
+}
 
 export function decodeRunState(
   json: unknown,
@@ -83,6 +108,12 @@ export function decodeRunState(
     )
   }
 
+  const raw =
+    json !== null && typeof json === "object" && !Array.isArray(json)
+      ? (json as Record<string, unknown>)
+      : {}
+  const hasRequiredRework = raw.required_rework !== undefined
+  const hasPendingDelivery = raw.pending_delivery !== undefined
   const decoded = Schema.decodeUnknownResult(RunStateSchema)(json)
   if (Result.isFailure(decoded)) {
     return Result.fail(
@@ -107,6 +138,11 @@ export function decodeRunState(
     last_error: d.last_error,
     pending_artifact: d.pending_artifact,
     pending_role: d.pending_role,
+    pending_delivery: hasPendingDelivery
+      ? (d.pending_delivery ?? null)
+      : d.pending_artifact !== null && d.pending_pane_id != null
+        ? "interactive"
+        : null,
     pending_pane_id: d.pending_pane_id ?? null,
     pending_pane_label: d.pending_pane_label ?? null,
     pending_started_at: d.pending_started_at ?? null,
@@ -124,7 +160,27 @@ export function decodeRunState(
     reviewer_tree_fingerprint: d.reviewer_tree_fingerprint,
     current_phase_package: d.current_phase_package,
     current_code_review: d.current_code_review,
-    phase_package_rework: d.phase_package_rework ?? false,
+    required_rework: (hasRequiredRework
+      ? d.required_rework
+      : raw.phase_package_rework === true
+        ? "phase_package"
+        : null) as RequiredReworkTarget | null,
+  }
+  if (
+    !hasRequiredRework &&
+    state.required_rework === null &&
+    d.step === "planning"
+  ) {
+    Object.defineProperty(state, LEGACY_PLAN_REWORK, { value: true })
+  }
+  if (
+    !hasRequiredRework &&
+    state.required_rework === null &&
+    d.step === "coding" &&
+    d.current_code_review !== null &&
+    !hasMatchingPendingCoderDispatch(d)
+  ) {
+    Object.defineProperty(state, LEGACY_CODE_REWORK, { value: true })
   }
   return Result.succeed(state)
 }

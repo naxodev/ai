@@ -107,6 +107,21 @@ describe("OPERATIONS", () => {
     })
   })
 
+  test('rejects redeliver: "true" instead of bypassing pending ownership', async () => {
+    const result = await executeOperation("dispatch", {
+      kind: "plan",
+      redeliver: "true",
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "invalid parameters for dispatch",
+      data: {
+        issues: [{ path: "/redeliver", message: "must be boolean" }],
+      },
+    })
+  })
+
   test("rejects undeclared parameters instead of silently ignoring host drift", async () => {
     const result = await executeOperation("status", { bogus: true })
 

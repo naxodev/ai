@@ -138,10 +138,10 @@ function createRegisteredOperations(
     {
       tool: "dispatch_role",
       verb: "dispatch",
-      usage: "<kind> [--rework]",
+      usage: "<kind> [--rework] [--redeliver]",
       summary: "Write the task file and launch a role in a Herdr pane.",
       guidance:
-        "One outstanding dispatch at a time. Pass rework=true for plan/code after CHANGES_REQUIRED. Phase-package rework advances its round automatically from review frontmatter.",
+        "One outstanding dispatch at a time. Persisted review state selects rework and advances its round. rework=true is a deprecated assertion through 0.2.x and grants authority only for ambiguous version-1 plan or code migration. Use redeliver=true only to reuse matching pending ownership after proving the prior delivery is dead. A complete pending artifact refuses redelivery; call workflow_wait to ingest it.",
       params: operationParams({
         kind: DispatchKind,
         task_markdown: Type.Optional(
@@ -149,7 +149,14 @@ function createRegisteredOperations(
         ),
         rework: Type.Optional(
           Type.Boolean({
-            description: "Increment round after CHANGES_REQUIRED",
+            description:
+              "Deprecated assertion through 0.2.x; persisted state owns rework",
+          }),
+        ),
+        redeliver: Type.Optional(
+          Type.Boolean({
+            description:
+              "Reuse matching pending ownership after the prior delivery is demonstrably dead",
           }),
         ),
       }),

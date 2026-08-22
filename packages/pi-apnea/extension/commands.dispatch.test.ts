@@ -59,9 +59,9 @@ describe("registerApneaCommands registry parity", () => {
         },
       },
       {
-        input: "dispatch plan --rework",
+        input: "dispatch plan --rework --redeliver",
         verb: "dispatch",
-        params: { kind: "plan", rework: true },
+        params: { kind: "plan", rework: true, redeliver: true },
       },
       {
         input: "wait --poll=5000 --budget=20000",

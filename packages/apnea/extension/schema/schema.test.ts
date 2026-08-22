@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Result } from "effect"
+import { LEGACY_CODE_REWORK } from "../domain/types.ts"
 import {
   decodeGlobalConfig,
   decodeProjectConfig,
@@ -25,6 +26,7 @@ const fullState = {
   last_error: null,
   pending_artifact: ".apnea/artifacts/phase-01/round-1/coder-result.md",
   pending_role: "coder" as const,
+  pending_delivery: "interactive" as const,
   pending_pane_id: "p1",
   pending_pane_label: "apnea:coder:abc",
   role_panes: {
@@ -38,7 +40,7 @@ const fullState = {
   reviewer_tree_fingerprint: null,
   current_phase_package: ".apnea/artifacts/phase-01/round-1/phase-package.md",
   current_code_review: null,
-  phase_package_rework: false,
+  required_rework: null,
 }
 
 describe("RunStateSchema", () => {
@@ -48,6 +50,7 @@ describe("RunStateSchema", () => {
     if (Result.isSuccess(r)) {
       expect(r.success.slug).toBe("demo")
       expect(r.success.pending_pane_id).toBe("p1")
+      expect(r.success.pending_delivery).toBe("interactive")
       expect(r.success.role_panes.coder?.pane_id).toBe("p1")
     }
   })
@@ -77,8 +80,9 @@ describe("RunStateSchema", () => {
     if (Result.isSuccess(r)) {
       expect(r.success.pending_pane_id).toBeNull()
       expect(r.success.pending_pane_label).toBeNull()
+      expect(r.success.pending_delivery).toBeNull()
       expect(r.success.role_panes).toEqual({})
-      expect(r.success.phase_package_rework).toBe(false)
+      expect(r.success.required_rework).toBeNull()
     }
   })
 
@@ -90,6 +94,23 @@ describe("RunStateSchema", () => {
     expect(Result.isSuccess(r)).toBe(true)
     if (Result.isSuccess(r)) {
       expect(r.success.role_panes.coder?.profile_fingerprint).toBeNull()
+    }
+  })
+
+  test("legacy pending delivery mode migrates only from a recorded pane", () => {
+    const { pending_delivery: _pendingDelivery, ...legacy } = fullState
+    const interactive = decodeRunState(legacy)
+    const ambiguous = decodeRunState({
+      ...legacy,
+      pending_pane_id: null,
+      pending_pane_label: null,
+    })
+
+    expect(Result.isSuccess(interactive)).toBe(true)
+    expect(Result.isSuccess(ambiguous)).toBe(true)
+    if (Result.isSuccess(interactive) && Result.isSuccess(ambiguous)) {
+      expect(interactive.success.pending_delivery).toBe("interactive")
+      expect(ambiguous.success.pending_delivery).toBeNull()
     }
   })
 
@@ -151,13 +172,78 @@ describe("RunStateSchema", () => {
     }
   })
 
+  test("migrates only explicit legacy package rework into an authoritative target", () => {
+    const { required_rework: _requiredRework, ...legacyState } = fullState
+    const packageRework = decodeRunState({
+      ...legacyState,
+      step: "phase_packaging",
+      phase_package_rework: true,
+    })
+    const codeRework = decodeRunState({
+      ...legacyState,
+      step: "coding",
+      current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+    })
+
+    expect(Result.isSuccess(packageRework)).toBe(true)
+    expect(Result.isSuccess(codeRework)).toBe(true)
+    if (Result.isSuccess(packageRework) && Result.isSuccess(codeRework)) {
+      expect(packageRework.success.required_rework).toBe("phase_package")
+      expect(codeRework.success.required_rework).toBeNull()
+      expect(codeRework.success[LEGACY_CODE_REWORK]).toBe(true)
+      expect(
+        Object.prototype.propertyIsEnumerable.call(
+          codeRework.success,
+          LEGACY_CODE_REWORK,
+        ),
+      ).toBe(false)
+      expect("phase_package_rework" in packageRework.success).toBe(false)
+    }
+  })
+
+  test("an explicit null target prevents legacy code inference", () => {
+    const r = decodeRunState({
+      ...fullState,
+      step: "coding",
+      required_rework: null,
+      current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+    })
+
+    expect(Result.isSuccess(r)).toBe(true)
+    if (Result.isSuccess(r)) {
+      expect(r.success.required_rework).toBeNull()
+      expect(r.success[LEGACY_CODE_REWORK]).toBeUndefined()
+    }
+  })
+
+  test("legacy coding with a matching coder dispatch already pending does not re-arm rework", () => {
+    const { required_rework: _requiredRework, ...legacyState } = fullState
+    const r = decodeRunState({
+      ...legacyState,
+      step: "coding",
+      rounds: { "phase-01/code_review": 2 },
+      pending_artifact: ".apnea/artifacts/phase-01/round-2/coder-result.md",
+      pending_role: "coder",
+      current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+    })
+
+    expect(Result.isSuccess(r)).toBe(true)
+    if (Result.isSuccess(r)) {
+      expect(r.success.required_rework).toBeNull()
+      expect(r.success[LEGACY_CODE_REWORK]).toBeUndefined()
+    }
+  })
+
   test("property names drift-guard vs schemas/state.schema.json", () => {
     const jsonPath = path.join(repoRoot, "schemas/state.schema.json")
     const doc = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as {
       properties: Record<string, unknown>
       required?: string[]
     }
-    const deprecatedMigrationProperties = ["pending_floating_exit"]
+    const deprecatedMigrationProperties = [
+      "pending_floating_exit",
+      "phase_package_rework",
+    ]
     const jsonKeys = Object.keys(doc.properties)
       .filter((key) => !deprecatedMigrationProperties.includes(key))
       .sort()
@@ -172,7 +258,12 @@ describe("RunStateSchema", () => {
       type: "null",
       deprecated: true,
     })
+    expect(doc.properties.phase_package_rework).toMatchObject({
+      type: "boolean",
+      deprecated: true,
+    })
     expect(doc.required).not.toContain("pending_floating_exit")
+    expect(doc.required).not.toContain("phase_package_rework")
   })
 })
 

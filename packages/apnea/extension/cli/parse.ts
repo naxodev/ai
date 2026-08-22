@@ -64,7 +64,7 @@ const OPERATION_ARGS: Readonly<Record<string, OperationArgSpec>> = {
     maxPositionals: 0,
   },
   dispatch: {
-    switches: ["rework"],
+    switches: ["rework", "redeliver"],
     values: [],
     minPositionals: 1,
     maxPositionals: 1,

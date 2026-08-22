@@ -17,14 +17,14 @@ Two phases, e.g. “CLI that greets by name + `--json` flag,” small enough to 
 
 ## Required paths (must all pass)
 
-| #   | Path                  | Pass criteria                                                                                                                     |
-| --- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Happy path            | Two phases committed/described; `pr-description.md` exists                                                                        |
-| 2   | Plan CHANGES_REQUIRED | At least one plan rework; new plan-review round artifact; **no** manual verdict transcription                                     |
-| 3   | Code CHANGES_REQUIRED | Live follow-up into existing coder pane; new `round-N` code-review; then APPROVED                                                 |
-| 4   | APPROVED + nits       | One review with `nits` field; commit still proceeds                                                                               |
-| 5   | Kill-and-resume       | Kill coder pane mid-phase; human reconciles per protocol (artifact present? ingest : re-dispatch same round); continue to success |
-| 6   | Mixed harness         | Planner/reviewer Claude interactive; coder Pi interactive                                                                         |
+| #   | Path                  | Pass criteria                                                                                                                                       |
+| --- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Happy path            | Two phases committed/described; `pr-description.md` exists                                                                                          |
+| 2   | Plan CHANGES_REQUIRED | At least one plan rework; new plan-review round artifact; **no** manual verdict transcription                                                       |
+| 3   | Code CHANGES_REQUIRED | Live follow-up into existing coder pane; new `round-N` code-review; then APPROVED                                                                   |
+| 4   | APPROVED + nits       | One review with `nits` field; commit still proceeds                                                                                                 |
+| 5   | Kill-and-resume       | Kill coder pane mid-phase; human reconciles per protocol (artifact present? ingest : dispatch same kind with `redeliver=true`); continue to success |
+| 6   | Mixed harness         | Planner/reviewer Claude interactive; coder Pi interactive                                                                                           |
 
 ## Hard rules during the gate
 

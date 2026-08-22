@@ -9,13 +9,8 @@ import {
 } from "../domain/frontmatter.ts"
 import { looksLikeShellOnly, shellJoin } from "../domain/herdr.ts"
 import { abs, rel } from "../domain/paths.ts"
+import { nextAfter, toolAllowed } from "../domain/state-machine.ts"
 import {
-  nextAfter,
-  stepAfterArtifact,
-  toolAllowed,
-} from "../domain/state-machine.ts"
-import {
-  ArtifactInvalid,
   GateRefused,
   HerdrError,
   WaitAborted,
@@ -24,7 +19,10 @@ import {
 } from "../errors.ts"
 import type { FrontMatter } from "../domain/types.ts"
 import { ok, type ToolResult } from "../result.ts"
-import { decodeFrontMatterResult } from "../schema/frontmatter.ts"
+import {
+  validateArtifactCompletion,
+  type AcceptedArtifactCompletion,
+} from "../schema/frontmatter.ts"
 import { Config } from "../services/config.ts"
 import { FileSystem } from "../services/file-system.ts"
 import { Herdr, paneReadRecentArgs } from "../services/herdr.ts"
@@ -288,20 +286,10 @@ export const waitWorkflow = (
 
     const advanceOnComplete = (
       fm: FrontMatter,
+      completion: AcceptedArtifactCompletion,
       msg = "artifact ready",
     ): Effect.Effect<ToolResult, AppError> =>
       Effect.gen(function* () {
-        if (
-          fm.rework !== undefined &&
-          (kind !== "code_review" || fm.verdict !== "CHANGES_REQUIRED")
-        ) {
-          return yield* new ArtifactInvalid({
-            artifact: pendingArtifact,
-            message:
-              "rework is valid only on a code_review artifact with verdict CHANGES_REQUIRED",
-          })
-        }
-
         if (
           state.pending_role === "reviewer" &&
           state.reviewer_tree_fingerprint != null
@@ -323,51 +311,26 @@ export const waitWorkflow = (
           }
         }
 
-        // Post-completion Schema guard only — isCompleteArtifact above is the
-        // completeness test. A bad/absent verdict must keep waiting, not fail
-        // here (that already happened before advanceOnComplete was called).
-        //
-        // Only review kinds carry a meaningful verdict. A stray `verdict:` on
-        // a plan/code/package artifact is noise the old parser ignored;
-        // validating it here would wedge the run permanently (state is not
-        // saved on failure, so every retry fails identically).
-        const decoded = decodeFrontMatterResult(
-          {
-            status: fm.status,
-            ...(requireVerdict ? { verdict: fm.verdict } : {}),
-            nits: fm.nits,
-            ...(kind === "code_review" && fm.rework
-              ? { rework: fm.rework }
-              : {}),
-          },
-          pendingArtifact,
-        )
-        if (Result.isFailure(decoded)) {
-          return yield* decoded.failure
-        }
-
-        const rework =
-          kind === "code_review" ? decoded.success.rework : undefined
-        const next = stepAfterArtifact(kind, fm.verdict, rework)
-        if (typeof next === "object") {
-          return yield* new ArtifactInvalid({
-            artifact: pendingArtifact,
-            message: next.error,
-          })
-        }
+        const { next, rework } = completion
 
         if (kind === "phase_package") {
           state.current_phase_package = pendingArtifact
         }
         if (kind === "code_review") {
           state.current_code_review = pendingArtifact
-          state.phase_package_rework =
-            fm.verdict === "CHANGES_REQUIRED" && rework === "phase_package"
         }
         const verdict = asVerdict(fm.verdict)
+        if (kind === "plan_review") {
+          state.required_rework = verdict === "CHANGES_REQUIRED" ? "plan" : null
+        }
+        if (kind === "code_review") {
+          state.required_rework =
+            verdict === "CHANGES_REQUIRED" ? (rework ?? "code") : null
+        }
         state.step = next
         state.pending_artifact = null
         state.pending_role = null
+        state.pending_delivery = null
         state.pending_pane_id = null
         state.pending_pane_label = null
         state.pending_started_at = null
@@ -475,9 +438,12 @@ export const waitWorkflow = (
         const deadline = state.pending_deadline_ms ?? startedMs + timeout
 
         const fm = yield* readArtifact()
-        if (isCompleteArtifact(fm, { requireVerdict })) {
+        const completion = validateArtifactCompletion(kind, fm, pendingArtifact)
+        if (Result.isFailure(completion)) return yield* completion.failure
+        if (completion.success !== null) {
           return yield* advanceOnComplete(
             fm!,
+            completion.success,
             nudged ? "artifact ready after nudge" : "artifact ready",
           )
         }
@@ -493,7 +459,7 @@ export const waitWorkflow = (
                 message: `role pane gone and artifact incomplete: ${pendingArtifact}`,
                 details: {
                   last_agent_status: lastStatus,
-                  hint: "re-dispatch same round after investigate",
+                  hint: "after investigate, dispatch the same kind with redeliver=true",
                 },
               })
             }
@@ -505,9 +471,18 @@ export const waitWorkflow = (
               // The artifact may have completed between the read above and this
               // terminal status, so fail the contract only after one fresh read.
               const artifactAfterDone = yield* readArtifact()
-              if (isCompleteArtifact(artifactAfterDone, { requireVerdict })) {
+              const completionAfterDone = validateArtifactCompletion(
+                kind,
+                artifactAfterDone,
+                pendingArtifact,
+              )
+              if (Result.isFailure(completionAfterDone)) {
+                return yield* completionAfterDone.failure
+              }
+              if (completionAfterDone.success !== null) {
                 return yield* advanceOnComplete(
                   artifactAfterDone!,
+                  completionAfterDone.success,
                   "artifact ready as role exited",
                 )
               }
@@ -571,7 +546,7 @@ export const waitWorkflow = (
                       details: {
                         last_agent_status: lastStatus,
                         foreground: names,
-                        hint: "check pane transcript; re-dispatch same round",
+                        hint: "check pane transcript; then dispatch the same kind with redeliver=true",
                       },
                     })
                   }
@@ -693,7 +668,7 @@ export const waitWorkflow = (
           nudged,
           extended_once: extendedOnce,
           configured_timeout_ms: timeout,
-          hint: "inspect pane transcript; re-dispatch same round or nudge via herdr pane run",
+          hint: "inspect pane transcript; use redeliver=true for the same kind only after proving delivery is dead, or nudge via herdr pane run",
         },
       })
     })
@@ -710,7 +685,7 @@ export const waitWorkflow = (
                 artifact,
                 details: {
                   last_agent_status: lastStatus,
-                  hint: "re-dispatch same round or wait again after investigate",
+                  hint: "after investigate, use redeliver=true for the same kind or wait again",
                 },
               }),
             ),
