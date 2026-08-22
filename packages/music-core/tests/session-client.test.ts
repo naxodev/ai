@@ -800,6 +800,38 @@ test("reconnecting artwork fences a late completion after managed disposal", asy
   }
 })
 
+test("reconnecting acquisition reports a supervisor defect instead of hanging", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make()
+        const failed = yield* createReconnectingMusicSessionClientEffect(
+          { clientId: "supervisor-defect", hostKind: "test" },
+          {
+            connect: () => Effect.die(new Error("connector defect")),
+          },
+        ).pipe(
+          Effect.timeout("1 hour"),
+          Effect.flip,
+          Effect.provideService(Clock.Clock, clock),
+          Effect.forkScoped,
+        )
+
+        yield* Effect.yieldNow
+        yield* clock.adjust("1 day")
+
+        const error = yield* Fiber.join(failed)
+        expect(error).toBeInstanceOf(MusicSessionClientError)
+        expect(error).toMatchObject({
+          code: "CONNECTION_LOST",
+          retryable: false,
+          message: "connector defect",
+        })
+      }),
+    ),
+  )
+})
+
 test("reconnecting disposal disposes a late Promise discovery client", async () => {
   const scope = await Effect.runPromise(Scope.make())
   const first = scriptedGeneration("generation-a")

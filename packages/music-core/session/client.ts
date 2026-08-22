@@ -3,6 +3,7 @@ import { spawn as spawnChild } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { basename } from "node:path"
 import {
+  Cause,
   Deferred,
   Duration,
   Effect,
@@ -1766,6 +1767,8 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
         }
       | {
           readonly changed: true
+          readonly active: ActiveGeneration | undefined
+          readonly pending: MusicSessionClient | undefined
           readonly listeners: Listener<MusicSessionConnectionLifecycle>[]
         }
     >((current) => {
@@ -1774,12 +1777,22 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
       return [
         {
           changed: true as const,
+          active: current.active,
+          pending: current.pending,
           listeners: [...current.connectionListeners],
         },
-        { ...current, terminal: error, lifecycle: { type: "terminal", error } },
+        {
+          ...current,
+          active: undefined,
+          pending: undefined,
+          terminal: error,
+          lifecycle: { type: "terminal", error },
+        },
       ]
     })
     if (!transition.changed) return
+    this.#release(transition.active, true)
+    transition.pending?.dispose()
     this.#notify(new Set(transition.listeners), { type: "terminal", error })
     Deferred.doneUnsafe(this.#initial, Effect.fail(error))
   }
@@ -1899,7 +1912,18 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
         const terminal = yield* Deferred.await(loss)
         if (!terminal.retryable) return
       }
-    })
+    }).pipe(
+      // This supervisor is scoped background work. Convert defects into the
+      // Promise-facing terminal state so acquisition and retained listeners
+      // cannot wait forever on a child fiber that has already died.
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) =>
+          Effect.sync(() =>
+            managed.#finish(asManagedTerminal(Cause.squash(cause))),
+          ),
+      ),
+    )
   }
 }
 
