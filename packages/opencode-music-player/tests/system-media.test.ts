@@ -201,6 +201,7 @@ describe("session media facade", () => {
 
   test("delegates controls once and routes artwork only through the client", async () => {
     const client = new FakeClient()
+    client.state = state("controls")
     client.artworkResult = { type: "available", base64: "AQID" }
     const native: Array<string | null> = []
     const media = createSessionSystemMedia({
@@ -228,8 +229,8 @@ describe("session media facade", () => {
     ])
     expect(client.artworkCalls).toEqual([
       expect.objectContaining({
-        id: "id-one",
-        name: "one",
+        id: "id-controls",
+        name: "controls",
         duration_ms: 180_000,
       }),
     ])
@@ -339,6 +340,51 @@ describe("session media facade", () => {
     await backendB.dispose()
   })
 
+  test("keeps detached shared work for surviving consumers", async () => {
+    const first = new FakeClient()
+    const second = new FakeClient()
+    first.state = state("detached-shared")
+    second.state = state("detached-shared")
+    let release!: (result: ArtworkResult) => void
+    first.artworkGate = new Promise((resolve) => {
+      release = resolve
+    })
+    const cover = { id: "shared", png_base64: "", accent: "", cells: [] }
+    const firstEvents: unknown[] = []
+    const secondEvents: unknown[] = []
+    const resolver = async (_key: string, target: any) => ({
+      artwork: cover,
+      duration_ms: target.duration_ms,
+    })
+    const firstMedia = createSessionSystemMedia({
+      createClient: async () => first,
+      resolveArtworkDetails: resolver,
+    })
+    const secondMedia = createSessionSystemMedia({
+      createClient: async () => second,
+      resolveArtworkDetails: resolver,
+    })
+    firstMedia.subscribePresentation((event) => firstEvents.push(event))
+    secondMedia.subscribePresentation((event) => secondEvents.push(event))
+    await Promise.all([firstMedia.player(), secondMedia.player()])
+    await flush()
+    expect(first.artworkCalls).toHaveLength(1)
+    expect(second.artworkCalls).toHaveLength(0)
+
+    await firstMedia.dispose()
+    release({ type: "available", base64: "shared" })
+    await flush()
+    await flush()
+    expect(firstEvents).toEqual([])
+    expect(secondEvents).toEqual([
+      expect.objectContaining({
+        artwork: cover,
+        identity: expect.objectContaining({ uid: "id-detached-shared" }),
+      }),
+    ])
+    await secondMedia.dispose()
+  })
+
   test("settled artwork uses deterministic FIFO eviction at the 32-entry boundary", async () => {
     const client = new FakeClient()
     client.state = state("eviction-0", 10)
@@ -400,17 +446,23 @@ describe("session media facade", () => {
       expect(started.length).toBeLessThanOrEqual(32)
       expect(waiting.length).toBeGreaterThan(0)
       const released = clients.indexOf(started[0]!)
+      await mediaInstances[released]!.dispose()
+      await flush()
+      expect(waiting[0]!.artworkCalls).toHaveLength(0)
       releases[released]!({ type: "available", base64: "released" })
       await flush()
       await flush()
       expect(waiting[0]!.artworkCalls).toHaveLength(1)
     } finally {
       await Promise.all(mediaInstances.map((media) => media.dispose()))
+      for (const release of releases) release({ type: "unavailable" })
+      await flush()
+      await flush()
     }
     expect(clients.every((client) => client.disposeCalls === 1)).toBeTrue()
   })
 
-  test("owner disposal admits a shared deferred identity and publishes to both waiters", async () => {
+  test("physical settlement admits a shared deferred identity and publishes to both waiters", async () => {
     const owners: Array<ReturnType<typeof createSessionSystemMedia>> = []
     const ownerClients: FakeClient[] = []
     const releases: Array<(result: ArtworkResult) => void> = []
@@ -461,11 +513,20 @@ describe("session media facade", () => {
       expect(waitA.artworkCalls).toHaveLength(0)
       expect(waitB.artworkCalls).toHaveLength(0)
 
-      // A concurrently running test can have an older global deferred key;
-      // release owners until this shared key is admitted, then verify the two
-      // hosts share that one job and its presentation.
-      for (const owner of ownerClients) {
-        await owners[ownerClients.indexOf(owner)]!.dispose()
+      const firstStarted = ownerClients.findIndex(
+        (client) => client.artworkCalls.length > 0,
+      )
+      expect(firstStarted).toBeGreaterThanOrEqual(0)
+      await owners[firstStarted]!.dispose()
+      await flush()
+      expect(waitA.artworkCalls).toHaveLength(0)
+
+      // A concurrently running test can have an older global deferred key.
+      // Settle physical owners until this shared key is admitted.
+      for (const [index, owner] of ownerClients.entries()) {
+        if (owner.artworkCalls.length === 0) continue
+        releases[index]!({ type: "unavailable" })
+        await flush()
         await flush()
         if (waitA.artworkCalls.length > 0) break
       }
@@ -489,6 +550,8 @@ describe("session media facade", () => {
     } finally {
       await Promise.all(owners.map((media) => media.dispose()))
       for (const release of releases) release({ type: "unavailable" })
+      await flush()
+      await flush()
     }
   })
 
@@ -540,8 +603,18 @@ describe("session media facade", () => {
       await flush()
       await deferredFirst.dispose()
 
-      for (const owner of ownerClients) {
-        await owners[ownerClients.indexOf(owner)]!.dispose()
+      const firstStarted = ownerClients.findIndex(
+        (client) => client.artworkCalls.length > 0,
+      )
+      expect(firstStarted).toBeGreaterThanOrEqual(0)
+      await owners[firstStarted]!.dispose()
+      await flush()
+      expect(second.artworkCalls).toHaveLength(0)
+
+      for (const [index, owner] of ownerClients.entries()) {
+        if (owner.artworkCalls.length === 0) continue
+        releases[index]!({ type: "unavailable" })
+        await flush()
         await flush()
         if (second.artworkCalls.length > 0) break
       }
@@ -559,6 +632,8 @@ describe("session media facade", () => {
     } finally {
       await Promise.all(owners.map((media) => media.dispose()))
       for (const release of releases) release({ type: "unavailable" })
+      await flush()
+      await flush()
     }
   })
 
@@ -572,6 +647,10 @@ describe("session media facade", () => {
         client.artworkGate = new Promise((resolve) => releases.push(resolve))
         const media = createSessionSystemMedia({
           createClient: async () => client,
+          resolveArtworkDetails: async (_key, target) => ({
+            artwork: null,
+            duration_ms: target.duration_ms,
+          }),
         })
         owners.push(media)
         await media.player()
@@ -582,6 +661,10 @@ describe("session media facade", () => {
         client.state = state(`overflow-waiter-${index}`)
         const media = createSessionSystemMedia({
           createClient: async () => client,
+          resolveArtworkDetails: async (_key, target) => ({
+            artwork: null,
+            duration_ms: target.duration_ms,
+          }),
         })
         owners.push(media)
         overflow = await media.player()
@@ -593,6 +676,8 @@ describe("session media facade", () => {
     } finally {
       await Promise.all(owners.map((media) => media.dispose()))
       for (const release of releases) release({ type: "unavailable" })
+      await flush()
+      await flush()
     }
   })
 
@@ -605,6 +690,7 @@ describe("session media facade", () => {
     })
     let releaseResolverA!: (value: any) => void
     const coverB = { id: "B", png_base64: "", accent: "", cells: [] }
+    const presentations: unknown[] = []
     const media = createSessionSystemMedia({
       createClient: async () => client,
       resolveArtworkDetails: async (_key, target, bytes) =>
@@ -614,6 +700,7 @@ describe("session media facade", () => {
             })
           : { artwork: coverB, duration_ms: target.duration_ms },
     })
+    media.subscribePresentation((event) => presentations.push(event))
     await media.player()
     await flush()
     client.artworkGate = undefined
@@ -633,11 +720,18 @@ describe("session media facade", () => {
       id: "id-B",
       artwork: coverB,
     })
+    expect(presentations).toEqual([
+      expect.objectContaining({
+        artwork: coverB,
+        identity: expect.objectContaining({ uid: "id-B" }),
+      }),
+    ])
     await media.dispose()
   })
 
   test("disposal closes exactly one client and fences late state, artwork, and listeners", async () => {
     const client = new FakeClient()
+    client.state = state("disposal")
     let releaseArtwork!: (result: ArtworkResult) => void
     client.artworkGate = new Promise((resolve) => {
       releaseArtwork = resolve
@@ -663,7 +757,7 @@ describe("session media facade", () => {
     expect(second).toBe(first)
     expect(client.disposeCalls).toBe(1)
     expect(client.stateListeners.size).toBe(0)
-    expect(resolverCalls).toBe(0)
+    expect(resolverCalls).toBe(1)
     expect(events).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({

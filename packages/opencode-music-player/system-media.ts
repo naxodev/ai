@@ -29,7 +29,6 @@ type ArtworkCacheEntry = {
   pending: boolean
   attempts: number
   retry_at: number
-  owner: PresentationHost | null
   interests: Map<PresentationHost, ArtworkIdentity>
 }
 const MAX_ARTWORK_ENTRIES = 32
@@ -71,6 +70,7 @@ const createOpenCodeSessionClient: SessionClientFactory = () =>
 type PresentationHost = {
   publish: (event: ArtworkCompletionEvent) => void
   isActive: () => boolean
+  accepts: (identity: ArtworkIdentity) => boolean
 }
 
 export type { CommandResult }
@@ -172,6 +172,7 @@ function publishArtworkCompletion(
   artwork: Artwork | null,
 ) {
   for (const [host, identity] of entry.interests) {
+    if (!host.isActive() || !host.accepts(identity)) continue
     host.publish({
       type: "artwork-completion",
       identity,
@@ -184,22 +185,10 @@ function publishArtworkCompletion(
 
 function removeArtworkInterests(host: PresentationHost) {
   removeWaitingInterest(host)
-  for (const [key, entry] of artworkCache) {
+  for (const entry of artworkCache.values()) entry.interests.delete(host)
+  // A host owns only its interest. The physical job keeps its slot until it settles.
+  for (const entry of artworkJobs.values()) {
     entry.interests.delete(host)
-    if (entry.owner !== host || entry.pending) continue
-    if (entry.value === null) artworkCache.delete(key)
-    else entry.owner = null
-  }
-  for (const [key, entry] of artworkJobs) {
-    entry.interests.delete(host)
-    if (entry.owner !== host) continue
-    entry.pending = false
-    entry.owner = null
-    if (artworkCache.get(key) === entry && entry.value === null)
-      artworkCache.delete(key)
-    // Disposal/cancellation frees a slot too. A deferred current identity
-    // must be admitted even when its predecessor never resolves.
-    releaseArtworkSlot(key)
   }
 }
 
@@ -248,18 +237,12 @@ function artworkForTrack(
       pending: false,
       attempts: 0,
       retry_at: 0,
-      owner: null,
       interests: new Map(),
     }
   }
   // A state change that reached admission supersedes any older deferred
   // identity owned by this adapter generation.
   removeWaitingInterest(host)
-  if (entry.pending && entry.owner && !entry.owner.isActive()) {
-    entry.pending = false
-    entry.owner = null
-    artworkJobs.delete(key)
-  }
   if (
     !entry.pending &&
     entry.attempts < 3 &&
@@ -270,8 +253,6 @@ function artworkForTrack(
     entry.attempts++
     artworkJobs.set(key, entry)
     const activeEntry = entry
-    const activeHost = host
-    activeEntry.owner = activeHost
     void (async () => {
       let data: string | null = null
       try {
@@ -279,12 +260,9 @@ function artworkForTrack(
       } catch {
         // Session artwork failure is transient; host catalog fallback remains.
       }
-      if (!activeHost.isActive() || activeEntry.owner !== activeHost)
-        return { artwork: null, duration_ms: activeEntry.duration_ms }
       return resolver(key, target, data, legacyKey)
     })().then(
       (resolution) => {
-        if (!activeHost.isActive() || activeEntry.owner !== activeHost) return
         activeEntry.value = resolution.artwork
         activeEntry.duration_ms = resolution.duration_ms
         activeEntry.resolved = true
@@ -295,7 +273,6 @@ function artworkForTrack(
         publishArtworkCompletion(activeEntry, resolution.artwork)
       },
       () => {
-        if (!activeHost.isActive() || activeEntry.owner !== activeHost) return
         activeEntry.value = null
         activeEntry.resolved = true
         activeEntry.pending = false
@@ -326,6 +303,7 @@ export function createSessionSystemMedia(
   const listeners = new Set<(event: SessionMediaEvent) => void>()
   const presentationListeners = new Set<ArtworkPresentationListener>()
   let disposed = false
+  let currentArtworkIdentity: string | null = null
   let client: ReconnectingMusicSessionClient | undefined
   let installed = false
   let latest: RevisionedState | undefined
@@ -364,6 +342,8 @@ export function createSessionSystemMedia(
       }
     },
     isActive: () => !disposed,
+    accepts: (identity) =>
+      currentArtworkIdentity === artworkIdentityKey(identity),
   }
   const lifecycle = (): SessionMediaLifecycleEvent => {
     if (
@@ -404,10 +384,17 @@ export function createSessionSystemMedia(
     emit(event)
   }
   const project = (state: RevisionedState | undefined): PlayerState | null => {
-    if (!state) return null
-    if (!state.state.track) return state.state as PlayerState
+    if (!state) {
+      currentArtworkIdentity = null
+      return null
+    }
+    if (!state.state.track) {
+      currentArtworkIdentity = null
+      return state.state as PlayerState
+    }
     const track = state.state.track
     const identity = identityFromTrack(track)
+    currentArtworkIdentity = artworkIdentityKey(identity)
     const artworkState = artworkForTrack(
       artworkCacheKey(identity),
       artworkIdentityKey(identity),
@@ -427,7 +414,7 @@ export function createSessionSystemMedia(
           album: track.album,
           duration_ms: track.duration_ms,
         } satisfies SessionArtworkIdentity)
-        return !disposed && active === client && result.type === "available"
+        return active === client && result.type === "available"
           ? result.base64
           : null
       },
