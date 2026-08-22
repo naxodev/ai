@@ -23,6 +23,7 @@ export default function (pi: ExtensionAPI) {
         label: "Apnea wait",
         description: [op.summary, op.guidance].filter(Boolean).join(" "),
         parameters: op.params,
+        executionMode: "sequential",
         async execute(
           _id: string,
           params: { poll_ms?: number; budget_ms?: number },
@@ -70,6 +71,7 @@ export default function (pi: ExtensionAPI) {
       label: `Apnea ${op.verb}`,
       description: [op.summary, op.guidance].filter(Boolean).join(" "),
       parameters: op.params,
+      executionMode: "sequential",
       async execute(_id: string, params: Record<string, unknown>) {
         return toolContent(await executePiOperation(op.verb, params))
       },

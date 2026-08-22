@@ -6,8 +6,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import {
   DISPATCH_KINDS,
   formatResult,
-  parseFlags,
   parseNumFlag,
+  parseOperationArgs,
   type DispatchKind,
   type ExecuteOperation,
   type Operation,
@@ -158,9 +158,16 @@ export function registerApneaCommands(
 
       const tokens = raw.split(/\s+/).filter(Boolean)
       const sub = tokens[0]!
-      const { flags, values, rest } = parseFlags(tokens.slice(1))
-
       try {
+        const parsed = parseOperationArgs(sub, tokens.slice(1), {
+          surface: "slash",
+        })
+        if (!parsed.ok) {
+          ctx.ui.notify(parsed.message, "error")
+          return
+        }
+        const { flags, values, positional: rest } = parsed
+
         switch (sub) {
           case "help":
             ctx.ui.notify(helpText(operations), "info")

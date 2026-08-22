@@ -24,7 +24,13 @@ function captureApneaHandler(execute: ExecuteOperation): Handler {
 }
 
 async function run(handler: Handler, args: string) {
-  await handler(args, { ui: { notify: () => {} } })
+  const notifications: Array<{ message: string; level?: string }> = []
+  await handler(args, {
+    ui: {
+      notify: (message, level) => notifications.push({ message, level }),
+    },
+  })
+  return notifications
 }
 
 describe("registerApneaCommands registry parity", () => {
@@ -114,6 +120,49 @@ describe("registerApneaCommands registry parity", () => {
       {
         verb: "wait",
         params: { poll_ms: undefined, budget_ms: Number.MAX_SAFE_INTEGER },
+      },
+    ])
+  })
+
+  test.each([
+    "dispatch plan --rewrok",
+    "wait --timeout 60000",
+    "wait --budget",
+    "wait --budget=",
+    "status extra",
+    "dispatch plan extra",
+    "wait --budget=1000 --timeout=2000",
+  ])("rejects invalid arguments without dispatching: %s", async (input) => {
+    const calls: unknown[] = []
+    const handler = captureApneaHandler(async (...args) => {
+      calls.push(args)
+      return { ok: true, message: "stub" }
+    })
+
+    const notifications = await run(handler, input)
+
+    expect(calls).toEqual([])
+    expect(notifications.at(-1)?.level).toBe("error")
+  })
+
+  test("supports literal goals beginning with -- after the terminator", async () => {
+    const calls: Array<{ verb: string; params: Record<string, unknown> }> = []
+    const handler = captureApneaHandler(async (verb, params) => {
+      calls.push({ verb, params })
+      return { ok: true, message: "stub" }
+    })
+
+    await run(handler, "start -- --ship safely")
+
+    expect(calls).toEqual([
+      {
+        verb: "start",
+        params: {
+          goal: "--ship safely",
+          slug: undefined,
+          allow_dirty: false,
+          action: "start",
+        },
       },
     ])
   })
