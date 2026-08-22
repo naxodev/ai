@@ -29,7 +29,7 @@ import {
 	type ArtworkFetcher,
 	type ArtworkPresentation,
 } from "./artwork.ts";
-import { clipWords } from "./format.ts";
+import { clipWords, sanitizeTerminalText } from "./format.ts";
 import {
 	createMusicSidebar,
 	type MusicSidebar,
@@ -61,6 +61,7 @@ type LiveSession = {
 	player: PlayerState | null;
 	client: ReconnectingMusicSessionClient | undefined;
 	acquisition: Promise<void>;
+	readonly acquisitionAbort: AbortController;
 	clientDisposed: boolean;
 	unsubscribers: Array<() => void>;
 	waveform: Waveform;
@@ -108,26 +109,6 @@ function errMsg(error: unknown): string {
 		: String(error);
 }
 
-function withArtworkDuration(
-	player: PlayerState | null,
-	artwork: ArtworkPresentation,
-): PlayerState | null {
-	const duration =
-		artwork.kind === "ready" ? artwork.artwork.duration_ms : undefined;
-	if (
-		!player?.track ||
-		player.track.duration_ms > 0 ||
-		!duration ||
-		!Number.isFinite(duration) ||
-		duration <= 0
-	)
-		return player;
-	return {
-		...player,
-		track: { ...player.track, duration_ms: duration },
-	};
-}
-
 export function createMusicDock(
 	pi: ExtensionAPI,
 	overrides: Partial<MusicDockDependencies> = {},
@@ -153,9 +134,10 @@ export function createMusicDock(
 	) => {
 		if (!isLive(session)) return;
 		const key = `${kind}Notification` as const;
-		if (session[key] === message) return;
-		session[key] = message;
-		session.ui.notify(message, "error");
+		const safeMessage = sanitizeTerminalText(message);
+		if (session[key] === safeMessage) return;
+		session[key] = safeMessage;
+		session.ui.notify(safeMessage, "error");
 	};
 
 	const pushSidebar = (
@@ -170,7 +152,7 @@ export function createMusicDock(
 			focused: session.focused,
 			hiddenByUser: session.userHidden,
 			...patch,
-			player: withArtworkDuration(player, artwork),
+			player,
 		});
 	};
 
@@ -189,7 +171,7 @@ export function createMusicDock(
 		const icon = current.is_playing ? "⏸" : "▶";
 		const dimText = session.ui.theme.fg(
 			"dim",
-			`${clipWords(track.name, 6)} · ${clipWords(track.artists, 4)}`,
+			`${clipWords(sanitizeTerminalText(track.name), 6)} · ${clipWords(sanitizeTerminalText(track.artists), 4)}`,
 		);
 		session.ui.setStatus(
 			STATUS_KEY,
@@ -499,6 +481,7 @@ export function createMusicDock(
 		}
 		session.active = false;
 		if (currentSession === session) currentSession = null;
+		session.acquisitionAbort.abort();
 		for (const unsubscribe of session.unsubscribers.splice(0)) unsubscribe();
 		session.waveform.dispose();
 		abortArtwork(session);
@@ -514,7 +497,8 @@ export function createMusicDock(
 		if (clearUi) clearUi.setStatus(STATUS_KEY, undefined);
 		else clearStatus(session);
 		session.player = null;
-		await session.acquisition;
+		// Acquisition cancellation is cooperative. Never block shutdown on a
+		// factory that ignores it; install() disposes any client that arrives late.
 		await disposeClient(session);
 	};
 
@@ -528,15 +512,13 @@ export function createMusicDock(
 			run(client).then(
 				() => undefined,
 				(error) => {
-					if (isLive(session)) ctx.ui.notify(errMsg(error), "error");
+					if (isLive(session))
+						ctx.ui.notify(sanitizeTerminalText(errMsg(error)), "error");
 				},
 			);
 		if (session.client) return invoke(session.client);
-		// This is an acquisition gate, not a transport queue: every caller
-		// waits only for its live generation's one client, then delegates once.
-		return session.acquisition.then(() =>
-			isLive(session) && session.client ? invoke(session.client) : undefined,
-		);
+		ctx.ui.notify("Music session is still connecting", "info");
+		return Promise.resolve();
 	};
 	const playPause = (ctx: ExtensionContext) =>
 		command(ctx, (client) => client.toggle());
@@ -601,6 +583,7 @@ export function createMusicDock(
 			player: null,
 			client: undefined,
 			acquisition: Promise.resolve(),
+			acquisitionAbort: new AbortController(),
 			clientDisposed: false,
 			unsubscribers: [],
 			waveform: undefined as never,
@@ -632,6 +615,7 @@ export function createMusicDock(
 			clientId: `pi-music-dock-${++clientSequence}`,
 			hostKind: "pi",
 			capabilities: ["state-replay", "transport", "native-artwork"],
+			signal: session.acquisitionAbort.signal,
 		};
 		session.acquisition = Promise.resolve()
 			.then(() => deps.createClient(options))

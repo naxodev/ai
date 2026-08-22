@@ -15,6 +15,7 @@ import {
 	type ImageDimensions,
 } from "@earendil-works/pi-tui";
 import type { ArtworkPresentation } from "./artwork.ts";
+import { sanitizeTerminalText } from "./format.ts";
 import { renderWave } from "./waveform.ts";
 
 export type SidebarTheme = {
@@ -295,6 +296,9 @@ export function createMusicSidebar(
 
 		const track = state.player?.track;
 		if (track) {
+			const name = sanitizeTerminalText(track.name);
+			const artists = sanitizeTerminalText(track.artists);
+			const album = sanitizeTerminalText(track.album);
 			const playing = state.player?.is_playing ?? false;
 			const icon = playing ? "▶" : "⏸";
 			const status = theme.fg(
@@ -303,18 +307,14 @@ export function createMusicSidebar(
 			);
 			lines.push(line(status));
 			lines.push(
-				line(theme.fg("text", ` ${clip(track.name, Math.max(1, inner - 1))}`)),
+				line(theme.fg("text", ` ${clip(name, Math.max(1, inner - 1))}`)),
 			);
 			lines.push(
-				line(
-					theme.fg("muted", ` ${clip(track.artists, Math.max(1, inner - 1))}`),
-				),
+				line(theme.fg("muted", ` ${clip(artists, Math.max(1, inner - 1))}`)),
 			);
-			if (track.album) {
+			if (album) {
 				lines.push(
-					line(
-						theme.fg("dim", ` ${clip(track.album, Math.max(1, inner - 1))}`),
-					),
+					line(theme.fg("dim", ` ${clip(album, Math.max(1, inner - 1))}`)),
 				);
 			}
 

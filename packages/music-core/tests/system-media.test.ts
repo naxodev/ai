@@ -19,6 +19,7 @@ import {
   eventsFromAttemptAdapter,
   layerFromAttemptAdapter,
   layerFromAttemptFactory,
+  layerFromLegacy,
   SessionProvider,
   type ProviderError,
 } from "../session/provider.ts"
@@ -38,9 +39,11 @@ class FakeLineStreamProcess extends EventEmitter {
   exitCode: number | null = null
   signalCode: NodeJS.Signals | null = null
   killCalls = 0
+  killSignals: Array<NodeJS.Signals | undefined> = []
 
-  kill() {
+  kill(signal?: NodeJS.Signals) {
     this.killCalls++
+    this.killSignals.push(signal)
   }
 }
 
@@ -478,6 +481,89 @@ describe("one-attempt media-control seam", () => {
       ).pipe(Effect.provide(layerFromAttemptAdapter(fake.backend))),
     )
     expect(fake.sources[0]?.disposed).toBe(1)
+  })
+
+  test("legacy callback bridge slides to the latest media snapshot and shuts down", async () => {
+    const subscribed = Latch.makeUnsafe()
+    let listener: ((event: MusicChangeEvent) => void) | undefined
+    let subscriptionDisposals = 0
+    let providerDisposals = 0
+    const legacy = {
+      status: async () => ({
+        kind: "ready" as const,
+        provider: "media-control" as const,
+        message: "fixture",
+      }),
+      sample: async () => null,
+      subscribe: (next: (event: MusicChangeEvent) => void) => {
+        listener = next
+        Latch.openUnsafe(subscribed)
+        return () => {
+          subscriptionDisposals++
+          listener = undefined
+        }
+      },
+      transport: async () => {},
+      dispose: () => {
+        providerDisposals++
+      },
+    }
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const provider = yield* SessionProvider
+          const observed = yield* Queue.unbounded<MusicChangeEvent>()
+          const release = yield* Latch.make(false)
+          let first = true
+          yield* provider.events.pipe(
+            Stream.runForEach((event) =>
+              Queue.offer(observed, event).pipe(
+                Effect.andThen(
+                  first
+                    ? Effect.sync(() => {
+                        first = false
+                      }).pipe(Effect.andThen(Latch.await(release)))
+                    : Effect.void,
+                ),
+              ),
+            ),
+            Effect.forkScoped,
+          )
+          yield* Latch.await(subscribed)
+          const event = (name: string): MusicChangeEvent => ({
+            type: "snapshot",
+            state: {
+              is_playing: false,
+              progress_ms: 0,
+              shuffle: false,
+              repeat: "off",
+              device: null,
+              track: {
+                uri: name,
+                id: name,
+                name,
+                artists: "artist",
+                album: "album",
+                duration_ms: 1,
+              },
+              fetched_at: 1,
+            },
+          })
+          listener?.(event("first"))
+          expect(yield* Queue.take(observed)).toMatchObject({
+            state: { track: { name: "first" } },
+          })
+          listener?.(event("middle"))
+          listener?.(event("latest"))
+          yield* Latch.open(release)
+          expect(yield* Queue.take(observed)).toMatchObject({
+            state: { track: { name: "latest" } },
+          })
+        }).pipe(Effect.provide(layerFromLegacy(legacy))),
+      ),
+    )
+    expect(subscriptionDisposals).toBe(1)
+    expect(providerDisposals).toBe(1)
   })
 
   test("provider operations and adapter acquisition preserve one tagged boundary", async () => {
@@ -970,6 +1056,19 @@ describe("media command boundaries", () => {
     expect(unchanged?.is_playing).toBe(false)
     expect(unchanged?.progress_ms).toBe(10_000)
   })
+
+  test("seek fails when no transport provider is installed", async () => {
+    const backend = createSystemMedia({
+      detectBackend: () => null,
+      hasNowPlayingCli: () => false,
+      run: async () => ({ ok: true, out: "" }),
+    })
+
+    await expect(backend.seek?.(1_000)).rejects.toEqual({
+      status: 500,
+      message: "install media-control or nowplaying-cli",
+    })
+  })
 })
 
 describe("startLineStream", () => {
@@ -1028,6 +1127,43 @@ describe("startLineStream", () => {
     child.stdout.emit("data", "first\nsecond\n")
 
     expect(lines).toEqual(["first"])
+  })
+
+  test("terminates oversized unterminated provider output", () => {
+    const child = new FakeLineStreamProcess()
+    const lines: string[] = []
+    let terminals = 0
+    startLineStream(
+      ["media-control", "stream"],
+      { onLine: (line) => lines.push(line), onTerminal: () => terminals++ },
+      () => child,
+    )
+
+    child.stdout.emit("data", Buffer.alloc(128 * 1024, 0x78))
+    child.stdout.emit("data", "late\n")
+
+    expect(lines).toEqual([])
+    expect(terminals).toBe(1)
+    expect(child.killCalls).toBe(1)
+    expect(child.killSignals).toEqual(["SIGKILL"])
+  })
+
+  test("rejects an oversized complete provider line before forwarding it", () => {
+    const child = new FakeLineStreamProcess()
+    const lines: string[] = []
+    let terminals = 0
+    startLineStream(
+      ["media-control", "stream"],
+      { onLine: (line) => lines.push(line), onTerminal: () => terminals++ },
+      () => child,
+    )
+
+    child.stdout.emit("data", `${"x".repeat(128 * 1024)}\n`)
+
+    expect(lines).toEqual([])
+    expect(terminals).toBe(1)
+    expect(child.killCalls).toBe(1)
+    expect(child.killSignals).toEqual(["SIGKILL"])
   })
 
   test("notifies once when error, exit, and close arrive together", () => {

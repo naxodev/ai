@@ -319,7 +319,10 @@ export async function readLimitedResponse(
 	maxBytes: number,
 ): Promise<Uint8Array | null> {
 	const declared = Number(response.headers.get("content-length"));
-	if (Number.isFinite(declared) && declared > maxBytes) return null;
+	if (Number.isFinite(declared) && declared > maxBytes) {
+		await cancelResponseBody(response, "artwork exceeds byte limit");
+		return null;
+	}
 	if (!response.body) return new Uint8Array();
 
 	const bytes = new Uint8Array(maxBytes);
@@ -330,16 +333,35 @@ export async function readLimitedResponse(
 			const { done, value } = await reader.read();
 			if (done) break;
 			if (total + value.byteLength > maxBytes) {
-				await reader.cancel("artwork exceeds byte limit");
+				try {
+					await reader.cancel("artwork exceeds byte limit");
+				} catch {
+					// The size rejection remains authoritative if cancellation fails.
+				}
 				return null;
 			}
 			bytes.set(value, total);
 			total += value.byteLength;
 		}
+	} catch (error) {
+		try {
+			await reader.cancel(error);
+		} catch {
+			// Preserve the read failure even when cancellation also fails.
+		}
+		throw error;
 	} finally {
 		reader.releaseLock();
 	}
 	return bytes.slice(0, total);
+}
+
+async function cancelResponseBody(response: Response, reason: string) {
+	try {
+		await response.body?.cancel(reason);
+	} catch {
+		// Rejection paths stay best-effort even when the stream is already errored.
+	}
 }
 
 export async function downloadCatalogImage(
@@ -356,8 +378,14 @@ export async function downloadCatalogImage(
 				? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)])
 				: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 		});
-		if (!response.ok || response.redirected) return null;
-		if (response.url && !allowedCatalogImageUrl(response.url)) return null;
+		if (!response.ok || response.redirected || signal?.aborted) {
+			await cancelResponseBody(response, "artwork response rejected");
+			return null;
+		}
+		if (response.url && !allowedCatalogImageUrl(response.url)) {
+			await cancelResponseBody(response, "artwork response URL rejected");
+			return null;
+		}
 		return readLimitedResponse(response, MAX_ARTWORK_BYTES);
 	} catch {
 		return null;
@@ -392,7 +420,10 @@ export async function resolveCatalogArtwork(
 				? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)])
 				: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 		});
-		if (!result.ok || result.redirected) return null;
+		if (!result.ok || result.redirected || signal?.aborted) {
+			await cancelResponseBody(result, "catalog response rejected");
+			return null;
+		}
 		const responseBytes = await readLimitedResponse(
 			result,
 			MAX_CATALOG_RESPONSE_BYTES,
@@ -426,9 +457,7 @@ export async function resolveCatalogArtwork(
 
 function shouldFallbackToCatalog(presentation: ArtworkPresentation): boolean {
 	return (
-		presentation.kind === "unavailable" ||
-		presentation.kind === "unsupported" ||
-		presentation.kind === "empty"
+		presentation.kind === "unavailable" || presentation.kind === "unsupported"
 	);
 }
 

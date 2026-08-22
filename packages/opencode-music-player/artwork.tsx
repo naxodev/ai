@@ -121,7 +121,7 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
           action.width,
           action.height,
         )
-        return commands.every((command) => writeGraphics(renderer, command))
+        return writeGraphics(renderer, commands)
       }
       case "place":
         return writeGraphics(

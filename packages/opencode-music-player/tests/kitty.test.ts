@@ -88,6 +88,25 @@ describe("Kitty graphics commands", () => {
     })
   })
 
+  test("restores the cursor when a multi-chunk display write fails", () => {
+    withEnv({ TMUX: undefined, HERDR_ENV: undefined }, () => {
+      const writes: string[] = []
+      let attempts = 0
+      const renderer = {
+        stdout: {},
+        realStdoutWrite(data: string) {
+          attempts++
+          if (attempts === 2) throw new Error("write failed")
+          writes.push(data)
+        },
+      }
+      const commands = kittyDisplayPng("A".repeat(5_000), 42, 3, 5, 24, 12)
+
+      expect(writeGraphics(renderer as never, commands)).toBe(false)
+      expect(writes).toEqual([commands[0]!, "\x1b8"])
+    })
+  })
+
   test("wraps graphics for tmux without Herdr", () => {
     withEnv({ TMUX: "1", HERDR_ENV: undefined }, () => {
       const { writes, renderer } = fakeRenderer()

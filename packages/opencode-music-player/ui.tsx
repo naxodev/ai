@@ -146,9 +146,11 @@ export type CompactPresentation = {
   artist: string | null
 }
 
-function sanitize(value: string, fallback = ""): string {
+export function sanitizeTerminalText(value: string, fallback = ""): string {
   const clean = value
     .normalize("NFC")
+    .replace(/(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)/g, "")
+    .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -176,8 +178,8 @@ export function compactPresentation(
 ): CompactPresentation {
   const available = Math.max(1, Math.floor(width))
   const marker = playing ? Icon.pause : Icon.play
-  const cleanTitle = sanitize(title, "Unknown track")
-  const cleanArtist = sanitize(artist)
+  const cleanTitle = sanitizeTerminalText(title, "Unknown track")
+  const cleanArtist = sanitizeTerminalText(artist)
 
   const tier: CompactTier =
     available >= COMPACT_BUDGETS.wide.minWidth
@@ -576,7 +578,11 @@ export function SidebarPlayer(props: {
       flexShrink={0}
     >
       <Show when={props.state.error}>
-        {(err) => <text fg={theme().text.feedback.error.default}>{err()}</text>}
+        {(err) => (
+          <text fg={theme().text.feedback.error.default}>
+            {sanitizeTerminalText(err())}
+          </text>
+        )}
       </Show>
 
       <box flexDirection="row" justifyContent="center">
@@ -618,13 +624,17 @@ export function SidebarPlayer(props: {
         {(t) => (
           <box flexDirection="column" gap={0}>
             <text fg={theme().text.default}>
-              <b>{t().name}</b>
+              <b>{sanitizeTerminalText(t().name, "Unknown track")}</b>
             </text>
             <Show when={t().artists}>
-              <text fg={theme().text.subdued}>{t().artists}</text>
+              <text fg={theme().text.subdued}>
+                {sanitizeTerminalText(t().artists)}
+              </text>
             </Show>
             <Show when={t().album}>
-              <text fg={theme().text.subdued}>{t().album}</text>
+              <text fg={theme().text.subdued}>
+                {sanitizeTerminalText(t().album)}
+              </text>
             </Show>
           </box>
         )}

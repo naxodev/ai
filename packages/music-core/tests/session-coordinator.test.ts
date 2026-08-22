@@ -329,6 +329,53 @@ test("artwork caller interruption leaves an equal-key lookup owned by the coordi
   )
 })
 
+test("artwork defects retain their cause, settle joiners, and permit a retry", async () => {
+  const provider = await fixture()
+  const state = { ...emptyPlayer(), track: track("one"), fetched_at: 1 }
+  const identity = {
+    id: "one",
+    name: "one",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 10_000,
+  }
+  await Effect.runPromise(provider.setState(state))
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* provider.blockArtwork
+        yield* provider.dieNextArtwork(new Error("native decoder crashed"))
+        const owner = yield* coordinator
+          .artwork(identity)
+          .pipe(Effect.forkScoped)
+        yield* Queue.take(provider.artworkStarts)
+        const joiner = yield* coordinator
+          .artwork(identity)
+          .pipe(Effect.forkScoped)
+        yield* provider.releaseArtwork
+
+        for (const fiber of [owner, joiner]) {
+          const failure = yield* Fiber.join(fiber).pipe(Effect.flip)
+          expect(failure.operation).toBe("artwork")
+          expect(failure.message).toBe("native decoder crashed")
+          expect(failure.cause).toEqual({ cause: expect.any(Error) })
+          expect(
+            ((failure.cause as { cause: unknown }).cause as Error).message,
+          ).toBe("native decoder crashed")
+        }
+
+        yield* provider.setArtworkResult({ type: "available", base64: "AQID" })
+        expect(yield* coordinator.artwork(identity)).toEqual({
+          type: "available",
+          base64: "AQID",
+        })
+        expect(yield* Ref.get(provider.artworkCalls)).toBe(2)
+      }).pipe(Effect.provide(graph(provider, 128, 1))),
+    ),
+  )
+})
+
 test("artwork distinct-key admission is bounded and recovers after release", async () => {
   const provider = await fixture()
   const state = (name: string, fetched_at: number) => ({
@@ -403,8 +450,14 @@ test("coordinator shutdown interrupts blocked artwork and clears waiters", async
     await Effect.runPromise(Queue.take(provider.artworkStarts))
     const joined = Effect.runPromise(coordinator.artwork(identity))
     await Effect.runPromise(Scope.close(scope, Exit.void))
-    await expect(owner).rejects.toMatchObject({ operation: "artwork" })
-    await expect(joined).rejects.toMatchObject({ operation: "artwork" })
+    await expect(owner).rejects.toMatchObject({
+      operation: "artwork",
+      message: "artwork lookup interrupted",
+    })
+    await expect(joined).rejects.toMatchObject({
+      operation: "artwork",
+      message: "artwork lookup interrupted",
+    })
     expect(await Effect.runPromise(Ref.get(provider.interruptedArtwork))).toBe(
       1,
     )
@@ -687,6 +740,119 @@ test("provider transport failure is tagged and leaves the FIFO lane live", async
   )
 })
 
+test("command worker defects close the lane and settle active, queued, and future submissions", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const statuses = yield* Queue.unbounded<{
+          readonly kind: string
+          readonly message: string
+        }>()
+        yield* coordinator.status.pipe(
+          Stream.drop(1),
+          Stream.runForEach((status) => Queue.offer(statuses, status)),
+          Effect.forkScoped,
+        )
+        yield* provider.blockTransport
+        yield* provider.dieNextTransport(new Error("transport worker crashed"))
+        const active = yield* coordinator.submit("play").pipe(Effect.forkScoped)
+        yield* Queue.take(provider.transportStarts)
+        const queued = yield* coordinator
+          .submit("pause")
+          .pipe(Effect.forkScoped)
+        yield* Effect.yieldNow
+        yield* provider.releaseTransport
+
+        const activeFailure = yield* Fiber.join(active).pipe(Effect.flip)
+        expect(activeFailure).toMatchObject({
+          code: "INDETERMINATE_COMMAND",
+          operation: "command",
+          message: "command outcome is indeterminate after worker failure",
+          cause: { cause: expect.any(Error) },
+        })
+        const queuedFailure = yield* Fiber.join(queued).pipe(Effect.flip)
+        expect(queuedFailure).toMatchObject({
+          code: "DISPOSED",
+          operation: "command",
+          message: "command was not issued because the command lane failed",
+          cause: { cause: expect.any(Error) },
+        })
+        expect(yield* Queue.take(statuses)).toMatchObject({
+          kind: "degraded",
+          message: "command worker failed",
+        })
+        expect((yield* coordinator.submit("next").pipe(Effect.flip)).code).toBe(
+          "DISPOSED",
+        )
+        expect(yield* Ref.get(provider.calls)).toEqual([{ action: "play" }])
+      }).pipe(Effect.provide(graph(provider, 2))),
+    ),
+  )
+})
+
+test("invalid and oversized provider snapshots retain prior authority and degrade status", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const valid = {
+          ...emptyPlayer(),
+          track: track("valid"),
+          fetched_at: 10,
+        }
+        yield* provider.emit({ type: "snapshot", state: valid })
+        yield* Queue.take(provider.eventConsumed)
+        yield* Effect.yieldNow
+        const accepted = yield* coordinator.current()
+
+        yield* provider.emit({
+          type: "snapshot",
+          state: { ...valid, progress_ms: -1 } as PlayerState,
+        })
+        yield* Queue.take(provider.eventConsumed)
+        yield* Effect.yieldNow
+        expect((yield* coordinator.current()).state).toEqual(accepted.state)
+        const invalidStatus = yield* coordinator.status.pipe(
+          Stream.take(1),
+          Stream.runHead,
+        )
+        expect(invalidStatus).toMatchObject({
+          value: { kind: "degraded", message: "provider state is invalid" },
+        })
+
+        yield* provider.emit({
+          type: "snapshot",
+          state: {
+            ...valid,
+            track: { ...track("large")!, name: "x".repeat(70_000) },
+            fetched_at: 11,
+          },
+        })
+        yield* Queue.take(provider.eventConsumed)
+        yield* Effect.yieldNow
+        expect((yield* coordinator.current()).state).toEqual(accepted.state)
+        const oversizedStatus = yield* coordinator.status.pipe(
+          Stream.take(1),
+          Stream.runHead,
+        )
+        expect(oversizedStatus).toMatchObject({
+          value: {
+            kind: "degraded",
+            message: "provider state exceeds frame limit",
+          },
+        })
+      }).pipe(Effect.provide(graph(provider))),
+    ),
+  )
+})
+
 test("next advances authority without inventing state", async () => {
   const provider = await fixture()
   await Effect.runPromise(
@@ -835,7 +1001,7 @@ test("scope closure settles active and queued commands exactly once", async () =
                   : "unknown",
             }),
           )
-        expect(yield* settle(active)).toBe("DISPOSED")
+        expect(yield* settle(active)).toBe("INDETERMINATE_COMMAND")
         const enrolled = yield* Queue.take(outcomes)
         expect(
           enrolled.outcome._tag === "Failure"
@@ -873,7 +1039,7 @@ test("scope close settles a blocked active command and rejects later submissions
                 : "unknown",
           }),
         )
-        expect(settled).toBe("DISPOSED")
+        expect(settled).toBe("INDETERMINATE_COMMAND")
         const revisionAtClose = (yield* coordinator.current()).revision
         yield* provider.releaseTransport
         expect((yield* coordinator.current()).revision).toBe(revisionAtClose)

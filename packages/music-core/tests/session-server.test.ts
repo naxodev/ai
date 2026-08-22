@@ -3067,152 +3067,99 @@ test("inbound chunk overflow during a blocked request stays local", async () => 
 })
 
 test("oversized provider state is contained without taking down its selected graph", async () => {
-  const serverModule = new URL("../session/server.ts", import.meta.url).href
-  const effectModule = new URL(
-    "../node_modules/effect/dist/index.js",
-    import.meta.url,
-  ).href
-  const providerModule = new URL("../session/provider.ts", import.meta.url).href
-  const clientModule = new URL("../session/client.ts", import.meta.url).href
-  const protocolModule = new URL("../session/protocol.ts", import.meta.url).href
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      "--eval",
-      `import net from "node:net"
-       import { basename } from "node:path"
-       import { existsSync, readdirSync } from "node:fs"
-       import { randomUUID } from "node:crypto"
-       import { startMusicSessionServer } from ${JSON.stringify(serverModule)}
-       import { createMusicSessionClient } from ${JSON.stringify(clientModule)}
-       import { createFakeProvider } from ${JSON.stringify(providerModule)}
-       import { PROTOCOL } from ${JSON.stringify(protocolModule)}
-       import { Effect, Fiber, Stream } from ${JSON.stringify(effectModule)}
-       const path = \`/tmp/music-session-oversized-\${process.pid}-\${randomUUID()}.sock\`
-       const provider = createFakeProvider()
-       const initialState = provider.state
-       const awaitWithin = (promise, label) => Effect.runPromise(
-         Effect.promise(() => promise).pipe(
-           Effect.timeout("2 seconds"),
-           Effect.catch(() => Effect.fail(new Error(\`timed out waiting for \${label}\`))),
-         ),
-       )
-       let server
-       let target
-       let healthy
-       let observer
-       try {
-         let overflows = 0
-         let finalized
-         const targetFinalized = new Promise((resolve) => { finalized = resolve })
-         server = await startMusicSessionServer(
-           { socketPath: path, maxFrameBytes: 4096 },
-           provider,
-           {
-             onOutboundOverflow: () => overflows++,
-             onConnectionFinalized: () => finalized(),
-           },
-         )
-         target = net.createConnection(path)
-         await awaitWithin(new Promise((resolve, reject) => {
-           target.once("connect", resolve)
-           target.once("error", reject)
-         }), "oversized target connection")
-         const closed = new Promise((resolve) => target.once("close", resolve))
-         let hello = ""
-         let emitted = false
-         target.on("data", (chunk) => {
-           hello += chunk
-           if (emitted || !hello.includes("\\\"requestId\\\":0")) return
-           emitted = true
-           provider.emit({
-             type: "snapshot",
-             state: {
-               ...initialState,
-               track: {
-                 uri: "spotify:track:oversized",
-                 id: "oversized",
-                 name: "x".repeat(8192),
-                 artists: "artist",
-                 album: "album",
-                 duration_ms: 60_000,
-               },
-               fetched_at: 77,
-             },
-           })
-         })
-         target.write(JSON.stringify({
-           type: "hello", requestId: 0, protocol: PROTOCOL,
-           packageVersion: "test", clientId: "oversized-target", hostKind: "test",
-           capabilities: ["state-replay", "transport"],
-         }) + "\\n")
-         await awaitWithin(closed, "oversized target close")
-         await awaitWithin(targetFinalized, "oversized target finalization")
-         if (overflows !== 1) throw new Error(\`expected one overflow, got \${overflows}\`)
-
-         let observed
-         const boundedState = new Promise((resolve) => { observed = resolve })
-         observer = Effect.runFork(server.coordinator.states.pipe(
-           Stream.runForEach((snapshot) => Effect.sync(() => {
-             if (snapshot.state.fetched_at === 78) observed()
-           })),
-         ))
-         await Effect.runPromise(Effect.yieldNow)
-         provider.emit({
-           type: "snapshot",
-           state: { ...initialState, fetched_at: 78 },
-         })
-         await awaitWithin(boundedState, "bounded coordinator replacement")
-
-         if (!existsSync(path)) throw new Error("listener disappeared after local overflow")
-         healthy = await createMusicSessionClient({
-           socketPath: path, clientId: "oversized-healthy", hostKind: "test",
-         })
-         const replay = new Promise((resolve) => healthy.subscribeState((snapshot) => {
-           if (snapshot.state.fetched_at === 78) resolve()
-         }))
-         await awaitWithin(replay, "healthy state replay")
-         const result = await healthy.play()
-         if (result.action !== "play") throw new Error("healthy protocol command failed")
-       } finally {
-         healthy?.dispose()
-         if (observer) await Effect.runPromise(Fiber.interrupt(observer))
-         target?.destroy()
-         if (server) await server.close()
-         const reservationPrefix = \`\${basename(path)}.bind-lock.\`
-         if (
-           existsSync(path) ||
-           existsSync(\`\${path}.bind-lock\`) ||
-           readdirSync("/tmp").some((entry) => entry.startsWith(reservationPrefix))
-         )
-           throw new Error("selected server left oversized-test runtime artifacts")
-       }`,
-    ],
-    { stdout: "ignore", stderr: "pipe" },
-  )
-  const stderr = child.stderr
-  if (!stderr || typeof stderr === "number")
-    throw new Error("oversized child stderr was not piped")
-  const diagnostics = new Response(stderr).text()
-  let exited = false
-  try {
-    const status = await Effect.runPromise(
-      Effect.promise(() => child.exited).pipe(Effect.timeout("5 seconds")),
-    )
-    exited = true
-    if (status !== 0)
-      throw new Error(`oversized child exited ${status}: ${await diagnostics}`)
-  } finally {
-    if (!exited) {
-      child.kill("SIGKILL")
-      await Effect.runPromise(
-        Effect.promise(() => child.exited).pipe(
-          Effect.timeout("2 seconds"),
-          Effect.catch(() => Effect.void),
+  const path = socketPath("oversized-provider-state")
+  const provider = createFakeProvider()
+  const initialState = provider.state
+  let overflows = 0
+  let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+  let one: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  let two: Awaited<ReturnType<typeof createMusicSessionClient>> | undefined
+  const within = <A>(promise: Promise<A>, label: string) =>
+    Effect.runPromise(
+      Effect.promise(() => promise).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Effect.fail(new Error(`timed out waiting for ${label}`)),
         ),
-      )
-    }
-    await diagnostics.catch(() => {})
+      ),
+    )
+  try {
+    server = await startMusicSessionServer(
+      { socketPath: path, maxFrameBytes: 4096 },
+      provider,
+      { onOutboundOverflow: () => overflows++ },
+    )
+    one = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "oversized-one",
+      hostKind: "test",
+    })
+    two = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "oversized-two",
+      hostKind: "test",
+    })
+    const beforeOne = one.state
+    const beforeTwo = two.state
+    const degradedOne = new Promise<void>((resolve) =>
+      one!.subscribeStatus((status) => {
+        if (status.message === "provider state exceeds frame limit") resolve()
+      }),
+    )
+    const degradedTwo = new Promise<void>((resolve) =>
+      two!.subscribeStatus((status) => {
+        if (status.message === "provider state exceeds frame limit") resolve()
+      }),
+    )
+
+    provider.emit({
+      type: "snapshot",
+      state: {
+        ...initialState,
+        track: {
+          uri: "spotify:track:oversized",
+          id: "oversized",
+          name: "x".repeat(8192),
+          artists: "artist",
+          album: "album",
+          duration_ms: 60_000,
+        },
+        fetched_at: 77,
+      },
+    })
+    await Promise.all([
+      within(degradedOne, "first degraded status"),
+      within(degradedTwo, "second degraded status"),
+    ])
+
+    expect(one.state).toEqual(beforeOne)
+    expect(two.state).toEqual(beforeTwo)
+    expect(overflows).toBe(0)
+    expect((await one.play()).action).toBe("play")
+    expect((await two.pause()).action).toBe("pause")
+
+    const validOne = new Promise<void>((resolve) =>
+      one!.subscribeState((snapshot) => {
+        if (snapshot.state.fetched_at === 78) resolve()
+      }),
+    )
+    const validTwo = new Promise<void>((resolve) =>
+      two!.subscribeState((snapshot) => {
+        if (snapshot.state.fetched_at === 78) resolve()
+      }),
+    )
+    provider.emit({
+      type: "snapshot",
+      state: { ...initialState, fetched_at: 78 },
+    })
+    await Promise.all([
+      within(validOne, "first valid replacement"),
+      within(validTwo, "second valid replacement"),
+    ])
+  } finally {
+    one?.dispose()
+    two?.dispose()
+    await server?.close().catch(() => {})
   }
 })
 

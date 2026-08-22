@@ -2,6 +2,7 @@ import { execFile, spawn, spawnSync } from "node:child_process"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
+const MAX_LINE_STREAM_PARTIAL_BYTES = 64 * 1024
 
 export type CommandResult =
   { ok: true; out: string } | { ok: false; err: string; timed_out: boolean }
@@ -33,7 +34,7 @@ export type LineStreamProcess = {
     event: "error" | "exit" | "close",
     listener: () => void,
   ) => unknown
-  kill: () => unknown
+  kill: (signal?: NodeJS.Signals) => unknown
 }
 
 export type LineStreamSpawner = (
@@ -61,6 +62,18 @@ export function startLineStream(
   let buffer = ""
   let disposed = false
   let terminated = false
+  let killRequested = false
+
+  const kill = (signal?: NodeJS.Signals) => {
+    if (killRequested || child.exitCode !== null || child.signalCode !== null)
+      return
+    killRequested = true
+    try {
+      child.kill(signal)
+    } catch {
+      // A process can exit between the state check and kill.
+    }
+  }
 
   const terminal = () => {
     if (disposed || terminated) return
@@ -68,13 +81,24 @@ export function startLineStream(
     callbacks.onTerminal()
   }
   const onData = (chunk: Buffer | string) => {
-    if (disposed) return
+    if (disposed || terminated) return
     buffer += String(chunk)
     const lines = buffer.split(/\r?\n/)
     buffer = lines.pop() ?? ""
     for (const line of lines) {
       if (disposed) return
+      if (Buffer.byteLength(line, "utf8") > MAX_LINE_STREAM_PARTIAL_BYTES) {
+        buffer = ""
+        kill("SIGKILL")
+        terminal()
+        return
+      }
       if (line) callbacks.onLine(line)
+    }
+    if (Buffer.byteLength(buffer, "utf8") > MAX_LINE_STREAM_PARTIAL_BYTES) {
+      buffer = ""
+      kill("SIGKILL")
+      terminal()
     }
   }
 
@@ -91,13 +115,7 @@ export function startLineStream(
     child.removeListener("error", terminal)
     child.removeListener("exit", terminal)
     child.removeListener("close", terminal)
-    if (child.exitCode === null && child.signalCode === null) {
-      try {
-        child.kill()
-      } catch {
-        // A process can exit between the state check and kill.
-      }
-    }
+    kill()
   }
 }
 

@@ -75,16 +75,31 @@ type RendererWriter = {
 }
 
 /** OpenTUI detects Kitty graphics but does not yet expose a raw output API. */
-export function writeGraphics(renderer: CliRenderer, data: string): boolean {
+export function writeGraphics(
+  renderer: CliRenderer,
+  data: string | readonly string[],
+): boolean {
   const target = renderer as unknown as RendererWriter
   if (!target.stdout || typeof target.realStdoutWrite !== "function")
     return false
+  const output = (value: string) =>
+    process.env.TMUX && !process.env.HERDR_ENV ? tmuxPassthrough(value) : value
+  let cursorSaved = false
   try {
-    const output =
-      process.env.TMUX && !process.env.HERDR_ENV ? tmuxPassthrough(data) : data
-    target.realStdoutWrite.call(target.stdout, output)
+    for (const command of typeof data === "string" ? [data] : data) {
+      if (command.includes("\x1b7")) cursorSaved = true
+      target.realStdoutWrite.call(target.stdout, output(command))
+      if (command.includes("\x1b8")) cursorSaved = false
+    }
     return true
   } catch {
+    if (cursorSaved) {
+      try {
+        target.realStdoutWrite.call(target.stdout, output("\x1b8"))
+      } catch {
+        // The original transaction still failed; restoration is best effort.
+      }
+    }
     return false
   }
 }

@@ -1,9 +1,5 @@
 import { expect, test } from "bun:test"
-import {
-  createController,
-  optimisticPlayerState,
-  optimisticSeekPlayerState,
-} from "../index.tsx"
+import { createController } from "../index.tsx"
 import { createSessionSystemMedia } from "../system-media.ts"
 import type { PlayerState } from "../types.ts"
 
@@ -197,13 +193,34 @@ test("commands delegate immediately, retain narrow latest seek, and preserve loa
   await flush()
   expect(calls).toEqual(["play", "next", "seek:10000"])
   expect(view.session.loading).toBeTrue()
+  expect(view.session.player).toMatchObject({
+    is_playing: false,
+    progress_ms: 12_000,
+    fetched_at: 42,
+    track: { duration_ms: 180_000 },
+  })
   gate.resolve()
   await Promise.all([play, next, firstSeek, latestSeek])
   expect(calls).toEqual(["play", "next", "seek:10000", "seek:20000"])
   expect(view.session.loading).toBeFalse()
   expect(view.session.player).toMatchObject({
+    is_playing: false,
+    progress_ms: 12_000,
+    fetched_at: 42,
+    track: { duration_ms: 180_000 },
+  })
+
+  client.emitState({
+    ...player("A", true),
+    progress_ms: 20_000,
+    fetched_at: 84,
+    track: { ...player("A", true).track!, duration_ms: 181_000 },
+  })
+  expect(view.session.player).toMatchObject({
     is_playing: true,
     progress_ms: 20_000,
+    fetched_at: 84,
+    track: { duration_ms: 181_000 },
   })
   view.controller.dispose()
 })
@@ -255,7 +272,7 @@ test("same-track polling does not reopen completed artwork", async () => {
   view.controller.dispose()
 })
 
-test("a newer daemon snapshot wins over late play and seek optimism", async () => {
+test("play and seek retain daemon state until the next snapshot", async () => {
   const { client } = createClient()
   const playGate = deferred<void>()
   client.gate = playGate.promise
@@ -263,6 +280,11 @@ test("a newer daemon snapshot wins over late play and seek optimism", async () =
   await flush()
   const playing = view.controller.playPause()
   await flush()
+  expect(view.session.player).toMatchObject({
+    is_playing: false,
+    progress_ms: 12_000,
+    fetched_at: 42,
+  })
   client.emitState(player("daemon-paused", false))
   playGate.resolve()
   await playing
@@ -275,6 +297,11 @@ test("a newer daemon snapshot wins over late play and seek optimism", async () =
   client.gate = seekGate.promise
   const seeking = view.controller.seek(90_000)
   await flush()
+  expect(view.session.player).toMatchObject({
+    progress_ms: 12_000,
+    fetched_at: 42,
+    track: { id: "daemon-paused", duration_ms: 180_000 },
+  })
   client.emitState({ ...player("daemon-seek", false), progress_ms: 45_000 })
   seekGate.resolve()
   await seeking
@@ -282,6 +309,65 @@ test("a newer daemon snapshot wins over late play and seek optimism", async () =
     progress_ms: 45_000,
     track: { id: "daemon-seek" },
   })
+  view.controller.dispose()
+})
+
+test("playback intent survives command success until daemon acknowledgement", async () => {
+  const { client, calls } = createClient()
+  const gate = deferred<void>()
+  client.gate = gate.promise
+  const view = harness(client)
+  await flush()
+
+  const play = view.controller.playPause()
+  gate.resolve()
+  await play
+  const pause = view.controller.playPause()
+  await pause
+
+  expect(calls).toEqual(["play", "pause"])
+  expect(view.session.player?.is_playing).toBeFalse()
+  view.controller.dispose()
+})
+
+test("connection loss clears playback intent before replacement authority", async () => {
+  const { client, calls } = createClient()
+  const view = harness(client)
+  await flush()
+
+  await view.controller.playPause()
+  client.emitConnection({
+    type: "reconnecting",
+    error: { message: "lost", retryable: true },
+  })
+  client.emitState(player("replacement", false), 1, "daemon-b")
+  await view.controller.playPause()
+
+  expect(calls).toEqual(["play", "play"])
+  view.controller.dispose()
+})
+
+test("coalesced seeks keep loading owned across the command handoff", async () => {
+  const { client } = createClient()
+  const gate = deferred<void>()
+  client.gate = gate.promise
+  const view = harness(client)
+  await flush()
+  const loading: boolean[] = []
+  const unsubscribe = view.controller.subscribe((session) =>
+    loading.push(session.loading),
+  )
+
+  const first = view.controller.seek(10_000)
+  const latest = view.controller.seek(20_000)
+  await flush()
+  loading.length = 0
+  gate.resolve()
+  await Promise.all([first, latest])
+
+  expect(loading.at(-1)).toBeFalse()
+  expect(loading.slice(0, -1).every(Boolean)).toBeTrue()
+  unsubscribe()
   view.controller.dispose()
 })
 
@@ -300,11 +386,14 @@ test("lifecycle and transport errors do not erase one another or reconcile", asy
     error: { message: "reconnecting", retryable: true },
   })
   expect(view.session.error).toBe("reconnecting")
-  client.failure = new Error("command failed")
+  client.failure = new Error(
+    "command\u001b]52;c;YXR0YWNr\u0007\u001b[31m\nfailed",
+  )
   await view.controller.next()
   expect(calls).toEqual(["next"])
   expect(view.session.error).toBe("reconnecting")
   expect(view.toasts).toHaveLength(1)
+  expect(view.toasts[0]).toMatchObject({ message: "command failed" })
   client.emitConnection({ type: "connected", daemonInstanceId: "daemon-a" })
   expect(view.session.error).toBe("command failed")
   client.emitConnection({
@@ -416,17 +505,4 @@ test("disposal settles callers and fences held command and late state", async ()
   expect(client.disposeCalls).toBe(1)
   expect(view.session.player).toBe(before)
   expect(view.session.loading).toBeFalse()
-})
-
-const paused = player("track")
-test("optimistic helpers retain waveform-compatible fields", () => {
-  expect(optimisticPlayerState(paused, true, 8_000)).toMatchObject({
-    is_playing: true,
-    progress_ms: 12_000,
-    fetched_at: 8_000,
-  })
-  expect(optimisticSeekPlayerState(paused, 20_000, 8_000)).toMatchObject({
-    progress_ms: 20_000,
-    fetched_at: 8_000,
-  })
 })

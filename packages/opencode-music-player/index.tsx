@@ -7,7 +7,12 @@ import {
   mergePlayerSnapshot,
   type SessionMedia,
 } from "./types.ts"
-import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
+import {
+  CompactPlayer,
+  sanitizeTerminalText,
+  SidebarPlayer,
+  type UiState,
+} from "./ui.tsx"
 
 type Context = Plugin.Context
 type SessionStore = UiState & { loadingOwners?: string[] }
@@ -30,37 +35,6 @@ export type Controller = {
 
 export type ControllerDependencies = {
   createSessionMedia: () => SessionMedia
-}
-
-/** Apply successful daemon transport state until the next authoritative replay. */
-export function optimisticPlayerState(
-  player: SessionStore["player"],
-  playing: boolean,
-  now = Date.now(),
-): SessionStore["player"] {
-  if (!player) return player
-  const progress = player.is_playing
-    ? Math.min(
-        player.track?.duration_ms || Number.POSITIVE_INFINITY,
-        Math.max(0, player.progress_ms + (now - player.fetched_at)),
-      )
-    : player.progress_ms
-  return {
-    ...player,
-    progress_ms: progress,
-    is_playing: playing,
-    fetched_at: now,
-  }
-}
-
-export function optimisticSeekPlayerState(
-  player: SessionStore["player"],
-  positionMs: number,
-  now = Date.now(),
-): SessionStore["player"] {
-  const target = seekTarget(positionMs, player?.track?.duration_ms)
-  if (!player?.track || target === null) return player
-  return { ...player, progress_ms: target, fetched_at: now }
 }
 
 function seekTarget(positionMs: number, durationMs?: number): number | null {
@@ -122,10 +96,14 @@ export function createController(
   } = { message: null, source: undefined }
   let transportError: string | null = null
   let receivedSnapshot = false
-  // An authority fence for optimistic UI projection, not a host sampling lane.
   let snapshotEpoch = 0
-  let playbackTarget: boolean | undefined
-  let playbackOperations = 0
+  let playbackIntent:
+    | {
+        readonly target: boolean
+        readonly startedAtEpoch: number
+        settled: boolean
+      }
+    | undefined
   let activeSeek: SeekIntent | null = null
   let latestSeek: SeekIntent | null = null
   const pending = new Set<() => void>()
@@ -172,11 +150,10 @@ export function createController(
 
   const runCommand = (
     command: () => Promise<unknown>,
-    afterSuccess?: () => void,
+    onSettled?: (succeeded: boolean) => void,
   ) => {
     if (!isActive()) return Promise.resolve()
     const generation = lifecycleGeneration
-    const commandSnapshotEpoch = snapshotEpoch
     return new Promise<void>((resolve) => {
       pending.add(resolve)
       updateLoading()
@@ -186,48 +163,46 @@ export function createController(
       } catch (error) {
         result = Promise.reject(error)
       }
+      let succeeded = false
       void Promise.resolve(result)
         .then(
           () => {
+            succeeded = true
             if (!isActive() || generation !== lifecycleGeneration) return
             if (transportError !== null) setTransportError(null)
-            // A later daemon snapshot is authoritative over command optimism.
-            if (snapshotEpoch === commandSnapshotEpoch) afterSuccess?.()
           },
           (error) => {
             if (!isActive() || generation !== lifecycleGeneration) return
-            const message = errMsg(error)
+            const message = sanitizeTerminalText(errMsg(error))
             setTransportError(message)
             context.ui.toast.show({ title: "Music", message, variant: "error" })
           },
         )
-        .finally(() => settle(resolve))
+        .finally(() => {
+          try {
+            onSettled?.(succeeded)
+          } finally {
+            settle(resolve)
+          }
+        })
     })
   }
 
   const runSeek = (intent: SeekIntent) => {
     activeSeek = intent
-    const operation = runCommand(
+    void runCommand(
       () => media.seek(intent.positionMs),
       () => {
-        setSession((draft) => {
-          draft.player = optimisticSeekPlayerState(
-            draft.player,
-            intent.positionMs,
-          )
-        })
+        if (activeSeek !== intent) return
+        activeSeek = null
+        for (const resolve of intent.resolves) resolve()
+        intent.resolves = []
+        const next = latestSeek
+        latestSeek = null
+        if (isActive() && next) runSeek(next)
+        else next?.resolves.splice(0).forEach((resolve) => resolve())
       },
     )
-    void operation.then(() => {
-      if (activeSeek !== intent) return
-      activeSeek = null
-      for (const resolve of intent.resolves) resolve()
-      intent.resolves = []
-      const next = latestSeek
-      latestSeek = null
-      if (isActive() && next) runSeek(next)
-      else next?.resolves.splice(0).forEach((resolve) => resolve())
-    })
   }
 
   const refreshAll = async () => {
@@ -247,20 +222,31 @@ export function createController(
   }
 
   const playPause = () => {
-    const nextPlaying = !(playbackTarget ?? !!session.player?.is_playing)
-    playbackTarget = nextPlaying
-    playbackOperations++
+    const nextPlaying = !(
+      playbackIntent?.target ?? !!session.player?.is_playing
+    )
+    const intent = {
+      target: nextPlaying,
+      startedAtEpoch: snapshotEpoch,
+      settled: false,
+    }
+    playbackIntent = intent
     return runCommand(
       () => (nextPlaying ? media.play() : media.pause()),
-      () => {
-        setSession((draft) => {
-          draft.player = optimisticPlayerState(draft.player, nextPlaying)
-        })
+      (succeeded) => {
+        if (playbackIntent !== intent) return
+        if (!succeeded) {
+          playbackIntent = undefined
+          return
+        }
+        intent.settled = true
+        if (
+          snapshotEpoch > intent.startedAtEpoch &&
+          session.player?.is_playing === intent.target
+        )
+          playbackIntent = undefined
       },
-    ).finally(() => {
-      playbackOperations--
-      if (playbackOperations === 0) playbackTarget = undefined
-    })
+    )
   }
 
   const seek = (positionMs: number) => {
@@ -289,6 +275,12 @@ export function createController(
       setSession((draft) => {
         draft.player = mergePlayerSnapshot(draft.player, event.state)
       })
+      if (
+        playbackIntent?.settled &&
+        snapshotEpoch > playbackIntent.startedAtEpoch &&
+        event.state.is_playing === playbackIntent.target
+      )
+        playbackIntent = undefined
       return
     }
     if (event?.type === "lifecycle") {
@@ -297,6 +289,8 @@ export function createController(
       // takes precedence over provider status, and clearing it restores the
       // latest daemon lifecycle state without requiring a repeated event.
       setLifecycleError(event.message, event.source)
+      if (event.source === "connection" && event.message !== null)
+        playbackIntent = undefined
       if (event.message !== null && latestSeek) {
         latestSeek.resolves.splice(0).forEach((resolve) => resolve())
         latestSeek = null
