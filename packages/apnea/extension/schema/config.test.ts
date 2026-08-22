@@ -149,6 +149,43 @@ describe("out-of-range numbers degrade instead of failing the decode", () => {
     if (Result.isSuccess(r)) expect(r.success.review_round_cap).toBe(3)
   })
 
+  test.each([1.5, 21, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "global review_round_cap=%s falls back to 3",
+    (review_round_cap) => {
+      const r = decodeGlobalConfig({ ...baseRawGlobal, review_round_cap })
+      expect(Result.isSuccess(r)).toBe(true)
+      if (Result.isSuccess(r)) expect(r.success.review_round_cap).toBe(3)
+    },
+  )
+
+  test("accepts the documented numeric upper boundaries", () => {
+    const r = decodeGlobalConfig({
+      ...baseRawGlobal,
+      review_round_cap: 20,
+      timeouts_ms: { verify: Number.MAX_SAFE_INTEGER },
+    })
+    expect(Result.isSuccess(r)).toBe(true)
+    if (Result.isSuccess(r)) {
+      expect(r.success.review_round_cap).toBe(20)
+      expect(r.success.timeouts_ms.verify).toBe(Number.MAX_SAFE_INTEGER)
+    }
+  })
+
+  test.each([1_000.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "invalid timeout=%s falls back per field",
+    (verify) => {
+      const r = decodeGlobalConfig({
+        ...baseRawGlobal,
+        timeouts_ms: { verify, coding: 1_800_000 },
+      })
+      expect(Result.isSuccess(r)).toBe(true)
+      if (Result.isSuccess(r)) {
+        expect(r.success.timeouts_ms.verify).toBe(900_000)
+        expect(r.success.timeouts_ms.coding).toBe(1_800_000)
+      }
+    },
+  )
+
   test("project overlay with an out-of-range number still decodes", () => {
     const r = decodeProjectConfig({
       review_round_cap: 0,

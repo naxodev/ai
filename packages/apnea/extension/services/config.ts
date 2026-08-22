@@ -1,3 +1,4 @@
+import * as os from "node:os"
 import { Context, Effect, Layer, Result } from "effect"
 import { globalConfigPath, projectConfigPath } from "../domain/paths.ts"
 import { ConfigError } from "../errors.ts"
@@ -50,7 +51,8 @@ export const ConfigLive = Layer.effect(
 
     const load = (root: string): Effect.Effect<ApneaConfig, ConfigError> =>
       Effect.gen(function* () {
-        const gPath = globalConfigPath()
+        const trustedHome = os.homedir()
+        const gPath = globalConfigPath(trustedHome)
         const gPresent = yield* fs.exists(gPath)
         if (!gPresent) {
           return yield* new ConfigError({
@@ -58,7 +60,7 @@ export const ConfigLive = Layer.effect(
             path: gPath,
           })
         }
-        const gText = yield* fs.readFile(gPath)
+        const gText = yield* fs.readTrustedGlobalFile(trustedHome, gPath)
         const gRaw = yield* parseJson(gText, gPath)
         const gDecoded = decodeGlobalConfig(gRaw)
         if (Result.isFailure(gDecoded)) {

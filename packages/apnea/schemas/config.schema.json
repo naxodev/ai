@@ -44,7 +44,11 @@
     "review_round_cap": { "type": "integer", "minimum": 1, "maximum": 20 },
     "timeouts_ms": {
       "type": "object",
-      "additionalProperties": { "type": "integer", "minimum": 1000 }
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 9007199254740991
+      }
     }
   }
 }

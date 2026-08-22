@@ -58,7 +58,15 @@ export const commitWorkflow = (
     const reviewPresent = yield* fs.projectPathExists(root, reviewAbs)
     let fm: ReturnType<typeof parseFrontMatter> = null
     if (reviewPresent) {
-      const reviewText = yield* fs.readProjectFile(root, reviewAbs)
+      const reviewText = yield* fs.readProjectFile(root, reviewAbs).pipe(
+        Effect.mapError(
+          (error) =>
+            new ArtifactInvalid({
+              artifact: reviewRel,
+              message: error.message,
+            }),
+        ),
+      )
       fm = parseFrontMatter(reviewText)
     }
     const verdict = asVerdict(fm?.verdict)
@@ -88,7 +96,14 @@ export const commitWorkflow = (
         details: { package: pkgRel },
       })
     }
-    const pkgText = yield* fs.readProjectFile(root, pkgAbs)
+    const pkgText = yield* fs
+      .readProjectFile(root, pkgAbs)
+      .pipe(
+        Effect.mapError(
+          (error) =>
+            new ArtifactInvalid({ artifact: pkgRel, message: error.message }),
+        ),
+      )
     const blocks = extractVerifyBlocks(pkgText)
     if (!blocks.length) {
       return yield* new ArtifactInvalid({

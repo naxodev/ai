@@ -1,7 +1,7 @@
 import { Clock, Effect, Exit, Option, Result } from "effect"
 import { resetRecoveryLadder } from "../domain/recovery.ts"
 import { inferKind } from "../domain/artifact-kind.ts"
-import { timeoutMsForKind } from "../domain/timeouts.ts"
+import { deadlineAfter, timeoutMsForKind } from "../domain/timeouts.ts"
 import {
   asVerdict,
   isCompleteArtifact,
@@ -11,6 +11,7 @@ import { looksLikeShellOnly, shellJoin } from "../domain/herdr.ts"
 import { abs, rel } from "../domain/paths.ts"
 import { nextAfter, toolAllowed } from "../domain/state-machine.ts"
 import {
+  ArtifactInvalid,
   GateRefused,
   HerdrError,
   WaitAborted,
@@ -200,10 +201,10 @@ export const waitWorkflow = (
     const cfg = yield* config.load(root)
 
     const poll = params.poll_ms ?? 2000
-    if (!Number.isFinite(poll) || poll < MIN_POLL_MS) {
+    if (!Number.isSafeInteger(poll) || poll < MIN_POLL_MS) {
       return yield* new GateRefused({
         gate: "poll_interval",
-        message: `poll_ms must be a finite number >= ${MIN_POLL_MS}; got ${poll}. Every poll spawns two herdr subprocesses, so a tiny interval is a busy-spin, not a faster wait.`,
+        message: `poll_ms must be a safe integer >= ${MIN_POLL_MS}; got ${poll}. Every poll spawns two herdr subprocesses, so a tiny interval is a busy-spin, not a faster wait.`,
       })
     }
     // Refuse to PICK a budget that a default host shell would kill; still
@@ -230,10 +231,10 @@ export const waitWorkflow = (
     // NaN, and the call blocks until the role's deadline instead of
     // returning exit 3. The CLI is protected by `parseNumFlag`; a Pi tool
     // call reaches `run` through a raw cast with no runtime coercion.
-    if (!Number.isFinite(budget)) {
+    if (!Number.isSafeInteger(budget) || budget <= 0) {
       return yield* new GateRefused({
         gate: "budget_floor",
-        message: `budget_ms must be a finite number; got ${budget}`,
+        message: `budget_ms must be a positive safe integer; got ${budget}`,
       })
     }
     const floor = minBudgetFor(poll)
@@ -271,7 +272,7 @@ export const waitWorkflow = (
     const dispatchedAt = state.pending_started_at ?? startedMs
     if (state.pending_deadline_ms == null) {
       state.pending_started_at = dispatchedAt
-      state.pending_deadline_ms = dispatchedAt + timeout
+      state.pending_deadline_ms = deadlineAfter(dispatchedAt, timeout)
       yield* store.save(state, root)
     }
     const requireVerdict = kind === "plan_review" || kind === "code_review"
@@ -280,7 +281,15 @@ export const waitWorkflow = (
       Effect.gen(function* () {
         const present = yield* fs.projectPathExists(root, artifactAbs)
         if (!present) return null
-        const text = yield* fs.readProjectFile(root, artifactAbs)
+        const text = yield* fs.readProjectFile(root, artifactAbs).pipe(
+          Effect.mapError(
+            (error) =>
+              new ArtifactInvalid({
+                artifact: pendingArtifact,
+                message: error.message,
+              }),
+          ),
+        )
         return parseFrontMatter(text)
       })
 
@@ -435,7 +444,8 @@ export const waitWorkflow = (
     const loop: Effect.Effect<ToolResult, AppError> = Effect.gen(function* () {
       while (true) {
         const now = yield* Clock.currentTimeMillis
-        const deadline = state.pending_deadline_ms ?? startedMs + timeout
+        const deadline =
+          state.pending_deadline_ms ?? deadlineAfter(startedMs, timeout)
 
         const fm = yield* readArtifact()
         const completion = validateArtifactCompletion(kind, fm, pendingArtifact)
@@ -583,7 +593,7 @@ export const waitWorkflow = (
             extendedOnce = true
             const extra = Math.max(Math.floor(timeout * 0.5), 120_000)
             state.pending_extended = true
-            state.pending_deadline_ms = now + extra
+            state.pending_deadline_ms = deadlineAfter(now, extra)
             yield* store.save(state, root)
             hooks.onUpdate?.({
               content: [
@@ -617,7 +627,7 @@ export const waitWorkflow = (
             // grace is not.
             finalNudgeGrace = true
             state.pending_final_grace = true
-            state.pending_deadline_ms = now + 180_000
+            state.pending_deadline_ms = deadlineAfter(now, 180_000)
             yield* store.save(state, root)
             yield* tryNudge("timeout idle", true)
             continue
@@ -659,7 +669,8 @@ export const waitWorkflow = (
       // was never the problem. `timeout` still sizes the extension,
       // because that has to come from config to stay stable across calls.
       const grantedMs =
-        (state.pending_deadline_ms ?? dispatchedAt + timeout) - dispatchedAt
+        (state.pending_deadline_ms ?? deadlineAfter(dispatchedAt, timeout)) -
+        dispatchedAt
       return yield* new WaitTimeout({
         artifact: pendingArtifact,
         timeoutMs: grantedMs,

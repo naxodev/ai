@@ -7,7 +7,7 @@ import { statePath } from "../domain/paths.ts"
 import { expectFailure } from "../test/expect-failure.ts"
 import { makeFakeFileSystem } from "../test/fake-file-system.ts"
 import { itEffect } from "../test/it-effect.ts"
-import { FileSystemLive } from "./file-system.ts"
+import { FileSystemLive, PERSISTED_INPUT_MAX_BYTES } from "./file-system.ts"
 import { RunStore, RunStoreLive } from "./run-store.ts"
 
 function withFake(initial: Record<string, string> = {}) {
@@ -126,6 +126,24 @@ describe("RunStore (fake FileSystem)", () => {
       const store = yield* RunStore
       const exit = yield* Effect.exit(store.load(root))
       expect(Exit.isFailure(exit)).toBe(true)
+    }).pipe(Effect.provide(layer))
+  })
+
+  itEffect("oversized state input fails as StateCorrupt", () => {
+    const root = "/proj"
+    const p = statePath(root)
+    const { layer } = withFake({
+      [p]: "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1),
+    })
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        Effect.gen(function* () {
+          const store = yield* RunStore
+          return yield* store.load(root)
+        }),
+      )
+      const error = expectFailure(result, "StateCorrupt")
+      expect(error.message).toContain("byte limit")
     }).pipe(Effect.provide(layer))
   })
 

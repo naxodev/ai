@@ -42,6 +42,11 @@ const PaneRefSchema = Schema.Struct({
   profile_fingerprint: Schema.optionalKey(Schema.NullOr(Schema.String)),
 })
 
+const PositiveSafeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
+const NonNegativeSafeInteger = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+)
+
 /**
  * Runtime codec for `state.json` (version 1).
  * Missing pane-tracking fields are filled in `decodeRunState` (legacy files).
@@ -50,9 +55,9 @@ export const RunStateSchema = Schema.Struct({
   version: Schema.Literal(1),
   slug: Schema.String.check(Schema.isMinLength(1)),
   step: StepSchema,
-  phase_index: Schema.Number,
-  phase_count_hint: Schema.NullOr(Schema.Number),
-  rounds: Schema.Record(Schema.String, Schema.Number),
+  phase_index: PositiveSafeInteger,
+  phase_count_hint: Schema.NullOr(NonNegativeSafeInteger),
+  rounds: Schema.Record(Schema.String, PositiveSafeInteger),
   vcs: VcsBackendSchema,
   allow_dirty: Schema.Boolean,
   goal: Schema.String,
@@ -63,9 +68,11 @@ export const RunStateSchema = Schema.Struct({
   // optional on Encoded so legacy fixtures without pane fields still decode
   pending_pane_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
   pending_pane_label: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  pending_started_at: Schema.optionalKey(Schema.NullOr(Schema.Number)),
-  pending_deadline_ms: Schema.optionalKey(Schema.NullOr(Schema.Number)),
-  pending_nudged_at: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  pending_started_at: Schema.optionalKey(Schema.NullOr(NonNegativeSafeInteger)),
+  pending_deadline_ms: Schema.optionalKey(
+    Schema.NullOr(NonNegativeSafeInteger),
+  ),
+  pending_nudged_at: Schema.optionalKey(Schema.NullOr(NonNegativeSafeInteger)),
   pending_final_grace: Schema.optionalKey(Schema.Boolean),
   pending_extended: Schema.optionalKey(Schema.Boolean),
   role_panes: Schema.optionalKey(Schema.Record(Schema.String, PaneRefSchema)),
@@ -77,6 +84,20 @@ export const RunStateSchema = Schema.Struct({
 })
 
 export type DecodedRunState = typeof RunStateSchema.Type
+
+function isPersistedArtifactPath(value: string): boolean {
+  if (
+    !value.startsWith(".apnea/") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    return false
+  }
+  return value
+    .slice(".apnea/".length)
+    .split("/")
+    .every((part) => part !== "" && part !== "." && part !== "..")
+}
 
 function hasMatchingPendingCoderDispatch(d: DecodedRunState): boolean {
   const phase = String(d.phase_index).padStart(2, "0")
@@ -124,6 +145,20 @@ export function decodeRunState(
     )
   }
   const d = decoded.success
+  for (const [field, value] of [
+    ["pending_artifact", d.pending_artifact],
+    ["current_phase_package", d.current_phase_package],
+    ["current_code_review", d.current_code_review],
+  ] as const) {
+    if (value !== null && !isPersistedArtifactPath(value)) {
+      return Result.fail(
+        new StateCorrupt({
+          path,
+          message: `${field} must be a repository-relative .apnea/ path`,
+        }),
+      )
+    }
+  }
   // Backward-compat defaults for state.json files predating pane tracking.
   const state: RunState = {
     version: 1,

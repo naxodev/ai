@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseFlags, parseOperationArgs } from "./parse.ts"
+import { parseFlags, parseNumFlag, parseOperationArgs } from "./parse.ts"
 
 describe("parseFlags", () => {
   test("bare switches land in flags, positionals in rest", () => {
@@ -65,17 +65,37 @@ describe("parseOperationArgs", () => {
     if (parsed.ok) expect(parsed.positional).toEqual(["--ship", "safely"])
   })
 
-  test.each(["", " ", " 1", "1 ", "Infinity", "NaN"])(
-    "rejects non-canonical numeric value %j",
+  test.each([
+    "",
+    " ",
+    " 1",
+    "1 ",
+    "Infinity",
+    "NaN",
+    ".5",
+    "0",
+    "-1",
+    String(Number.MAX_SAFE_INTEGER + 1),
+  ])("rejects non-canonical numeric value %j", (value) => {
+    expect(parseOperationArgs("wait", [`--budget=${value}`]).ok).toBe(false)
+  })
+
+  test.each(["+1", "1e3", "0x10", "1.0"])(
+    "retains exact positive integer syntax %s",
     (value) => {
-      expect(parseOperationArgs("wait", [`--budget=${value}`]).ok).toBe(false)
+      expect(parseOperationArgs("wait", [`--budget=${value}`]).ok).toBe(true)
     },
   )
 
-  test.each(["+1", "1e3", ".5", "0x10"])(
-    "retains supported numeric syntax %s",
+  test.each([".5", "0", "-1", "9007199254740992", "0x10", "1e3"])(
+    "keeps CLI and slash numeric acceptance in parity for %s",
     (value) => {
-      expect(parseOperationArgs("wait", [`--budget=${value}`]).ok).toBe(true)
+      expect(
+        parseOperationArgs("wait", [`--poll=${value}`], { surface: "cli" }).ok,
+      ).toBe(
+        parseOperationArgs("wait", [`--poll=${value}`], { surface: "slash" })
+          .ok,
+      )
     },
   )
 
@@ -88,5 +108,29 @@ describe("parseOperationArgs", () => {
     expect(
       parseOperationArgs("status", ["--i-am-human"], { surface: "cli" }).ok,
     ).toBe(false)
+  })
+})
+
+describe("parseNumFlag", () => {
+  test.each([" 1", "1 ", "\t1", "1\n"])(
+    "rejects padded public API input %j",
+    (value) => {
+      expect(parseNumFlag(new Map([["budget", value]]), "budget")).toEqual({
+        ok: false,
+        raw: value,
+      })
+    },
+  )
+
+  test.each([
+    ["+1", 1],
+    ["1e3", 1_000],
+    ["0x10", 16],
+    ["1.0", 1],
+  ])("retains exact safe-integer form %s", (raw, expected) => {
+    expect(parseNumFlag(new Map([["poll", raw]]), "poll")).toEqual({
+      ok: true,
+      value: expected,
+    })
   })
 })

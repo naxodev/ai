@@ -20,18 +20,60 @@ const RoleBindingSchema = Schema.Struct({
   profile: Schema.String.check(Schema.isMinLength(1)),
 })
 
+const ReviewRoundCapSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 20 }),
+)
+const TimeoutMsSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 1_000, maximum: Number.MAX_SAFE_INTEGER }),
+)
+
+function validReviewRoundCap(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1 && value <= 20
+}
+
+function validTimeout(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1_000
+}
+
+function sanitizeConfigNumbers(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const sanitized = { ...config }
+  if (
+    typeof sanitized.review_round_cap === "number" &&
+    !validReviewRoundCap(sanitized.review_round_cap)
+  ) {
+    delete sanitized.review_round_cap
+  }
+  if (
+    sanitized.timeouts_ms &&
+    typeof sanitized.timeouts_ms === "object" &&
+    !Array.isArray(sanitized.timeouts_ms)
+  ) {
+    const timeouts = {
+      ...(sanitized.timeouts_ms as Record<string, unknown>),
+    }
+    for (const [key, value] of Object.entries(timeouts)) {
+      if (typeof value === "number" && !validTimeout(value)) {
+        delete timeouts[key]
+      }
+    }
+    sanitized.timeouts_ms = timeouts
+  }
+  return sanitized
+}
+
 /**
  * Mirrors `schemas/config.schema.json` top-level keys.
  *
- * `review_round_cap` / `timeouts_ms` carry no range `check`: an out-of-range
- * number must fall back to the default (see below), not fail the decode. A
- * hard failure here bricks every tool until the file is hand-edited.
+ * Numeric fields are strict here. The decoders remove only invalid numeric
+ * values before decoding so published 0.2 per-field fallback remains intact.
  */
 export const GlobalConfigSchema = Schema.Struct({
   profiles: Schema.optional(Schema.Record(Schema.String, ProfileSchema)),
   roles: Schema.optional(Schema.Record(Schema.String, RoleBindingSchema)),
-  review_round_cap: Schema.optional(Schema.Number),
-  timeouts_ms: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
+  review_round_cap: Schema.optional(ReviewRoundCapSchema),
+  timeouts_ms: Schema.optional(Schema.Record(Schema.String, TimeoutMsSchema)),
 })
 
 const PROJECT_KNOWN = new Set([
@@ -56,8 +98,8 @@ const PROJECT_FORBIDDEN = new Set([
  */
 export const ProjectConfigSchema = Schema.Struct({
   roles: Schema.optional(Schema.Record(Schema.String, RoleBindingSchema)),
-  review_round_cap: Schema.optional(Schema.Number),
-  timeouts_ms: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
+  review_round_cap: Schema.optional(ReviewRoundCapSchema),
+  timeouts_ms: Schema.optional(Schema.Record(Schema.String, TimeoutMsSchema)),
   isolation: Schema.optional(Schema.Literal("shared_cwd")),
 })
 
@@ -125,7 +167,9 @@ export function decodeGlobalConfig(
   }
 
   const { pane_style: _legacy, ...globalConfig } = obj
-  const decoded = Schema.decodeUnknownResult(GlobalConfigSchema)(globalConfig)
+  const decoded = Schema.decodeUnknownResult(GlobalConfigSchema)(
+    sanitizeConfigNumbers(globalConfig),
+  )
   if (Result.isFailure(decoded)) {
     return configFail(decoded.failure.message)
   }
@@ -152,17 +196,14 @@ export function decodeGlobalConfig(
   const timeouts = { ...DEFAULT_TIMEOUTS }
   if (d.timeouts_ms) {
     for (const [k, v] of Object.entries(d.timeouts_ms)) {
-      if (typeof v === "number" && v >= 1000) timeouts[k] = v
+      if (validTimeout(v)) timeouts[k] = v
     }
   }
 
   return Result.succeed({
     profiles,
     roles,
-    review_round_cap:
-      typeof d.review_round_cap === "number" && d.review_round_cap >= 1
-        ? d.review_round_cap
-        : 3,
+    review_round_cap: d.review_round_cap ?? 3,
     timeouts_ms: timeouts,
   })
 }
@@ -228,7 +269,7 @@ export function decodeProjectConfig(
 
   const { pane_style: _legacy, ...projectConfig } = obj
   const decoded = Schema.decodeUnknownResult(ProjectConfigSchema)(
-    projectConfig,
+    sanitizeConfigNumbers(projectConfig),
     {
       onExcessProperty: "error",
     },
@@ -256,14 +297,15 @@ export function applyProjectConfig(
   const timeouts = { ...cfg.timeouts_ms }
   if (overlay.timeouts_ms) {
     for (const [k, v] of Object.entries(overlay.timeouts_ms)) {
-      if (typeof v === "number" && v >= 1000) timeouts[k] = v
+      if (validTimeout(v)) timeouts[k] = v
     }
   }
   return {
     profiles: cfg.profiles,
     roles,
     review_round_cap:
-      overlay.review_round_cap !== undefined && overlay.review_round_cap >= 1
+      overlay.review_round_cap !== undefined &&
+      validReviewRoundCap(overlay.review_round_cap)
         ? overlay.review_round_cap
         : cfg.review_round_cap,
     timeouts_ms: timeouts,

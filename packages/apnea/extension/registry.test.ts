@@ -130,4 +130,15 @@ describe("OPERATIONS", () => {
       error: "invalid parameters for status",
     })
   })
+
+  test.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects unsafe wait poll_ms=%s at the TypeBox boundary",
+    async (poll_ms) => {
+      const result = await executeOperation("wait", { poll_ms })
+      expect(result).toMatchObject({
+        ok: false,
+        error: "invalid parameters for wait",
+      })
+    },
+  )
 })

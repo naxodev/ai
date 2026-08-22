@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto"
 import { Context, Effect, Layer } from "effect"
 import { ConfigError } from "../errors.ts"
 
+export const PERSISTED_INPUT_MAX_BYTES = 1024 * 1024
+
 export interface FileSystemService {
   readonly readFile: (path: string) => Effect.Effect<string>
   readonly writeFile: (path: string, content: string) => Effect.Effect<void>
@@ -17,9 +19,15 @@ export interface FileSystemService {
     destination: string,
     content: string,
   ) => Effect.Effect<void, ConfigError>
+  readonly readTrustedGlobalFile: (
+    accountHome: string,
+    source: string,
+    limit?: number,
+  ) => Effect.Effect<string, ConfigError>
   readonly readProjectFile: (
     root: string,
     source: string,
+    limit?: number,
   ) => Effect.Effect<string, ConfigError>
   readonly projectPathExists: (
     root: string,
@@ -198,6 +206,67 @@ function projectEffect<A>(operation: () => A): Effect.Effect<A, ConfigError> {
   )
 }
 
+function readRegularUtf8(target: string, limit: number): string {
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit < 0 ||
+    limit > PERSISTED_INPUT_MAX_BYTES
+  ) {
+    throw new ConfigError({
+      message: `persisted input byte limit must be between 0 and ${PERSISTED_INPUT_MAX_BYTES}`,
+      path: target,
+    })
+  }
+  let descriptor: number | undefined
+  try {
+    const noFollow = fs.constants.O_NOFOLLOW ?? 0
+    const nonBlocking = fs.constants.O_NONBLOCK ?? 0
+    descriptor = fs.openSync(
+      target,
+      fs.constants.O_RDONLY | noFollow | nonBlocking,
+    )
+    if (!fs.fstatSync(descriptor).isFile()) {
+      throw new ConfigError({
+        message: `persisted input is not a regular file: ${target}`,
+        path: target,
+      })
+    }
+
+    const bytes = Buffer.allocUnsafe(limit + 1)
+    let offset = 0
+    while (offset < bytes.length) {
+      const count = fs.readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.length - offset,
+        null,
+      )
+      if (count === 0) break
+      offset += count
+    }
+    if (offset > limit) {
+      throw new ConfigError({
+        message: `persisted input exceeds ${limit} byte limit: ${target}`,
+        path: target,
+        details: { limit_bytes: limit },
+      })
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, offset),
+      )
+    } catch {
+      throw new ConfigError({
+        message: `persisted input is not valid UTF-8: ${target}`,
+        path: target,
+      })
+    }
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor)
+  }
+}
+
 function fsyncParentDirectory(target: string): void {
   let descriptor: number | undefined
   try {
@@ -302,9 +371,18 @@ export const FileSystemLive = Layer.succeed(
         }
       }),
 
-    readProjectFile: (root, source) =>
+    readTrustedGlobalFile: (
+      accountHome,
+      source,
+      limit = PERSISTED_INPUT_MAX_BYTES,
+    ) =>
       projectEffect(() =>
-        fs.readFileSync(secureProjectPath(root, source), "utf8"),
+        readRegularUtf8(trustedGlobalPath(accountHome, source), limit),
+      ),
+
+    readProjectFile: (root, source, limit = PERSISTED_INPUT_MAX_BYTES) =>
+      projectEffect(() =>
+        readRegularUtf8(secureProjectPath(root, source), limit),
       ),
 
     projectPathExists: (root, destination) =>

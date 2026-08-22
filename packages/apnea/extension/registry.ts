@@ -187,8 +187,9 @@ function createRegisteredOperations(
       // moves, and then the schema promises a budget the runtime refuses.
       params: operationParams({
         poll_ms: Type.Optional(
-          Type.Number({
+          Type.Integer({
             minimum: MIN_POLL_MS,
+            maximum: Number.MAX_SAFE_INTEGER,
             description:
               `Milliseconds between polls. At least ${MIN_POLL_MS} — each poll spawns two herdr subprocesses. ` +
               `Keep it at or under ${MAX_AUTO_POLL_MS} unless you also pass budget_ms: above that, the floor ` +
@@ -196,7 +197,9 @@ function createRegisteredOperations(
           }),
         ),
         budget_ms: Type.Optional(
-          Type.Number({
+          Type.Integer({
+            minimum: 1,
+            maximum: Number.MAX_SAFE_INTEGER,
             description:
               `How long THIS call may block — not the role's deadline, which comes from config. ` +
               `Must be at least ${GRACE_MS} + max(${IDLE_NUDGE_AFTER_MS}, ${DEAD_POLLS_NEEDED} x poll_ms), so the call ` +

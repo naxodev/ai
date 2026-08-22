@@ -21,8 +21,9 @@ import {
   toolAllowed,
   type DispatchKind,
 } from "../domain/state-machine.ts"
-import { timeoutMsForKind } from "../domain/timeouts.ts"
+import { deadlineAfter, timeoutMsForKind } from "../domain/timeouts.ts"
 import {
+  ArtifactInvalid,
   GateRefused,
   HerdrError,
   IllegalKind,
@@ -195,8 +196,17 @@ export const dispatchWorkflow = (
         })
       }
       const pendingAbs = abs(pendingArtifact, root)
-      if (yield* fs.exists(pendingAbs)) {
-        const frontmatter = parseFrontMatter(yield* fs.readFile(pendingAbs))
+      if (yield* fs.projectPathExists(root, pendingAbs)) {
+        const pendingText = yield* fs.readProjectFile(root, pendingAbs).pipe(
+          Effect.mapError(
+            (error) =>
+              new ArtifactInvalid({
+                artifact: pendingArtifact,
+                message: error.message,
+              }),
+          ),
+        )
+        const frontmatter = parseFrontMatter(pendingText)
         const completion = validateArtifactCompletion(
           inferred.success,
           frontmatter,
@@ -634,7 +644,7 @@ export const dispatchWorkflow = (
       state.pending_role = role
       state.pending_delivery = delivery
       state.pending_started_at = launchedAt
-      state.pending_deadline_ms = launchedAt + roleTimeoutMs
+      state.pending_deadline_ms = deadlineAfter(launchedAt, roleTimeoutMs)
       if (isRework) state.required_rework = null
       resetRecoveryLadder(state)
     }

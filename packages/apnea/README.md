@@ -121,8 +121,13 @@ See [`docs/protocol/config.md`](docs/protocol/config.md) for the budget-floor ar
 ```text
 /apnea setup              # ~/.config/apnea/config.json from PATH
 /apnea setup --project    # also .apnea/config.json role→profile only
+/apnea setup --force      # replace profiles; required to replace malformed global JSON
 /apnea setup --agents-md  # also write/refresh an AGENTS.md loop primer at the repo root
 ```
+
+Setup never silently destroys malformed JSON. Without `--force`, malformed existing global JSON
+is left byte-for-byte unchanged and setup refuses. `--force` atomically replaces it and reports
+the replacement. Malformed existing project config always fails closed.
 
 After upgrading from a version with floating panes, old copied
 `~/.config/apnea/herdr-plugin` files are inert. Apnea does not unlink or delete them; remove that

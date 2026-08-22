@@ -4,7 +4,11 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { Effect, Exit, Option } from "effect"
 import { ConfigError } from "../errors.ts"
-import { FileSystem, FileSystemLive } from "./file-system.ts"
+import {
+  FileSystem,
+  FileSystemLive,
+  PERSISTED_INPUT_MAX_BYTES,
+} from "./file-system.ts"
 
 const roots: string[] = []
 
@@ -49,6 +53,69 @@ function trustedGlobalWrite(
     }).pipe(Effect.provide(FileSystemLive)),
   )
 }
+
+function secureRead(root: string, source: string, limit?: number) {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem
+      return yield* fileSystem.readProjectFile(root, source, limit)
+    }).pipe(Effect.provide(FileSystemLive)),
+  )
+}
+
+function trustedGlobalRead(home: string, source: string, limit?: number) {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem
+      return yield* fileSystem.readTrustedGlobalFile(home, source, limit)
+    }).pipe(Effect.provide(FileSystemLive)),
+  )
+}
+
+describe("bounded persisted-input reads", () => {
+  test("counts UTF-8 bytes and accepts an exact multibyte boundary", async () => {
+    const project = temp("apnea-bounded-project-")
+    const target = path.join(project, ".apnea", "state.json")
+    fs.mkdirSync(path.dirname(target))
+    const exact = "é".repeat(4)
+    fs.writeFileSync(target, exact)
+
+    expect(await secureRead(project, target, 8)).toBe(exact)
+    await expect(secureRead(project, target, 7)).rejects.toThrow(
+      "exceeds 7 byte limit",
+    )
+  })
+
+  test("uses the practical 1 MiB default", async () => {
+    const home = temp("apnea-bounded-home-")
+    const target = path.join(home, ".config", "apnea", "config.json")
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1))
+
+    await expect(trustedGlobalRead(home, target)).rejects.toThrow(
+      `exceeds ${PERSISTED_INPUT_MAX_BYTES} byte limit`,
+    )
+  })
+
+  test("refuses directories and other non-regular project inputs", async () => {
+    const project = temp("apnea-special-project-")
+    const target = path.join(project, ".apnea")
+    fs.mkdirSync(target)
+
+    await expect(secureRead(project, target)).rejects.toThrow("regular file")
+  })
+
+  test("refuses a FIFO without blocking where FIFOs are supported", async () => {
+    if (process.platform === "win32") return
+    const project = temp("apnea-fifo-project-")
+    const target = path.join(project, ".apnea", "state.json")
+    fs.mkdirSync(path.dirname(target))
+    const created = Bun.spawnSync(["mkfifo", target])
+    if (created.exitCode !== 0) return
+
+    await expect(secureRead(project, target)).rejects.toThrow("regular file")
+  })
+})
 
 describe("FileSystem.writeProjectFile", () => {
   test("a symlinked .apnea directory cannot alter an outside target", async () => {

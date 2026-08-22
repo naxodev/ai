@@ -16,6 +16,10 @@ const STEP_KEY: Record<DispatchKind, string> = {
 
 export const DEFAULT_TIMEOUT_MS = 900_000
 
+export function deadlineAfter(start: number, duration: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, start + duration)
+}
+
 export function timeoutMsForKind(
   kind: DispatchKind,
   timeouts: Record<string, number>,

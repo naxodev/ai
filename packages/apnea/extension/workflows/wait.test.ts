@@ -13,6 +13,7 @@ import { fakeVcsLayer } from "../test/fake-vcs.ts"
 import { itEffect } from "../test/it-effect.ts"
 import { RunStoreLive } from "../services/run-store.ts"
 import { Herdr } from "../services/herdr.ts"
+import { PERSISTED_INPUT_MAX_BYTES } from "../services/file-system.ts"
 import { briefFiles } from "../test/briefs.ts"
 import { dispatchWorkflow } from "./dispatch.ts"
 import {
@@ -234,6 +235,28 @@ function harness(
 }
 
 describe("waitWorkflow (fake layers + TestClock)", () => {
+  itEffect("oversized wait artifact fails as ArtifactInvalid", () => {
+    const artifact = ".apnea/artifacts/plan.md"
+    const state = baseState({
+      step: "planning",
+      pending_artifact: artifact,
+      pending_role: "planner",
+      pending_delivery: "manual",
+      pending_started_at: 0,
+      pending_deadline_ms: 900_000,
+    })
+    const fsFake = seedFs(state, {
+      [`${ROOT}/${artifact}`]: "x".repeat(PERSISTED_INPUT_MAX_BYTES + 1),
+    })
+    const { layer } = layerOf(fsFake)
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(waitWorkflow({}, ROOT))
+      const error = expectFailure(result, "ArtifactInvalid")
+      expect(error.artifact).toBe(artifact)
+      expect(error.message).toContain("byte limit")
+    }).pipe(Effect.provide(layer))
+  })
+
   itEffect(
     "artifact already complete advances step, clears pending_*, and carries verdict/nits",
     () => {
@@ -1598,7 +1621,7 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
 
         const result = yield* Effect.result(Fiber.join(fiber))
         const e = expectFailure(result, "GateRefused")
-        expect(e.message).toContain("finite")
+        expect(e.message).toContain("safe integer")
       }).pipe(Effect.provide(t.layer))
     },
   )
