@@ -51,6 +51,7 @@ export type MusicSessionClientOptions = {
   socketPath: string
   clientId: string
   hostKind: HostKind
+  signal?: AbortSignal
   packageVersion?: string
   maxFrameBytes?: number
   protocolRange?: ProtocolRange
@@ -128,7 +129,6 @@ class Client implements MusicSessionClient {
   negotiatedCapabilities: string[] = []
   selectedRevision = 0
   #phase: "handshaking" | "active" | "terminal" | "disposed" = "handshaking"
-  #preHello: unknown[] = []
   #handshake:
     | {
         readonly offered: ProtocolRange
@@ -218,7 +218,11 @@ class Client implements MusicSessionClient {
     }
     if (this.#phase === "handshaking") {
       if (frame.type !== "response" || frame.requestId !== 0) {
-        this.#preHello.push(raw)
+        this.terminate({
+          code: "CONNECTION_LOST",
+          message: "unexpected frame before hello response",
+          retryable: false,
+        })
         return
       }
       if (!frame.ok) {
@@ -243,7 +247,6 @@ class Client implements MusicSessionClient {
         this.selectedRevision = result.protocol.selectedRevision
         this.#phase = "active"
         this.#handshake = undefined
-        for (const queued of this.#preHello.splice(0)) this.receive(queued)
         handshake.resolve()
       } catch {
         this.terminate({
@@ -513,10 +516,29 @@ class Client implements MusicSessionClient {
     frame: string,
     offered: ProtocolRange,
     capabilities: string[],
+    signal?: AbortSignal,
   ): Promise<void> {
-    this.attach()
     return new Promise<void>((resolve, reject) => {
-      this.#handshake = { offered, capabilities, resolve, reject }
+      const cleanup = () => signal?.removeEventListener("abort", onAbort)
+      const onAbort = () => this.dispose()
+      this.#handshake = {
+        offered,
+        capabilities,
+        resolve: () => {
+          cleanup()
+          resolve()
+        },
+        reject: (error) => {
+          cleanup()
+          reject(error)
+        },
+      }
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      signal?.addEventListener("abort", onAbort, { once: true })
+      this.attach()
       try {
         this.#socket.write(frame, (error) => {
           if (error)
@@ -647,18 +669,40 @@ export async function createMusicSessionClient(
     })
   const socket = net.createConnection(options.socketPath)
   await new Promise<void>((resolve, reject) => {
-    const onConnect = () => {
+    const cleanup = () => {
+      socket.off("connect", onConnect)
       socket.off("error", onError)
+      options.signal?.removeEventListener("abort", onAbort)
+    }
+    const onConnect = () => {
+      cleanup()
       resolve()
     }
     const onError = (cause: Error) => {
-      socket.off("connect", onConnect)
+      cleanup()
       reject(cause)
+    }
+    const onAbort = () => {
+      cleanup()
+      socket.destroy()
+      reject(
+        new MusicSessionClientError({
+          code: "DISPOSED",
+          message: "music session connection was interrupted",
+          retryable: false,
+        }),
+      )
+    }
+    if (options.signal?.aborted) {
+      onAbort()
+      return
     }
     socket.once("connect", onConnect)
     socket.once("error", onError)
+    options.signal?.addEventListener("abort", onAbort, { once: true })
   }).catch((cause: unknown) => {
     socket.destroy()
+    if (cause instanceof MusicSessionClientError) throw cause
     const transportCode =
       typeof cause === "object" &&
       cause !== null &&
@@ -692,6 +736,7 @@ export async function createMusicSessionClient(
     }),
     offered,
     capabilities,
+    options.signal,
   )
   return client
 }
@@ -751,8 +796,20 @@ export async function discoverMusicSession(
       ...options,
       socketPath,
     })
+    const interrupted = () => {
+      client.dispose()
+      return new MusicSessionClientError({
+        code: "DISPOSED",
+        message: "music session discovery was interrupted",
+        retryable: false,
+      })
+    }
+    const onAbort = () => client.dispose()
     try {
+      if (options.signal?.aborted) throw interrupted()
+      options.signal?.addEventListener("abort", onAbort, { once: true })
       const found = await probe.healthy(client)
+      if (options.signal?.aborted) throw interrupted()
       if (found.type !== "healthy")
         throw new Error("invalid managed runtime healthy probe")
       return found.cleanup
@@ -761,6 +818,8 @@ export async function discoverMusicSession(
     } catch (cause) {
       client.dispose()
       throw cause
+    } finally {
+      options.signal?.removeEventListener("abort", onAbort)
     }
   }
   const incompatible = (cause: unknown) =>
@@ -774,10 +833,14 @@ export async function discoverMusicSession(
     cause instanceof MusicSessionClientError &&
     cause.code === "CONNECTION_LOST" &&
     cause.retryable
+  const interrupted = (cause: unknown) =>
+    options.signal?.aborted ||
+    (cause instanceof MusicSessionClientError && cause.code === "DISPOSED")
 
   try {
     return await connect()
   } catch (cause) {
+    if (interrupted(cause)) throw cause
     if (incompatible(cause))
       return { type: "incompatible", error: cause as MusicSessionClientError }
     if (refused(cause)) return nonEndpoint()
@@ -789,6 +852,7 @@ export async function discoverMusicSession(
       try {
         return await connect()
       } catch (confirmationCause) {
+        if (interrupted(confirmationCause)) throw confirmationCause
         if (incompatible(confirmationCause))
           return {
             type: "incompatible",
@@ -1118,13 +1182,12 @@ export const connectOrStartMusicSessionEffect = (
         candidate.dispose()
       } catch {}
   }
-  const promise = <A>(run: () => Promise<A>) =>
+  const promise = <A>(run: (signal: AbortSignal) => Promise<A>) =>
     Effect.tryPromise({
-      // Promise-backed discovery/hello cannot be force-cancelled by Effect.
-      // If it wins after interruption, it may contain a live explicit client;
-      // dispose that late value rather than losing the socket ownership.
+      // Boundaries that consume the signal stop immediately. A test seam may
+      // ignore it and return a late client, which still needs explicit disposal.
       try: (signal) =>
-        run().then((value) => {
+        run(signal).then((value) => {
           if (signal.aborted) {
             disposeLateClient(value)
             throw new MusicSessionClientError({
@@ -1181,11 +1244,24 @@ export const connectOrStartMusicSessionEffect = (
       // launchers that return void retain the historical immediate probe seam.
       if (launch && !launch.ready())
         return yield* Effect.fail(new StartupPending())
-      const discovery = yield* promise(() =>
+      const discovery = yield* promise((signal) =>
         discover({
           ...options,
           runtime,
+          signal,
           ...(ownedLease ? { ownedLease } : {}),
+        }),
+      ).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(maxDelayMs),
+          orElse: () =>
+            Effect.fail(
+              new MusicSessionStartupError({
+                operation: "occupied",
+                message:
+                  "music session endpoint did not complete hello before the startup attempt deadline",
+              }),
+            ),
         }),
       )
       // If the child died while the probe was in flight, preserve its causal

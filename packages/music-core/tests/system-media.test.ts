@@ -1030,6 +1030,24 @@ describe("startLineStream", () => {
     expect(lines).toEqual(["first"])
   })
 
+  test("terminates oversized unterminated provider output", () => {
+    const child = new FakeLineStreamProcess()
+    const lines: string[] = []
+    let terminals = 0
+    startLineStream(
+      ["media-control", "stream"],
+      { onLine: (line) => lines.push(line), onTerminal: () => terminals++ },
+      () => child,
+    )
+
+    child.stdout.emit("data", Buffer.alloc(128 * 1024, 0x78))
+    child.stdout.emit("data", "late\n")
+
+    expect(lines).toEqual([])
+    expect(terminals).toBe(1)
+    expect(child.killCalls).toBe(1)
+  })
+
   test("notifies once when error, exit, and close arrive together", () => {
     const child = new FakeLineStreamProcess()
     let terminals = 0

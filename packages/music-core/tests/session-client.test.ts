@@ -100,6 +100,8 @@ const test: SessionTestFn = createSessionTest(
     "a managed child early exit reaches acquisition without becoming timeout",
     "a peer remains terminal occupied after the launched daemon is ready",
     "marker is released after startup timeout and interruption",
+    "startup interruption closes a peer blocked before hello",
+    "startup bounds a silent occupied endpoint without replacing it",
     "launcher rejection releases its owned marker",
     "primary startup failure remains primary when marker release fails",
     "workflow marker release does not remove a replacement marker",
@@ -128,6 +130,7 @@ const test: SessionTestFn = createSessionTest(
     "a live marker cannot mask unsafe socket type or ownership",
     "malformed negotiated hello result fails once and destroys the socket",
     "hello failure response and malformed frame destroy the client socket",
+    "hostile pre-hello frames fail immediately without replay",
     "impossible negotiated capabilities destroy the client socket",
     "out-of-order transport responses settle only their matching command",
     "unsolicited and duplicate responses cannot settle later requests",
@@ -2634,6 +2637,118 @@ test("marker is released after startup timeout and interruption", async () => {
   }
 })
 
+test("startup interruption closes a peer blocked before hello", async () => {
+  const root = await mkdtemp("/tmp/music-session-interrupted-hello-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: net.Server | undefined
+  let resolveAccepted: () => void = () => {}
+  let resolveClosed: () => void = () => {}
+  const accepted = new Promise<void>((resolve) => (resolveAccepted = resolve))
+  const closed = new Promise<void>((resolve) => (resolveClosed = resolve))
+  try {
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    server = net.createServer((socket) => {
+      socket.once("close", resolveClosed)
+      resolveAccepted()
+    })
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject)
+      server!.listen(runtime.socketPath, resolve)
+    })
+    await chmod(runtime.socketPath, 0o600)
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fiber = yield* connectOrStartMusicSessionEffect({
+            runtime,
+            clientId: "interrupted-hello",
+            hostKind: "test",
+            startup: { attempts: 2, initialDelayMs: 100, maxDelayMs: 100 },
+          }).pipe(Effect.forkScoped)
+          yield* Effect.promise(() => accepted)
+          yield* Fiber.interrupt(fiber)
+          yield* Effect.promise(() => closed).pipe(Effect.timeout("2 seconds"))
+        }),
+      ),
+    )
+  } finally {
+    await new Promise<void>(
+      (resolve) => server?.close(() => resolve()) ?? resolve(),
+    )
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("startup bounds a silent occupied endpoint without replacing it", async () => {
+  const root = await mkdtemp("/tmp/music-session-silent-occupied-")
+  const runtime = resolveMusicSessionRuntimePaths({
+    root,
+    uid: process.getuid?.() ?? -1,
+  })
+  let server: net.Server | undefined
+  let connections = 0
+  let resolveAccepted: () => void = () => {}
+  const accepted = new Promise<void>((resolve) => (resolveAccepted = resolve))
+  try {
+    await Effect.runPromise(prepareManagedRuntimeDirectory(runtime))
+    server = net.createServer(() => {
+      connections++
+      resolveAccepted()
+    })
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject)
+      server!.listen(runtime.socketPath, resolve)
+    })
+    await chmod(runtime.socketPath, 0o600)
+    const before = await lstat(runtime.socketPath)
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const clock = yield* TestClock.make()
+          const acquisition = yield* connectOrStartMusicSessionEffect({
+            runtime,
+            clientId: "silent-occupied",
+            hostKind: "test",
+            startup: { attempts: 3, initialDelayMs: 10, maxDelayMs: 20 },
+          }).pipe(Effect.provideService(Clock.Clock, clock), Effect.forkScoped)
+          yield* Effect.promise(() => accepted)
+          const observed = yield* Fiber.join(acquisition).pipe(
+            Effect.timeout("1 hour"),
+            Effect.match({
+              onFailure: (error) => error,
+              onSuccess: () => "unexpected success",
+            }),
+            Effect.forkScoped,
+          )
+          yield* clock.adjust("1 hour")
+          expect(yield* Fiber.join(observed)).toMatchObject({
+            _tag: "MusicSession.StartupError",
+            operation: "occupied",
+          })
+        }),
+      ),
+    )
+
+    const after = await lstat(runtime.socketPath)
+    expect([after.dev, after.ino, after.mode]).toEqual([
+      before.dev,
+      before.ino,
+      before.mode,
+    ])
+    expect(connections).toBe(1)
+  } finally {
+    await new Promise<void>(
+      (resolve) => server?.close(() => resolve()) ?? resolve(),
+    )
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("launcher rejection releases its owned marker", async () => {
   const root = await mkdtemp("/tmp/music-session-launcher-finalization-")
   const runtime = resolveMusicSessionRuntimePaths({
@@ -4039,6 +4154,58 @@ test("hello failure response and malformed frame destroy the client socket", asy
       )
       await rm(path, { force: true })
     }
+  }
+})
+
+test("hostile pre-hello frames fail immediately without replay", async () => {
+  const path = `/tmp/music-session-client-pre-hello-${process.pid}-${randomUUID()}.sock`
+  let server: net.Server | undefined
+  let closed: Promise<void> | undefined
+  try {
+    server = net.createServer((socket) => {
+      closed = new Promise((resolve) => socket.once("close", resolve))
+      socket.once("data", () => {
+        const unsolicited = `${JSON.stringify({
+          type: "status",
+          status: { kind: "ready", provider: null, message: "hostile" },
+        })}\n`
+        const hello = `${JSON.stringify({
+          type: "response",
+          requestId: 0,
+          ok: true,
+          data: {
+            daemonInstanceId: "daemon",
+            packageVersion: "test",
+            protocol: {
+              major: 1,
+              minRevision: 0,
+              maxRevision: 1,
+              selectedRevision: 1,
+            },
+            capabilities: ["state-replay", "transport"],
+          },
+        })}\n`
+        socket.write(unsolicited.repeat(16) + hello)
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject)
+      server!.listen(path, resolve)
+    })
+
+    await expect(
+      createMusicSessionClient({
+        socketPath: path,
+        clientId: "hostile-pre-hello",
+        hostKind: "test",
+      }),
+    ).rejects.toMatchObject({ code: "CONNECTION_LOST", retryable: false })
+    await closed
+  } finally {
+    await new Promise<void>(
+      (resolve) => server?.close(() => resolve()) ?? resolve(),
+    )
+    await rm(path, { force: true })
   }
 })
 
