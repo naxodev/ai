@@ -4,6 +4,7 @@ import type { ToolResult } from "../result.ts"
 import { runToolResult } from "../run-tool.ts"
 import { resetRoundsWorkflow } from "../workflows/reset.ts"
 import { statusWorkflow } from "../workflows/status.ts"
+import { withRepositoryLock } from "../services/operation-lock.ts"
 
 export async function workflowStatus(
   hostAdapter: ApneaHostAdapter = neutralHostAdapter,
@@ -18,7 +19,10 @@ export async function workflowResetRounds(
   hostAdapter: ApneaHostAdapter = neutralHostAdapter,
 ): Promise<ToolResult> {
   return runToolResult(
-    resetRoundsWorkflow(params, process.cwd()),
+    withRepositoryLock(
+      process.cwd(),
+      resetRoundsWorkflow(params, process.cwd()),
+    ),
     makeAppLive(hostAdapter),
   )
 }

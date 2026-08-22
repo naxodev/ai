@@ -47,7 +47,7 @@ export const startWorkflow = (
       let pendingStatus: string = "none"
       if (pending) {
         const absPath = pending.startsWith("/") ? pending : `${root}/${pending}`
-        const present = yield* fs.exists(absPath)
+        const present = yield* fs.projectPathExists(root, absPath)
         pendingStatus = present ? "artifact_exists" : "artifact_missing"
       }
       return ok(

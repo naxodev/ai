@@ -1,4 +1,5 @@
 import * as path from "node:path"
+import * as os from "node:os"
 import { Effect, Result } from "effect"
 import { globalConfigPath, projectConfigPath } from "../domain/paths.ts"
 import {
@@ -70,6 +71,8 @@ export type SetupDeps = {
   onPath: (bin: string) => boolean
   /** Prepare host-specific role resources, or return null when none are needed. */
   materializeRoleAgentDir: () => string | null
+  /** Trusted account home. Production uses node:os.homedir(). */
+  trustedHome?: () => string
 }
 
 /**
@@ -118,15 +121,15 @@ export const setupWorkflow = (
       })
     }
 
-    const gPath = globalConfigPath()
-    yield* fs.mkdir(path.dirname(gPath), { recursive: true })
+    const trustedHome = deps.trustedHome?.() ?? os.homedir()
+    const gPath = globalConfigPath(trustedHome)
 
     const prev = yield* readJsonSafe(gPath)
     const force = params.force === true
     const globalConfig = buildGlobalConfig({ has, prev, force })
 
     const serialized = `${JSON.stringify(globalConfig, null, 2)}\n`
-    yield* fs.writeFile(gPath, serialized)
+    yield* fs.writeTrustedGlobalFile(trustedHome, gPath, serialized)
 
     let projectPath: string | null = null
     if (params.project) {
@@ -162,9 +165,9 @@ export const setupWorkflow = (
     let agentsMdPath: string | null = null
     if (params.agents_md) {
       const target = path.join(root, "AGENTS.md")
-      const present = yield* fs.exists(target)
-      const existing = present ? yield* fs.readFile(target) : null
-      yield* fs.writeFile(target, mergeAgentsMd(existing))
+      const present = yield* fs.projectPathExists(root, target)
+      const existing = present ? yield* fs.readProjectFile(root, target) : null
+      yield* fs.writeProjectFile(root, target, mergeAgentsMd(existing))
       agentsMdPath = target
     }
 

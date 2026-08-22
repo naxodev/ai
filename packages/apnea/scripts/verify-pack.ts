@@ -81,6 +81,7 @@ extension/services/app-live.ts
 extension/services/config.ts
 extension/services/file-system.ts
 extension/services/herdr.ts
+extension/services/operation-lock.ts
 extension/services/run-store.ts
 extension/services/vcs.ts
 extension/workflows/commit.ts

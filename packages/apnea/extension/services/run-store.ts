@@ -6,18 +6,25 @@ import {
   statePath,
   tasksDir,
 } from "../domain/paths.ts"
-import { NoRunState, StateCorrupt } from "../errors.ts"
+import { ConfigError, NoRunState, StateCorrupt } from "../errors.ts"
 import type { RunState } from "../domain/types.ts"
 import { decodeRunState } from "../schema/state.ts"
 import { FileSystem, type FileSystemService } from "./file-system.ts"
 
 export interface RunStoreService {
-  readonly load: (root: string) => Effect.Effect<RunState | null, StateCorrupt>
-  readonly save: (state: RunState, root: string) => Effect.Effect<void>
+  readonly load: (
+    root: string,
+  ) => Effect.Effect<RunState | null, StateCorrupt | ConfigError>
+  readonly save: (
+    state: RunState,
+    root: string,
+  ) => Effect.Effect<void, ConfigError>
   readonly require: (
     root: string,
-  ) => Effect.Effect<RunState, NoRunState | StateCorrupt>
-  readonly abandon: (root: string) => Effect.Effect<string, NoRunState>
+  ) => Effect.Effect<RunState, NoRunState | StateCorrupt | ConfigError>
+  readonly abandon: (
+    root: string,
+  ) => Effect.Effect<string, NoRunState | ConfigError>
 }
 
 export class RunStore extends Context.Service<RunStore, RunStoreService>()(
@@ -27,14 +34,14 @@ export class RunStore extends Context.Service<RunStore, RunStoreService>()(
 function ensureApneaDirs(
   fs: FileSystemService,
   root: string,
-): Effect.Effect<void> {
+): Effect.Effect<void, ConfigError> {
   const dirs = [
     apneaRoot(root),
     artifactsDir(root),
     tasksDir(root),
     path.join(artifactsDir(root), "plan-review"),
   ]
-  return Effect.forEach(dirs, (d) => fs.mkdir(d, { recursive: true }), {
+  return Effect.forEach(dirs, (d) => fs.mkdirProject(root, d), {
     discard: true,
   })
 }
@@ -44,12 +51,14 @@ export const RunStoreLive = Layer.effect(
   Effect.gen(function* () {
     const fs = yield* FileSystem
 
-    const load = (root: string): Effect.Effect<RunState | null, StateCorrupt> =>
+    const load = (
+      root: string,
+    ): Effect.Effect<RunState | null, StateCorrupt | ConfigError> =>
       Effect.gen(function* () {
         const p = statePath(root)
-        const present = yield* fs.exists(p)
+        const present = yield* fs.projectPathExists(root, p)
         if (!present) return null
-        const text = yield* fs.readFile(p)
+        const text = yield* fs.readProjectFile(root, p)
         let json: unknown
         try {
           json = JSON.parse(text)
@@ -66,31 +75,36 @@ export const RunStoreLive = Layer.effect(
         return decoded.success
       })
 
-    const save = (state: RunState, root: string): Effect.Effect<void> =>
+    const save = (
+      state: RunState,
+      root: string,
+    ): Effect.Effect<void, ConfigError> =>
       Effect.gen(function* () {
         yield* ensureApneaDirs(fs, root)
         const p = statePath(root)
         const body = `${JSON.stringify(state, null, 2)}\n`
-        yield* fs.writeFile(p, body)
+        yield* fs.writeProjectFile(root, p, body)
       })
 
     const require = (
       root: string,
-    ): Effect.Effect<RunState, NoRunState | StateCorrupt> =>
+    ): Effect.Effect<RunState, NoRunState | StateCorrupt | ConfigError> =>
       Effect.gen(function* () {
         const s = yield* load(root)
         if (!s) return yield* new NoRunState({})
         return s
       })
 
-    const abandon = (root: string): Effect.Effect<string, NoRunState> =>
+    const abandon = (
+      root: string,
+    ): Effect.Effect<string, NoRunState | ConfigError> =>
       Effect.gen(function* () {
         const p = statePath(root)
-        const present = yield* fs.exists(p)
+        const present = yield* fs.projectPathExists(root, p)
         if (!present) return yield* new NoRunState({})
         const millis = yield* Clock.currentTimeMillis
         const bak = `${p}.abandoned.${millis}`
-        yield* fs.rename(p, bak)
+        yield* fs.renameProjectFile(root, p, bak)
         return bak
       })
 

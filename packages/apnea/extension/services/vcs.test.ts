@@ -1,8 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs"
+import { spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
-import { Effect, Layer } from "effect"
+import { Effect, Exit, Layer, Option } from "effect"
+import { VcsError } from "../errors.ts"
 import {
   extractVerifyBlocks,
   formatVerifyBlock,
@@ -14,9 +28,13 @@ import {
   Vcs,
   VcsLive,
   filterAppPaths,
+  fingerprintUntrackedFiles,
+  gitCommitPhaseWithCommand,
+  treeFingerprintWithCommand,
   utf8BytesAfterAppend,
   verifyBlockDisplayByteLength,
 } from "./vcs.ts"
+import { FileSystemLive } from "./file-system.ts"
 
 function withFake(initial: Record<string, string> = {}) {
   const fake = makeFakeFileSystem(initial)
@@ -38,6 +56,39 @@ function makeProject(): string {
   const root = mkdtempSync(path.join(tmpdir(), "apnea-vcs-test-"))
   projectRoots.push(root)
   return root
+}
+
+function command(root: string, bin: string, args: string[]): string {
+  const result = spawnSync(bin, args, { cwd: root, encoding: "utf8" })
+  if (result.status !== 0) {
+    throw new Error(`${bin} ${args.join(" ")}: ${result.stderr}`)
+  }
+  return result.stdout
+}
+
+function commandResult(
+  root: string,
+  bin: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): { ok: boolean; stdout: string; stderr: string; code: number } {
+  const result = spawnSync(bin, args, {
+    cwd: root,
+    encoding: "utf8",
+    env: env === undefined ? undefined : { ...process.env, ...env },
+  })
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? result.error?.message ?? "",
+    code: result.status ?? 1,
+  }
+}
+
+function realVcs<A>(effect: Effect.Effect<A, VcsError | never, Vcs>) {
+  return Effect.runPromise(
+    effect.pipe(Effect.provide(Layer.provide(VcsLive, FileSystemLive))),
+  )
 }
 
 function runVerify(
@@ -123,6 +174,427 @@ describe("filterAppPaths", () => {
 
   test("drops blank lines", () => {
     expect(filterAppPaths("\n\n  \n")).toBe("")
+  })
+})
+
+describe("Vcs repository safety", () => {
+  itEffect(
+    "command seam fingerprints diff bytes rather than path summaries",
+    () => {
+      let diff = "diff --git a/file.txt b/file.txt\n-old\n+first\n"
+      return Effect.gen(function* () {
+        const first = yield* treeFingerprintWithCommand(
+          "/project",
+          "jj",
+          () => ({
+            ok: true,
+            stdout: diff,
+            stderr: "",
+            code: 0,
+          }),
+        )
+        diff = "diff --git a/file.txt b/file.txt\n-old\n+other\n"
+        const second = yield* treeFingerprintWithCommand(
+          "/project",
+          "jj",
+          () => ({
+            ok: true,
+            stdout: diff,
+            stderr: "",
+            code: 0,
+          }),
+        )
+        expect(second).not.toBe(first)
+      })
+    },
+  )
+
+  test("git fingerprint hashes content and ignores .apnea", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+
+    writeFileSync(path.join(root, "tracked.txt"), "first\n")
+    const first = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).treeFingerprint(root, "git")
+      }),
+    )
+    writeFileSync(path.join(root, "tracked.txt"), "other\n")
+    const second = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).treeFingerprint(root, "git")
+      }),
+    )
+    expect(second).not.toBe(first)
+
+    mkdirSync(path.join(root, ".apnea"))
+    writeFileSync(path.join(root, ".apnea", "state.json"), "one")
+    const beforeRuntimeChange = second
+    writeFileSync(path.join(root, ".apnea", "state.json"), "two")
+    expect(
+      await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).treeFingerprint(root, "git")
+        }),
+      ),
+    ).toBe(beforeRuntimeChange)
+
+    writeFileSync(path.join(root, "untracked.txt"), "one")
+    const untrackedOne = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).treeFingerprint(root, "git")
+      }),
+    )
+    writeFileSync(path.join(root, "untracked.txt"), "two")
+    expect(
+      await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).treeFingerprint(root, "git")
+        }),
+      ),
+    ).not.toBe(untrackedOne)
+  })
+
+  test("rejects case-folded .apnea aliases before Git fingerprint or commit", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+    mkdirSync(path.join(root, ".APNEA"))
+    writeFileSync(path.join(root, ".APNEA", "state.json"), "runtime\n")
+
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).treeFingerprint(root, "git")
+        }),
+      ),
+    ).rejects.toThrow("case-insensitive")
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).commitPhase(root, "git", "unsafe alias")
+        }),
+      ),
+    ).rejects.toThrow("case-insensitive")
+  })
+
+  test.skipIf(process.platform === "win32")(
+    "hashes large files incrementally and rejects FIFOs without blocking",
+    async () => {
+      const root = makeProject()
+      const large = path.join(root, "large.bin")
+      const descriptor = openSync(large, "w")
+      const chunk = Buffer.alloc(64 * 1024, 0x61)
+      try {
+        for (let index = 0; index < 192; index++) writeSync(descriptor, chunk)
+      } finally {
+        closeSync(descriptor)
+      }
+      const first = await Effect.runPromise(
+        fingerprintUntrackedFiles(root, ["large.bin"]),
+      )
+      const changed = openSync(large, "r+")
+      try {
+        writeSync(changed, Buffer.from("b"), 0, 1, 11 * 1024 * 1024)
+      } finally {
+        closeSync(changed)
+      }
+      expect(
+        await Effect.runPromise(fingerprintUntrackedFiles(root, ["large.bin"])),
+      ).not.toBe(first)
+
+      command(root, "mkfifo", ["special.fifo"])
+      await expect(
+        Effect.runPromise(fingerprintUntrackedFiles(root, ["special.fifo"])),
+      ).rejects.toThrow("regular files or symlinks")
+    },
+  )
+
+  test("bounds aggregate untracked bytes", async () => {
+    const root = makeProject()
+    writeFileSync(path.join(root, "too-large.txt"), "12345")
+    await expect(
+      Effect.runPromise(
+        fingerprintUntrackedFiles(root, ["too-large.txt"], {
+          maxBytes: 4,
+          timeoutMs: 10_000,
+        }),
+      ),
+    ).rejects.toThrow("byte limit")
+  })
+
+  test("tree fingerprint returns VcsError when the command fails", async () => {
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).treeFingerprint(
+          path.join(makeProject(), "missing"),
+          "git",
+        )
+      }).pipe(Effect.provide(Layer.provide(VcsLive, FileSystemLive))),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Exit.findErrorOption(exit)
+      expect(Option.isSome(error)).toBe(true)
+      if (Option.isSome(error)) expect(error.value).toBeInstanceOf(VcsError)
+    }
+  })
+
+  test("git commit excludes untracked .apnea and refuses tracked .apnea", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+    mkdirSync(path.join(root, ".apnea"))
+    writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
+    writeFileSync(path.join(root, "tracked.txt"), "changed\n")
+    const hook = path.join(root, ".git", "hooks", "pre-commit")
+    writeFileSync(
+      hook,
+      "#!/bin/sh\nmkdir -p .apnea\nprintf hook > .apnea/from-hook\ngit add -f .apnea/from-hook\nprintf ran > hook-ran\n",
+      { mode: 0o700 },
+    )
+
+    await realVcs(
+      Effect.gen(function* () {
+        yield* (yield* Vcs).commitPhase(root, "git", "safe commit")
+      }),
+    )
+    expect(command(root, "git", ["ls-files", ".apnea"])).toBe("")
+    expect(command(root, "git", ["write-tree"]).trim()).toBe(
+      command(root, "git", ["rev-parse", "HEAD^{tree}"]).trim(),
+    )
+    expect(existsSync(path.join(root, "hook-ran"))).toBe(false)
+    expect(
+      command(root, "git", ["show", "--name-only", "--format=", "HEAD"]),
+    ).not.toContain(".apnea")
+
+    command(root, "git", ["add", "-f", ".apnea/state.json"])
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).commitPhase(root, "git", "unsafe commit")
+        }),
+      ),
+    ).rejects.toThrow(".apnea")
+
+    command(root, "git", ["commit", "-qm", "track runtime"])
+    rmSync(path.join(root, ".apnea", "state.json"))
+    command(root, "git", ["add", "-u", "--", ".apnea"])
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).commitPhase(root, "git", "unsafe deletion")
+        }),
+      ),
+    ).rejects.toThrow(".apnea")
+  })
+
+  test("jj leaves fresh unignored .apnea changes in the new working copy", async () => {
+    const available = spawnSync("jj", ["--version"], { encoding: "utf8" })
+    if (available.status !== 0) return
+    const root = makeProject()
+    command(root, "jj", ["git", "init", "--colocate"])
+    mkdirSync(path.join(root, ".apnea"))
+    writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
+    writeFileSync(path.join(root, "tracked.txt"), "change\n")
+
+    const first = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).treeFingerprint(root, "jj")
+      }),
+    )
+    writeFileSync(path.join(root, "tracked.txt"), "different content\n")
+    const second = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).treeFingerprint(root, "jj")
+      }),
+    )
+    expect(second).not.toBe(first)
+    writeFileSync(path.join(root, ".apnea", "state.json"), "changed runtime\n")
+    expect(
+      await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).treeFingerprint(root, "jj")
+        }),
+      ),
+    ).toBe(second)
+
+    await realVcs(
+      Effect.gen(function* () {
+        yield* (yield* Vcs).commitPhase(root, "jj", "safe source commit")
+      }),
+    )
+    expect(
+      command(root, "jj", [
+        "log",
+        "-r",
+        "@-",
+        "--no-graph",
+        "-T",
+        "description",
+      ]).trim(),
+    ).toBe("safe source commit")
+    expect(command(root, "jj", ["diff", "--name-only"])).toContain(
+      ".apnea/state.json",
+    )
+  })
+
+  test("jj rejects a clean tracked .apnea and case aliases", async () => {
+    const available = spawnSync("jj", ["--version"], { encoding: "utf8" })
+    if (available.status !== 0) return
+    const root = makeProject()
+    command(root, "jj", ["git", "init", "--colocate"])
+    mkdirSync(path.join(root, ".apnea"))
+    writeFileSync(path.join(root, ".apnea", "state.json"), "tracked\n")
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "jj", ["commit", "-m", "unsafe seed"])
+    writeFileSync(path.join(root, "tracked.txt"), "changed\n")
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).commitPhase(root, "jj", "must refuse")
+        }),
+      ),
+    ).rejects.toThrow(".apnea")
+
+    renameSync(path.join(root, ".apnea"), path.join(root, ".ApNeA"))
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).treeFingerprint(root, "jj")
+        }),
+      ),
+    ).rejects.toThrow("case-insensitive")
+  })
+
+  test("jj commits only the case-insensitive complement of .apnea", async () => {
+    const available = spawnSync("jj", ["--version"], { encoding: "utf8" })
+    if (available.status !== 0) return
+    const root = makeProject()
+    command(root, "jj", ["git", "init", "--colocate"])
+    writeFileSync(path.join(root, ".gitignore"), ".apnea/\n")
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "jj", ["commit", "-m", "base"])
+    mkdirSync(path.join(root, ".apnea"))
+    writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
+    writeFileSync(path.join(root, "tracked.txt"), "changed\n")
+
+    await realVcs(
+      Effect.gen(function* () {
+        yield* (yield* Vcs).commitPhase(root, "jj", "safe jj commit")
+      }),
+    )
+
+    const committed = command(root, "jj", ["diff", "-r", "@-", "--name-only"])
+    expect(committed).toContain("tracked.txt")
+    expect(committed.toLowerCase()).not.toContain(".apnea")
+    expect(readFileSync(path.join(root, ".apnea", "state.json"), "utf8")).toBe(
+      "runtime\n",
+    )
+  })
+
+  test("setBookmarkAtTerminus surfaces a typed command failure", async () => {
+    const root = makeProject()
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        yield* (yield* Vcs).setBookmarkAtTerminus(root, "demo")
+      }).pipe(Effect.provide(Layer.provide(VcsLive, FileSystemLive))),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const error = Exit.findErrorOption(exit)
+      expect(Option.isSome(error)).toBe(true)
+      if (Option.isSome(error)) expect(error.value).toBeInstanceOf(VcsError)
+    }
+  })
+
+  test.skipIf(process.platform !== "linux")(
+    "preserves distinct invalid-byte filenames and symlink targets",
+    async () => {
+      const root = makeProject()
+      command(root, "git", ["init", "-q"])
+      command(root, "git", ["config", "user.email", "apnea@example.test"])
+      command(root, "git", ["config", "user.name", "Apnea Test"])
+      writeFileSync(path.join(root, "base.txt"), "base\n")
+      command(root, "git", ["add", "base.txt"])
+      command(root, "git", ["commit", "-qm", "base"])
+
+      const rawName = Buffer.concat([
+        Buffer.from(`${root}${path.sep}raw-`),
+        Buffer.from([0x80]),
+      ])
+      writeFileSync(rawName, "one")
+      const first = await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).treeFingerprint(root, "git")
+        }),
+      )
+      writeFileSync(rawName, "two")
+      const second = await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).treeFingerprint(root, "git")
+        }),
+      )
+      expect(second).not.toBe(first)
+
+      const link = Buffer.from(`${root}${path.sep}raw-link`)
+      symlinkSync(Buffer.from([0x80]), link)
+      const targetOne = await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).treeFingerprint(root, "git")
+        }),
+      )
+      rmSync(link)
+      symlinkSync(Buffer.from([0x81]), link)
+      expect(
+        await realVcs(
+          Effect.gen(function* () {
+            return yield* (yield* Vcs).treeFingerprint(root, "git")
+          }),
+        ),
+      ).not.toBe(targetOne)
+    },
+  )
+
+  test("real index failure leaves the Git branch unchanged", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+    writeFileSync(path.join(root, "tracked.txt"), "changed\n")
+    const before = command(root, "git", ["rev-parse", "HEAD"]).trim()
+
+    await expect(
+      Effect.runPromise(
+        gitCommitPhaseWithCommand(
+          root,
+          "must not move",
+          (bin, args, cwd, env) => {
+            if (args[0] === "read-tree" && env === undefined) {
+              return { ok: false, stdout: "", stderr: "injected", code: 1 }
+            }
+            return commandResult(cwd, bin, args, env)
+          },
+        ),
+      ),
+    ).rejects.toThrow("injected")
+    expect(command(root, "git", ["rev-parse", "HEAD"]).trim()).toBe(before)
   })
 })
 

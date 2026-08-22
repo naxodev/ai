@@ -46,8 +46,49 @@ export function makeFakeFileSystem(
 
     writeProjectFile: (_root, path, content) =>
       Effect.sync(() => {
+        const failure = opts.failWrite?.(path)
+        if (failure) throw failure
         ensureParent(path)
         files.set(path, content)
+      }),
+
+    writeTrustedGlobalFile: (_home, path, content) =>
+      Effect.sync(() => {
+        const failure = opts.failWrite?.(path)
+        if (failure) throw failure
+        ensureParent(path)
+        files.set(path, content)
+      }),
+
+    readProjectFile: (_root, path) =>
+      Effect.sync(() => {
+        const value = files.get(path)
+        if (value === undefined) throw new Error(`ENOENT: ${path}`)
+        return value
+      }),
+
+    projectPathExists: (_root, path) =>
+      Effect.sync(() => files.has(path) || dirs.has(path)),
+
+    mkdirProject: (_root, path) =>
+      Effect.sync(() => {
+        dirs.add(path)
+      }),
+
+    renameProjectFile: (_root, from, to) =>
+      Effect.sync(() => {
+        const value = files.get(from)
+        if (value === undefined) throw new Error(`ENOENT: ${from}`)
+        files.delete(from)
+        ensureParent(to)
+        files.set(to, value)
+      }),
+
+    removeProjectFile: (_root, path) =>
+      Effect.sync(() => {
+        const failure = opts.failRemove?.(path)
+        if (failure) throw failure
+        files.delete(path)
       }),
 
     rename: (from, to) =>

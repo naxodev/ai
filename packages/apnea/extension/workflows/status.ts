@@ -1,6 +1,6 @@
 import { Effect, Result } from "effect"
 import { LEGAL_TOOLS, nextAfter } from "../domain/state-machine.ts"
-import type { StateCorrupt } from "../errors.ts"
+import type { AppError } from "../errors.ts"
 import { ok, type ToolResult } from "../result.ts"
 import { Config } from "../services/config.ts"
 import { RunStore } from "../services/run-store.ts"
@@ -12,7 +12,7 @@ import { Vcs } from "../services/vcs.ts"
  */
 export const statusWorkflow = (
   root: string,
-): Effect.Effect<ToolResult, StateCorrupt, RunStore | Config | Vcs> =>
+): Effect.Effect<ToolResult, AppError, RunStore | Config | Vcs> =>
   Effect.gen(function* () {
     const store = yield* RunStore
     const config = yield* Config

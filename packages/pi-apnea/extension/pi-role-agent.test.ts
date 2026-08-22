@@ -12,6 +12,7 @@ import {
   materializePiRoleAgentDir,
   syncDirectoryAfterRename,
   wrapInteractiveCmdNoVim,
+  defaultRoleAgentDir,
 } from "./pi-role-agent.ts"
 
 const tmpDirs: string[] = []
@@ -36,6 +37,23 @@ function readJson(file: string): unknown {
     )
   }
 }
+
+test("defaultRoleAgentDir ignores HOME and USERPROFILE", () => {
+  const home = process.env.HOME
+  const userProfile = process.env.USERPROFILE
+  process.env.HOME = "/tmp/untrusted-pi-home"
+  process.env.USERPROFILE = "/tmp/untrusted-pi-profile"
+  try {
+    expect(defaultRoleAgentDir()).toBe(
+      path.join(os.homedir(), ".config", "apnea", "pi-role-agent"),
+    )
+  } finally {
+    if (home === undefined) delete process.env.HOME
+    else process.env.HOME = home
+    if (userProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = userProfile
+  }
+})
 
 describe("isPiCmd / isPiVimModePackage", () => {
   // Wrong binary detection would either skip the no-vim wrap (coder stuck

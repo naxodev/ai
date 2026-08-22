@@ -55,10 +55,10 @@ export const commitWorkflow = (
     }
 
     const reviewAbs = abs(reviewRel, root)
-    const reviewPresent = yield* fs.exists(reviewAbs)
+    const reviewPresent = yield* fs.projectPathExists(root, reviewAbs)
     let fm: ReturnType<typeof parseFrontMatter> = null
     if (reviewPresent) {
-      const reviewText = yield* fs.readFile(reviewAbs)
+      const reviewText = yield* fs.readProjectFile(root, reviewAbs)
       fm = parseFrontMatter(reviewText)
     }
     const verdict = asVerdict(fm?.verdict)
@@ -80,7 +80,7 @@ export const commitWorkflow = (
         root,
       )
     const pkgAbs = abs(pkgRel, root)
-    const pkgPresent = yield* fs.exists(pkgAbs)
+    const pkgPresent = yield* fs.projectPathExists(root, pkgAbs)
     if (!pkgPresent) {
       return yield* new GateRefused({
         gate: "commit",
@@ -88,7 +88,7 @@ export const commitWorkflow = (
         details: { package: pkgRel },
       })
     }
-    const pkgText = yield* fs.readFile(pkgAbs)
+    const pkgText = yield* fs.readProjectFile(root, pkgAbs)
     const blocks = extractVerifyBlocks(pkgText)
     if (!blocks.length) {
       return yield* new ArtifactInvalid({
@@ -102,8 +102,7 @@ export const commitWorkflow = (
     const verify = yield* vcs.runVerify(root, blocks, verifyTimeout)
 
     const vlog = path.join(path.dirname(reviewAbs), "verify.log")
-    yield* fs.mkdir(path.dirname(vlog), { recursive: true })
-    yield* fs.writeFile(vlog, `${verify.log}\n`)
+    yield* fs.writeProjectFile(root, vlog, `${verify.log}\n`)
 
     if (!verify.ok) {
       return yield* new VerifyFailed({
