@@ -241,4 +241,35 @@ describe("clipboard invocation", () => {
     write.dispose()
     expect(kills).toBe(2)
   })
+
+  test("suppresses killed-child failures and ignores writes after disposal", () => {
+    let spawns = 0
+    let kills = 0
+    let fail: (() => void) | undefined
+    const warnings: string[] = []
+    const write = createClipboardWriter(
+      "pbcopy",
+      dependencies({
+        spawn: () => {
+          spawns++
+          return processStub({
+            kill: () => (kills++, true),
+            on(event, listener) {
+              if (event === "error") fail = listener as () => void
+            },
+          })
+        },
+        warn: (message) => warnings.push(message),
+      }),
+    )
+
+    write("active")
+    write.dispose()
+    fail?.()
+    write("late")
+
+    expect(kills).toBe(1)
+    expect(spawns).toBe(1)
+    expect(warnings).toEqual([])
+  })
 })

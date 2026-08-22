@@ -108,10 +108,11 @@ export function createClipboardWriter(
   const dependencies = { ...defaultDependencies, ...overrides }
   const provider = selectClipboardProvider(option, dependencies)
   let warned = false
+  let disposed = false
   const children = new Set<ClipboardProcess>()
   const timers = new Map<ClipboardProcess, ReturnType<typeof setTimeout>>()
   const warnOnce = (message: string) => {
-    if (warned) return
+    if (disposed || warned) return
     warned = true
     try {
       dependencies.warn(message)
@@ -126,7 +127,7 @@ export function createClipboardWriter(
     )
 
   const write = (text: string) => {
-    if (!provider) return
+    if (disposed || !provider) return
     try {
       const invocation = providerInvocation[provider]
       const child = dependencies.spawn(invocation.command, invocation.args, {
@@ -170,6 +171,8 @@ export function createClipboardWriter(
   }
   return Object.assign(write, {
     dispose() {
+      if (disposed) return
+      disposed = true
       for (const child of children) {
         const timeout = timers.get(child)
         if (timeout) clearTimeout(timeout)

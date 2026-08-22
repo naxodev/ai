@@ -7,6 +7,14 @@ import {
   type ExCommand,
 } from "../ex-command.ts"
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => {
+    resolve = next
+  })
+  return { promise, resolve }
+}
+
 function command(
   id: string,
   name?: string,
@@ -118,7 +126,7 @@ describe("EX command resolver", () => {
 })
 
 describe("EX public adapter", () => {
-  function context(input: string | undefined) {
+  function context(input: string | undefined | Promise<string | undefined>) {
     const dispatched: Array<[string, string | undefined]> = []
     const alerts: Array<{ title: string; message: string }> = []
     let commandsCalls = 0
@@ -191,6 +199,23 @@ describe("EX public adapter", () => {
       const adapter = context(input)
       await openExDialog(adapter.value)
       expect(adapter.commandsCalls()).toBe(0)
+      expect(adapter.dispatched).toEqual([])
+      expect(adapter.alerts).toEqual([])
+    }
+  })
+
+  test("does not dispatch or alert after its plugin generation is disposed", async () => {
+    for (const input of [":review now", ":write"]) {
+      const prompt = deferred<string | undefined>()
+      const adapter = context(prompt.promise)
+      let generation = 1
+      const started = generation
+      const pending = openExDialog(adapter.value, () => generation === started)
+
+      generation++
+      prompt.resolve(input)
+      await pending
+
       expect(adapter.dispatched).toEqual([])
       expect(adapter.alerts).toEqual([])
     }
