@@ -16,8 +16,14 @@ import {
 import { ok, type ToolResult } from "../result.ts"
 import { Config } from "../services/config.ts"
 import { FileSystem } from "../services/file-system.ts"
-import { RunStore } from "../services/run-store.ts"
-import { Vcs } from "../services/vcs.ts"
+import { RunStore, type RunStoreService } from "../services/run-store.ts"
+import {
+  Vcs,
+  type VcsService,
+  withTransactionTrailer,
+  withoutTransactionTrailer,
+} from "../services/vcs.ts"
+import type { RunState } from "../domain/types.ts"
 
 export type CommitParams = {
   message?: string
@@ -28,6 +34,18 @@ export type CommitParams = {
 /**
  * Require APPROVED code review, run phase package verify commands,
  * jj/git commit, advance phase. Refusals are tagged failures only.
+ *
+ * The commit itself is a crash-recoverable transaction:
+ *
+ *   gates → verify.log → prepare → save pending_commit (durable point)
+ *   → complete or recognize → bookmark (jj, final phase) → advance + clear
+ *
+ * Once `pending_commit` is saved, cancellation does NOT undo the
+ * transaction — the prepared anchor is durable and a later commit call
+ * resumes or recognizes it. A call that loads an existing `pending_commit`
+ * skips the gates and verification entirely and resumes only that
+ * transaction; retry params conflicting with the persisted message or
+ * `--done` value are refused, not silently ignored.
  */
 export const commitWorkflow = (
   params: CommitParams,
@@ -44,6 +62,16 @@ export const commitWorkflow = (
     const allowed = toolAllowed(state.step, "workflow_commit_phase")
     if (Result.isFailure(allowed)) {
       return yield* allowed.failure
+    }
+
+    if (state.pending_commit) {
+      return yield* resumePendingCommit({
+        params,
+        root,
+        state,
+        store,
+        vcs,
+      })
     }
 
     const reviewRel = state.current_code_review
@@ -132,9 +160,162 @@ export const commitWorkflow = (
       params.message?.trim() ||
       `feat: apnea phase ${state.phase_index} (${state.slug})`
 
-    const detail = yield* vcs.commitPhase(root, state.vcs, message)
+    const prepared = yield* vcs.prepareCommit(root, state.vcs, message)
 
-    if (params.no_remaining_phases) {
+    // Durable point. From here the transaction survives crashes and
+    // cancellation: the anchor below is everything completion needs to
+    // recognize or create the commit exactly once.
+    const noRemainingPhases = params.no_remaining_phases === true
+    const verifyLogRel = rel(vlog, root)
+    state.pending_commit =
+      prepared.backend === "git"
+        ? {
+            id: prepared.id,
+            backend: prepared.backend,
+            phase_index: state.phase_index,
+            message: prepared.message,
+            no_remaining_phases: noRemainingPhases,
+            verify_log: verifyLogRel,
+            branch: prepared.branch,
+            parent_commit: prepared.parent_commit,
+            tree_id: prepared.tree_id,
+          }
+        : {
+            id: prepared.id,
+            backend: prepared.backend,
+            phase_index: state.phase_index,
+            message: prepared.message,
+            no_remaining_phases: noRemainingPhases,
+            verify_log: verifyLogRel,
+            change_id: prepared.change_id,
+            content_fingerprint: prepared.content_fingerprint,
+          }
+    yield* store.save(state, root)
+
+    const committedId = yield* vcs.completeCommit(
+      root,
+      state.vcs,
+      state.pending_commit,
+    )
+
+    return yield* advanceAndSave({
+      state,
+      store,
+      vcs,
+      root,
+      noRemainingPhases,
+      committedId,
+      recovered: false,
+      transactionId: state.pending_commit.id,
+      verifyLog: verifyLogRel,
+    })
+  })
+
+type ResumeArgs = {
+  params: CommitParams
+  root: string
+  state: RunState
+  store: RunStoreService
+  vcs: VcsService
+}
+
+/**
+ * Resume the durable transaction only: no gates, no verification.
+ * Explicit retry params conflicting with the persisted values are refused.
+ */
+function resumePendingCommit({
+  params,
+  root,
+  state,
+  store,
+  vcs,
+}: ResumeArgs): Effect.Effect<ToolResult, AppError> {
+  return Effect.gen(function* () {
+    const pending = state.pending_commit!
+    const requestedMessage = params.message?.trim()
+    // Compare against the exact trailer-augmented form the transaction will
+    // write, not a stripped persisted message: stripping only removes the
+    // LAST trailer line, so a user message that legitimately ends with a
+    // trailer-shaped line would otherwise refuse an identical plain retry.
+    if (
+      requestedMessage !== undefined &&
+      requestedMessage !== pending.message &&
+      withTransactionTrailer(requestedMessage, pending.id) !== pending.message
+    ) {
+      return yield* new GateRefused({
+        gate: "commit",
+        message:
+          "conflicting retry: this call already has a durable commit transaction with a different message",
+        details: {
+          transaction: pending.id,
+          persisted_message: withoutTransactionTrailer(pending.message),
+          requested_message: requestedMessage,
+        },
+      })
+    }
+    if (
+      params.no_remaining_phases !== undefined &&
+      params.no_remaining_phases !== pending.no_remaining_phases
+    ) {
+      return yield* new GateRefused({
+        gate: "commit",
+        message:
+          "conflicting retry: this call already has a durable commit transaction with a different no_remaining_phases value",
+        details: {
+          transaction: pending.id,
+          persisted_no_remaining_phases: pending.no_remaining_phases,
+          requested_no_remaining_phases: params.no_remaining_phases,
+        },
+      })
+    }
+
+    const committedId = yield* vcs.completeCommit(root, state.vcs, pending)
+
+    return yield* advanceAndSave({
+      state,
+      store,
+      vcs,
+      root,
+      noRemainingPhases: pending.no_remaining_phases,
+      committedId,
+      recovered: true,
+      transactionId: pending.id,
+      verifyLog: pending.verify_log,
+    })
+  })
+}
+
+type AdvanceArgs = {
+  state: RunState
+  store: RunStoreService
+  vcs: VcsService
+  root: string
+  noRemainingPhases: boolean
+  committedId: string
+  recovered: boolean
+  transactionId: string
+  /** Repo-relative verify.log path captured before the phase advanced. */
+  verifyLog: string
+}
+
+/**
+ * Advance the run after completion. A bookmark failure propagates BEFORE any
+ * state mutation is saved, so `pending_commit` stays durable and the
+ * transaction remains resumable on the next call.
+ */
+function advanceAndSave({
+  state,
+  store,
+  vcs,
+  root,
+  noRemainingPhases,
+  committedId,
+  recovered,
+  transactionId,
+  verifyLog,
+}: AdvanceArgs): Effect.Effect<ToolResult, AppError> {
+  return Effect.gen(function* () {
+    if (noRemainingPhases) {
       state.step = "finishing"
       if (state.vcs === "jj") {
         yield* vcs.setBookmarkAtTerminus(root, state.slug)
@@ -146,13 +327,18 @@ export const commitWorkflow = (
       state.current_code_review = null
     }
     state.last_error = null
+    state.pending_commit = null
     yield* store.save(state, root)
 
+    const prefix = recovered
+      ? `committed phase (recovered transaction ${transactionId})`
+      : "committed phase"
     return ok(
-      `committed phase; step → ${state.step}`,
+      `${prefix}; step → ${state.step}`,
       {
-        vcs_detail: detail,
-        verify_log: rel(vlog, root),
+        vcs_detail: `${state.vcs} commit ${committedId}`,
+        transaction: transactionId,
+        verify_log: verifyLog,
         step: state.step,
         phase_index: state.phase_index,
         next:
@@ -163,3 +349,4 @@ export const commitWorkflow = (
       nextAfter(state.step),
     )
   })
+}

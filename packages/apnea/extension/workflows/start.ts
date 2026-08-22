@@ -100,7 +100,7 @@ export const startWorkflow = (
     }
 
     const state: RunState = {
-      version: 1,
+      version: 2,
       slug,
       step: "planning",
       phase_index: 1,
@@ -126,6 +126,7 @@ export const startWorkflow = (
       current_phase_package: null,
       current_code_review: null,
       required_rework: null,
+      pending_commit: null,
     }
     // The literal above assigns the ladder's fields; this re-asserts them
     // through the shared helper so a rung added there cannot be missed here.

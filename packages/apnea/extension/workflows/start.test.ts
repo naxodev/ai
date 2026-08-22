@@ -132,7 +132,7 @@ describe("startWorkflow (fake layers)", () => {
 
   itEffect("double start → GateRefused", () => {
     const existing: RunState = {
-      version: 1,
+      version: 2,
       slug: "ex",
       step: "planning",
       phase_index: 1,
@@ -158,6 +158,7 @@ describe("startWorkflow (fake layers)", () => {
       current_phase_package: null,
       current_code_review: null,
       required_rework: null,
+      pending_commit: null,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,
@@ -189,7 +190,7 @@ describe("startWorkflow (fake layers)", () => {
   itEffect("resume: pending_status classification and hint", () => {
     const pendingPath = ".apnea/artifacts/phase-01/round-1/coder-result.md"
     const stateWithPending = (pending: string | null): RunState => ({
-      version: 1,
+      version: 2,
       slug: "ex",
       step: "planning",
       phase_index: 1,
@@ -215,6 +216,7 @@ describe("startWorkflow (fake layers)", () => {
       current_phase_package: null,
       current_code_review: null,
       required_rework: null,
+      pending_commit: null,
     })
 
     return Effect.gen(function* () {
@@ -267,7 +269,7 @@ describe("startWorkflow (fake layers)", () => {
 describe("statusWorkflow (fake layers)", () => {
   itEffect("failing config yields config_error while tool succeeds", () => {
     const existing: RunState = {
-      version: 1,
+      version: 2,
       slug: "ex",
       step: "planning",
       phase_index: 1,
@@ -293,6 +295,7 @@ describe("statusWorkflow (fake layers)", () => {
       current_phase_package: null,
       current_code_review: null,
       required_rework: null,
+      pending_commit: null,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,
@@ -324,7 +327,7 @@ describe("statusWorkflow (fake layers)", () => {
 describe("resetRoundsWorkflow (fake layers)", () => {
   itEffect("zeros counter", () => {
     const existing: RunState = {
-      version: 1,
+      version: 2,
       slug: "ex",
       step: "planning",
       phase_index: 1,
@@ -350,6 +353,7 @@ describe("resetRoundsWorkflow (fake layers)", () => {
       current_phase_package: null,
       current_code_review: null,
       required_rework: null,
+      pending_commit: null,
     }
     const fsFake = makeFakeFileSystem({
       [statePath(ROOT)]: `${JSON.stringify(existing, null, 2)}\n`,

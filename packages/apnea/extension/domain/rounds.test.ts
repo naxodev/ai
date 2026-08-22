@@ -4,7 +4,7 @@ import { getRound, roundKey, setRound } from "./rounds.ts"
 
 function baseState(): RunState {
   return {
-    version: 1,
+    version: 2,
     slug: "t",
     step: "coding",
     phase_index: 1,
@@ -30,6 +30,7 @@ function baseState(): RunState {
     current_phase_package: null,
     current_code_review: null,
     required_rework: null,
+    pending_commit: null,
   }
 }
 

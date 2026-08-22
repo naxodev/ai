@@ -5,8 +5,21 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "slug", "step", "phase_index", "rounds", "vcs"],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "version": { "const": 2 } },
+        "required": ["version"]
+      },
+      "then": { "required": ["pending_commit"] },
+      "description": "Runtime enforcement is authoritative: decodeRunState applies the same rule plus consistency checks the JSON Schema cannot express."
+    }
+  ],
   "properties": {
-    "version": { "const": 1 },
+    "version": {
+      "enum": [1, 2],
+      "description": "Version 1 is accepted INPUT for migration (decodes with pending_commit=null); version 2 is the OUTPUT every save writes and must carry pending_commit explicitly."
+    },
     "slug": { "type": "string", "minLength": 1 },
     "step": {
       "type": "string",
@@ -104,6 +117,100 @@
       "type": ["string", "null"],
       "enum": ["plan", "code", "phase_package", null],
       "description": "Exact dispatch target that owns the next review round"
+    },
+    "pending_commit": {
+      "description": "Durable record of an in-flight commit transaction (crash-recoverable commit completion). Requires step=committing and phase_index equal to the run's phase_index; non-committing states must carry null. Version-1 files must not contain this key.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend",
+            "id",
+            "phase_index",
+            "message",
+            "no_remaining_phases",
+            "verify_log",
+            "branch",
+            "parent_commit",
+            "tree_id"
+          ],
+          "properties": {
+            "backend": { "const": "git" },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Transaction uuid; appears in the commit message as Apnea-Transaction: <id>"
+            },
+            "phase_index": { "type": "integer", "minimum": 1 },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Full commit message including the Apnea-Transaction trailer line"
+            },
+            "no_remaining_phases": { "type": "boolean" },
+            "verify_log": { "type": "string", "minLength": 1 },
+            "branch": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Full ref the commit must land on, e.g. refs/heads/apnea/<slug>"
+            },
+            "parent_commit": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Expected HEAD at completion; also the created commit's parent"
+            },
+            "tree_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Prepared tree id staged with .apnea excluded"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend",
+            "id",
+            "phase_index",
+            "message",
+            "no_remaining_phases",
+            "verify_log",
+            "change_id",
+            "content_fingerprint"
+          ],
+          "properties": {
+            "backend": { "const": "jj" },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Transaction uuid; appears in the change description as Apnea-Transaction: <id>"
+            },
+            "phase_index": { "type": "integer", "minimum": 1 },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Full description including the Apnea-Transaction trailer line"
+            },
+            "no_remaining_phases": { "type": "boolean" },
+            "verify_log": { "type": "string", "minLength": 1 },
+            "change_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Change id of the described working-copy change"
+            },
+            "content_fingerprint": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Fingerprint of the change's non-.apnea diff at preparation time"
+            }
+          }
+        }
+      ]
     },
     "phase_package_rework": {
       "type": "boolean",

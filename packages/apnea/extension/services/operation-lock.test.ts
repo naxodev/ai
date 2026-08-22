@@ -41,7 +41,7 @@ function writeOwner(lock: string, owner: { pid: number; token: string }): void {
 }
 
 describe("withRepositoryLock", () => {
-  test("rejects a live owner in the same process", async () => {
+  test("refuses a live owner in the same process", async () => {
     const root = project("apnea-lock-contention-")
     const fiber = Effect.runFork(withRepositoryLock(root, Effect.never))
     await waitForFile(repositoryLockPath(root))
@@ -51,6 +51,73 @@ describe("withRepositoryLock", () => {
     ).rejects.toBeInstanceOf(OperationLocked)
 
     await Effect.runPromise(Fiber.interrupt(fiber))
+  })
+
+  test("reclaims a crashed owner once the lock ages past the grace period", async () => {
+    const root = project("apnea-lock-reclaim-")
+    const lock = repositoryLockPath(root)
+    fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 })
+    writeOwner(lock, { pid: 2_147_483_647, token: "crashed" })
+    // Age the lock directory past the 60s grace.
+    const old = new Date(Date.now() - 120_000)
+    fs.utimesSync(lock, old, old)
+
+    let ran = false
+    await Effect.runPromise(
+      withRepositoryLock(
+        root,
+        Effect.sync(() => (ran = true)),
+      ),
+    )
+    expect(ran).toBe(true)
+    expect(fs.existsSync(lock)).toBe(false)
+  })
+
+  test("still refuses a fresh-looking dead owner (PID reuse mitigation)", async () => {
+    const root = project("apnea-lock-fresh-stale-")
+    const lock = repositoryLockPath(root)
+    fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 })
+    writeOwner(lock, { pid: 2_147_483_647, token: "fresh-crash" })
+
+    const error = await Effect.runPromise(
+      Effect.flip(withRepositoryLock(root, Effect.void)),
+    )
+    expect(error).toBeInstanceOf(OperationLocked)
+    if (error instanceof OperationLocked) {
+      expect(error.reason).toBe("stale")
+      expect(error.message).toContain("Remove this lock directory manually")
+    }
+    expect(fs.existsSync(lock)).toBe(true)
+  })
+
+  test("grace evaluation uses the injected clock seam", async () => {
+    const root = project("apnea-lock-clock-seam-")
+    const lock = repositoryLockPath(root)
+    fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 })
+    writeOwner(lock, { pid: 2_147_483_647, token: "seam" })
+    // Lock looks fresh on disk; the injected clock claims a year has passed.
+    const later = Date.now() + 365 * 24 * 60 * 60 * 1000
+
+    await Effect.runPromise(
+      withRepositoryLock(root, Effect.void, { now: () => later }),
+    )
+    expect(fs.existsSync(lock)).toBe(false)
+  })
+
+  test("an old mtime never reclaims an owner whose pid is alive", async () => {
+    const root = project("apnea-lock-live-aged-")
+    const lock = repositoryLockPath(root)
+    fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 })
+    writeOwner(lock, { pid: process.pid, token: "live-but-old" })
+    const old = new Date(Date.now() - 120_000)
+    fs.utimesSync(lock, old, old)
+
+    const error = await Effect.runPromise(
+      Effect.flip(withRepositoryLock(root, Effect.void)),
+    )
+    expect(error).toBeInstanceOf(OperationLocked)
+    if (error instanceof OperationLocked) expect(error.reason).toBe("live")
+    expect(fs.existsSync(lock)).toBe(true)
   })
 
   test("refuses a dead owner until the validated lock path is manually removed", async () => {
@@ -242,6 +309,21 @@ describe("global setup lock", () => {
     )
     expect(error).toBeInstanceOf(OperationLocked)
     if (error instanceof OperationLocked) expect(error.reason).toBe("stale")
+    expect(fs.existsSync(lock)).toBe(true)
+    fs.rmSync(lock, { recursive: true })
+  })
+
+  test("global setup lock stays fail-closed even for an aged dead owner", async () => {
+    const home = project("apnea-global-lock-aged-")
+    const lock = globalSetupLockPath(home)
+    fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 })
+    writeOwner(lock, { pid: 2_147_483_647, token: "aged-global" })
+    const old = new Date(Date.now() - 120_000)
+    fs.utimesSync(lock, old, old)
+
+    await expect(
+      Effect.runPromise(withGlobalSetupLock(home, Effect.void)),
+    ).rejects.toBeInstanceOf(OperationLocked)
     expect(fs.existsSync(lock)).toBe(true)
     fs.rmSync(lock, { recursive: true })
   })

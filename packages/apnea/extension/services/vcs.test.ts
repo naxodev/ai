@@ -28,14 +28,21 @@ import { itEffect } from "../test/it-effect.ts"
 import {
   Vcs,
   VcsLive,
+  EMPTY_JJ_DIFF_FINGERPRINT,
   filterAppPaths,
   fingerprintUntrackedFiles,
-  gitCommitPhaseWithCommand,
+  gitCompleteWithCommand,
+  gitPrepareWithCommand,
+  jjCompleteWithCommand,
+  jjPrepareWithCommand,
   runVerifyWithProcess,
   treeFingerprintWithCommand,
   utf8BytesAfterAppend,
+  syncMutationRunner,
   verifyBlockDisplayByteLength,
+  type PreparedCommit,
 } from "./vcs.ts"
+import type { GitPendingCommit, JjPendingCommit } from "../domain/types.ts"
 import { FileSystemLive } from "./file-system.ts"
 import {
   ProcessLive,
@@ -103,6 +110,39 @@ function realVcs<A>(effect: Effect.Effect<A, VcsError | never, Vcs>) {
       ),
     ),
   )
+}
+
+/** Same as realVcs but keeps the Effect so failures can be flipped/inspected. */
+function realVcsEffect<A>(effect: Effect.Effect<A, VcsError, Vcs>) {
+  return Effect.provide(
+    effect,
+    Layer.provide(VcsLive, Layer.merge(FileSystemLive, ProcessLive)),
+  )
+}
+
+/** Turn a prepared anchor into a full pending-commit record for tests. */
+function asGitPending(prepared: PreparedCommit): GitPendingCommit {
+  if (prepared.backend !== "git") throw new Error("expected git anchor")
+  return {
+    ...prepared,
+    phase_index: 1,
+    no_remaining_phases: false,
+    verify_log: ".apnea/verify.log",
+  }
+}
+
+function jjPendingOf(prepared: PreparedCommit): JjPendingCommit {
+  if (prepared.backend !== "jj") throw new Error("expected jj anchor")
+  return {
+    ...prepared,
+    phase_index: 1,
+    no_remaining_phases: false,
+    verify_log: ".apnea/verify.log",
+  }
+}
+
+function gitPrepare(root: string, message = "test commit") {
+  return realVcs(gitPrepareWithCommand(root, message))
 }
 
 function runVerify(
@@ -295,7 +335,7 @@ describe("Vcs repository safety", () => {
     await expect(
       realVcs(
         Effect.gen(function* () {
-          yield* (yield* Vcs).commitPhase(root, "git", "unsafe alias")
+          yield* (yield* Vcs).prepareCommit(root, "git", "unsafe alias")
         }),
       ),
     ).rejects.toThrow("case-insensitive")
@@ -385,12 +425,21 @@ describe("Vcs repository safety", () => {
       { mode: 0o700 },
     )
 
-    await realVcs(
+    const prepared = await realVcs(
       Effect.gen(function* () {
-        yield* (yield* Vcs).commitPhase(root, "git", "safe commit")
+        return yield* (yield* Vcs).prepareCommit(root, "git", "safe commit")
       }),
     )
+    await realVcs(
+      Effect.gen(function* () {
+        yield* (yield* Vcs).completeCommit(root, "git", asGitPending(prepared))
+      }),
+    )
+    expect(prepared.message).toContain("Apnea-Transaction: ")
     expect(command(root, "git", ["ls-files", ".apnea"])).toBe("")
+    expect(command(root, "git", ["log", "-1", "--format=%B"])).toContain(
+      `Apnea-Transaction: ${prepared.id}`,
+    )
     expect(command(root, "git", ["write-tree"]).trim()).toBe(
       command(root, "git", ["rev-parse", "HEAD^{tree}"]).trim(),
     )
@@ -403,7 +452,7 @@ describe("Vcs repository safety", () => {
     await expect(
       realVcs(
         Effect.gen(function* () {
-          yield* (yield* Vcs).commitPhase(root, "git", "unsafe commit")
+          yield* (yield* Vcs).prepareCommit(root, "git", "unsafe commit")
         }),
       ),
     ).rejects.toThrow(".apnea")
@@ -414,7 +463,7 @@ describe("Vcs repository safety", () => {
     await expect(
       realVcs(
         Effect.gen(function* () {
-          yield* (yield* Vcs).commitPhase(root, "git", "unsafe deletion")
+          yield* (yield* Vcs).prepareCommit(root, "git", "unsafe deletion")
         }),
       ),
     ).rejects.toThrow(".apnea")
@@ -450,9 +499,18 @@ describe("Vcs repository safety", () => {
       ),
     ).toBe(second)
 
+    const preparedJj = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).prepareCommit(
+          root,
+          "jj",
+          "safe source commit",
+        )
+      }),
+    )
     await realVcs(
       Effect.gen(function* () {
-        yield* (yield* Vcs).commitPhase(root, "jj", "safe source commit")
+        yield* (yield* Vcs).completeCommit(root, "jj", jjPendingOf(preparedJj))
       }),
     )
     expect(
@@ -464,7 +522,17 @@ describe("Vcs repository safety", () => {
         "-T",
         "description",
       ]).trim(),
-    ).toBe("safe source commit")
+    ).toContain("safe source commit")
+    expect(
+      command(root, "jj", [
+        "log",
+        "-r",
+        "@-",
+        "--no-graph",
+        "-T",
+        "description",
+      ]),
+    ).toContain(`Apnea-Transaction: ${preparedJj.id}`)
     expect(command(root, "jj", ["diff", "--name-only"])).toContain(
       ".apnea/state.json",
     )
@@ -483,7 +551,7 @@ describe("Vcs repository safety", () => {
     await expect(
       realVcs(
         Effect.gen(function* () {
-          yield* (yield* Vcs).commitPhase(root, "jj", "must refuse")
+          yield* (yield* Vcs).prepareCommit(root, "jj", "must refuse")
         }),
       ),
     ).rejects.toThrow(".apnea")
@@ -510,9 +578,14 @@ describe("Vcs repository safety", () => {
     writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
     writeFileSync(path.join(root, "tracked.txt"), "changed\n")
 
+    const preparedJj2 = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).prepareCommit(root, "jj", "safe jj commit")
+      }),
+    )
     await realVcs(
       Effect.gen(function* () {
-        yield* (yield* Vcs).commitPhase(root, "jj", "safe jj commit")
+        yield* (yield* Vcs).completeCommit(root, "jj", jjPendingOf(preparedJj2))
       }),
     )
 
@@ -602,22 +675,316 @@ describe("Vcs repository safety", () => {
     writeFileSync(path.join(root, "tracked.txt"), "changed\n")
     const before = command(root, "git", ["rev-parse", "HEAD"]).trim()
 
+    const injected = (
+      bin: string,
+      args: string[],
+      cwd: string,
+      env?: NodeJS.ProcessEnv,
+    ) => {
+      if (args[0] === "read-tree" && env === undefined) {
+        return { ok: false, stdout: "", stderr: "injected", code: 1 }
+      }
+      return commandResult(cwd, bin, args, env)
+    }
+    const preparedInjected = await Effect.runPromise(
+      gitPrepareWithCommand(root, "must not move", injected),
+    )
     await expect(
       Effect.runPromise(
-        gitCommitPhaseWithCommand(
+        gitCompleteWithCommand(
           root,
-          "must not move",
-          (bin, args, cwd, env) => {
-            if (args[0] === "read-tree" && env === undefined) {
-              return { ok: false, stdout: "", stderr: "injected", code: 1 }
-            }
-            return commandResult(cwd, bin, args, env)
-          },
+          asGitPending(preparedInjected),
+          injected,
+          syncMutationRunner(injected),
         ),
       ),
     ).rejects.toThrow("injected")
     expect(command(root, "git", ["rev-parse", "HEAD"]).trim()).toBe(before)
   })
+
+  test("git preparation maps detached HEAD to a friendly typed refusal", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+    // `symbolic-ref -q` exits 1 with empty stdout here — the generic
+    // requireCommand failure must not mask the real problem.
+    command(root, "git", ["checkout", "--detach", "-q", "HEAD"])
+    writeFileSync(path.join(root, "tracked.txt"), "changed\n")
+
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).prepareCommit(root, "git", "no branch")
+        }),
+      ),
+    ).rejects.toThrow(/detached HEAD/)
+  })
+
+  test("git completion refuses a detached HEAD as anchor drift", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+    writeFileSync(path.join(root, "tracked.txt"), "changed\n")
+    const prepared = await gitPrepare(root, "detached completion")
+
+    command(root, "git", ["checkout", "--detach", "-q", "HEAD"])
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).completeCommit(
+            root,
+            "git",
+            asGitPending(prepared),
+          )
+        }),
+      ),
+    ).rejects.toThrow(/detached HEAD/)
+  })
+
+  test("jj prepare refuses a working copy whose only diffs are .apnea", async () => {
+    const available = spawnSync("jj", ["--version"], { encoding: "utf8" })
+    if (available.status !== 0) return
+    const root = makeProject()
+    command(root, "jj", ["git", "init", "--colocate"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "jj", ["commit", "-m", "base"])
+    mkdirSync(path.join(root, ".apnea"))
+    writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
+
+    const error = await Effect.runPromise(
+      Effect.flip(realVcsEffect(jjPrepareWithCommand(root, "empty content"))),
+    )
+    expect(error).toBeInstanceOf(VcsError)
+    expect(error.message).toContain("no non-.apnea changes")
+  })
+
+  test("jj completion refuses an empty-content terminus before it can be abandoned", async () => {
+    const available = spawnSync("jj", ["--version"], { encoding: "utf8" })
+    if (available.status !== 0) return
+    const root = makeProject()
+    command(root, "jj", ["git", "init", "--colocate"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "jj", ["commit", "-m", "base"])
+    mkdirSync(path.join(root, ".apnea"))
+    writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
+
+    // Hand-craft the state prepare now refuses to produce: a described
+    // change with an empty non-.apnea fingerprint, as an older version
+    // could have persisted.
+    const changeId = command(root, "jj", [
+      "log",
+      "-r",
+      "@",
+      "--no-graph",
+      "-T",
+      "change_id",
+    ]).trim()
+    const id = "3d6f4b2c-15e9-6e33-1c4b-7a8f0c9d1e23"
+    command(root, "jj", [
+      "describe",
+      "-m",
+      `orphaned transaction\n\nApnea-Transaction: ${id}`,
+    ])
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        jjCompleteWithCommand(root, {
+          backend: "jj",
+          id,
+          phase_index: 1,
+          message: `orphaned transaction\n\nApnea-Transaction: ${id}`,
+          no_remaining_phases: false,
+          verify_log: ".apnea/verify.log",
+          change_id: changeId,
+          content_fingerprint: EMPTY_JJ_DIFF_FINGERPRINT,
+        }),
+      ),
+    )
+    expect(error).toBeInstanceOf(VcsError)
+    expect(error.message).toContain("wedge the transaction")
+    // The target is still @ — nothing advanced.
+    expect(changeId).toBe(
+      command(root, "jj", [
+        "log",
+        "-r",
+        "@",
+        "--no-graph",
+        "-T",
+        "change_id",
+      ]).trim(),
+    )
+  })
+
+  test("git completion is idempotent: a crash after the commit is recognized, not doubled", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+    writeFileSync(path.join(root, "tracked.txt"), "changed\n")
+
+    const prepared = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).prepareCommit(root, "git", "recovered")
+      }),
+    )
+    const pending = asGitPending(prepared)
+
+    const first = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).completeCommit(root, "git", pending)
+      }),
+    )
+    expect(first).toMatch(/^[0-9a-f]{40}$/)
+
+    // Simulate the crash: state was never advanced; completion runs again.
+    const second = await realVcs(
+      Effect.gen(function* () {
+        return yield* (yield* Vcs).completeCommit(root, "git", pending)
+      }),
+    )
+    expect(second).toBe(first)
+    expect(command(root, "git", ["rev-list", "--count", "HEAD"]).trim()).toBe(
+      "2",
+    )
+    expect(command(root, "git", ["log", "-1", "--format=%B"])).toContain(
+      `Apnea-Transaction: ${pending.id}`,
+    )
+  })
+
+  test("git completion refuses branch drift after preparation", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea Test"])
+    writeFileSync(path.join(root, "tracked.txt"), "base\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", ["commit", "-qm", "base"])
+
+    const prepared = await gitPrepare(root, "drifted")
+    const pending = asGitPending(prepared)
+    // Unrelated commit lands on the branch between prepare and complete.
+    writeFileSync(path.join(root, "other.txt"), "unrelated\n")
+    command(root, "git", ["add", "other.txt"])
+    command(root, "git", ["commit", "-qm", "unrelated"])
+
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).completeCommit(root, "git", pending)
+        }),
+      ),
+    ).rejects.toThrow(/HEAD moved since preparation|branch drifted/)
+
+    // A tampered marker with mismatched parent/tree also refuses.
+    writeFileSync(path.join(root, "tracked.txt"), "more\n")
+    command(root, "git", ["add", "tracked.txt"])
+    command(root, "git", [
+      "commit",
+      "-qm",
+      `forged\n\nApnea-Transaction: ${pending.id}`,
+    ])
+    await expect(
+      realVcs(
+        Effect.gen(function* () {
+          yield* (yield* Vcs).completeCommit(root, "git", pending)
+        }),
+      ),
+    ).rejects.toThrow("unexpected parent")
+  })
+
+  test.skipIf(process.platform === "win32")(
+    "jj recovery: crash after describe advances once; drift refuses",
+    async () => {
+      const available = spawnSync("jj", ["--version"], { encoding: "utf8" })
+      if (available.status !== 0) return
+      const root = makeProject()
+      command(root, "jj", ["git", "init", "--colocate"])
+      writeFileSync(path.join(root, "tracked.txt"), "base\n")
+      command(root, "jj", ["commit", "-m", "base"])
+      mkdirSync(path.join(root, ".apnea"))
+      writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
+      writeFileSync(path.join(root, "tracked.txt"), "change\n")
+
+      // Crash window 1: describe happened (prepare), nothing else.
+      const prepared = await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).prepareCommit(root, "jj", "recover me")
+        }),
+      )
+      expect(
+        command(root, "jj", [
+          "log",
+          "-r",
+          "@",
+          "--no-graph",
+          "-T",
+          "description",
+        ]),
+      ).toContain(`Apnea-Transaction: ${prepared.id}`)
+
+      const pending = jjPendingOf(prepared)
+
+      // Fingerprint drift refuses while the target is still @.
+      writeFileSync(path.join(root, "tracked.txt"), "tampered\n")
+      await expect(
+        realVcs(
+          Effect.gen(function* () {
+            yield* (yield* Vcs).completeCommit(root, "jj", pending)
+          }),
+        ),
+      ).rejects.toThrow("fingerprint")
+
+      // Restoring the prepared content lets completion proceed exactly once.
+      writeFileSync(path.join(root, "tracked.txt"), "change\n")
+      const first = await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).completeCommit(root, "jj", pending)
+        }),
+      )
+      expect(first).toBe(pending.change_id)
+
+      // Crash window 2: everything done, only recognition remains.
+      const second = await realVcs(
+        Effect.gen(function* () {
+          return yield* (yield* Vcs).completeCommit(root, "jj", pending)
+        }),
+      )
+      expect(second).toBe(first)
+
+      // Exactly one new change beyond base; .apnea stayed out of it.
+      const committed = command(root, "jj", ["diff", "-r", "@-", "--name-only"])
+      expect(committed).toContain("tracked.txt")
+      expect(committed.toLowerCase()).not.toContain(".apnea")
+      const workingCopy = command(root, "jj", ["diff", "--name-only"])
+      expect(workingCopy).toContain(".apnea/state.json")
+
+      // Once the repository moves past the anchored change, the drift
+      // refusal names the exact recovery surface (.apnea/state.json →
+      // pending_commit) and why it is never cleared automatically.
+      writeFileSync(path.join(root, "tracked.txt"), "more\n")
+      command(root, "jj", ["commit", "-m", "further work"])
+      await expect(
+        realVcs(
+          Effect.gen(function* () {
+            yield* (yield* Vcs).completeCommit(root, "jj", pending)
+          }),
+        ),
+      ).rejects.toThrow(
+        /neither @ nor @-[\s\S]*pending_commit[\s\S]*never clears it automatically/,
+      )
+    },
+  )
 })
 
 describe("utf8BytesAfterAppend", () => {
