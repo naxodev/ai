@@ -203,6 +203,7 @@ function setup(
 	let shutdown: ((event: unknown, ctx: any) => Promise<void>) | undefined;
 	const intervals: Timer[] = [];
 	const statuses: Array<string | undefined> = [];
+	const themedText: string[] = [];
 	const notifications: string[] = [];
 	const commands: Record<
 		string,
@@ -283,7 +284,10 @@ function setup(
 		setStatus: (_key: string, value: string | undefined) =>
 			statuses.push(value),
 		theme: {
-			fg: (_color: string, value: string) => value,
+			fg: (_color: string, value: string) => {
+				themedText.push(value);
+				return value;
+			},
 		},
 		notify: (message: string) => notifications.push(message),
 		setWidget: (
@@ -367,6 +371,7 @@ function setup(
 			return match!.handler(context);
 		},
 		statuses,
+		themedText,
 		notifications,
 		intervals,
 		hosts,
@@ -408,9 +413,34 @@ test("session client is created only for a live TUI start with Pi capabilities i
 		hostKind: "pi",
 		capabilities: ["state-replay", "transport", "native-artwork"],
 	});
+	expect(options[0]!.signal).toBeInstanceOf(AbortSignal);
 	expect(client.stateListeners.size).toBe(1);
 	expect(client.statusListeners.size).toBe(1);
 	expect(client.connectionListeners.size).toBe(1);
+	await dock.shutdown();
+});
+
+test("status metadata is sanitized before theme rendering", async () => {
+	// Why: a media title can contain OSC 52, ANSI, and layout controls supplied
+	// by another process. The status line must retain safe Unicode only.
+	const client = new FakeClient();
+	client.state = undefined;
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	client.emitState({
+		...player(),
+		track: {
+			...player().track!,
+			name: "Café 🎵\x1b]52;c;YXR0YWNr\x07\x1b[31m\nnext",
+			artists: "Art\tist\x9d52;c;ZXZpbA\x9c",
+		},
+	});
+	const themedStatus = dock.themedText.at(-1)!;
+	expect(themedStatus).toBe("Café 🎵next · Artist");
+	expect(themedStatus).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+	expect(themedStatus).not.toContain("]52;");
+	expect(themedStatus).not.toContain("[31m");
 	await dock.shutdown();
 });
 
@@ -868,6 +898,61 @@ test("shutdown during acquisition disposes the late client and fences all feedba
 	expect(client.stateListeners.size).toBe(0);
 	expect(dock.notifications).toEqual([]);
 	expect(dock.statuses.at(-1)).toBeUndefined();
+	expect(dock.overlays[0]!.handle.hideCalls).toBe(1);
+});
+
+test("shutdown aborts a non-settling client acquisition and completes promptly", async () => {
+	// Why: daemon discovery may wait indefinitely. Session shutdown must be able
+	// to stop the factory instead of awaiting work that only it can cancel.
+	let observedSignal: AbortSignal | undefined;
+	let observedAbort = false;
+	const dock = setup(
+		(options) =>
+			new Promise<ReconnectingMusicSessionClient>((_resolve, reject) => {
+				observedSignal = options.signal;
+				options.signal?.addEventListener(
+					"abort",
+					() => {
+						observedAbort = true;
+						reject(options.signal?.reason);
+					},
+					{ once: true },
+				);
+			}),
+	);
+	await dock.start();
+	await flush();
+	expect(observedSignal?.aborted).toBe(false);
+
+	await Promise.race([
+		dock.shutdown(),
+		Bun.sleep(200).then(() => {
+			throw new Error("shutdown did not cancel client acquisition");
+		}),
+	]);
+	expect(observedAbort).toBe(true);
+	expect(observedSignal?.aborted).toBe(true);
+});
+
+test("shutdown does not await a client factory that ignores abort", async () => {
+	// Why: cancellation is cooperative. An injected or buggy factory may ignore
+	// its signal forever, but Pi shutdown must still release all owned UI work.
+	let observedSignal: AbortSignal | undefined;
+	const dock = setup((options) => {
+		observedSignal = options.signal;
+		return new Promise<ReconnectingMusicSessionClient>(() => {});
+	});
+	await dock.start();
+	await flush();
+	expect(observedSignal?.aborted).toBe(false);
+
+	await Promise.race([
+		dock.shutdown(),
+		Bun.sleep(200).then(() => {
+			throw new Error("shutdown awaited an abort-ignoring client factory");
+		}),
+	]);
+	expect(observedSignal?.aborted).toBe(true);
 	expect(dock.overlays[0]!.handle.hideCalls).toBe(1);
 });
 

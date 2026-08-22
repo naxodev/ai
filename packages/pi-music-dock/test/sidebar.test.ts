@@ -40,6 +40,7 @@ const player = (
 function panel(options?: {
 	now?: () => number;
 	terminalWrite?: (data: string) => void;
+	theme?: typeof theme;
 }) {
 	const calls = {
 		toggle: 0,
@@ -64,7 +65,7 @@ function panel(options?: {
 					}
 				: undefined,
 		},
-		theme,
+		options?.theme ?? theme,
 		{
 			onTogglePlayback: () => calls.toggle++,
 			onNext: () => calls.next++,
@@ -76,6 +77,37 @@ function panel(options?: {
 	);
 	return { sidebar, calls, writes };
 }
+
+test("track metadata cannot inject terminal controls into themed panel text", () => {
+	// Why: metadata comes from external players. OSC 52 and line controls must
+	// never reach the theme or alter the terminal layout, while Unicode survives.
+	const themed: string[] = [];
+	const { sidebar } = panel({
+		theme: {
+			fg: (_color, text) => {
+				themed.push(text);
+				return text;
+			},
+		},
+	});
+	const unsafe = player("Café 🎵\x1b]52;c;YXR0YWNr\x07\x1b[31m\nnext", {
+		track: {
+			...player().track!,
+			name: "Café 🎵\x1b]52;c;YXR0YWNr\x07\x1b[31m\nnext",
+			artists: "Art\tist\x9d52;c;ZXZpbA\x9c",
+			album: "Alb\x1bum",
+		},
+	});
+	sidebar.update({ player: unsafe, artwork: { kind: "unavailable" } });
+	const rendered = sidebar.render(40).join("\n");
+
+	expect(rendered).toContain("Café 🎵next");
+	expect(rendered).toContain("Artist");
+	expect(rendered).toContain("Album");
+	expect(themed.join("")).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+	expect(rendered).not.toContain("]52;");
+	expect(rendered).not.toContain("[31m");
+});
 
 test("every rendered line fits the requested width, even when narrow", () => {
 	// Why: overlay lines that exceed width corrupt the TUI compositor and can

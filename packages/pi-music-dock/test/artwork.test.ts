@@ -338,6 +338,80 @@ test("readLimitedResponse and download reject oversize, redirects, and foreign f
 	).toBeNull();
 });
 
+test("rejected and failed response reads cancel their bodies", async () => {
+	// Why: leaving rejected HTTP streams open retains sockets and buffered artwork.
+	const trackedResponse = (init: ResponseInit = {}) => {
+		const cancellations: unknown[] = [];
+		const response = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new Uint8Array([1]));
+				},
+				cancel(reason) {
+					cancellations.push(reason);
+				},
+			}),
+			{ status: 200, ...init },
+		);
+		return { response, cancellations };
+	};
+
+	const oversized = trackedResponse({
+		headers: { "content-length": String(MAX_ARTWORK_BYTES + 1) },
+	});
+	expect(
+		await readLimitedResponse(oversized.response, MAX_ARTWORK_BYTES),
+	).toBeNull();
+	expect(oversized.cancellations).toHaveLength(1);
+
+	const rejected = trackedResponse({ status: 503 });
+	expect(
+		await downloadCatalogImage(
+			"https://is1-ssl.mzstatic.com/x.jpg",
+			async () => rejected.response,
+		),
+	).toBeNull();
+	expect(rejected.cancellations).toHaveLength(1);
+
+	const foreign = trackedResponse();
+	Object.defineProperty(foreign.response, "url", {
+		value: "https://evil.example/x.jpg",
+	});
+	expect(
+		await downloadCatalogImage(
+			"https://is1-ssl.mzstatic.com/x.jpg",
+			async () => foreign.response,
+		),
+	).toBeNull();
+	expect(foreign.cancellations).toHaveLength(1);
+
+	const catalogRejected = trackedResponse({ status: 429 });
+	expect(
+		await resolveCatalogArtwork(target, async () => catalogRejected.response),
+	).toBeNull();
+	expect(catalogRejected.cancellations).toHaveLength(1);
+
+	let readerCancellations = 0;
+	const failedRead = {
+		headers: new Headers(),
+		body: {
+			getReader: () => ({
+				read: async () => {
+					throw new Error("stream failed");
+				},
+				cancel: async () => {
+					readerCancellations++;
+				},
+				releaseLock: () => {},
+			}),
+		},
+	} as unknown as Response;
+	await expect(readLimitedResponse(failedRead, 10)).rejects.toThrow(
+		"stream failed",
+	);
+	expect(readerCancellations).toBe(1);
+});
+
 test("native success avoids the catalog entirely", async () => {
 	// Why: when the daemon already has valid art, never spend a network round-trip.
 	let catalogHits = 0;
@@ -361,6 +435,29 @@ test("native success avoids the catalog entirely", async () => {
 		kind: "ready",
 		artwork: { base64: png, mime: "image/png" },
 	});
+	expect(catalogHits).toBe(0);
+});
+
+test("stale native artwork does not query the catalog", async () => {
+	// Why: stale means the daemon rejected an obsolete identity. A fallback fetch
+	// would spend network work for a track that is no longer authoritative.
+	let catalogHits = 0;
+	const presentation = await resolveArtworkPresentation({
+		identity: {
+			id: "obsolete",
+			name: target.title,
+			artists: target.artist,
+			album: target.album,
+			duration_ms: target.duration_ms,
+		},
+		loadNative: async () => ({ type: "stale" }),
+		fetch: async () => {
+			catalogHits++;
+			throw new Error("catalog must not run for stale artwork");
+		},
+		signal: new AbortController().signal,
+	});
+	expect(presentation).toEqual({ kind: "empty" });
 	expect(catalogHits).toBe(0);
 });
 
