@@ -30,7 +30,7 @@
     },
     "packages/music-core": {
       "name": "@naxodev/music-core",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "bin": {
         "naxodev-music-sessiond": "./dist/music-sessiond.js",
       },
@@ -45,14 +45,14 @@
     },
     "packages/opencode-music-player": {
       "name": "@naxodev/opencode-music-player",
-      "version": "0.1.4",
+      "version": "0.2.4",
       "dependencies": {
-        "@naxodev/music-core": "^0.1.0",
+        "@naxodev/music-core": "^0.1.1",
         "@opencode-ai/plugin": "0.0.0-next-17444",
         "@opentui/core": "0.5.3",
         "@opentui/solid": "0.5.3",
         "pngjs": "^7.0.0",
-        "solid-js": "1.9.12",
+        "solid-js": "1.9.15",
       },
       "devDependencies": {
         "@opencode-ai/theme": "0.0.0-next-17444",
@@ -64,12 +64,12 @@
     },
     "packages/opencode-vim": {
       "name": "@naxodev/opencode-vim",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@opencode-ai/plugin": "0.0.0-next-17444",
         "@opentui/core": "0.5.3",
         "@opentui/solid": "0.5.3",
-        "solid-js": "1.9.12",
+        "solid-js": "1.9.15",
       },
       "devDependencies": {
         "@opencode-ai/theme": "0.0.0-next-17444",
@@ -97,7 +97,7 @@
     },
     "packages/pi-music-dock": {
       "name": "@naxodev/pi-music-dock",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@naxodev/music-core": "^0.1.0",
       },
@@ -1064,7 +1064,7 @@
 
     "smol-toml": ["smol-toml@1.6.1", "", {}, "sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg=="],
 
-    "solid-js": ["solid-js@1.9.12", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "~1.5.0", "seroval-plugins": "~1.5.0" } }, "sha512-QzKaSJq2/iDrWR1As6MHZQ8fQkdOBf8GReYb7L5iKwMGceg7HxDcaOHk0at66tNgn9U2U7dXo8ZZpLIAmGMzgw=="],
+    "solid-js": ["solid-js@1.9.15", "", { "dependencies": { "csstype": "^3.1.0", "seroval": "~1.5.4", "seroval-plugins": "~1.5.4" } }, "sha512-EeiY2xfpZJqPLjXspVEKjAII4yv8NyG//NxZ3IpOFHdUNnnTyL0uJOeS9LWGvA7cFCz5y94cjFwYlmw5Luncsg=="],
 
     "source-map": ["source-map@0.6.1", "", {}, "sha512-UjgapumWlbMhkBgzT7Ykc5YXUT46F0iKu8SGXq0bcwP5dz/h0Plj6enJqjz1Zbq2l5WaqYnrVbwWOWMyF3F47g=="],
 
