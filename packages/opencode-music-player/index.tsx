@@ -91,8 +91,14 @@ export function createController(
   } = { message: null, source: undefined }
   let transportError: string | null = null
   let receivedSnapshot = false
-  let playbackTarget: boolean | undefined
-  let playbackOperations = 0
+  let snapshotEpoch = 0
+  let playbackIntent:
+    | {
+        readonly target: boolean
+        readonly startedAtEpoch: number
+        settled: boolean
+      }
+    | undefined
   let activeSeek: SeekIntent | null = null
   let latestSeek: SeekIntent | null = null
   const pending = new Set<() => void>()
@@ -137,7 +143,10 @@ export function createController(
     updateLoading()
   }
 
-  const runCommand = (command: () => Promise<unknown>) => {
+  const runCommand = (
+    command: () => Promise<unknown>,
+    onSettled?: (succeeded: boolean) => void,
+  ) => {
     if (!isActive()) return Promise.resolve()
     const generation = lifecycleGeneration
     return new Promise<void>((resolve) => {
@@ -149,9 +158,11 @@ export function createController(
       } catch (error) {
         result = Promise.reject(error)
       }
+      let succeeded = false
       void Promise.resolve(result)
         .then(
           () => {
+            succeeded = true
             if (!isActive() || generation !== lifecycleGeneration) return
             if (transportError !== null) setTransportError(null)
           },
@@ -162,23 +173,31 @@ export function createController(
             context.ui.toast.show({ title: "Music", message, variant: "error" })
           },
         )
-        .finally(() => settle(resolve))
+        .finally(() => {
+          try {
+            onSettled?.(succeeded)
+          } finally {
+            settle(resolve)
+          }
+        })
     })
   }
 
   const runSeek = (intent: SeekIntent) => {
     activeSeek = intent
-    const operation = runCommand(() => media.seek(intent.positionMs))
-    void operation.then(() => {
-      if (activeSeek !== intent) return
-      activeSeek = null
-      for (const resolve of intent.resolves) resolve()
-      intent.resolves = []
-      const next = latestSeek
-      latestSeek = null
-      if (isActive() && next) runSeek(next)
-      else next?.resolves.splice(0).forEach((resolve) => resolve())
-    })
+    void runCommand(
+      () => media.seek(intent.positionMs),
+      () => {
+        if (activeSeek !== intent) return
+        activeSeek = null
+        for (const resolve of intent.resolves) resolve()
+        intent.resolves = []
+        const next = latestSeek
+        latestSeek = null
+        if (isActive() && next) runSeek(next)
+        else next?.resolves.splice(0).forEach((resolve) => resolve())
+      },
+    )
   }
 
   const refreshAll = async () => {
@@ -198,15 +217,31 @@ export function createController(
   }
 
   const playPause = () => {
-    const nextPlaying = !(playbackTarget ?? !!session.player?.is_playing)
-    playbackTarget = nextPlaying
-    playbackOperations++
-    return runCommand(() =>
-      nextPlaying ? media.play() : media.pause(),
-    ).finally(() => {
-      playbackOperations--
-      if (playbackOperations === 0) playbackTarget = undefined
-    })
+    const nextPlaying = !(
+      playbackIntent?.target ?? !!session.player?.is_playing
+    )
+    const intent = {
+      target: nextPlaying,
+      startedAtEpoch: snapshotEpoch,
+      settled: false,
+    }
+    playbackIntent = intent
+    return runCommand(
+      () => (nextPlaying ? media.play() : media.pause()),
+      (succeeded) => {
+        if (playbackIntent !== intent) return
+        if (!succeeded) {
+          playbackIntent = undefined
+          return
+        }
+        intent.settled = true
+        if (
+          snapshotEpoch > intent.startedAtEpoch &&
+          session.player?.is_playing === intent.target
+        )
+          playbackIntent = undefined
+      },
+    )
   }
 
   const seek = (positionMs: number) => {
@@ -231,9 +266,16 @@ export function createController(
     if (!isActive()) return
     if (event?.type === "snapshot") {
       receivedSnapshot = true
+      snapshotEpoch++
       setSession((draft) => {
         draft.player = mergePlayerSnapshot(draft.player, event.state)
       })
+      if (
+        playbackIntent?.settled &&
+        snapshotEpoch > playbackIntent.startedAtEpoch &&
+        event.state.is_playing === playbackIntent.target
+      )
+        playbackIntent = undefined
       return
     }
     if (event?.type === "lifecycle") {

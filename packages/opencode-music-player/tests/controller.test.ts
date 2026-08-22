@@ -312,6 +312,48 @@ test("play and seek retain daemon state until the next snapshot", async () => {
   view.controller.dispose()
 })
 
+test("playback intent survives command success until daemon acknowledgement", async () => {
+  const { client, calls } = createClient()
+  const gate = deferred<void>()
+  client.gate = gate.promise
+  const view = harness(client)
+  await flush()
+
+  const play = view.controller.playPause()
+  gate.resolve()
+  await play
+  const pause = view.controller.playPause()
+  await pause
+
+  expect(calls).toEqual(["play", "pause"])
+  expect(view.session.player?.is_playing).toBeFalse()
+  view.controller.dispose()
+})
+
+test("coalesced seeks keep loading owned across the command handoff", async () => {
+  const { client } = createClient()
+  const gate = deferred<void>()
+  client.gate = gate.promise
+  const view = harness(client)
+  await flush()
+  const loading: boolean[] = []
+  const unsubscribe = view.controller.subscribe((session) =>
+    loading.push(session.loading),
+  )
+
+  const first = view.controller.seek(10_000)
+  const latest = view.controller.seek(20_000)
+  await flush()
+  loading.length = 0
+  gate.resolve()
+  await Promise.all([first, latest])
+
+  expect(loading.at(-1)).toBeFalse()
+  expect(loading.slice(0, -1).every(Boolean)).toBeTrue()
+  unsubscribe()
+  view.controller.dispose()
+})
+
 test("lifecycle and transport errors do not erase one another or reconcile", async () => {
   const { client, calls } = createClient()
   const view = harness(client)
