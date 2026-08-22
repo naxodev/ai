@@ -1368,6 +1368,38 @@ describe("dispatchWorkflow (fake layers)", () => {
   )
 
   itEffect(
+    "unknown delivery before a pane id preserves null-pane pending ownership",
+    () => {
+      const fsFake = seedFs(baseState({ step: "planning" }))
+      const { layer } = layerOf(fsFake, {
+        herdr: {
+          interactive: new HerdrError({
+            message: "herdr pane split timed out",
+            details: { delivery: "unknown" },
+          }),
+        },
+      })
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        const failure = expectFailure(result, "HerdrError")
+        expect(failure.details).toMatchObject({
+          delivery: "unknown",
+          // No pane id reached the state machine, so nothing preserved
+          // pending ownership — claiming otherwise would invite a redelivery
+          // against ownership that was never written.
+          pending_preserved: false,
+        })
+        const saved = savedState(fsFake)
+        expect(saved.pending_artifact).toBe(".apnea/artifacts/plan.md")
+        expect(saved.pending_pane_id).toBeNull()
+        expect(taskFiles(fsFake)).toHaveLength(1)
+      }).pipe(Effect.provide(layer))
+    },
+  )
+
+  itEffect(
     "definite launch failure reports rollback cleanup failure without hiding launch error",
     () => {
       const fsFake = makeFakeFileSystem(

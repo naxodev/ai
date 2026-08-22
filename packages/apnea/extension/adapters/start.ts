@@ -5,13 +5,16 @@ import type { ToolResult } from "../result.ts"
 import { runToolResult } from "../run-tool.ts"
 import { startWorkflow, type StartParams } from "../workflows/start.ts"
 import { withRepositoryLock } from "../services/operation-lock.ts"
+import type { OperationHooks } from "../operation-hooks.ts"
 
 export async function workflowStart(
   params: StartParams,
   hostAdapter: ApneaHostAdapter = neutralHostAdapter,
+  hooks: OperationHooks = {},
 ): Promise<ToolResult> {
   return runToolResult(
     withRepositoryLock(process.cwd(), startWorkflow(params, process.cwd())),
     makeAppLive(hostAdapter),
+    { signal: hooks.signal, operation: "workflow_start" },
   )
 }

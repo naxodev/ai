@@ -10,6 +10,7 @@ import {
   type SetupParams,
 } from "../workflows/setup.ts"
 import { withSetupLocks } from "../services/operation-lock.ts"
+import type { OperationHooks } from "../operation-hooks.ts"
 
 /**
  * Walk PATH directly rather than spawning `which` once per binary — `which`
@@ -23,6 +24,7 @@ function onPath(bin: string): boolean {
 export async function apneaSetup(
   params: SetupParams,
   hostAdapter: ApneaHostAdapter = neutralHostAdapter,
+  hooks: OperationHooks = {},
 ): Promise<ToolResult> {
   const trustedHome = os.homedir()
   const prodDeps: SetupDeps = {
@@ -41,5 +43,6 @@ export async function apneaSetup(
       workflow,
     ),
     makeAppLive(hostAdapter),
+    { signal: hooks.signal, operation: "setup" },
   )
 }

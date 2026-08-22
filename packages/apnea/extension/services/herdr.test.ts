@@ -9,10 +9,13 @@ import {
   type PromptProbes,
   cleanupFailedInteractiveLaunch,
   ensurePromptSubmitted,
+  herdrCli,
+  paneGet,
   paneReadRecentArgs,
   probeHerdrAvailability,
   resolveExecutable,
 } from "./herdr.ts"
+import { ProcessTimeoutError, type ProcessService } from "./process.ts"
 
 const tmpDirs: string[] = []
 
@@ -93,6 +96,56 @@ describe("probeHerdrAvailability", () => {
   })
 })
 
+describe("Herdr process boundary", () => {
+  test("rejects malformed JSON even when Herdr exits zero", async () => {
+    const processService: ProcessService = {
+      run: () =>
+        Effect.succeed({ exitCode: 0, stdout: "not-json\n", stderr: "" }),
+    }
+    const result = await Effect.runPromise(
+      Effect.result(herdrCli(processService, ["pane", "get", "p1"])),
+    )
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure.message).toContain("malformed JSON")
+    }
+  })
+
+  test("rejects missing required pane output on exit zero", async () => {
+    const processService: ProcessService = {
+      run: () => Effect.succeed({ exitCode: 0, stdout: "{}\n", stderr: "" }),
+    }
+    const result = await Effect.runPromise(
+      Effect.result(paneGet(processService, "p1")),
+    )
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure.message).toContain("returned no pane")
+    }
+  })
+
+  test("reports mutation timeout as unknown delivery", async () => {
+    const processService: ProcessService = {
+      run: (options) =>
+        Effect.fail(
+          new ProcessTimeoutError(options.command, options.timeoutMs, "", ""),
+        ),
+    }
+    const result = await Effect.runPromise(
+      Effect.result(
+        herdrCli(processService, ["pane", "split"], { mutation: true }),
+      ),
+    )
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure.details?.delivery).toBe("unknown")
+    }
+  })
+})
+
 describe("ensurePromptSubmitted recovery", () => {
   /**
    * Fake probes whose reported status flips on *observed events* — a `sendKeys`
@@ -107,18 +160,18 @@ describe("ensurePromptSubmitted recovery", () => {
     let sawSendKeys = false
     let runCount = 0
     const probes: PromptProbes = {
-      status: () => {
-        switch (opts.workingAfter) {
-          case "start":
-            return "working"
-          case "sendKeys":
-            return sawSendKeys ? "working" : "idle"
-          case "rerun":
-            return runCount > 0 ? "working" : "idle"
-          case "never":
-            return "idle"
-        }
-      },
+      status: () =>
+        Effect.succeed(
+          opts.workingAfter === "start"
+            ? "working"
+            : opts.workingAfter === "sendKeys"
+              ? sawSendKeys
+                ? "working"
+                : "idle"
+              : opts.workingAfter === "rerun" && runCount > 0
+                ? "working"
+                : "idle",
+        ),
       sendKeys: (keys) =>
         opts.sendKeysFails
           ? Effect.fail(new HerdrError({ message: "pane is gone" }))
@@ -140,11 +193,14 @@ describe("ensurePromptSubmitted recovery", () => {
    * windows) then cost nothing, so the test exercises the real thresholds.
    */
   function drive(
-    eff: Effect.Effect<{
-      accepted: boolean
-      attempts: number
-      last_status?: string
-    }>,
+    eff: Effect.Effect<
+      {
+        accepted: boolean
+        attempts: number
+        last_status?: string
+      },
+      HerdrError
+    >,
   ) {
     return Effect.gen(function* () {
       const fiber = yield* Effect.forkChild(eff)

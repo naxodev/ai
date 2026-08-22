@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import {
   closeSync,
   constants as fsConstants,
@@ -15,7 +15,7 @@ import {
 import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
-import { Context, Effect, Layer } from "effect"
+import { Clock, Context, Effect, Layer, Result } from "effect"
 import {
   formatVerifyBlock,
   normalizeVerifySource,
@@ -24,6 +24,13 @@ import {
 import { VcsError } from "../errors.ts"
 import type { VcsBackend } from "../domain/types.ts"
 import { FileSystem } from "./file-system.ts"
+import {
+  Process,
+  ProcessExitError,
+  ProcessOutputError,
+  ProcessTimeoutError,
+  type ProcessService,
+} from "./process.ts"
 
 export interface VcsService {
   readonly detect: (root: string) => Effect.Effect<VcsBackend | null>
@@ -416,7 +423,6 @@ function verificationError(
 }
 
 const VERIFY_LOG_LIMIT = 10 * 1024 * 1024
-const VERIFY_KILL_CLOSE_GRACE_MS = 2_500
 const VERIFY_RESULT_RESERVE = 2_048
 const VERIFY_WRAPPER_SOURCE = `exec 2>&1
 exec "$1" -e "$2"
@@ -502,96 +508,6 @@ export function verifyBlockDisplayByteLength(block: VerifyBlock): number {
   )
 }
 
-async function taskkillTree(pid: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    let settled = false
-    let killer: ChildProcess
-    const finish = (ok: boolean) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(ok)
-    }
-
-    try {
-      killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      })
-    } catch {
-      resolve(false)
-      return
-    }
-
-    const timer = setTimeout(() => {
-      try {
-        killer.kill("SIGKILL")
-      } catch {
-        // The fallback below still targets the verification child.
-      }
-      finish(false)
-    }, 2_000)
-    killer.once("error", () => finish(false))
-    killer.once("close", (code) => finish(code === 0))
-  })
-}
-
-function snapshotProcessDescendants(rootPid: number): number[] {
-  const snapshot = spawnSync("ps", ["-axo", "pid=,ppid="], {
-    encoding: "utf8",
-    maxBuffer: 10 * 1024 * 1024,
-  })
-  if (snapshot.status !== 0 || snapshot.error) return []
-
-  const children = new Map<number, number[]>()
-  for (const line of (snapshot.stdout ?? "").split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
-    if (!match) continue
-    const pid = Number(match[1])
-    const parentPid = Number(match[2])
-    const siblings = children.get(parentPid)
-    if (siblings) siblings.push(pid)
-    else children.set(parentPid, [pid])
-  }
-
-  const descendants: number[] = []
-  const pending = [...(children.get(rootPid) ?? [])]
-  for (let index = 0; index < pending.length; index++) {
-    const pid = pending[index]!
-    descendants.push(pid)
-    pending.push(...(children.get(pid) ?? []))
-  }
-  return descendants
-}
-
-async function killProcessTree(child: ChildProcess): Promise<void> {
-  const pid = child.pid
-  if (process.platform === "win32" && pid !== undefined) {
-    if (await taskkillTree(pid)) return
-  } else if (pid !== undefined) {
-    const descendants = snapshotProcessDescendants(pid)
-    try {
-      process.kill(-pid, "SIGKILL")
-    } catch {
-      // The process may have exited between timeout and termination.
-    }
-    for (const descendantPid of descendants) {
-      try {
-        process.kill(descendantPid, "SIGKILL")
-      } catch {
-        // Process-group termination may already have killed this descendant.
-      }
-    }
-  }
-
-  // This is also the fallback when Windows taskkill cannot kill the tree.
-  try {
-    child.kill("SIGKILL")
-  } catch {
-    // A concurrently exited child needs no further termination.
-  }
-}
-
 type VerificationProcessResult = {
   code: number
   output: string
@@ -599,99 +515,54 @@ type VerificationProcessResult = {
 }
 
 function runVerificationProcess(
+  processService: ProcessService,
   wrapper: string,
   interpreter: VerifyBlock["interpreter"],
   script: string,
   cwd: string,
   timeoutMs: number,
   outputLimit: number,
-): Promise<VerificationProcessResult> {
-  return new Promise((resolve) => {
-    let child: ChildProcess
-    try {
-      child = spawn("sh", [wrapper, interpreter, script], {
+  reportedTimeoutMs = timeoutMs,
+): Effect.Effect<VerificationProcessResult> {
+  return Effect.gen(function* () {
+    const result = yield* Effect.result(
+      processService.run({
+        command: "sh",
+        args: [wrapper, interpreter, script],
         cwd,
-        detached: process.platform !== "win32",
-        stdio: ["ignore", "pipe", "ignore"],
-        windowsHide: true,
-      })
-    } catch (error) {
-      resolve({
+        timeoutMs,
+        outputLimitBytes: Math.max(1, outputLimit),
+      }),
+    )
+    if (Result.isSuccess(result)) {
+      return { code: result.success.exitCode, output: result.success.stdout }
+    }
+    const error = result.failure
+    if (error instanceof ProcessExitError) {
+      return {
+        code: error.exitCode,
+        output: `${error.stdout}${error.stderr}`,
+      }
+    }
+    if (error instanceof ProcessTimeoutError) {
+      return {
         code: 1,
-        output: "",
-        error: verificationError(error),
-      })
-      return
-    }
-
-    const output: Buffer[] = []
-    let outputSize = 0
-    let outputExceeded = false
-    let processError: string | undefined
-    let termination: Promise<void> | undefined
-    let timeout: ReturnType<typeof setTimeout> | undefined
-    let postKillCompletion: ReturnType<typeof setTimeout> | undefined
-    let settled = false
-
-    const terminate = (message: string) => {
-      if (settled) return
-      processError ??= message
-      if (termination) return
-      termination = killProcessTree(child)
-      postKillCompletion = setTimeout(() => {
-        child.stdout?.destroy()
-        finish(1)
-      }, VERIFY_KILL_CLOSE_GRACE_MS)
-    }
-    const capture = (chunk: Buffer) => {
-      if (outputExceeded) return
-      const available = outputLimit - outputSize
-      if (chunk.length > available) {
-        if (available > 0) output.push(chunk.subarray(0, available))
-        outputSize = outputLimit
-        outputExceeded = true
-        terminate(`verification output exceeded ${outputLimit} bytes`)
-        return
-      }
-      output.push(chunk)
-      outputSize += chunk.length
-    }
-    const onStdout = (chunk: Buffer) => capture(chunk)
-    const onError = (error: Error) => {
-      terminate(`verification process error: ${verificationError(error)}`)
-    }
-    const finish = (code: number) => {
-      if (settled) return
-      settled = true
-      if (timeout) clearTimeout(timeout)
-      if (postKillCompletion) clearTimeout(postKillCompletion)
-      child.stdout?.off("data", onStdout)
-      child.off("error", onError)
-      child.off("close", onClose)
-      resolve({
-        code,
-        output: Buffer.concat(output).toString("utf8"),
-        ...(processError === undefined ? {} : { error: processError }),
-      })
-    }
-    const onClose = (code: number | null) => {
-      if (termination) {
-        void termination.then(
-          () => finish(code ?? 1),
-          () => finish(code ?? 1),
-        )
-      } else {
-        finish(code ?? 1)
+        output: `${error.stdout}${error.stderr}`,
+        error: `verification timed out after ${reportedTimeoutMs}ms`,
       }
     }
-
-    child.stdout?.on("data", onStdout)
-    child.once("error", onError)
-    child.once("close", onClose)
-
-    timeout = setTimeout(() => {
-      terminate(`verification timed out after ${timeoutMs}ms`)
-    }, timeoutMs)
+    if (error instanceof ProcessOutputError) {
+      return {
+        code: 1,
+        output: `${error.stdout}${error.stderr}`,
+        error: `verification output exceeded ${outputLimit} bytes`,
+      }
+    }
+    return {
+      code: 1,
+      output: "stdout" in error ? `${error.stdout}${error.stderr}` : "",
+      error: `verification process error: ${verificationError(error)}`,
+    }
   })
 }
 
@@ -879,10 +750,140 @@ export function gitCommitPhaseWithCommand(
   })
 }
 
+export function runVerifyWithProcess(
+  root: string,
+  blocks: readonly VerifyBlock[],
+  timeoutMs: number,
+  processService: ProcessService,
+): Effect.Effect<{ ok: boolean; log: string }> {
+  return Effect.gen(function* () {
+    const log = new VerificationLog(VERIFY_LOG_LIMIT)
+    const startedAt = yield* Clock.currentTimeNanos
+    const deadline =
+      startedAt + BigInt(Math.max(0, Math.floor(timeoutMs))) * 1_000_000n
+    let temporaryDirectory: string | undefined
+    let ok = true
+    let operation = "create temporary verification directory"
+
+    const remainingMs = (): Effect.Effect<number> =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeNanos
+        return Number((deadline - now) / 1_000_000n)
+      })
+
+    const work = Effect.gen(function* () {
+      temporaryDirectory = yield* Effect.try({
+        try: () => mkdtempSync(path.join(tmpdir(), "apnea-verify-")),
+        catch: (error) => error,
+      })
+      const wrapper = path.join(temporaryDirectory, "run-block.sh")
+      operation = "write verification wrapper"
+      yield* Effect.try({
+        try: () =>
+          writeFileSync(wrapper, VERIFY_WRAPPER_SOURCE, {
+            encoding: "utf8",
+            mode: 0o600,
+          }),
+        catch: (error) => error,
+      })
+      for (const [index, block] of blocks.entries()) {
+        const source = normalizeVerifySource(block.source)
+        const normalizedBlock = { ...block, source }
+        const script = path.join(
+          temporaryDirectory,
+          `block-${index + 1}.${block.interpreter}`,
+        )
+        const displayBytes =
+          2 + verifyBlockDisplayByteLength(normalizedBlock) + 1
+        if (!log.canAppendBytes(displayBytes)) {
+          log.addLimitNotice(VERIFY_DISPLAY_LIMIT_NOTICE)
+          ok = false
+          break
+        }
+        log.append(`$ ${formatVerifyBlock(normalizedBlock)}\n`)
+        operation = `write ${block.interpreter} verification block`
+        yield* Effect.try({
+          try: () =>
+            writeFileSync(script, source, {
+              encoding: "utf8",
+              mode: 0o600,
+            }),
+          catch: (error) => error,
+        })
+        const remaining = yield* remainingMs()
+        if (remaining <= 0) {
+          log.append(`verification timed out after ${timeoutMs}ms\n`)
+          ok = false
+          break
+        }
+        operation = `run ${block.interpreter} verification block`
+        const result = yield* runVerificationProcess(
+          processService,
+          wrapper,
+          block.interpreter,
+          script,
+          root,
+          remaining,
+          Math.max(0, log.remaining - VERIFY_RESULT_RESERVE),
+          timeoutMs,
+        )
+        const output = verificationError(
+          result.output.trimEnd(),
+          temporaryDirectory,
+        )
+        if (output && !log.append(`${output}\n`)) {
+          log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
+          ok = false
+          break
+        }
+        if (!log.append(`exit=${result.code}\n`)) {
+          log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
+          ok = false
+          break
+        }
+        if (result.error) {
+          const error = verificationError(result.error, temporaryDirectory)
+          if (!log.append(`${error}\n`))
+            log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
+          ok = false
+          break
+        }
+        if (result.code !== 0) {
+          ok = false
+          break
+        }
+        if (index < blocks.length - 1 && !log.append("\n")) {
+          log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
+          ok = false
+          break
+        }
+      }
+      return { ok, log: log.toString() }
+    }).pipe(
+      Effect.catch((error) => {
+        const message = `${operation} failed: ${verificationError(error, temporaryDirectory)}\n`
+        if (!log.append(message)) log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
+        ok = false
+        return Effect.succeed({ ok, log: log.toString() })
+      }),
+    )
+
+    return yield* Effect.ensuring(
+      work,
+      Effect.sync(() => {
+        if (temporaryDirectory) {
+          rmSync(temporaryDirectory, { recursive: true, force: true })
+        }
+      }).pipe(Effect.ignore),
+    )
+  })
+}
+
 export const VcsLive = Layer.effect(
   Vcs,
   Effect.gen(function* () {
     const fs = yield* FileSystem
+    const processService = yield* Process
 
     const detect = (root: string): Effect.Effect<VcsBackend | null> =>
       Effect.gen(function* () {
@@ -1013,101 +1014,7 @@ export const VcsLive = Layer.effect(
       blocks: readonly VerifyBlock[],
       timeoutMs: number,
     ): Effect.Effect<{ ok: boolean; log: string }> =>
-      Effect.promise(async () => {
-        const log = new VerificationLog(VERIFY_LOG_LIMIT)
-        let temporaryDirectory: string | undefined
-        let ok = true
-        let operation = "create temporary verification directory"
-        try {
-          temporaryDirectory = mkdtempSync(path.join(tmpdir(), "apnea-verify-"))
-          const wrapper = path.join(temporaryDirectory, "run-block.sh")
-          operation = "write verification wrapper"
-          writeFileSync(wrapper, VERIFY_WRAPPER_SOURCE, {
-            encoding: "utf8",
-            mode: 0o600,
-          })
-          for (const [index, block] of blocks.entries()) {
-            const source = normalizeVerifySource(block.source)
-            const normalizedBlock = { ...block, source }
-            const script = path.join(
-              temporaryDirectory,
-              `block-${index + 1}.${block.interpreter}`,
-            )
-            const displayBytes =
-              2 + verifyBlockDisplayByteLength(normalizedBlock) + 1
-            if (!log.canAppendBytes(displayBytes)) {
-              log.addLimitNotice(VERIFY_DISPLAY_LIMIT_NOTICE)
-              ok = false
-              break
-            }
-            log.append(`$ ${formatVerifyBlock(normalizedBlock)}\n`)
-            operation = `write ${block.interpreter} verification block`
-            writeFileSync(script, source, {
-              encoding: "utf8",
-              mode: 0o600,
-            })
-            operation = `run ${block.interpreter} verification block`
-            const result = await runVerificationProcess(
-              wrapper,
-              block.interpreter,
-              script,
-              root,
-              timeoutMs,
-              Math.max(0, log.remaining - VERIFY_RESULT_RESERVE),
-            )
-            const output = verificationError(
-              result.output.trimEnd(),
-              temporaryDirectory,
-            )
-            if (output && !log.append(`${output}\n`)) {
-              log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
-              ok = false
-              break
-            }
-            if (!log.append(`exit=${result.code}\n`)) {
-              log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
-              ok = false
-              break
-            }
-            if (result.error) {
-              const error = verificationError(result.error, temporaryDirectory)
-              if (!log.append(`${error}\n`)) {
-                log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
-              }
-              ok = false
-              break
-            }
-            if (result.code !== 0) {
-              ok = false
-              break
-            }
-            if (index < blocks.length - 1 && !log.append("\n")) {
-              log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
-              ok = false
-              break
-            }
-          }
-        } catch (error) {
-          const message = `${operation} failed: ${verificationError(error, temporaryDirectory)}\n`
-          if (!log.append(message)) {
-            log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
-          }
-          ok = false
-        } finally {
-          if (temporaryDirectory) {
-            try {
-              rmSync(temporaryDirectory, { recursive: true, force: true })
-            } catch (error) {
-              const message = `clean up temporary verification directory failed: ${verificationError(error, temporaryDirectory)}\n`
-              if (!log.append(message)) {
-                log.addLimitNotice(VERIFY_LOG_LIMIT_NOTICE)
-              }
-              ok = false
-            }
-          }
-        }
-        return { ok, log: log.toString() }
-      })
+      runVerifyWithProcess(root, blocks, timeoutMs, processService)
 
     return Vcs.of({
       detect,

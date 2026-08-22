@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Layer, Option, Result } from "effect"
-import { isAppError, toToolResult } from "./errors.ts"
+import { isAppError, OperationAborted, toToolResult } from "./errors.ts"
 import type { ToolResult } from "./result.ts"
 
 /**
@@ -12,15 +12,32 @@ export async function runToolResult<E, R>(
   // without the layer would type-check and then die as a service-not-found
   // defect on every invocation. Pass `Layer.empty` explicitly when R is never.
   layer: Layer.Layer<R, never, never>,
+  hooks: {
+    signal?: AbortSignal
+    operation?: string
+    abortDetails?: Record<string, unknown>
+  } = {},
 ): Promise<ToolResult> {
   const provided = Effect.provide(effect, layer) as Effect.Effect<ToolResult, E>
-  const exit = await Effect.runPromiseExit(provided)
+  const exit = await Effect.runPromiseExit(provided, { signal: hooks.signal })
 
   if (Exit.isSuccess(exit)) {
     return exit.value
   }
 
   const error = Exit.findErrorOption(exit)
+  if (
+    hooks.signal?.aborted ||
+    Result.isSuccess(Cause.findInterrupt(exit.cause))
+  ) {
+    return toToolResult(
+      new OperationAborted({
+        operation: hooks.operation ?? "operation",
+        details: hooks.abortDetails,
+      }),
+    )
+  }
+
   if (Option.isSome(error) && isAppError(error.value)) {
     return toToolResult(error.value)
   }

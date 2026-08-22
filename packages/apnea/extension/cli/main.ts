@@ -8,7 +8,12 @@ import {
   renderJson,
 } from "./format.ts"
 import { confirmHuman, prodHumanGateDeps } from "./human-gate.ts"
-import { OPERATIONS, executeOperation, findByVerb } from "../registry.ts"
+import {
+  OPERATIONS,
+  executeOperation,
+  findByVerb,
+  type ExecuteOperation,
+} from "../registry.ts"
 import { DISPATCH_KINDS } from "../domain/state-machine.ts"
 import type { ToolResult } from "../result.ts"
 
@@ -108,11 +113,51 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
-  const result = await executeOperation(op.verb, built.params)
+  const result = await executeWithSignals(
+    executeOperation,
+    op.verb,
+    built.params,
+  )
   const text = json ? renderJson(result) : renderHuman(result)
   if (result.ok) console.log(text)
   else console.error(text)
   return exitCodeFor(result)
+}
+
+export type SignalTarget = {
+  on: (signal: "SIGINT" | "SIGTERM", listener: () => void) => unknown
+  off: (signal: "SIGINT" | "SIGTERM", listener: () => void) => unknown
+}
+
+export async function executeWithSignals(
+  execute: ExecuteOperation,
+  verb: string,
+  params: Record<string, unknown>,
+  target: SignalTarget = process,
+  exit: (code: number) => void = (code) => process.exit(code),
+): Promise<ToolResult> {
+  const controller = new AbortController()
+  let interrupts = 0
+  const abort = () => controller.abort()
+  const onInterrupt = () => {
+    interrupts += 1
+    if (interrupts >= 2) {
+      // A second Ctrl+C must always terminate, even if an operation stopped
+      // observing the abort signal.
+      controller.abort()
+      exit(130)
+      return
+    }
+    abort()
+  }
+  target.on("SIGINT", onInterrupt)
+  target.on("SIGTERM", abort)
+  try {
+    return await execute(verb, params, { signal: controller.signal })
+  } finally {
+    target.off("SIGINT", onInterrupt)
+    target.off("SIGTERM", abort)
+  }
 }
 
 export type BuildParamsResult =

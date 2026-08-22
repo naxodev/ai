@@ -29,6 +29,7 @@ import { FileSystem } from "../services/file-system.ts"
 import { Herdr, paneReadRecentArgs } from "../services/herdr.ts"
 import { RunStore } from "../services/run-store.ts"
 import { Vcs } from "../services/vcs.ts"
+import type { OperationHooks } from "../operation-hooks.ts"
 
 export type WaitParams = {
   poll_ms?: number
@@ -150,12 +151,7 @@ export const MAX_AUTO_POLL_MS =
 export const fitsHostShell = (pollMs: number): boolean =>
   defaultBudgetFor(pollMs) < HOST_SHELL_TIMEOUT_MS
 
-export type WaitHooks = {
-  signal?: AbortSignal
-  onUpdate?: (partial: {
-    content: Array<{ type: "text"; text: string }>
-  }) => void
-}
+export type WaitHooks = OperationHooks
 
 /**
  * Async wait — polls via `Clock` + `Effect.sleep` so Pi stays responsive and

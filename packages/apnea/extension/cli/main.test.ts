@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { DISPATCH_KINDS } from "../domain/state-machine.ts"
 import { OPERATIONS } from "../registry.ts"
-import { buildParams } from "./main.ts"
+import { buildParams, executeWithSignals, type SignalTarget } from "./main.ts"
 import { parseOperationArgs } from "./parse.ts"
 
 /** Runs argv through the same tokenizer the CLI uses before handing off to
@@ -79,6 +79,85 @@ describe("buildParams: argument shape per verb", () => {
       ok: true,
       params: { gate: "plan_review" },
     })
+  })
+})
+
+describe("CLI operation signals", () => {
+  test("SIGINT aborts the current operation and listeners are removed", async () => {
+    const listeners = new Map<string, Set<() => void>>()
+    const target = {
+      on: (signal: "SIGINT" | "SIGTERM", listener: () => void) => {
+        const set = listeners.get(signal) ?? new Set()
+        set.add(listener)
+        listeners.set(signal, set)
+      },
+      off: (signal: "SIGINT" | "SIGTERM", listener: () => void) => {
+        listeners.get(signal)?.delete(listener)
+      },
+    }
+    let received: AbortSignal | undefined
+    const running = executeWithSignals(
+      async (_verb, _params, hooks) => {
+        received = hooks?.signal
+        await new Promise<void>((resolve) =>
+          hooks?.signal?.addEventListener("abort", () => resolve(), {
+            once: true,
+          }),
+        )
+        return { ok: false, error: "aborted" }
+      },
+      "commit",
+      {},
+      target,
+    )
+
+    for (const listener of listeners.get("SIGINT") ?? []) listener()
+    await running
+
+    expect(received?.aborted).toBe(true)
+    expect(listeners.get("SIGINT")?.size).toBe(0)
+    expect(listeners.get("SIGTERM")?.size).toBe(0)
+  })
+
+  test("a second Ctrl+C force-exits even when the operation stopped observing the abort", () => {
+    const listeners = new Map<"SIGINT" | "SIGTERM", Set<() => void>>()
+    const target: SignalTarget = {
+      on: (signal: "SIGINT" | "SIGTERM", listener: () => void) => {
+        const set = listeners.get(signal) ?? new Set()
+        set.add(listener)
+        listeners.set(signal, set)
+      },
+      off: (signal: "SIGINT" | "SIGTERM", listener: () => void) => {
+        listeners.get(signal)?.delete(listener)
+      },
+    }
+    const exits: number[] = []
+    // The operation aborts cleanly but then hangs anyway — exactly the
+    // stuck-finalizer shape where default termination is gone.
+    void executeWithSignals(
+      async (_verb, _params, hooks) => {
+        await new Promise<void>((resolve) => {
+          hooks?.signal?.addEventListener("abort", () => resolve(), {
+            once: true,
+          })
+        })
+        await new Promise<void>(() => {})
+        // Unreachable: this operation never settles, which is the point.
+        return { ok: true, message: "" }
+      },
+      "wait",
+      {},
+      target,
+      (code) => exits.push(code),
+    )
+
+    const fire = (signal: "SIGINT" | "SIGTERM") => {
+      for (const listener of [...(listeners.get(signal) ?? [])]) listener()
+    }
+    fire("SIGINT")
+    expect(exits).toEqual([])
+    fire("SIGINT")
+    expect(exits).toEqual([130])
   })
 })
 

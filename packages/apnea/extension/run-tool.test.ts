@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
-import { GateRefused, IllegalTool } from "./errors.ts"
+import { GateRefused, HerdrError, IllegalTool } from "./errors.ts"
 import { toolContent } from "./result.ts"
 import { runToolResult } from "./run-tool.ts"
 import { itEffect } from "./test/it-effect.ts"
@@ -76,6 +76,40 @@ describe("runToolResult", () => {
       expect(r.data?.step).toBe("planning")
       expect(r.data?.slug).toBe("x")
     }
+  })
+
+  test("maps non-wait host cancellation to OperationAborted", async () => {
+    const controller = new AbortController()
+    const running = runToolResult(Effect.never, Layer.empty, {
+      signal: controller.signal,
+      operation: "workflow_commit_phase",
+    })
+    controller.abort()
+
+    await expect(running).resolves.toEqual({
+      ok: false,
+      error: "workflow_commit_phase aborted (signal / cancel)",
+      data: { operation: "workflow_commit_phase" },
+    })
+  })
+
+  test("host cancellation wins over a concurrent typed AppError", async () => {
+    const controller = new AbortController()
+    const effect = Effect.fail(
+      new HerdrError({ message: "readiness process cancelled" }),
+    ).pipe(Effect.ensuring(Effect.sync(() => controller.abort())))
+
+    await expect(
+      runToolResult(effect, Layer.empty, {
+        signal: controller.signal,
+        operation: "dispatch_role",
+        abortDetails: { delivery: "unknown" },
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "dispatch_role aborted (signal / cancel)",
+      data: { operation: "dispatch_role", delivery: "unknown" },
+    })
   })
 })
 

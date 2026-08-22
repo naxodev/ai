@@ -18,8 +18,8 @@ import {
   MAX_AUTO_POLL_MS,
   MIN_POLL_MS,
   type WaitParams,
-  type WaitHooks,
 } from "./workflows/wait.ts"
+import type { OperationHooks } from "./operation-hooks.ts"
 
 export type Operation = {
   /** Pi tool name, or null when the operation is not model-facing. */
@@ -46,14 +46,14 @@ export type Operation = {
 type RegisteredOperation = Operation & {
   readonly run: (
     params: Record<string, unknown>,
-    hooks?: WaitHooks,
+    hooks?: OperationHooks,
   ) => Promise<ToolResult>
 }
 
 export type ExecuteOperation = (
   verb: string,
   params: Record<string, unknown>,
-  hooks?: WaitHooks,
+  hooks?: OperationHooks,
 ) => Promise<ToolResult>
 
 // Sourced from domain/state-machine.ts (not hardcoded here) so a new kind
@@ -86,8 +86,8 @@ function createRegisteredOperations(
         force: Type.Optional(Type.Boolean()),
         agents_md: Type.Optional(Type.Boolean()),
       }),
-      run: (p) =>
-        apneaSetup(p as Parameters<typeof apneaSetup>[0], hostAdapter),
+      run: (p, hooks) =>
+        apneaSetup(p as Parameters<typeof apneaSetup>[0], hostAdapter, hooks),
     },
     {
       tool: "workflow_start",
@@ -115,7 +115,7 @@ function createRegisteredOperations(
       // Mirrors the guard in index.ts's execute(): without it, action=start
       // with no goal reaches slugify(undefined) in workflows/start.ts and
       // throws instead of returning a clean refusal.
-      run: (p) => {
+      run: (p, hooks) => {
         const params = p as Parameters<typeof workflowStart>[0]
         const action = params.action ?? "start"
         if (action === "start" && !params.goal?.trim()) {
@@ -132,6 +132,7 @@ function createRegisteredOperations(
             action,
           },
           hostAdapter,
+          hooks,
         )
       },
     },
@@ -160,10 +161,11 @@ function createRegisteredOperations(
           }),
         ),
       }),
-      run: (p) =>
+      run: (p, hooks) =>
         workflowDispatch(
           p as Parameters<typeof workflowDispatch>[0],
           hostAdapter,
+          hooks,
         ),
     },
     {
@@ -233,10 +235,11 @@ function createRegisteredOperations(
           }),
         ),
       }),
-      run: (p) =>
+      run: (p, hooks) =>
         workflowCommitPhase(
           p as Parameters<typeof workflowCommitPhase>[0],
           hostAdapter,
+          hooks,
         ),
     },
     {
@@ -246,7 +249,7 @@ function createRegisteredOperations(
       summary: "Read-only snapshot of run state and legal next calls.",
       guidance: "Never mutates. Safe to call at any point.",
       params: operationParams({}),
-      run: () => workflowStatus(hostAdapter),
+      run: (_p, hooks) => workflowStatus(hostAdapter, hooks),
     },
     {
       tool: null,
@@ -264,10 +267,11 @@ function createRegisteredOperations(
           description: "Round key, e.g. plan_review or phase-01/code_review",
         }),
       }),
-      run: (p) =>
+      run: (p, hooks) =>
         workflowResetRounds(
           p as Parameters<typeof workflowResetRounds>[0],
           hostAdapter,
+          hooks,
         ),
     },
   ]
