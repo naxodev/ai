@@ -87,6 +87,12 @@ export function startLineStream(
     buffer = lines.pop() ?? ""
     for (const line of lines) {
       if (disposed) return
+      if (Buffer.byteLength(line, "utf8") > MAX_LINE_STREAM_PARTIAL_BYTES) {
+        buffer = ""
+        kill()
+        terminal()
+        return
+      }
       if (line) callbacks.onLine(line)
     }
     if (Buffer.byteLength(buffer, "utf8") > MAX_LINE_STREAM_PARTIAL_BYTES) {

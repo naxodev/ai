@@ -1048,6 +1048,23 @@ describe("startLineStream", () => {
     expect(child.killCalls).toBe(1)
   })
 
+  test("rejects an oversized complete provider line before forwarding it", () => {
+    const child = new FakeLineStreamProcess()
+    const lines: string[] = []
+    let terminals = 0
+    startLineStream(
+      ["media-control", "stream"],
+      { onLine: (line) => lines.push(line), onTerminal: () => terminals++ },
+      () => child,
+    )
+
+    child.stdout.emit("data", `${"x".repeat(128 * 1024)}\n`)
+
+    expect(lines).toEqual([])
+    expect(terminals).toBe(1)
+    expect(child.killCalls).toBe(1)
+  })
+
   test("notifies once when error, exit, and close arrive together", () => {
     const child = new FakeLineStreamProcess()
     let terminals = 0
