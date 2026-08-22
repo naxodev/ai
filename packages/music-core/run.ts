@@ -34,7 +34,7 @@ export type LineStreamProcess = {
     event: "error" | "exit" | "close",
     listener: () => void,
   ) => unknown
-  kill: () => unknown
+  kill: (signal?: NodeJS.Signals) => unknown
 }
 
 export type LineStreamSpawner = (
@@ -64,12 +64,12 @@ export function startLineStream(
   let terminated = false
   let killRequested = false
 
-  const kill = () => {
+  const kill = (signal?: NodeJS.Signals) => {
     if (killRequested || child.exitCode !== null || child.signalCode !== null)
       return
     killRequested = true
     try {
-      child.kill()
+      child.kill(signal)
     } catch {
       // A process can exit between the state check and kill.
     }
@@ -89,7 +89,7 @@ export function startLineStream(
       if (disposed) return
       if (Buffer.byteLength(line, "utf8") > MAX_LINE_STREAM_PARTIAL_BYTES) {
         buffer = ""
-        kill()
+        kill("SIGKILL")
         terminal()
         return
       }
@@ -97,7 +97,7 @@ export function startLineStream(
     }
     if (Buffer.byteLength(buffer, "utf8") > MAX_LINE_STREAM_PARTIAL_BYTES) {
       buffer = ""
-      kill()
+      kill("SIGKILL")
       terminal()
     }
   }

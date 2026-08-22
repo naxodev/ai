@@ -386,11 +386,14 @@ test("lifecycle and transport errors do not erase one another or reconcile", asy
     error: { message: "reconnecting", retryable: true },
   })
   expect(view.session.error).toBe("reconnecting")
-  client.failure = new Error("command failed")
+  client.failure = new Error(
+    "command\u001b]52;c;YXR0YWNr\u0007\u001b[31m\nfailed",
+  )
   await view.controller.next()
   expect(calls).toEqual(["next"])
   expect(view.session.error).toBe("reconnecting")
   expect(view.toasts).toHaveLength(1)
+  expect(view.toasts[0]).toMatchObject({ message: "command failed" })
   client.emitConnection({ type: "connected", daemonInstanceId: "daemon-a" })
   expect(view.session.error).toBe("command failed")
   client.emitConnection({

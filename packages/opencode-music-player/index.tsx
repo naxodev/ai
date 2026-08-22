@@ -7,7 +7,12 @@ import {
   mergePlayerSnapshot,
   type SessionMedia,
 } from "./types.ts"
-import { CompactPlayer, SidebarPlayer, type UiState } from "./ui.tsx"
+import {
+  CompactPlayer,
+  sanitizeTerminalText,
+  SidebarPlayer,
+  type UiState,
+} from "./ui.tsx"
 
 type Context = Plugin.Context
 type SessionStore = UiState & { loadingOwners?: string[] }
@@ -168,7 +173,7 @@ export function createController(
           },
           (error) => {
             if (!isActive() || generation !== lifecycleGeneration) return
-            const message = errMsg(error)
+            const message = sanitizeTerminalText(errMsg(error))
             setTransportError(message)
             context.ui.toast.show({ title: "Music", message, variant: "error" })
           },

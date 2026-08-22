@@ -441,6 +441,12 @@ test("status metadata is sanitized before theme rendering", async () => {
 	expect(themedStatus).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
 	expect(themedStatus).not.toContain("]52;");
 	expect(themedStatus).not.toContain("[31m");
+	client.emitStatus({
+		kind: "degraded",
+		provider: "media-control",
+		message: "lost\x1b]52;c;YXR0YWNr\x07\x1b[31m\nprovider",
+	});
+	expect(dock.notifications.at(-1)).toBe("lostprovider");
 	await dock.shutdown();
 });
 
@@ -610,16 +616,17 @@ test("commands and shortcuts delegate immediately once through the client", asyn
 	await dock.shutdown();
 });
 
-test("commands wait for their live acquisition and never cross into a replacement", async () => {
+test("commands never queue behind client acquisition", async () => {
 	const pending = deferred<ReconnectingMusicSessionClient>();
 	const client = new FakeClient();
 	const dock = setup(async () => pending.promise);
 	await dock.start();
 	const issued = dock.command("music-next");
 	expect(client.calls).toEqual([]);
+	expect(dock.notifications).toContain("Music session is still connecting");
 	pending.resolve(client);
 	await issued;
-	expect(client.calls).toEqual(["next"]);
+	expect(client.calls).toEqual([]);
 	await dock.shutdown();
 
 	const oldPending = deferred<ReconnectingMusicSessionClient>();
@@ -642,7 +649,9 @@ test("commands wait for their live acquisition and never cross into a replacemen
 
 test("each rejected live command notifies its caller once", async () => {
 	const client = new FakeClient();
-	client.commandFailure = new Error("command failed");
+	client.commandFailure = new Error(
+		"command \x1b]52;c;YXR0YWNr\x07\x1b[31m\nfailed",
+	);
 	const dock = setup(async () => client);
 	await dock.start();
 	await flush();
@@ -705,9 +714,8 @@ test("provider failure falls back to catalog art and paints ready presentation",
 	expect(rendered).not.toContain("no artwork");
 	expect(rendered).not.toContain("loading art");
 	expect(rendered).toContain("Song");
-	// Catalog metadata fills only the presentation gap; daemon state remains
-	// authoritative and can replace it when richer provider data arrives.
-	expect(rendered).toContain("/ 0:10");
+	// Catalog metadata never replaces daemon-owned playback duration.
+	expect(rendered).toContain("/ 0:00");
 	await dock.shutdown();
 });
 

@@ -618,11 +618,21 @@ class Client implements MusicSessionClient {
     this.#terminalListeners.clear()
     this.#statusListeners.clear()
     this.#stateListeners.clear()
-    this.failAll({
-      code: "DISPOSED",
-      message: "client is disposed",
-      retryable: false,
-    })
+    for (const pending of [...this.#pending.values()])
+      this.settleFailure(
+        pending,
+        pending.kind === "artwork"
+          ? {
+              code: "DISPOSED",
+              message: "client is disposed",
+              retryable: false,
+            }
+          : {
+              code: "INDETERMINATE_COMMAND",
+              message: "client disposed before command result",
+              retryable: false,
+            },
+      )
     this.#socket.destroy()
   }
 }
@@ -1357,7 +1367,9 @@ export const connectOrStartMusicSessionEffect = (
 export const connectOrStartMusicSession = (
   options: ConnectOrStartMusicSessionOptions,
 ): Promise<MusicSessionClient> =>
-  Effect.runPromise(connectOrStartMusicSessionEffect(options))
+  Effect.runPromise(connectOrStartMusicSessionEffect(options), {
+    signal: options.signal,
+  })
 
 /** Promise adapter spelling retained for callers that use the shorter name. */
 export const connectOrStart = connectOrStartMusicSession
@@ -2041,6 +2053,7 @@ export const createReconnectingMusicSessionClient = async (
       createReconnectingMusicSessionClientEffect(options).pipe(
         Effect.provideService(Scope.Scope, scope),
       ),
+      { signal: options.signal },
     )) as ManagedMusicSessionClient
     managed.setScopeCloser(() =>
       Effect.runPromise(Scope.close(scope, Exit.void)),

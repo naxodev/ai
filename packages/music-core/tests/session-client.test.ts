@@ -803,7 +803,9 @@ test("reconnecting artwork fences a late completion after managed disposal", asy
     expect(generation.artworkCalls).toBe(1)
     await managed.dispose()
     generation.respondArtwork({ type: "available", base64: "AQ==" })
-    await expect(pending).rejects.toMatchObject({ code: "DISPOSED" })
+    await expect(pending).rejects.toMatchObject({
+      code: "DISPOSED",
+    })
   } finally {
     await Effect.runPromise(Scope.close(scope, Exit.void))
   }
@@ -2666,21 +2668,23 @@ test("startup interruption closes a peer blocked before hello", async () => {
     })
     await chmod(runtime.socketPath, 0o600)
 
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fiber = yield* connectOrStartMusicSessionEffect({
-            runtime,
-            clientId: "interrupted-hello",
-            hostKind: "test",
-            startup: { attempts: 2, initialDelayMs: 100, maxDelayMs: 100 },
-          }).pipe(Effect.forkScoped)
-          yield* Effect.promise(() => accepted)
-          yield* Fiber.interrupt(fiber)
-          yield* Effect.promise(() => closed).pipe(Effect.timeout("2 seconds"))
-        }),
-      ),
-    )
+    const controller = new AbortController()
+    const pending = connectOrStartMusicSession({
+      runtime,
+      clientId: "interrupted-hello",
+      hostKind: "test",
+      signal: controller.signal,
+      startup: { attempts: 2, initialDelayMs: 100, maxDelayMs: 100 },
+    })
+    await accepted
+    controller.abort()
+    await Promise.race([
+      pending.catch(() => undefined),
+      Bun.sleep(150).then(() => {
+        throw new Error("Promise adapter ignored caller abort")
+      }),
+    ])
+    await closed
   } finally {
     await new Promise<void>(
       (resolve) => server?.close(() => resolve()) ?? resolve(),
@@ -4443,7 +4447,9 @@ test("typed command failures are request-local and disposal is terminal", async 
     await daemon.received(4)
     client.dispose()
     client.dispose()
-    await expect(pending).rejects.toMatchObject({ code: "DISPOSED" })
+    await expect(pending).rejects.toMatchObject({
+      code: "INDETERMINATE_COMMAND",
+    })
     await expect(client.play()).rejects.toMatchObject({ code: "DISPOSED" })
   } finally {
     client?.dispose()
@@ -4765,7 +4771,9 @@ test("disposal wins first and suppresses late daemon callbacks", async () => {
     daemon.error()
     daemon.end()
     daemon.destroy()
-    await expect(pending).rejects.toMatchObject({ code: "DISPOSED" })
+    await expect(pending).rejects.toMatchObject({
+      code: "INDETERMINATE_COMMAND",
+    })
     await daemon.closed()
     await expect(client.pause()).rejects.toMatchObject({ code: "DISPOSED" })
     expect(client.state?.revision).toBe(1)

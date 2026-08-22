@@ -39,9 +39,11 @@ class FakeLineStreamProcess extends EventEmitter {
   exitCode: number | null = null
   signalCode: NodeJS.Signals | null = null
   killCalls = 0
+  killSignals: Array<NodeJS.Signals | undefined> = []
 
-  kill() {
+  kill(signal?: NodeJS.Signals) {
     this.killCalls++
+    this.killSignals.push(signal)
   }
 }
 
@@ -1143,6 +1145,7 @@ describe("startLineStream", () => {
     expect(lines).toEqual([])
     expect(terminals).toBe(1)
     expect(child.killCalls).toBe(1)
+    expect(child.killSignals).toEqual(["SIGKILL"])
   })
 
   test("rejects an oversized complete provider line before forwarding it", () => {
@@ -1160,6 +1163,7 @@ describe("startLineStream", () => {
     expect(lines).toEqual([])
     expect(terminals).toBe(1)
     expect(child.killCalls).toBe(1)
+    expect(child.killSignals).toEqual(["SIGKILL"])
   })
 
   test("notifies once when error, exit, and close arrive together", () => {

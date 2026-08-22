@@ -1001,7 +1001,7 @@ test("scope closure settles active and queued commands exactly once", async () =
                   : "unknown",
             }),
           )
-        expect(yield* settle(active)).toBe("DISPOSED")
+        expect(yield* settle(active)).toBe("INDETERMINATE_COMMAND")
         const enrolled = yield* Queue.take(outcomes)
         expect(
           enrolled.outcome._tag === "Failure"
@@ -1039,7 +1039,7 @@ test("scope close settles a blocked active command and rejects later submissions
                 : "unknown",
           }),
         )
-        expect(settled).toBe("DISPOSED")
+        expect(settled).toBe("INDETERMINATE_COMMAND")
         const revisionAtClose = (yield* coordinator.current()).revision
         yield* provider.releaseTransport
         expect((yield* coordinator.current()).revision).toBe(revisionAtClose)

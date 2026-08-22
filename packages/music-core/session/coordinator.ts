@@ -441,8 +441,14 @@ export const layer = Layer.effect(
           { discard: true },
         )
       })
-    const settleDisposed = closeCommands(() =>
-      commandError("DISPOSED", "command", "coordinator is closed"),
+    const settleDisposed = closeCommands((_job, potentiallyIssued) =>
+      potentiallyIssued
+        ? commandError(
+            "INDETERMINATE_COMMAND",
+            "command",
+            "command outcome is indeterminate during coordinator shutdown",
+          )
+        : commandError("DISPOSED", "command", "coordinator is closed"),
     )
     yield* Effect.addFinalizer(() => settleDisposed)
 

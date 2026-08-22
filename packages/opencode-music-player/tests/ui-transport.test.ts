@@ -9,6 +9,7 @@ import {
   COMPACT_TITLE_SEPARATOR,
   compactPresentation,
   compactSeekRegionWidth,
+  sanitizeTerminalText,
   seekPositionForCell,
   transportRowWidth,
 } from "../ui.tsx"
@@ -138,6 +139,12 @@ describe("compact row width policy", () => {
     expect(first).toEqual(second)
     expect(first.title).toBe("Long …")
     expect(renderedWidth(first)).toBeLessThanOrEqual(10)
+  })
+
+  test("removes terminal control sequences from sidebar metadata and errors", () => {
+    expect(
+      sanitizeTerminalText("Café 🎵\u001b]52;c;YXR0YWNr\u0007\u001b[31m\nnext"),
+    ).toBe("Café 🎵 next")
   })
 
   test("uses a stable fallback for an empty title and omits an empty artist", () => {
