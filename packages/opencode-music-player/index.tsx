@@ -284,6 +284,8 @@ export function createController(
       // takes precedence over provider status, and clearing it restores the
       // latest daemon lifecycle state without requiring a repeated event.
       setLifecycleError(event.message, event.source)
+      if (event.source === "connection" && event.message !== null)
+        playbackIntent = undefined
       if (event.message !== null && latestSeek) {
         latestSeek.resolves.splice(0).forEach((resolve) => resolve())
         latestSeek = null

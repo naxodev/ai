@@ -330,6 +330,23 @@ test("playback intent survives command success until daemon acknowledgement", as
   view.controller.dispose()
 })
 
+test("connection loss clears playback intent before replacement authority", async () => {
+  const { client, calls } = createClient()
+  const view = harness(client)
+  await flush()
+
+  await view.controller.playPause()
+  client.emitConnection({
+    type: "reconnecting",
+    error: { message: "lost", retryable: true },
+  })
+  client.emitState(player("replacement", false), 1, "daemon-b")
+  await view.controller.playPause()
+
+  expect(calls).toEqual(["play", "play"])
+  view.controller.dispose()
+})
+
 test("coalesced seeks keep loading owned across the command handoff", async () => {
   const { client } = createClient()
   const gate = deferred<void>()
