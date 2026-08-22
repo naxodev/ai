@@ -59,7 +59,7 @@
     "validate": "bun run format:check && bun run check && bun run test && bun run test:parity && bun run pack:check && bun run smoke:package"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-17444",
+    "@opencode-ai/plugin": "1.18.18",
     "@opentui/core": "0.5.3",
     "@opentui/solid": "0.5.3",
     "solid-js": "1.9.12"
