@@ -120,7 +120,9 @@ function fillCard(text: string, theme: SidebarTheme): string {
 export function truncateAtWordBoundary(text: string, maxWidth: number): string {
 	if (maxWidth <= 0) return "";
 	if (visibleWidth(text) <= maxWidth) return text;
-	const room = Math.max(1, maxWidth - 1);
+	// Reserve one column for the ellipsis so the result never exceeds maxWidth,
+	// including the maxWidth=1 case (ellipsis alone fills the budget).
+	const room = maxWidth - 1;
 	let kept = "";
 	for (const word of text.split(/\s+/)) {
 		if (!word) continue;
