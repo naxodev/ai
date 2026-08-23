@@ -20,6 +20,12 @@ import { renderWave } from "./waveform.ts";
 
 export type SidebarTheme = {
 	fg: (color: string, text: string) => string;
+	/**
+	 * Background wrapper from the Pi Theme (`theme.bg(color, text)`).
+	 * Optional so fake themes without a background seam fall back to an
+	 * ANSI default-background fill that still erases content underneath.
+	 */
+	bg?: (color: string, text: string) => string;
 	bold?: (text: string) => string;
 };
 
@@ -64,7 +70,14 @@ type ImageTheme = {
 const EMPTY_ARTWORK: ArtworkPresentation = { kind: "empty" };
 const ARTWORK_ROWS = 8;
 const ARTWORK_MAX_COLUMNS = 16;
-
+/**
+ * Card fill color. `selectedBg` is required by every Pi theme and is designed
+ * as a solid elevated surface over the terminal background, so the panel reads
+ * as one opaque card instead of interleaved transcript text.
+ */
+const CARD_BG_COLOR = "selectedBg";
+/** Reset-to-default-background fill for themes without a bg seam. */
+const DEFAULT_BG_ANSI = "\x1b[49m";
 /**
  * Exact ownership key for a ready artwork payload.
  * Full base64 (not a prefix) so same-format/same-size covers cannot collide.
@@ -93,6 +106,65 @@ function progressBar(ratio: number, width: number): string {
 	return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
 }
 
+/**
+ * Wrap a full-width line in the card background. Spaces painted with a
+ * background escape erase base transcript content when compositeTuiLine
+ * drops the overlay slot over the base line.
+ */
+function fillCard(text: string, theme: SidebarTheme): string {
+	if (theme.bg) return theme.bg(CARD_BG_COLOR, text);
+	return `${DEFAULT_BG_ANSI}${text}\x1b[0m`;
+}
+
+/** Ellipsize at a word boundary so clipped text never cuts mid-word. */
+export function truncateAtWordBoundary(text: string, maxWidth: number): string {
+	if (maxWidth <= 0) return "";
+	if (visibleWidth(text) <= maxWidth) return text;
+	const room = Math.max(1, maxWidth - 1);
+	let kept = "";
+	for (const word of text.split(/\s+/)) {
+		if (!word) continue;
+		const candidate = kept ? `${kept} ${word}` : word;
+		if (visibleWidth(candidate) > room) break;
+		kept = candidate;
+	}
+	// Single long word has no boundary: hard-truncate by visible columns.
+	if (kept.length === 0) {
+		let out = "";
+		let used = 0;
+		for (const ch of text) {
+			const chWidth = visibleWidth(ch);
+			if (used + chWidth > room) break;
+			out += ch;
+			used += chWidth;
+		}
+		return `${out}…`;
+	}
+	return `${kept}…`;
+}
+
+/**
+ * "▶ Title – Artist" for the compact chip. The artist truncates first at a
+ * word boundary; the title stays whole whenever it fits on its own.
+ */
+export function formatNowPlayingLine(
+	icon: string,
+	title: string,
+	artist: string,
+	width: number,
+): string {
+	const prefix = `${icon} `;
+	const avail = Math.max(0, width - visibleWidth(prefix));
+	if (visibleWidth(title) > avail) {
+		return prefix + truncateAtWordBoundary(title, avail);
+	}
+	if (artist.length === 0) return prefix + title;
+	const separator = " – ";
+	const artistRoom = avail - visibleWidth(title) - visibleWidth(separator);
+	if (artistRoom <= 0) return prefix + title;
+	return `${prefix}${title}${separator}${truncateAtWordBoundary(artist, artistRoom)}`;
+}
+
 function borderLine(left: string, fill: string, right: string, inner: number) {
 	return `${left}${fill.repeat(Math.max(0, inner))}${right}`;
 }
@@ -112,6 +184,21 @@ function imageColumns(dimensions: ImageDimensions, inner: number): number {
 		1,
 		Math.min(maxWidth, Math.ceil((dimensions.widthPx * scale) / cells.widthPx)),
 	);
+}
+
+/** Live playback position for a player snapshot, projected through `now`. */
+function liveProgressOf(player: PlayerState | null, nowMs: number): number {
+	const track = player?.track;
+	if (!player || !track) return 0;
+	return livePlaybackPosition({
+		track_key: track.id || track.uri || track.name,
+		bars: 1,
+		progress_ms: player.progress_ms,
+		fetched_at: player.fetched_at,
+		is_playing: player.is_playing,
+		duration_ms: track.duration_ms,
+		now_ms: nowMs,
+	});
 }
 
 /**
@@ -228,20 +315,7 @@ export function createMusicSidebar(
 		}
 	};
 
-	const liveProgressMs = (): number => {
-		const current = state.player;
-		const track = current?.track;
-		if (!current || !track) return 0;
-		return livePlaybackPosition({
-			track_key: track.id || track.uri || track.name,
-			bars: 1,
-			progress_ms: current.progress_ms,
-			fetched_at: current.fetched_at,
-			is_playing: current.is_playing,
-			duration_ms: track.duration_ms,
-			now_ms: now(),
-		});
-	};
+	const liveProgressMs = (): number => liveProgressOf(state.player, now());
 
 	const renderArtwork = (inner: number): string[] => {
 		const reserveSlot = (lines: string[]) => {
@@ -354,9 +428,10 @@ export function createMusicSidebar(
 		lines.push(border(borderLine("╰", "─", "╯", inner)));
 
 		return lines.map((entry) => {
-			// Final width fence: every returned line must fit the overlay slot.
-			if (visibleWidth(entry) > width) return clip(entry, width);
-			return entry;
+			// Opaque card: clip to the slot, pad to its exact width, and paint
+			// the background so transcript text cannot bleed through gaps.
+			const clipped = visibleWidth(entry) > width ? clip(entry, width) : entry;
+			return fillCard(pad(clipped, width), theme);
 		});
 	};
 
@@ -386,6 +461,84 @@ export function createMusicSidebar(
 				focused: false,
 				hiddenByUser: state.hiddenByUser,
 			};
+			invalidate();
+		},
+	};
+}
+
+export type MusicChipState = {
+	player: PlayerState | null;
+};
+
+export type MusicChip = Component & {
+	update: (patch: Partial<MusicChipState>) => void;
+	getState: () => MusicChipState;
+	dispose: () => void;
+};
+
+/** The compact streaming chip is exactly two rows: track line + progress. */
+export const CHIP_HEIGHT = 2;
+
+/**
+ * Create the compact 2-line now-playing chip shown bottom-right while the
+ * agent streams. Host code pushes player updates; visibility is owned by the
+ * overlay handle, so render() always paints the collapsed card.
+ */
+export function createMusicChip(
+	theme: SidebarTheme,
+	options: MusicSidebarOptions = {},
+): MusicChip {
+	const now = options.now ?? Date.now;
+	let state: MusicChipState = { player: null };
+	let disposed = false;
+	let cachedWidth: number | undefined;
+	let cachedLines: string[] | undefined;
+
+	const invalidate = () => {
+		cachedWidth = undefined;
+		cachedLines = undefined;
+	};
+
+	const renderBody = (width: number): string[] => {
+		const track = state.player?.track;
+		if (!track) return [];
+		const playing = state.player?.is_playing ?? false;
+		const icon = playing ? "▶" : "⏸";
+		const title = sanitizeTerminalText(track.name);
+		const artists = sanitizeTerminalText(track.artists);
+		const first = fillCard(
+			pad(formatNowPlayingLine(icon, title, artists, width), width),
+			theme,
+		);
+		const duration = Math.max(0, track.duration_ms);
+		const progress = Math.max(0, liveProgressOf(state.player, now()));
+		const ratio = duration > 0 ? progress / duration : 0;
+		const time = `${formatMs(progress)} / ${formatMs(duration)}`;
+		const barWidth = Math.max(0, width - visibleWidth(time) - 2);
+		const second = ` ${time} ${progressBar(ratio, barWidth)}`;
+		return [first, fillCard(pad(second, width), theme)];
+	};
+
+	return {
+		update: (patch) => {
+			if (disposed) return;
+			state = { ...state, ...patch };
+			invalidate();
+		},
+		getState: () => state,
+		invalidate,
+		render: (width: number) => {
+			const playing = Boolean(state.player?.is_playing && state.player.track);
+			if (!playing && cachedLines && cachedWidth === width) return cachedLines;
+			const lines = renderBody(Math.max(1, width));
+			cachedWidth = width;
+			cachedLines = lines;
+			return lines;
+		},
+		dispose: () => {
+			if (disposed) return;
+			disposed = true;
+			state = { player: null };
 			invalidate();
 		},
 	};

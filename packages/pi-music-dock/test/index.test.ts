@@ -9,8 +9,10 @@ import type {
 	ReconnectingMusicSessionClientOptions,
 	RevisionedState,
 } from "@naxodev/music-core";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	createMusicDock,
+	musicChipOverlayContract,
 	musicSidebarOverlayContract,
 } from "../extensions/music-dock/index.ts";
 import { PNG_1X1_BASE64, PNG_1X1_BYTES } from "./artwork-fixtures.ts";
@@ -197,10 +199,13 @@ function setup(
 			input: string | URL | Request,
 			init?: RequestInit,
 		) => Promise<Response>;
+		collapseOnStreaming?: boolean;
 	} = {},
 ) {
 	let start: ((event: unknown, ctx: any) => Promise<void>) | undefined;
 	let shutdown: ((event: unknown, ctx: any) => Promise<void>) | undefined;
+	const events: Record<string, (event: unknown, ctx: any) => Promise<void>> =
+		{};
 	const intervals: Timer[] = [];
 	const statuses: Array<string | undefined> = [];
 	const themedText: string[] = [];
@@ -325,6 +330,7 @@ function setup(
 				commands[name] = command;
 			},
 			on: (name: string, handler: any) => {
+				events[name] = handler;
 				if (name === "session_start") start = handler;
 				if (name === "session_shutdown") shutdown = handler;
 			},
@@ -332,6 +338,7 @@ function setup(
 		{
 			createClient,
 			now: () => 1,
+			collapseOnStreaming: extras.collapseOnStreaming,
 			// Default fetch never hits the network — catalog tests inject their own.
 			fetch:
 				extras.fetch ??
@@ -360,6 +367,8 @@ function setup(
 	return {
 		start: (context: any = ctx) => start?.({}, context),
 		shutdown: (context: any = ctx) => shutdown?.({}, context),
+		fireEvent: async (name: string, event: unknown = {}) =>
+			events[name]?.(event, ctx),
 		command: (name: string, context: any = ctx) =>
 			commands[name]!.handler("", context),
 		shortcut: (index: number, context: any = ctx) =>
@@ -458,7 +467,8 @@ test("panel mounts via setWidget host + showOverlay with responsive nonCapturing
 	await dock.start();
 	await flush();
 	expect(dock.hosts.has(musicSidebarOverlayContract.widgetKey)).toBe(true);
-	expect(dock.overlays).toHaveLength(1);
+	// Two overlays: the full right-center panel plus the compact bottom-right chip.
+	expect(dock.overlays).toHaveLength(2);
 	const options = dock.overlays[0]!.options;
 	expect(options).toMatchObject({
 		anchor: musicSidebarOverlayContract.anchor,
@@ -836,7 +846,7 @@ test("reload/shutdown returns promptly, hides the exact host overlay once, and l
 	const dock = setup(async () => (++factories === 1 ? old : replacement));
 	await dock.start();
 	await flush();
-	expect(dock.overlays).toHaveLength(1);
+	expect(dock.overlays).toHaveLength(2);
 	const firstHandle = dock.overlays[0]!.handle;
 	const firstHost = dock.musicHost();
 	expect(firstHost).toBeDefined();
@@ -853,7 +863,8 @@ test("reload/shutdown returns promptly, hides the exact host overlay once, and l
 	expect(firstHandle.hideCalls).toBe(1);
 	expect(old.disposeCalls).toBe(1);
 	expect(factories).toBe(2);
-	expect(dock.overlays.length).toBe(2);
+	// Reload replaced both overlays (panel + chip) for the new session.
+	expect(dock.overlays.length).toBe(4);
 	expect(firstHandle.hideCalls).toBe(1);
 	expect(dock.foreignOverlay.hideCalls).toBe(foreignBefore);
 	// Host for the old key was disposed via setWidget clear (tracked as remove).
@@ -1005,4 +1016,103 @@ test("shutdown fences held commands, clears status and waveform work, and dispos
 	await flush();
 	expect(dock.notifications).toHaveLength(notifications);
 	expect(client.disposeCalls).toBe(1);
+});
+
+test("panel collapses into a bottom-right chip while streaming and expands when idle", async () => {
+	// Why: the full right-center panel covers the transcript exactly while the
+	// agent is streaming, which is when reading matters most. agent lifecycle
+	// events must flip between panel (idle) and chip (streaming) deterministically.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	expect(dock.overlays).toHaveLength(2);
+	const [panelOverlay, chipOverlay] = dock.overlays;
+	expect(panelOverlay!.options.anchor).toBe(musicSidebarOverlayContract.anchor);
+	expect(chipOverlay!.options).toMatchObject({
+		anchor: musicChipOverlayContract.anchor,
+		width: musicChipOverlayContract.width,
+		nonCapturing: musicChipOverlayContract.nonCapturing,
+	});
+	expect(panelOverlay!.handle.hidden).toBe(false);
+	expect(chipOverlay!.handle.hidden).toBe(true);
+
+	await dock.fireEvent("agent_start");
+	expect(panelOverlay!.handle.hidden).toBe(true);
+	expect(chipOverlay!.handle.hidden).toBe(false);
+
+	// The collapsed chip is a 2-line card: glyph + track, elapsed/total + bar.
+	const lines = chipOverlay!.component.render(30) as string[];
+	expect(lines).toHaveLength(2);
+	for (const line of lines) expect(visibleWidth(line)).toBe(30);
+	expect(lines.join("\n")).toContain("Song");
+
+	await dock.fireEvent("agent_end");
+	expect(panelOverlay!.handle.hidden).toBe(false);
+	expect(chipOverlay!.handle.hidden).toBe(true);
+	await dock.shutdown();
+});
+
+test("ctrl+alt+m hides everything even while streaming and restores collapse on show", async () => {
+	// Why: manual toggle must always win over the automatic streaming collapse.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	await dock.fireEvent("agent_start");
+	const [panelOverlay, chipOverlay] = dock.overlays;
+
+	await dock.shortcutByDescription("side panel");
+	expect(panelOverlay!.handle.hidden).toBe(true);
+	expect(chipOverlay!.handle.hidden).toBe(true);
+
+	// Showing again restores the streaming-collapsed state, not the full panel.
+	await dock.shortcutByDescription("side panel");
+	expect(panelOverlay!.handle.hidden).toBe(true);
+	expect(chipOverlay!.handle.hidden).toBe(false);
+
+	await dock.fireEvent("agent_end");
+	expect(panelOverlay!.handle.hidden).toBe(false);
+	expect(chipOverlay!.handle.hidden).toBe(true);
+	await dock.shutdown();
+});
+
+test("music-focus expands the streaming-collapsed panel for keyboard transport", async () => {
+	// Why: /music-focus must stay usable mid-stream — focus implies intent to
+	// drive transport with Space/arrows on the full panel.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	await dock.fireEvent("agent_start");
+	const [panelOverlay] = dock.overlays;
+	expect(panelOverlay!.handle.hidden).toBe(true);
+
+	await dock.command("music-focus");
+	const [panelAfterFocus, chipAfterFocus] = dock.overlays;
+	expect(panelAfterFocus!.handle.hidden).toBe(false);
+	expect(chipAfterFocus!.handle.hidden).toBe(true);
+	expect(panelAfterFocus!.handle.focused).toBe(true);
+
+	// Unfocusing re-engages the streaming collapse.
+	panelAfterFocus!.component.handleInput("\x1b");
+	expect(panelAfterFocus!.handle.hidden).toBe(true);
+	expect(chipAfterFocus!.handle.hidden).toBe(false);
+	await dock.shutdown();
+});
+
+test("collapseOnStreaming:false keeps the full panel mounted during streaming", async () => {
+	// Why: the collapse threshold must be injectable so hosts (and tests) can
+	// pin the old always-expanded behavior without touching event plumbing.
+	const client = new FakeClient();
+	const dock = setup(async () => client, { collapseOnStreaming: false });
+	await dock.start();
+	await flush();
+	await dock.fireEvent("agent_start");
+	const [panelOverlay, chipOverlay] = dock.overlays;
+	expect(panelOverlay!.handle.hidden).toBe(false);
+	expect(chipOverlay!.handle.hidden).toBe(true);
+	await dock.fireEvent("agent_end");
+	expect(panelOverlay!.handle.hidden).toBe(false);
+	await dock.shutdown();
 });

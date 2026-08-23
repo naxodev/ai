@@ -148,5 +148,7 @@ export function renderWave(eng: WaveEngine, playing: boolean): string {
 		}
 		out += ansiFg(fg) + ch;
 	}
-	return out + "\x1b[0m";
+	// Reset fg only: a full SGR reset would clear the card's selectedBg span
+	// and leave a default-background stripe through the opaque panel row.
+	return out + "\x1b[39m";
 }

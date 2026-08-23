@@ -7,14 +7,22 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
+	CHIP_HEIGHT,
 	artworkImageKey,
+	createMusicChip,
 	createMusicSidebar,
+	formatNowPlayingLine,
+	truncateAtWordBoundary,
 } from "../extensions/music-dock/sidebar.ts";
 import { PNG_1X1_BASE64 } from "./artwork-fixtures.ts";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
 };
+
+/** Remove the card-fill ANSI wrapper so tests can assert on panel content. */
+const stripCardFill = (line: string): string =>
+	line.replace(/\x1b\[49m/g, "").replace(/\x1b\[0m/g, "");
 
 const player = (
 	name = "Song",
@@ -40,7 +48,7 @@ const player = (
 function panel(options?: {
 	now?: () => number;
 	terminalWrite?: (data: string) => void;
-	theme?: typeof theme;
+	theme?: typeof theme & { bg?: (color: string, text: string) => string };
 }) {
 	const calls = {
 		toggle: 0,
@@ -183,15 +191,16 @@ test("Kitty artwork is centered inside both panel borders", () => {
 		const imageIndex = lines.findIndex((line) => line.includes("\x1b_G"));
 		const statusIndex = lines.findIndex((line) => line.includes("Playing"));
 		const progressIndex = lines.findIndex((line) => line.includes(" / "));
-		const imageLine = lines[imageIndex];
-		expect(imageLine).toBeDefined();
-		expect(imageLine).toStartWith(`│${" ".repeat(6)}\x1b_G`);
-		expect(imageLine).toEndWith("│");
-		expect(visibleWidth(imageLine!)).toBe(30);
+		const imageLine = lines[imageIndex]!;
+		expect(imageLine).toContain(`│${" ".repeat(6)}\x1b_G`);
+		expect(stripCardFill(imageLine)).toEndWith("│");
+		expect(visibleWidth(imageLine)).toBe(30);
 		// One bordered row separates the physical eight-row image from metadata.
 		expect(statusIndex - imageIndex).toBe(9);
 		// A second row keeps the animated waveform distinct from progress.
-		expect(lines[progressIndex - 1]).toBe(`│${" ".repeat(28)}│`);
+		expect(stripCardFill(lines[progressIndex - 1]!)).toBe(
+			`│${" ".repeat(28)}│`,
+		);
 	} finally {
 		resetCapabilitiesCache();
 	}
@@ -354,4 +363,136 @@ test("dispose clears artwork work so a replacement session cannot reuse it", () 
 	// Updates after dispose are ignored.
 	sidebar.update({ player: player("late") });
 	expect(sidebar.getState().player).toBeNull();
+});
+
+test("every rendered line is a full-width opaque card row with the theme background", () => {
+	// Why: compositeTuiLine replaces the overlay slot wholesale, but short
+	// unpadded lines leave gaps; every row must be padded to the exact width
+	// and painted with the theme background so transcript text cannot bleed.
+	const bgCalls: Array<{ color: string; text: string }> = [];
+	const { sidebar } = panel({
+		theme: {
+			fg: (_color, text) => text,
+			bg: (color, text) => {
+				bgCalls.push({ color, text });
+				return text;
+			},
+		},
+	});
+	sidebar.update({ player: player(), artwork: { kind: "unavailable" } });
+	const lines = sidebar.render(30);
+	expect(lines.length).toBeGreaterThan(5);
+	for (const line of lines) expect(visibleWidth(line)).toBe(30);
+	// Every single line went through the bg seam exactly once.
+	expect(bgCalls).toHaveLength(lines.length);
+	for (const call of bgCalls) expect(call.color).toBe("selectedBg");
+	// The bottom border is padded to the slot edge — no trailing gap remains.
+	expect(stripCardFill(lines.at(-1)!)).toBe(`╰${"─".repeat(28)}╯`);
+});
+
+test("the waveform row keeps the card background span (no mid-row full SGR reset)", () => {
+	// Why: renderWave used to end with a full \x1b[0m reset, which cleared the
+	// card's selectedBg span mid-line and left a default-background stripe
+	// through the opaque panel exactly where the waveform plays.
+	const { sidebar } = panel();
+	sidebar.update({ player: player(), artwork: { kind: "unavailable" } });
+	const lines = sidebar.render(30);
+	const waveRows = lines.filter((line) => line.includes("\x1b["));
+	expect(waveRows.length).toBeGreaterThan(0);
+	for (const line of lines) {
+		// The only full reset in a themed row is the card fill's trailing one.
+		const firstReset = line.indexOf("\x1b[0m");
+		if (firstReset === -1) continue;
+		expect(firstReset).toBe(line.lastIndexOf("\x1b[0m"));
+		expect(firstReset + 4).toBe(line.length);
+	}
+});
+
+test("themes without a background seam fall back to an ANSI default-bg fill", () => {
+	// Why: fake/minimal themes expose only fg; ESC[49m + padded spaces still
+	// erases base content inside the panel rectangle instead of bleeding it.
+	const { sidebar } = panel();
+	sidebar.update({ player: player(), artwork: { kind: "unavailable" } });
+	const lines = sidebar.render(30);
+	for (const line of lines) {
+		expect(line).toContain("\x1b[49m");
+		expect(visibleWidth(line)).toBe(30);
+	}
+});
+
+test("truncateAtWordBoundary cuts at spaces, never mid-word when a boundary exists", () => {
+	expect(truncateAtWordBoundary("short", 10)).toBe("short");
+	expect(truncateAtWordBoundary("one two three four", 9)).toBe("one two…");
+	expect(truncateAtWordBoundary("", 5)).toBe("");
+	expect(truncateAtWordBoundary("word", 0)).toBe("");
+	// A single long word has no boundary: hard-truncate to fit.
+	const hard = truncateAtWordBoundary("Supercalifragilistic", 8);
+	expect(hard).toBe("Superca…");
+	expect(visibleWidth(hard)).toBe(8);
+});
+
+test("now-playing chip line truncates the artist first and keeps the whole title", () => {
+	// Why: the title identifies the track; sacrificing artist characters first
+	// keeps recognition while fitting the compact 30-column chip.
+	expect(formatNowPlayingLine("▶", "Song", "Artist", 30)).toBe(
+		"▶ Song – Artist",
+	);
+
+	const artistClipped = formatNowPlayingLine(
+		"⏸",
+		"Reasonable Title",
+		"A Very Long Artist Name That Overflows",
+		30,
+	);
+	expect(artistClipped.startsWith("⏸ Reasonable Title – A Very…")).toBe(true);
+	expect(visibleWidth(artistClipped)).toBeLessThanOrEqual(30);
+	expect(artistClipped.endsWith("…")).toBe(true);
+
+	// No room for any artist after a slot-filling title: artist is dropped
+	// before the title loses a single character.
+	const noArtistRoom = formatNowPlayingLine(
+		"▶",
+		"An Entirely Reasonable Title Length",
+		"Artist",
+		40,
+	);
+	expect(noArtistRoom).toBe("▶ An Entirely Reasonable Title Length");
+
+	// Title alone exceeds the width: word-boundary ellipsis on the title.
+	const titleClipped = formatNowPlayingLine(
+		"▶",
+		"A Supremely Long Title That Cannot Fit At All",
+		"Artist",
+		20,
+	);
+	expect(titleClipped.startsWith("▶ A Supremely Long…")).toBe(true);
+	expect(visibleWidth(titleClipped)).toBeLessThanOrEqual(20);
+});
+
+test("compact chip renders two opaque rows that advance live progress", () => {
+	// Why: while streaming the chip replaces the panel; it must show glyph +
+	// track in row one and elapsed/total + bar in row two without gaps.
+	let now = 61_000;
+	const chip = createMusicChip(theme, {
+		now: () => now,
+	});
+	chip.update({
+		player: player("Song", { progress_ms: 0, fetched_at: 1_000 }),
+	});
+	const lines = chip.render(30);
+	expect(lines).toHaveLength(CHIP_HEIGHT);
+	for (const line of lines) expect(visibleWidth(line)).toBe(30);
+	expect(stripCardFill(lines[0]!)).toContain("Song");
+	expect(lines[1]!).toContain("1:00 / 3:00");
+
+	now = 31_000;
+	const advanced = chip.render(30);
+	expect(stripCardFill(advanced[1]!)).toContain("0:30 / 3:00");
+
+	chip.update({ player: player("Song", { is_playing: false }) });
+	const paused = chip.render(30);
+	expect(stripCardFill(paused[0]!)).toContain("⏸");
+
+	chip.dispose();
+	expect(chip.getState().player).toBeNull();
 });
