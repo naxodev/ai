@@ -31,7 +31,9 @@ import {
 } from "./artwork.ts";
 import { clipWords, sanitizeTerminalText } from "./format.ts";
 import {
+	createMusicChip,
 	createMusicSidebar,
+	type MusicChip,
 	type MusicSidebar,
 	type MusicSidebarState,
 } from "./sidebar.ts";
@@ -47,6 +49,9 @@ const OVERLAY_HOST_WIDGET_KEY = "music-dock-sidebar-host";
 const SIDEBAR_MIN_COLS = 80;
 const SIDEBAR_WIDTH = 30;
 const SIDEBAR_MAX_HEIGHT = "90%";
+/** Compact streaming chip anchor: bottom-right, clear of the input line. */
+const CHIP_ANCHOR = "bottom-right" as const;
+const CHIP_MARGIN = { right: 1, bottom: 1 } as const;
 
 type Interval = ReturnType<typeof setInterval>;
 type Waveform = ReturnType<typeof createWaveformCoordinator>;
@@ -69,9 +74,13 @@ type LiveSession = {
 	reconnectingNotification: string | undefined;
 	terminalNotification: string | undefined;
 	acquisitionNotification: string | undefined;
-	// Side panel host owns overlay handle + sidebar; cleared with the widget key.
+	// Side panel host owns overlay handles + sidebar/chip; cleared with the key.
 	sidebar: MusicSidebar | undefined;
 	overlayHandle: OverlayHandle | undefined;
+	chip: MusicChip | undefined;
+	chipOverlayHandle: OverlayHandle | undefined;
+	/** True between agent_start and agent_end/agent_settled events. */
+	streaming: boolean;
 	hostMounted: boolean;
 	userHidden: boolean;
 	focused: boolean;
@@ -88,6 +97,12 @@ export type MusicDockDependencies = {
 	clearInterval: (timer: Interval) => void;
 	/** Injected fetch seam for catalog fallback — tests never hit the network. */
 	fetch: ArtworkFetcher;
+	/**
+	 * Collapse threshold seam: when true (default), a streaming agent session
+	 * collapses the full panel into the bottom-right chip. Inject false to
+	 * disable collapse in tests or user settings.
+	 */
+	collapseOnStreaming?: boolean;
 };
 
 export type { MusicSidebar, MusicSidebarState } from "./sidebar.ts";
@@ -154,6 +169,32 @@ export function createMusicDock(
 			...patch,
 			player,
 		});
+		session.chip?.update({ player });
+	};
+
+	/**
+	 * Collapse rule, applied as the single source of overlay visibility:
+	 * streaming collapses the panel into the chip unless the panel is focused
+	 * or the user hid everything; userHidden hides both.
+	 */
+	const collapsedFor = (session: LiveSession): boolean =>
+		Boolean(deps.collapseOnStreaming ?? true) &&
+		session.streaming &&
+		!session.focused;
+
+	const applyVisibility = (session: LiveSession) => {
+		if (!isLive(session)) return;
+		const collapsed = collapsedFor(session);
+		try {
+			session.overlayHandle?.setHidden(session.userHidden || collapsed);
+		} catch {
+			// ignore
+		}
+		try {
+			session.chipOverlayHandle?.setHidden(session.userHidden || !collapsed);
+		} catch {
+			// ignore
+		}
 	};
 
 	const renderStatus = (
@@ -325,6 +366,13 @@ export function createMusicDock(
 		}
 	};
 
+	const chipOptionsFor = (_session: LiveSession): OverlayOptions => ({
+		anchor: CHIP_ANCHOR,
+		width: SIDEBAR_WIDTH,
+		margin: CHIP_MARGIN,
+		nonCapturing: true,
+	});
+
 	const overlayOptionsFor = (session: LiveSession): OverlayOptions => ({
 		anchor: "right-center",
 		width: SIDEBAR_WIDTH,
@@ -345,20 +393,30 @@ export function createMusicDock(
 		session: LiveSession,
 		ctx: ExtensionContext,
 		tui: TUI,
-		theme: { fg: (color: never, text: string) => string },
+		theme: {
+			fg: (color: never, text: string) => string;
+			bg?: (color: never, text: string) => string;
+		},
 	): Component & { dispose: () => void } => {
 		let disposed = false;
 		let handle: OverlayHandle | undefined;
+		let chipHandle: OverlayHandle | undefined;
+
+		const sidebarTheme = {
+			fg: (color: string, text: string) =>
+				theme.fg(color as Parameters<typeof theme.fg>[0], text),
+			bg: theme.bg
+				? (color: string, text: string) =>
+						theme.bg!(color as Parameters<typeof theme.bg>[0], text)
+				: undefined,
+		};
 
 		const sidebar = createMusicSidebar(
 			{
 				requestRender: () => tui.requestRender(),
 				terminal: tui.terminal,
 			},
-			{
-				fg: (color, text) =>
-					theme.fg(color as Parameters<typeof theme.fg>[0], text),
-			},
+			sidebarTheme,
 			{
 				onTogglePlayback: () => {
 					void playPause(ctx);
@@ -387,20 +445,38 @@ export function createMusicDock(
 		session.sidebar = sidebar;
 		handle = tui.showOverlay(sidebar, overlayOptionsFor(session));
 		session.overlayHandle = handle;
-		if (session.userHidden) handle.setHidden(true);
+
+		// Second overlay handle: the compact chip shown while streaming.
+		const chip = createMusicChip(sidebarTheme, { now: deps.now });
+		session.chip = chip;
+		chipHandle = tui.showOverlay(chip, chipOptionsFor(session));
+		session.chipOverlayHandle = chipHandle;
+
+		applyVisibility(session);
 		pushSidebar(session);
 
 		const dispose = () => {
 			if (disposed) return;
 			disposed = true;
-			const owned = handle;
+			const ownedHandles = [handle, chipHandle];
 			handle = undefined;
-			if (session.overlayHandle === owned) session.overlayHandle = undefined;
-			try {
-				owned?.hide();
-			} catch {
-				// ignore double-hide races
+			chipHandle = undefined;
+			for (const owned of ownedHandles) {
+				if (!owned) continue;
+				try {
+					owned.hide();
+				} catch {
+					// ignore double-hide races
+				}
+				if (session.overlayHandle === owned) {
+					session.overlayHandle = undefined;
+				}
+				if (session.chipOverlayHandle === owned) {
+					session.chipOverlayHandle = undefined;
+				}
 			}
+			chip.dispose();
+			if (session.chip === chip) session.chip = undefined;
 			sidebar.dispose();
 			if (session.sidebar === sidebar) session.sidebar = undefined;
 		};
@@ -435,6 +511,8 @@ export function createMusicDock(
 		} catch {
 			// ignore
 		}
+		// Unfocus may re-engage the streaming collapse.
+		applyVisibility(session);
 	};
 
 	const focusSidebar = (session: LiveSession) => {
@@ -450,24 +528,26 @@ export function createMusicDock(
 		} catch {
 			// ignore
 		}
+		// Focus expands a streaming-collapsed panel for keyboard transport.
+		applyVisibility(session);
 	};
 
 	const toggleSidebar = (session: LiveSession) => {
-		if (!isLive(session) || !session.overlayHandle) return;
+		if (!isLive(session)) return;
 		session.userHidden = !session.userHidden;
 		if (session.userHidden) {
 			session.focused = false;
 			try {
-				session.overlayHandle.unfocus();
+				session.overlayHandle?.unfocus();
 			} catch {
 				// ignore
 			}
 		}
-		session.overlayHandle.setHidden(session.userHidden);
 		pushSidebar(session, {
 			hiddenByUser: session.userHidden,
 			focused: session.focused,
 		});
+		applyVisibility(session);
 	};
 
 	const shutdown = async (
@@ -494,6 +574,8 @@ export function createMusicDock(
 		session.hostMounted = false;
 		session.overlayHandle = undefined;
 		session.sidebar = undefined;
+		session.chipOverlayHandle = undefined;
+		session.chip = undefined;
 		if (clearUi) clearUi.setStatus(STATUS_KEY, undefined);
 		else clearStatus(session);
 		session.player = null;
@@ -573,6 +655,23 @@ export function createMusicDock(
 		},
 	});
 
+	/**
+	 * Stream-aware collapse: agent lifecycle events flip the session between
+	 * full panel (idle) and compact chip (streaming). Idempotent per state.
+	 */
+	const setStreaming = (streaming: boolean) => {
+		const session = currentSession;
+		if (!session || !isLive(session)) return;
+		if (session.streaming === streaming) return;
+		session.streaming = streaming;
+		pushSidebar(session);
+		applyVisibility(session);
+	};
+	pi.on("agent_start", async () => setStreaming(true));
+	pi.on("agent_end", async () => setStreaming(false));
+	// Settled fires after retries/queued continuations; a no-op when already idle.
+	pi.on("agent_settled", async () => setStreaming(false));
+
 	pi.on("session_start", async (_event, ctx) => {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
 		await shutdown(currentSession);
@@ -593,6 +692,9 @@ export function createMusicDock(
 			acquisitionNotification: undefined,
 			sidebar: undefined,
 			overlayHandle: undefined,
+			chip: undefined,
+			chipOverlayHandle: undefined,
+			streaming: false,
 			hostMounted: false,
 			userHidden: false,
 			focused: false,
@@ -646,4 +748,12 @@ export const musicSidebarOverlayContract = {
 	anchor: "right-center" as const,
 	nonCapturing: true,
 	widgetKey: OVERLAY_HOST_WIDGET_KEY,
+};
+
+/** Test-visible constants for the compact streaming chip overlay. */
+export const musicChipOverlayContract = {
+	anchor: CHIP_ANCHOR,
+	width: SIDEBAR_WIDTH,
+	margin: CHIP_MARGIN,
+	nonCapturing: true,
 };
