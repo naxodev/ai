@@ -429,6 +429,9 @@ test("truncateAtWordBoundary cuts at spaces, never mid-word when a boundary exis
 	const hard = truncateAtWordBoundary("Supercalifragilistic", 8);
 	expect(hard).toBe("Superca…");
 	expect(visibleWidth(hard)).toBe(8);
+	// Budget of 1 cannot keep a character plus ellipsis — ellipsis fills it.
+	expect(truncateAtWordBoundary("aa", 1)).toBe("…");
+	expect(visibleWidth(truncateAtWordBoundary("aa", 1))).toBe(1);
 });
 
 test("now-playing chip line truncates the artist first and keeps the whole title", () => {
