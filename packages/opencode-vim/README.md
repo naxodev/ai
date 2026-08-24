@@ -1,33 +1,16 @@
-# @naxodev/opencode-vim
+# `@naxodev/opencode-vim`
 
-Native Vim-style modal prompt editing for the OpenCode 2 TUI.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/naxodev/ai/main/docs/media/opencode-vim/insert.png" alt="OpenCode footer showing -- INSERT -- mode" width="220" />
+</p>
 
-> [!IMPORTANT]
-> This package is tested with exactly `opencode2 v0.0.0-next-17444` and matching `@opencode-ai/plugin` and `@opencode-ai/theme` packages. The OpenCode V2 TUI plugin API is beta and may change before its stable release.
+[![npm](https://img.shields.io/npm/v/@naxodev/opencode-vim)](https://www.npmjs.com/package/@naxodev/opencode-vim)
+[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## Requirements
-
-- OpenCode 2 `v0.0.0-next-17444`
-- Bun 1.3 or later, which OpenCode uses to load TypeScript plugin packages
-- Neovim, required only for development parity tests
-- A supported clipboard executable for system clipboard yanks: macOS `pbcopy`,
-  Wayland `wl-copy`, X11 `xclip` or `xsel`, or Windows PowerShell
-
-## Install
-
-Add the npm package to `plugins` in the global `~/.config/opencode/cli.json`:
+Native Vim-style modal prompt editing for the OpenCode 2 TUI. Motions, operators, text objects, visual modes, registers, dot-repeat, EX commands — implemented against OpenCode's own editor, with headless Neovim parity tests behind every command.
 
 ```jsonc
-{
-  "plugins": ["@naxodev/opencode-vim"],
-}
-```
-
-OpenCode installs the package and its production dependencies in an isolated cache. Restart OpenCode after changing the package entry.
-
-To start in normal mode, use the object form:
-
-```jsonc
+// ~/.config/opencode/cli.json
 {
   "plugins": [
     {
@@ -38,6 +21,14 @@ To start in normal mode, use the object form:
 }
 ```
 
+Toggle any time with `/vim` or the command palette action **Toggle Vim mode**; the footer shows the active mode (`-- INSERT --`, `-- NORMAL --`, `-- VISUAL --`) or `VIM OFF`.
+
+## Why it feels native
+
+- **Real editor, real commands.** Edits go through OpenCode's edit buffer, so undo, submit, and history behave like the editor you already use.
+- **Neovim parity suite.** Text, cursor, mode, and unnamed-register semantics for every implemented command are compared against headless Neovim in CI.
+- **System clipboard yanks.** `pbcopy`, `wl-copy`, `xclip`, `xsel`, or PowerShell — auto-detected, never required.
+
 ## Options
 
 | Option      | Values                                                                     | Default  | Purpose                               |
@@ -45,15 +36,7 @@ To start in normal mode, use the object form:
 | `startMode` | `"insert"`, `"normal"`                                                     | `insert` | Select the initial Vim mode.          |
 | `clipboard` | `"auto"`, `"none"`, `"pbcopy"`, `"wl-copy"`, `"xclip"`, `"xsel"`, `"clip"` | `auto`   | Select the system clipboard provider. |
 
-Use `/vim` or the command palette action **Toggle Vim mode** to persistently enable or disable modal editing.
-
-## Compatibility
-
-Version `0.1.0` supports only OpenCode 2 `v0.0.0-next-17444`. Its TUI plugin API is not stable, so newer or older OpenCode builds may not load this package.
-
-The package intentionally ships TypeScript and TSX source because this OpenCode release loads TUI plugins with Bun. It is not a precompiled JavaScript library and does not support direct loading by Node.js.
-
-## Key Reference
+## Key reference
 
 | Keys                            | Action                                          |
 | ------------------------------- | ----------------------------------------------- |
@@ -99,21 +82,33 @@ The package intentionally ships TypeScript and TSX source because this OpenCode 
 | `{`, `}`                        | Select the previous or next session message     |
 | `j`, `k` on empty input         | Select the next or previous prompt history item |
 
-Yanks also update the system clipboard when a configured provider is available.
-`auto` uses `pbcopy` on macOS and PowerShell `Set-Clipboard` on Windows. The
-Windows provider remains named `clip` in configuration. On Linux it prefers
-`wl-copy` in Wayland sessions, then `xclip` and `xsel` when X11 is available.
+Yanks also update the system clipboard when a configured provider is available. `auto` uses `pbcopy` on macOS and PowerShell `Set-Clipboard` on Windows (still named `clip` in configuration). On Linux it prefers `wl-copy` in Wayland sessions, then `xclip` and `xsel` when X11 is available.
+
+## Requirements
+
+- OpenCode 2 `v0.0.0-next-17444`
+- Bun 1.3 or later, which OpenCode uses to load TypeScript plugin packages
+- A supported clipboard executable for system clipboard yanks: macOS `pbcopy`, Wayland `wl-copy`, X11 `xclip` or `xsel`, or Windows PowerShell
+- Neovim, required only for development parity tests
+
+> [!IMPORTANT]
+> Tested with exactly `opencode2 v0.0.0-next-17444` and matching `@opencode-ai/plugin` and `@opencode-ai/theme` packages. The OpenCode V2 TUI plugin API is beta and may change before its stable release.
+
+OpenCode installs npm plugin packages and their production dependencies in an isolated cache. Restart OpenCode after changing the package entry.
+
+## Compatibility
+
+The package intentionally ships TypeScript and TSX source because this OpenCode release loads TUI plugins with Bun. It is not a precompiled JavaScript library and does not support direct loading by Node.js.
 
 ## Limitations
 
 - The public V2 keymap API cannot intercept arbitrary printable Unicode. An unlisted Unicode key may reach the editor in normal or visual mode.
 - Character finds register every printable ASCII target with the public keymap. Unicode find targets remain subject to the public keymap limitation above.
-- Active leader prefixes are left to OpenCode except `v`, `V`, and `$`, which Vim reserves for visual and line-end motions. The API does not expose inactive or dynamically changed leader configuration.
+- Active leader prefixes are left to OpenCode except `v`, `V`, and `$`, which Vim reserves for visual and line-end motions.
 - Clipboard integration requires a supported executable on `PATH` and the matching display environment. Clipboard failures show at most one warning and never affect edits or the unnamed Vim register. Use `"clipboard": "none"` to disable integration and its availability warning.
 - This is prompt editing, not full Vim emulation. Only the commands listed above are implemented.
 - OpenCode must be able to install npm dependencies. Offline startup works only after OpenCode has cached the package and its dependencies.
-- EX commands resolve available OpenCode slash names and aliases. `:q`/`:quit` and `:help` work only when matching public OpenCode commands are available.
-- EX does not implement Vim file commands such as `:w` or shell commands such as `:!`.
+- EX commands resolve available OpenCode slash names and aliases. `:q`/`:quit` and `:help` work only when matching public OpenCode commands are available. EX does not implement Vim file commands such as `:w` or shell commands such as `:!`.
 - The public prompt dialog does not report whether Enter was typed or pasted. The plugin relies only on the dialog's confirmation and cancellation result.
 - Block visual mode is not implemented. Character and line visual changes form one undo transaction and repeat their selection shape with dot.
 - Visual `r<Enter>` is rejected. Vim stores literal carriage returns for this command, but OpenCode's editor only safely represents line feeds.
@@ -135,9 +130,7 @@ bun install --frozen-lockfile
 bun run check
 ```
 
-The workspace check verifies formatting and types, runs unit and headless Neovim parity tests, verifies the tarball, and imports the installed tarball from an isolated consumer. The parity suites compare text, cursor, mode, and unnamed register semantics for implemented Vim commands. OpenCode host mappings are outside this contract.
-
-Buffer jumps intentionally land on the first nonblank character. Headless Neovim's default `nostartofline` setting preserves the desired column for `gg` and `G`. The parity suite records both exact outcomes when those columns differ.
+The workspace check verifies formatting and types, runs unit and headless Neovim parity tests, verifies the tarball, and imports the installed tarball from an isolated consumer. Buffer jumps intentionally land on the first nonblank character; headless Neovim's default `nostartofline` setting preserves the desired column for `gg` and `G`, and the parity suite records both exact outcomes when those columns differ.
 
 ## Attribution
 

@@ -1,40 +1,41 @@
-# @naxodev/opencode-music-player
+# `@naxodev/opencode-music-player`
 
-A sidebar player and compact bottom bar for the OpenCode 2 TUI that display and control the active macOS system media session.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/naxodev/ai/main/docs/media/opencode-music-player/sidebar.png" alt="OpenCode sidebar player showing Wrecked by Kiasmos with artwork, waveform, seek bar, and transport" width="340" />
+</p>
 
-It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed through [`media-control`](https://github.com/ungive/media-control). The player keeps the existing OpenCode theme and provides keyboard and mouse controls.
+[![npm](https://img.shields.io/npm/v/@naxodev/opencode-music-player)](https://www.npmjs.com/package/@naxodev/opencode-music-player)
+[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## Architecture
+A sidebar player and compact bottom bar for the OpenCode 2 TUI that display and control the active macOS system media session. Play something in Spotify, Apple Music, a browser — the sidebar follows, with album artwork, a live waveform, a clickable seek bar, and transport controls.
 
-One reconnecting music-session client supplies replayed and live state, provider status, transport, and daemon-owned native artwork bytes. The shared same-user daemon owns provider discovery, provider events and polling, the playback clock, and global transport ordering.
-
-OpenCode keeps plugin/controller lifecycle, the Solid compact and sidebar UI, optimistic transport presentation, seek coalescing, notifications, waveform projection, iTunes catalog fallback and downloads, conversion, bounded presentation cache/jobs, and Kitty or half-block rendering. Plugin disposal removes local listeners and presentation work, then disposes only its session client. Other clients keep the shared daemon alive.
-
-Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the daemon protocol, replay, reconnect, and cleanup model.
-
-## Artwork
-
-The daemon performs the bounded native `media-control get --now` read and validates the complete recording identity before and after the read. OpenCode uses those bytes when available, then keeps iTunes Search fallback, image downloads, conversion, cache/job ownership, and terminal rendering locally. Artwork failure never blocks playback state.
-
-Ghostty and other terminals with Kitty graphics support display the cover as a native image. Other terminals receive a true-color half-block rendering of the same cover.
-
-Terminal multiplexers must pass Kitty graphics through to use native images. The player uses the half-block rendering when the host does not expose that support.
-
-Herdr users can enable its experimental renderer in `~/.config/herdr/config.toml`:
-
-```toml
-[experimental]
-kitty_graphics = true
+```jsonc
+// ~/.config/opencode/cli.json (or .opencode/cli.json)
+{
+  "plugins": ["@naxodev/opencode-music-player"],
+}
 ```
 
-tmux 3.3 and later users must allow wrapped graphics passthrough in `~/.tmux.conf`:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/naxodev/ai/main/docs/media/opencode-music-player/compact.png" alt="Compact now-playing bar: pause marker, Wrecked - Kiasmos" width="640" />
+</p>
 
-```tmux
-set -g allow-passthrough on
-```
+## What you get
 
-> [!IMPORTANT]
-> This package targets the beta OpenCode 2 TUI plugin API in `opencode2 v0.0.0-next-17444`. OpenCode may change this API before its stable release.
+- **Sidebar player** — native album artwork (Kitty graphics in Ghostty, WezTerm, iTerm2; true-color half-blocks elsewhere), animated waveform, seek slider, elapsed/total time, and prev/pause/next.
+- **Compact bar** — a one-row now-playing line below the active route whenever a track exists, visible even with the session sidebar collapsed. Click the marker to play/pause; click in the seek region to seek.
+- **System-wide** — any app exposed through [`media-control`](https://github.com/ungive/media-control) works. Artwork failure never blocks playback state.
+- **Shared daemon** — one machine-local music-session daemon serves every host, so OpenCode and Pi see the same state.
+
+## Controls
+
+| Input              | Action         |
+| ------------------ | -------------- |
+| `ctrl+shift+p`     | Play or pause  |
+| `ctrl+shift+left`  | Previous track |
+| `ctrl+shift+right` | Next track     |
+
+The compact bar adapts to width: wide terminals show marker, title, and artist; medium terminals omit the artist; narrow terminals truncate the title, then keep only the marker.
 
 ## Requirements
 
@@ -50,20 +51,24 @@ set -g allow-passthrough on
 
 [`nowplaying-cli`](https://github.com/kirtan-shah/nowplaying-cli) is a fallback. Its play state can freeze for some media apps.
 
-## Install
+> [!IMPORTANT]
+> This package targets the beta OpenCode 2 TUI plugin API in `opencode2 v0.0.0-next-17444`. OpenCode may change this API before its stable release.
 
-Add the package to the `plugin` array in your global `~/.config/opencode/tui.jsonc` or project `.opencode/tui.jsonc`:
+## Terminal graphics
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["@naxodev/opencode-music-player"],
-}
-```
+Ghostty and other terminals with Kitty graphics display the cover as a native image. Other terminals receive a true-color half-block rendering of the same cover. Multiplexers must pass Kitty graphics through:
 
-OpenCode installs npm plugin packages and their production dependencies in its isolated cache. Restart OpenCode after changing the package entry.
+- Herdr — enable its experimental renderer in `~/.config/herdr/config.toml`:
+  ```toml
+  [experimental]
+  kitty_graphics = true
+  ```
+- tmux 3.3+ — allow wrapped passthrough in `~/.tmux.conf`:
+  ```tmux
+  set -g allow-passthrough on
+  ```
 
-### Local checkout
+## Local checkout
 
 OpenCode imports local packages directly and does not install their dependencies. Install them first:
 
@@ -77,8 +82,7 @@ Then reference the absolute package path:
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["/absolute/path/to/ai/packages/opencode-music-player"],
+  "plugins": ["/absolute/path/to/ai/packages/opencode-music-player"],
 }
 ```
 
@@ -92,31 +96,17 @@ opencode2 api get /api/plugin
 
 The response should include `music-player`. If it does not, inspect `~/.local/share/opencode/log/opencode.log` for package resolution or setup errors.
 
-## Controls
+## Architecture
 
-The compact bar appears below the active route whenever a current track exists, including while playback is paused. It remains visible when the session sidebar is collapsed. Wide terminals show the playback marker, title, and artist. Medium terminals omit the artist. Narrow terminals truncate the title, then keep only the playback marker when metadata cannot fit safely. The bar always stays on one row.
+One reconnecting music-session client supplies replayed and live state, provider status, transport, and daemon-owned native artwork bytes. OpenCode keeps plugin lifecycle, the Solid compact and sidebar UI, optimistic transport presentation, seek coalescing, notifications, waveform projection, iTunes catalog fallback, and Kitty or half-block rendering locally. Plugin disposal removes its client; other clients keep the shared daemon alive.
 
-| Input              | Action         |
-| ------------------ | -------------- |
-| `ctrl+shift+p`     | Play or pause  |
-| `ctrl+shift+left`  | Previous track |
-| `ctrl+shift+right` | Next track     |
-
-## Development
-
-```sh
-bun install --frozen-lockfile
-bun run check
-```
-
-The workspace smoke packs OpenCode and music-core, installs them into an isolated project, and launches the exact manifest-selected OpenCode CLI. It verifies the packed plugin's deterministic playing, paused, collapsed, narrow, and smallest layouts. See the workspace [contribution guide](../../CONTRIBUTING.md) for the contribution and release process.
+Read the [music session architecture field guide](https://github.com/naxodev/ai/blob/main/docs/music-session-architecture.html) for the daemon protocol, replay, reconnect, and cleanup model.
 
 ## Community
 
 - Ask usage questions in [GitHub Discussions](https://github.com/naxodev/ai/discussions).
 - Report reproducible bugs with the [bug form](https://github.com/naxodev/ai/issues/new?template=bug.yml).
-- Read [SUPPORT.md](SUPPORT.md) before requesting support.
-- Report vulnerabilities privately as described in the workspace [security policy](../../SECURITY.md).
+- Report vulnerabilities privately as described in the workspace [security policy](https://github.com/naxodev/ai/blob/main/SECURITY.md).
 
 ## License
 

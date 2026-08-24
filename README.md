@@ -2,6 +2,15 @@
 
 TypeScript packages for OpenCode and Pi: shared macOS media controls, Vim-style prompt editing, and a multi-role development workflow. The host packages publish TypeScript source because OpenCode and Pi load source packages directly.
 
+<p align="center">
+  <table>
+    <tr>
+      <td width="50%" align="center"><a href="packages/pi-music-dock/README.md"><img src="docs/media/pi-music-dock/card.png" alt="Pi music dock side panel" width="280" /><br /><sub><b>@naxodev/pi-music-dock</b> — Now Playing panel and chip for Pi</sub></a></td>
+      <td width="50%" align="center"><a href="packages/opencode-music-player/README.md"><img src="docs/media/opencode-music-player/sidebar.png" alt="OpenCode sidebar music player" width="280" /><br /><sub><b>@naxodev/opencode-music-player</b> — sidebar player for OpenCode</sub></a></td>
+    </tr>
+  </table>
+</p>
+
 ## Packages
 
 | Package                                                                      | Purpose                                           | Platform and host support                              |
