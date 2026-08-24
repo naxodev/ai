@@ -57,6 +57,10 @@ set -g allow-passthrough on
 
 ## Install
 
+![OpenCode music sidebar showing First Light, demo cover artwork, seek bar, and transport controls](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/opencode-music-player/preview.png)
+
+[Watch the silent player demo (19 seconds)](https://cap.so/s/97eecxhba8e6vs1): pause, resume, seek, and collapse the sidebar. The real interface uses staged media and original cover artwork.
+
 Add the package to `plugins` in your global `~/.config/opencode/cli.json` (or `$XDG_CONFIG_HOME/opencode/cli.json`):
 
 ```jsonc

@@ -11,6 +11,10 @@ Pi adapter for the [Apnea workflow engine](../apnea/README.md). It registers Apn
 
 ## Install
 
+![Pi displaying Apnea's command reference and a labeled scripted demonstration](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/pi-apnea/preview.png)
+
+The real extension's help handler runs inside Pi. This screenshot shows the command surface, not a completed orchestration run. Follow the [quickstart](#quickstart) to start and inspect your own workflow.
+
 ```sh
 pi install npm:@naxodev/pi-apnea
 ```
