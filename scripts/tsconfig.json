@@ -1,10 +1,8 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "exactOptionalPropertyTypes": true,
-    "jsx": "preserve",
-    "jsxImportSource": "@opentui/solid",
-    "lib": ["DOM", "ESNext"],
+    "lib": ["ESNext"],
     "module": "Preserve",
     "moduleDetection": "force",
     "noFallthroughCasesInSwitch": true,
@@ -12,8 +10,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "target": "ESNext",
-    "types": ["bun"],
-    "ignoreDeprecations": "6.0"
+    "types": ["bun"]
   },
-  "include": ["**/*.ts", "**/*.tsx"]
+  "include": ["**/*.ts"]
 }
