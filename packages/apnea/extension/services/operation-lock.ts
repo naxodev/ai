@@ -190,6 +190,9 @@ function writeCandidate(directory: string, owner: Owner): void {
   fsyncDirectory(directory)
 }
 
+// The caller either releases its own live owner or holds the reclamation guard.
+// A live owner cannot be reclaimed. Stale removers must serialize the token
+// check and rename; checking the token after rename cannot undo displacement.
 function moveOwnedToTombstone(lock: string, token: string): string | null {
   if (readOwner(lock)?.token !== token) return null
   const tombstone = `${lock}.tombstone.${crypto.randomUUID()}`
@@ -270,7 +273,7 @@ function acquireLock(
     if (
       reclaim !== undefined &&
       lockAgeMs(lock, reclaim.now()) >= reclaim.graceMs &&
-      removeStaleOwner(lock, existing.token)
+      removeStaleOwner(lock, existing.token, resource)
     ) {
       // Dead owner past the freshness grace: a crashed holder. Reclaiming
       // lets crash-recoverable operations (e.g. a durable commit
@@ -307,14 +310,45 @@ function lockAgeMs(lock: string, nowMs: number): number {
 }
 
 /**
- * Remove a validated stale owner atomically: the tombstone rename re-checks
- * the token, so a concurrently refreshed lock is never displaced.
+ * Only one stale remover may validate ownership and rename the canonical path.
+ * Publication needs no guard: the old nonempty directory excludes candidates
+ * until rename, and this remover never renames the canonical path again.
+ * A delayed remover must acquire the guard and recheck the token, so it cannot
+ * displace a replacement. Live-owner release cannot race a matching stale
+ * removal because processIsAlive refuses that owner.
+ *
+ * The guard is deliberately not reclaimable. A crash here requires manual
+ * removal of `${lock}.reclaim` after all Apnea processes using this lock stop.
+ * Recursively reclaiming a stale guard would reintroduce the same race.
  */
-function removeStaleOwner(lock: string, token: string): boolean {
-  const tombstone = moveOwnedToTombstone(lock, token)
-  if (tombstone === null) return false
-  fs.rmSync(tombstone, { recursive: true, force: true })
-  return true
+function removeStaleOwner(
+  lock: string,
+  token: string,
+  resource: string,
+): boolean {
+  const guard = `${lock}.reclaim`
+  try {
+    fs.mkdirSync(guard, { mode: 0o700 })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+    throw new OperationLocked({
+      message:
+        `Apnea stale-lock reclamation is guarded at ${guard}. Retry after the other operation completes. ` +
+        `If the guard persists, stop all Apnea processes using ${lock}, then remove this guard directory manually: ${guard}`,
+      repository: resource,
+      lock_path: lock,
+      reason: "stale",
+      pid: 0,
+    })
+  }
+  try {
+    const tombstone = moveOwnedToTombstone(lock, token)
+    if (tombstone === null) return false
+    fs.rmSync(tombstone, { recursive: true, force: true })
+    return true
+  } finally {
+    fs.rmdirSync(guard)
+  }
 }
 
 function withLock<A, E, R>(

@@ -25,12 +25,16 @@ this tool at a repository.
   the ref moves, so index failure cannot advance the branch. An unrelated external Git process can
   still race that real-index replacement; the repository lock coordinates Apnea processes, not
   arbitrary Git clients.
-- **Repository locks identify owners by PID plus a random token.** The token prevents one owner
-  from deleting a replacement lock. Apnea never reclaims dead or malformed locks automatically:
-  it reports the validated lock path and requires manual cleanup after the user verifies no owner
-  remains. PID reuse can keep a dead lock looking live because there is no portable
-  process-creation identity across supported platforms; this also fails closed. Global setup waits
-  only when the recorded PID is currently live; it never retries stale or malformed ownership.
+- **Repository locks identify owners by PID plus a random token.** Apnea reclaims a valid dead
+  owner after the grace period. An atomic `<lock-path>.reclaim` directory serializes stale
+  removers across their token check and canonical rename, preserving every replacement owner.
+  A crashed remover can leave this guard behind. Apnea never reclaims the guard automatically:
+  doing so would introduce the same ownership race. If an error reports a stranded guard, stop
+  all Apnea processes using that lock before manually removing the reported guard path.
+  Malformed locks require manual cleanup after verifying that no owner remains. PID reuse can
+  keep a dead lock looking live because there is no portable process-creation identity across
+  supported platforms; this also fails closed. Global setup waits only when the recorded PID is
+  currently live; it never retries stale or malformed ownership.
 - **Setup serializes account-global configuration and role resources.** Every setup holds one
   same-user lock keyed by the canonical account home for its full read/merge/write and role-agent
   materialization. Setup takes this global lock before an optional repository lock. Global config
