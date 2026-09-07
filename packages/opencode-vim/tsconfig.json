@@ -15,5 +15,5 @@
     "types": ["bun"],
     "ignoreDeprecations": "6.0"
   },
-  "include": ["*.ts", "*.tsx", "scripts/**/*.ts", "tests/**/*.ts"]
+  "include": ["**/*.ts", "**/*.tsx"]
 }

@@ -45,6 +45,9 @@ describe("release policy", () => {
       ),
     ) as { version: string }
     const [major, minor, patch] = manifest.version.split(".").map(Number)
+    if (major === undefined || minor === undefined || patch === undefined) {
+      throw new Error(`Expected a three-part version, got ${manifest.version}`)
+    }
     expect(projectsVersionData.apnea?.newVersion).toBe(
       `${major}.${minor}.${patch + 1}`,
     )
