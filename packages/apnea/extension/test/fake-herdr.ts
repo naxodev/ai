@@ -106,28 +106,28 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
             : opts.foreground) ?? [],
       ),
 
-    runInteractivePrompt: (role, cmd, prompt, prefer) =>
+    runInteractivePrompt: (role, cmd, prompt, prefer, beforeDelivery) =>
       Effect.gen(function* () {
         recorder.interactiveCalls.push({ role, cmd, prompt, prefer })
+        if (opts.interactive instanceof HerdrError) {
+          return yield* opts.interactive
+        }
+        const launch = opts.interactive ?? {
+          pane_id: "pane-1",
+          label: `apnea:${role}:fake`,
+          reused: false,
+          prompt_accepted: true,
+          prompt_attempts: 1,
+          last_status: "working",
+        }
+        if (beforeDelivery) yield* beforeDelivery(launch)
         if (opts.interactiveDelayMs) {
           // Models the real `waitAgentReady` block inside
           // `runInteractivePrompt` (services/herdr.ts) so a test can assert
           // what a slow launch does to clock-anchored state.
           yield* TestClock.adjust(opts.interactiveDelayMs)
         }
-        if (opts.interactive instanceof HerdrError) {
-          return yield* opts.interactive
-        }
-        return (
-          opts.interactive ?? {
-            pane_id: "pane-1",
-            label: `apnea:${role}:fake`,
-            reused: false,
-            prompt_accepted: true,
-            prompt_attempts: 1,
-            last_status: "working",
-          }
-        )
+        return launch
       }),
   }
 

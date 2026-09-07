@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, Result } from "effect"
+import { Effect, Exit, Fiber, Latch, Layer, Result } from "effect"
 import { TestClock } from "effect/testing"
 import { describe, expect, test } from "bun:test"
 import { statePath } from "../domain/paths.ts"
@@ -11,6 +11,12 @@ import { fakeHerdrLayer } from "../test/fake-herdr.ts"
 import { fakeVcsLayer } from "../test/fake-vcs.ts"
 import { itEffect } from "../test/it-effect.ts"
 import { RunStoreLive } from "../services/run-store.ts"
+import { HerdrLive } from "../services/herdr.ts"
+import {
+  Process,
+  ProcessExitError,
+  type ProcessService,
+} from "../services/process.ts"
 import {
   applyProjectConfig,
   decodeGlobalConfig,
@@ -22,6 +28,28 @@ import { waitWorkflow } from "./wait.ts"
 
 const ROOT = "/proj"
 
+function withHerdrEnvironment<A, E, R>(effect: Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = {
+        enabled: process.env.HERDR_ENV,
+        pane: process.env.HERDR_PANE_ID,
+      }
+      process.env.HERDR_ENV = "1"
+      process.env.HERDR_PANE_ID = "parent-pane"
+      return previous
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous.enabled === undefined) delete process.env.HERDR_ENV
+        else process.env.HERDR_ENV = previous.enabled
+        if (previous.pane === undefined) delete process.env.HERDR_PANE_ID
+        else process.env.HERDR_PANE_ID = previous.pane
+      }),
+  )
+}
+
 const INTERACTIVE_CFG: ApneaConfig = {
   profiles: { pi: { cmd_interactive: ["pi"], cmd_oneshot: ["pi", "-p"] } },
   roles: {
@@ -31,6 +59,21 @@ const INTERACTIVE_CFG: ApneaConfig = {
   },
   review_round_cap: 3,
   timeouts_ms: { verify: 900_000 },
+}
+
+function liveHerdrLayer(
+  fakeFs: ReturnType<typeof makeFakeFileSystem>,
+  processService: ProcessService,
+) {
+  return Layer.mergeAll(
+    Layer.provideMerge(RunStoreLive, fakeFs.layer),
+    fakeConfigLayer(INTERACTIVE_CFG),
+    fakeVcsLayer().layer,
+    HerdrLive.pipe(
+      Layer.provide(Layer.succeed(Process, Process.of(processService))),
+    ),
+    TestClock.layer(),
+  )
 }
 
 /** Apnea dispatch cannot use a profile that only supports oneshot workflows. */
@@ -715,7 +758,7 @@ describe("dispatchWorkflow (fake layers)", () => {
           failWrite: (path) => {
             if (path !== statePath(ROOT)) return null
             stateWrites += 1
-            return stateWrites === 2
+            return stateWrites === 3
               ? new Error("final interactive state save failed")
               : null
           },
@@ -727,16 +770,19 @@ describe("dispatchWorkflow (fake layers)", () => {
           dispatchWorkflow({ kind: "plan" }, ROOT),
         )
         expect(Exit.isFailure(initial)).toBe(true)
-        expect(stateWrites).toBe(2)
+        expect(stateWrites).toBe(3)
         expect(first.herdr.interactiveCalls).toHaveLength(1)
         expect(savedState(fsFake).pending_artifact).toBe(
           ".apnea/artifacts/plan.md",
         )
         expect(savedState(fsFake).pending_delivery).toBe("interactive")
-        expect(savedState(fsFake).pending_pane_id).toBeNull()
+        expect(savedState(fsFake).pending_pane_id).toBe("pane-1")
 
         const retry = layerOf(fsFake, {
-          herdr: { availability: "available" },
+          herdr: {
+            availability: "available",
+            pane: () => ({ ok: false }),
+          },
         })
         const result = yield* Effect.result(
           dispatchWorkflow({ kind: "plan", redeliver: true }, ROOT).pipe(
@@ -745,7 +791,7 @@ describe("dispatchWorkflow (fake layers)", () => {
         )
         const failure = expectFailure(result, "GateRefused")
         expect(failure.gate).toBe("redelivery")
-        expect(failure.message).toContain("ambiguous")
+        expect(failure.details?.liveness).toBe("ambiguous")
         expect(retry.herdr.interactiveCalls).toHaveLength(0)
       }).pipe(Effect.provide(first.layer))
     },
@@ -1708,5 +1754,376 @@ describe("dispatchWorkflow — brief resolution", () => {
       expect(msg.split("/pkg/briefs/planner.md").length - 1).toBe(1)
       expect(msg).not.toContain(" and ")
     }).pipe(Effect.provide(layer))
+  })
+})
+
+describe("dispatchWorkflow through the real Herdr adapter", () => {
+  for (const failure of [null, "persistence", "split"] as const) {
+    itEffect(
+      failure
+        ? `cancellation with failed ${failure} restores the prior run`
+        : "cancellation during a split response saves the created pane for recovery",
+      () => {
+        let saves = 0
+        const fakeFs = makeFakeFileSystem(
+          {
+            [statePath(ROOT)]:
+              `${JSON.stringify(baseState({ required_rework: "plan" }), null, 2)}\n`,
+            [`${ROOT}/.apnea/artifacts/plan.md`]: "prior plan",
+            ...briefFiles("/pkg"),
+          },
+          {
+            failWrite: (path) =>
+              failure === "persistence" &&
+              path === statePath(ROOT) &&
+              ++saves === 2
+                ? new Error("ownership save failed")
+                : null,
+          },
+        )
+        const before = new Map(fakeFs.files)
+        return withHerdrEnvironment(
+          Effect.gen(function* () {
+            const created = yield* Latch.make()
+            const response = yield* Latch.make()
+            let sent = false
+            let closed = false
+            const processService: ProcessService = {
+              run: ({ args = [] }) =>
+                Effect.gen(function* () {
+                  if (args[1] === "split") {
+                    yield* created.open
+                    yield* response.await
+                    if (failure === "split") {
+                      return yield* Effect.fail(
+                        new ProcessExitError(
+                          "herdr pane split",
+                          1,
+                          "",
+                          "split refused",
+                        ),
+                      )
+                    }
+                  }
+                  if (args[1] === "run") sent = true
+                  if (args[1] === "close") closed = true
+                  const json =
+                    args[1] === "layout"
+                      ? { layout: { panes: [] } }
+                      : {
+                          pane: {
+                            pane_id: "created-pane",
+                            agent_status: "idle",
+                          },
+                        }
+                  return {
+                    exitCode: 0,
+                    stdout: JSON.stringify(json),
+                    stderr: "",
+                  }
+                }),
+            }
+            yield* Effect.gen(function* () {
+              const fiber = yield* Effect.forkChild(
+                dispatchWorkflow({ kind: "plan" }, ROOT),
+              )
+              yield* created.await
+              const abort = yield* Effect.forkChild(Fiber.interrupt(fiber), {
+                startImmediately: true,
+              })
+              yield* response.open
+              yield* Fiber.join(abort)
+              expect(sent).toBe(false)
+              if (failure) {
+                expect(closed).toBe(failure === "persistence")
+                expect(fakeFs.files).toEqual(before)
+                const retry = layerOf(fakeFs)
+                const result = yield* dispatchWorkflow(
+                  { kind: "plan" },
+                  ROOT,
+                ).pipe(Effect.provide(retry.layer))
+                expect(result.ok).toBe(true)
+                expect(retry.herdr.interactiveCalls).toHaveLength(1)
+                return
+              }
+              expect(savedState(fakeFs).pending_pane_id).toBe("created-pane")
+              expect(taskFiles(fakeFs)).toHaveLength(1)
+              expectFailure(
+                yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT)),
+                "GateRefused",
+              )
+              const recovered = layerOf(fakeFs, {
+                herdr: { pane: () => ({ ok: false, missing: true }) },
+              })
+              const result = yield* dispatchWorkflow(
+                { kind: "plan", redeliver: true },
+                ROOT,
+              ).pipe(Effect.provide(recovered.layer))
+              expect(result.ok).toBe(true)
+              expect(recovered.herdr.interactiveCalls).toHaveLength(1)
+            }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService)))
+          }),
+        )
+      },
+    )
+  }
+
+  itEffect(
+    "failed pane persistence prevents delivery and restores the previous run state",
+    () => {
+      const state = baseState()
+      let saves = 0
+      const fakeFs = makeFakeFileSystem(
+        {
+          [statePath(ROOT)]: `${JSON.stringify(state, null, 2)}\n`,
+          ...briefFiles("/pkg"),
+        },
+        {
+          failWrite: (path) =>
+            path === statePath(ROOT) && ++saves === 2
+              ? new Error("pane ownership disk full")
+              : null,
+        },
+      )
+      const before = new Map(fakeFs.files)
+      const commands: string[][] = []
+      const processService: ProcessService = {
+        run: ({ args = [] }) =>
+          Effect.sync(() => {
+            commands.push([...args])
+            const json =
+              args[1] === "layout"
+                ? { layout: { panes: [] } }
+                : { pane: { pane_id: "new-pane", agent_status: "idle" } }
+            return { exitCode: 0, stdout: JSON.stringify(json), stderr: "" }
+          }),
+      }
+      return withHerdrEnvironment(
+        Effect.gen(function* () {
+          const result = yield* Effect.result(
+            dispatchWorkflow({ kind: "plan" }, ROOT),
+          )
+          const failure = expectFailure(result, "HerdrError")
+          expect(failure.message).toContain("pane ownership disk full")
+          expect(commands.some((args) => args[1] === "run")).toBe(false)
+          expect(commands.filter((args) => args[1] === "close")).toEqual([
+            ["pane", "close", "new-pane"],
+          ])
+          expect(fakeFs.files).toEqual(before)
+        }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService))),
+      )
+    },
+  )
+
+  itEffect(
+    "a readiness failure closes only the new pane and restores the prior task state",
+    () => {
+      const fakeFs = seedFs(baseState({ required_rework: "plan" }), {
+        [`${ROOT}/.apnea/artifacts/plan.md`]: "prior plan",
+      })
+      const before = new Map(fakeFs.files)
+      const closed: string[] = []
+      let launched = false
+      let taskSent = false
+      const processService: ProcessService = {
+        run: ({ args = [] }) =>
+          Effect.sync(() => {
+            if (args[1] === "close") closed.push(args[2] ?? "")
+            if (args[1] === "run") {
+              launched = true
+              taskSent = args[3]?.startsWith("You are") ?? false
+            }
+            if (args[1] === "get" && launched)
+              return { exitCode: 0, stdout: "not-json", stderr: "" }
+            const json =
+              args[1] === "layout"
+                ? { layout: { panes: [] } }
+                : { pane: { pane_id: "new-pane", agent_status: "idle" } }
+            return { exitCode: 0, stdout: JSON.stringify(json), stderr: "" }
+          }),
+      }
+      return withHerdrEnvironment(
+        Effect.gen(function* () {
+          const result = yield* Effect.result(
+            dispatchWorkflow({ kind: "plan" }, ROOT),
+          )
+          const failure = expectFailure(result, "HerdrError")
+          expect(failure.message).toContain("malformed JSON")
+          expect(taskSent).toBe(false)
+          expect(closed).toEqual(["new-pane"])
+          expect(fakeFs.files).toEqual(before)
+        }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService))),
+      )
+    },
+  )
+
+  itEffect(
+    "cancellation while starting a new pane preserves acquired ownership",
+    () => {
+      const fakeFs = seedFs(baseState())
+      return withHerdrEnvironment(
+        Effect.gen(function* () {
+          const starting = yield* Latch.make()
+          let label = ""
+          let taskSent = false
+          const processService: ProcessService = {
+            run: ({ args = [] }) =>
+              Effect.gen(function* () {
+                if (args[1] === "run") {
+                  taskSent = args[3]?.startsWith("You are") ?? false
+                  yield* starting.open
+                  return yield* Effect.never
+                }
+                if (args[1] === "rename") label = args[3] ?? ""
+                const json =
+                  args[1] === "layout"
+                    ? { layout: { panes: [] } }
+                    : { pane: { pane_id: "new-pane", agent_status: "idle" } }
+                return { exitCode: 0, stdout: JSON.stringify(json), stderr: "" }
+              }),
+          }
+          yield* Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(
+              dispatchWorkflow({ kind: "plan" }, ROOT),
+            )
+            yield* starting.await
+            yield* Fiber.interrupt(fiber)
+            expect(taskSent).toBe(false)
+            expect(savedState(fakeFs).pending_pane_id).toBe("new-pane")
+            expect(savedState(fakeFs).pending_pane_label).toBe(label)
+            expect(taskFiles(fakeFs)).toHaveLength(1)
+          }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService)))
+        }),
+      )
+    },
+  )
+
+  for (const stage of ["submission", "acceptance"] as const) {
+    itEffect(
+      `cancellation during ${stage} retains the pane needed for recovery`,
+      () => {
+        const fakeFs = seedFs(
+          baseState({
+            role_panes: {
+              planner: {
+                pane_id: "role-pane",
+                label: "apnea:planner:existing",
+                profile_fingerprint: '["pi",["pi"]]',
+              },
+            },
+          }),
+        )
+        return withHerdrEnvironment(
+          Effect.gen(function* () {
+            const sending = yield* Latch.make()
+            let sent = false
+            const processService: ProcessService = {
+              run: ({ args = [] }) =>
+                Effect.gen(function* () {
+                  if (args[1] === "run") sent = true
+                  if (
+                    sent &&
+                    ((stage === "submission" && args[1] === "run") ||
+                      (stage === "acceptance" && args[1] === "get"))
+                  ) {
+                    yield* sending.open
+                    return yield* Effect.never
+                  }
+                  return {
+                    exitCode: 0,
+                    stdout: JSON.stringify({ pane: { agent_status: "idle" } }),
+                    stderr: "",
+                  }
+                }),
+            }
+            yield* Effect.gen(function* () {
+              const fiber = yield* Effect.forkChild(
+                dispatchWorkflow({ kind: "plan" }, ROOT),
+              )
+              yield* TestClock.adjust(2500)
+              yield* sending.await
+              const beforeAbort = savedState(fakeFs)
+              yield* Fiber.interrupt(fiber)
+              expect(beforeAbort.pending_pane_id).toBe("role-pane")
+              expect(beforeAbort.pending_pane_label).toBe(
+                "apnea:planner:existing",
+              )
+              expect(savedState(fakeFs).pending_pane_id).toBe("role-pane")
+              expect(savedState(fakeFs).pending_artifact).toBe(
+                ".apnea/artifacts/plan.md",
+              )
+              expect(taskFiles(fakeFs)).toHaveLength(1)
+              const retry = yield* Effect.result(
+                dispatchWorkflow({ kind: "plan" }, ROOT),
+              )
+              expectFailure(retry, "GateRefused")
+            }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService)))
+          }),
+        )
+      },
+    )
+  }
+
+  itEffect("a failed acceptance query cannot discard a delivered task", () => {
+    const fakeFs = seedFs(baseState())
+    let sent = false
+    let label = ""
+    const commands: string[][] = []
+    const processService: ProcessService = {
+      run: ({ args = [] }) =>
+        Effect.sync(() => {
+          commands.push([...args])
+          let json: unknown = {}
+          if (args[1] === "layout") {
+            json = { layout: { panes: [] } }
+          } else if (args[1] === "split") {
+            json = { pane: { pane_id: "role-pane" } }
+          } else if (args[1] === "rename") {
+            label = args[3] ?? ""
+          } else if (args[1] === "run" && args[3]?.startsWith("You are")) {
+            sent = true
+          } else if (args[1] === "get") {
+            if (sent) return { exitCode: 0, stdout: "not-json", stderr: "" }
+            json = { pane: { agent_status: "idle", label } }
+          }
+          return { exitCode: 0, stdout: JSON.stringify(json), stderr: "" }
+        }),
+    }
+    return withHerdrEnvironment(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT)),
+        )
+        yield* TestClock.adjust(2500)
+        const failure = expectFailure(yield* Fiber.join(fiber), "HerdrError")
+        expect(failure.message).toContain("malformed JSON")
+        expect(failure.details?.pending_preserved).toBe(true)
+        expect(sent).toBe(true)
+        expect(taskFiles(fakeFs)).toHaveLength(1)
+        expect(savedState(fakeFs).pending_artifact).toBe(
+          ".apnea/artifacts/plan.md",
+        )
+        expect(savedState(fakeFs).pending_pane_id).toBe("role-pane")
+        expect(savedState(fakeFs).pending_pane_label).toBe(label)
+        expect(commands.some((args) => args[1] === "close")).toBe(false)
+        const retry = yield* Effect.result(
+          dispatchWorkflow({ kind: "plan" }, ROOT),
+        )
+        expectFailure(retry, "GateRefused")
+        expect(
+          commands.filter(
+            (args) => args[1] === "run" && args[3]?.startsWith("You are"),
+          ),
+        ).toHaveLength(1)
+        fakeFs.files.set(
+          `${ROOT}/.apnea/artifacts/plan.md`,
+          "---\nstatus: done\n---\n# Plan\n",
+        )
+        const completed = yield* waitWorkflow({}, ROOT)
+        expect(completed.ok).toBe(true)
+        expect(savedState(fakeFs).step).toBe("plan_review")
+        expect(savedState(fakeFs).pending_artifact).toBeNull()
+      }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService))),
+    )
   })
 })

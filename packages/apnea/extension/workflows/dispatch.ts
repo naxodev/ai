@@ -39,7 +39,7 @@ import { ok, type ToolResult } from "../result.ts"
 import { validateArtifactCompletion } from "../schema/frontmatter.ts"
 import { Config } from "../services/config.ts"
 import { FileSystem } from "../services/file-system.ts"
-import { Herdr } from "../services/herdr.ts"
+import { Herdr, type RolePaneRef } from "../services/herdr.ts"
 import { RunStore } from "../services/run-store.ts"
 import { Vcs } from "../services/vcs.ts"
 
@@ -701,8 +701,40 @@ export const dispatchWorkflow = (
     const remembered = state.role_panes[role] ?? null
     const prefer =
       remembered?.profile_fingerprint === profileFingerprint ? remembered : null
+    const recordPaneOwnership = (pane: RolePaneRef) => {
+      state.pending_pane_id = pane.pane_id
+      state.pending_pane_label = pane.label
+      state.role_panes[role] = {
+        pane_id: pane.pane_id,
+        label: pane.label,
+        profile_fingerprint: profileFingerprint,
+      }
+    }
+    let acquisitionRollbackErrors: string[] | undefined
     const launched = yield* Effect.result(
-      herdr.runInteractivePrompt(role, cmd, prompt, prefer),
+      herdr.runInteractivePrompt(
+        role,
+        cmd,
+        prompt,
+        prefer,
+        (pane) =>
+          Effect.gen(function* () {
+            recordPaneOwnership(pane)
+            const persisted = yield* Effect.exit(store.save(state, root))
+            if (Exit.isFailure(persisted)) {
+              // Restore proven non-delivery while the adapter still masks
+              // cancellation. A pending interruption can hide the typed failure.
+              acquisitionRollbackErrors = yield* rollbackLaunch()
+              return yield* new HerdrError({
+                message: `failed to persist pane ownership before delivery: ${Cause.pretty(persisted.cause)}`,
+              })
+            }
+          }),
+        () =>
+          Effect.gen(function* () {
+            acquisitionRollbackErrors = yield* rollbackLaunch()
+          }),
+      ),
     )
     if (Result.isFailure(launched)) {
       if (launched.failure.details?.delivery === "unknown") {
@@ -715,13 +747,7 @@ export const dispatchWorkflow = (
         const preserved =
           typeof paneId === "string" && typeof paneLabel === "string"
         if (preserved) {
-          state.pending_pane_id = paneId
-          state.pending_pane_label = paneLabel
-          state.role_panes[role] = {
-            pane_id: paneId,
-            label: paneLabel,
-            profile_fingerprint: profileFingerprint,
-          }
+          recordPaneOwnership({ pane_id: paneId, label: paneLabel })
         }
         yield* store.save(state, root)
         return yield* new HerdrError({
@@ -737,7 +763,8 @@ export const dispatchWorkflow = (
           },
         })
       }
-      const rollbackErrors = yield* rollbackLaunch()
+      const rollbackErrors =
+        acquisitionRollbackErrors ?? (yield* rollbackLaunch())
       return yield* herdrAfterRollback(
         launched.failure,
         {
@@ -759,13 +786,7 @@ export const dispatchWorkflow = (
       prompt_attempts: r.prompt_attempts,
       last_status: r.last_status ?? null,
     }
-    state.pending_pane_id = r.pane_id
-    state.pending_pane_label = r.label
-    state.role_panes[role] = {
-      pane_id: r.pane_id,
-      label: r.label,
-      profile_fingerprint: profileFingerprint,
-    }
+    recordPaneOwnership(r)
 
     // After the launch, not before it: `runInteractivePrompt` blocks in
     // `waitAgentReady` (up to 90s) plus prompt-submit retries. Anchoring at

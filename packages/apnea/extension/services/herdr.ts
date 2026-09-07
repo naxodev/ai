@@ -23,6 +23,10 @@ export type PaneInfo = {
   agent?: string
 }
 export type RolePaneRef = { pane_id: string; label: string }
+/** Persist pane ownership before any task prompt can reach the pane. */
+export type BeforeInteractiveDelivery = (
+  pane: RolePaneRef,
+) => Effect.Effect<void, HerdrError>
 export type HerdrAvailability = "available" | "unavailable"
 export type InteractiveLaunch = {
   pane_id: string
@@ -51,6 +55,8 @@ export interface HerdrService {
     interactiveCmd: string[],
     prompt: string,
     prefer: RolePaneRef | null,
+    beforeDelivery?: BeforeInteractiveDelivery,
+    onAcquisitionFailure?: () => Effect.Effect<void>,
   ) => Effect.Effect<InteractiveLaunch, HerdrError>
 }
 
@@ -663,6 +669,8 @@ function acquireRolePane(
     prefer?: RolePaneRef | null
     /** Launch interactive harness only when creating a new pane */
     interactiveCmd?: string[]
+    beforeDelivery?: BeforeInteractiveDelivery
+    onAcquisitionFailure?: () => Effect.Effect<void>
   },
 ): Effect.Effect<RolePaneRef & { reused: boolean }, HerdrError> {
   return Effect.gen(function* () {
@@ -676,6 +684,9 @@ function acquireRolePane(
       opts?.prefer?.pane_id &&
       (yield* paneGet(processService, opts.prefer.pane_id)).ok
     ) {
+      if (opts.beforeDelivery) {
+        yield* Effect.uninterruptible(opts.beforeDelivery(opts.prefer))
+      }
       return {
         pane_id: opts.prefer.pane_id,
         label: opts.prefer.label,
@@ -685,17 +696,41 @@ function acquireRolePane(
 
     const millis = yield* Clock.currentTimeMillis
     const label = roleLabel(role, millis)
-    const split = yield* Effect.result(splitPane(processService))
-    if (Result.isFailure(split)) {
-      return yield* withLaunchDetails(split.failure, {
-        delivery:
-          split.failure.details?.delivery === "unknown"
-            ? "unknown"
-            : "not_delivered",
-        newly_created: false,
-      })
-    }
-    const paneId = split.success
+    // A split can create a pane before its response arrives. Finish the bounded
+    // acquisition and ownership save before observing cancellation.
+    const paneId = yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        const split = yield* Effect.result(splitPane(processService))
+        if (Result.isFailure(split)) {
+          // Restore proven non-delivery before a pending interruption can hide
+          // the split failure when this acquisition mask exits.
+          if (split.failure.details?.delivery !== "unknown") {
+            yield* opts?.onAcquisitionFailure?.() ?? Effect.void
+          }
+          return yield* withLaunchDetails(split.failure, {
+            delivery:
+              split.failure.details?.delivery === "unknown"
+                ? "unknown"
+                : "not_delivered",
+            newly_created: false,
+          })
+        }
+        const paneId = split.success
+        if (opts?.beforeDelivery) {
+          const persisted = yield* Effect.result(
+            opts.beforeDelivery({ pane_id: paneId, label }),
+          )
+          if (Result.isFailure(persisted)) {
+            return yield* cleanupFailedInteractiveLaunch(
+              persisted.failure,
+              paneId,
+              (id) => paneClose(processService, id),
+            )
+          }
+        }
+        return paneId
+      }),
+    )
     const prepared = yield* Effect.result(
       Effect.gen(function* () {
         yield* renamePane(processService, paneId, label)
@@ -748,6 +783,8 @@ function runInteractivePromptImpl(
   interactiveCmd: string[],
   prompt: string,
   prefer: RolePaneRef | null,
+  beforeDelivery?: BeforeInteractiveDelivery,
+  onAcquisitionFailure?: () => Effect.Effect<void>,
 ): Effect.Effect<InteractiveLaunch, HerdrError> {
   return Effect.gen(function* () {
     let preferUse: RolePaneRef | null = null
@@ -767,37 +804,61 @@ function runInteractivePromptImpl(
     const acquired = yield* acquireRolePane(processService, role, hostAdapter, {
       prefer: preferUse,
       interactiveCmd: preferUse ? undefined : interactiveCmd,
+      beforeDelivery,
+      onAcquisitionFailure,
     })
 
-    if (!acquired.reused) {
-      yield* waitAgentReady(processService, acquired.pane_id, 90_000)
-      // still try even if not idle/done — some harnesses accept input
-      // before status settles.
-    } else {
-      const st = (yield* paneGet(processService, acquired.pane_id)).agent_status
-      if (st !== "idle" && st !== "done") {
-        yield* waitAgentReady(processService, acquired.pane_id, 30_000)
-      }
-    }
+    const ready = yield* Effect.result(
+      Effect.gen(function* () {
+        if (!acquired.reused) {
+          yield* waitAgentReady(processService, acquired.pane_id, 90_000)
+          // Some harnesses accept input before status settles.
+        } else {
+          const st = (yield* paneGet(processService, acquired.pane_id))
+            .agent_status
+          if (st !== "idle" && st !== "done") {
+            yield* waitAgentReady(processService, acquired.pane_id, 30_000)
+          }
+        }
 
-    const beforePrompt = hostAdapter.beforeInteractivePrompt?.(interactiveCmd)
-    if (beforePrompt) {
-      // Host preparation is best-effort; command wrapping is the primary guard.
-      yield* Effect.gen(function* () {
-        yield* paneRun(processService, acquired.pane_id, beforePrompt)
-        yield* waitAgentReady(processService, acquired.pane_id, 5_000)
-        yield* Effect.sleep(300)
-      }).pipe(Effect.ignore)
+        const beforePrompt =
+          hostAdapter.beforeInteractivePrompt?.(interactiveCmd)
+        if (beforePrompt) {
+          // Host preparation is best-effort; command wrapping is the primary guard.
+          yield* Effect.gen(function* () {
+            yield* paneRun(processService, acquired.pane_id, beforePrompt)
+            yield* waitAgentReady(processService, acquired.pane_id, 5_000)
+            yield* Effect.sleep(300)
+          }).pipe(Effect.ignore)
+        }
+      }),
+    )
+    if (Result.isFailure(ready)) {
+      if (!acquired.reused) {
+        return yield* cleanupFailedInteractiveLaunch(
+          ready.failure,
+          acquired.pane_id,
+          (id) => paneClose(processService, id),
+        )
+      }
+      return yield* withLaunchDetails(ready.failure, {
+        delivery: "not_delivered",
+      })
     }
 
     // Submit pointer into the live TUI (Herdr: pane run = text + Enter),
     // then confirm the agent actually started — do not trust fire-and-forget.
     const submitted = yield* Effect.result(
-      paneRun(processService, acquired.pane_id, prompt),
+      Effect.gen(function* () {
+        yield* paneRun(processService, acquired.pane_id, prompt)
+        return yield* ensurePromptSubmitted(acquired.pane_id, prompt, {
+          processService,
+        })
+      }),
     )
     if (Result.isFailure(submitted)) {
       return yield* withLaunchDetails(submitted.failure, {
-        // The Herdr CLI can lose its response after the pane accepted text.
+        // Submission or acceptance probing can fail after the pane accepted text.
         // Closing or retrying here could kill or duplicate a live worker.
         delivery: "unknown",
         pane_id: acquired.pane_id,
@@ -805,9 +866,7 @@ function runInteractivePromptImpl(
         reused: acquired.reused,
       })
     }
-    const submit = yield* ensurePromptSubmitted(acquired.pane_id, prompt, {
-      processService,
-    })
+    const submit = submitted.success
     return {
       pane_id: acquired.pane_id,
       label: acquired.label,
