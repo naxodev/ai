@@ -629,6 +629,10 @@ const connection = (
     let session: NegotiatedSession | undefined
     let joined = false
     let highestId = -1
+    // Bound response waiters as well as the coordinator's distinct native reads.
+    // Reuse the mandatory-response capacity as the per-connection waiter budget.
+    // Completed fibers leave the set; disconnect interrupts every remaining waiter.
+    const artworkTasks = yield* FiberSet.make<void, never>()
     const encode = (value: unknown) => {
       const frame = encodeFrame(value)
       return Buffer.byteLength(frame) <= maxFrameBytes
@@ -856,25 +860,39 @@ const connection = (
             "UNSUPPORTED_CAPABILITY",
             "native-artwork was not negotiated",
           )
-        return yield* coordinator.artwork(request.identity).pipe(
-          Effect.matchEffect({
-            onSuccess: (result) =>
-              encode(response(request.requestId, result))
-                ? send(response(request.requestId, result))
-                : send(response(request.requestId, { type: "too-large" })),
-            onFailure: () =>
-              send(
-                failure(
-                  request.requestId,
-                  protocolError(
-                    "PROVIDER_FAILURE",
-                    "native artwork failed",
-                    true,
+        // Admission stays serial. Never wait for a permit here: saturated
+        // artwork must still leave later playback frames admissible.
+        if (
+          (yield* FiberSet.size(artworkTasks)) >= mandatoryOutboundQueueCapacity
+        )
+          return yield* reject(
+            request,
+            "SERVER_BUSY",
+            "too many pending artwork requests",
+          )
+        yield* FiberSet.run(
+          artworkTasks,
+          coordinator.artwork(request.identity).pipe(
+            Effect.matchEffect({
+              onSuccess: (result) =>
+                encode(response(request.requestId, result))
+                  ? send(response(request.requestId, result))
+                  : send(response(request.requestId, { type: "too-large" })),
+              onFailure: () =>
+                send(
+                  failure(
+                    request.requestId,
+                    protocolError(
+                      "PROVIDER_FAILURE",
+                      "native artwork failed",
+                      true,
+                    ),
                   ),
                 ),
-              ),
-          }),
+            }),
+          ),
         )
+        return
       }
       if (request.type === "state")
         return yield* coordinator
@@ -947,7 +965,7 @@ const connection = (
     )
     // EOF completes only after the serial processor has consumed every queued
     // chunk and validated the framer; abrupt close completes immediately.
-    yield* Queue.take(completion)
+    yield* Effect.raceFirst(Queue.take(completion), FiberSet.join(artworkTasks))
   })
 
 /** Scoped Unix listener. Accepted sockets enter a server-owned FiberSet. */
