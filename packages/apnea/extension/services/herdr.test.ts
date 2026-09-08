@@ -99,6 +99,7 @@ describe("probeHerdrAvailability", () => {
 describe("Herdr process boundary", () => {
   test("rejects malformed JSON even when Herdr exits zero", async () => {
     const processService: ProcessService = {
+      runRaw: () => Effect.die("unexpected raw command"),
       run: () =>
         Effect.succeed({ exitCode: 0, stdout: "not-json\n", stderr: "" }),
     }
@@ -114,6 +115,7 @@ describe("Herdr process boundary", () => {
 
   test("rejects missing required pane output on exit zero", async () => {
     const processService: ProcessService = {
+      runRaw: () => Effect.die("unexpected raw command"),
       run: () => Effect.succeed({ exitCode: 0, stdout: "{}\n", stderr: "" }),
     }
     const result = await Effect.runPromise(
@@ -128,6 +130,7 @@ describe("Herdr process boundary", () => {
 
   test("reports mutation timeout as unknown delivery", async () => {
     const processService: ProcessService = {
+      runRaw: () => Effect.die("unexpected raw command"),
       run: (options) =>
         Effect.fail(
           new ProcessTimeoutError(options.command, options.timeoutMs, "", ""),
