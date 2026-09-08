@@ -13,6 +13,25 @@ import {
 } from "./process.ts"
 
 describe("Process", () => {
+  test("raw stdout preserves invalid UTF-8 and NUL bytes while text callers still decode", async () => {
+    const service = makeProcessService()
+    const options = {
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(Buffer.from([0xff, 0, 0xc3, 0x28, 10]))",
+      ],
+      timeoutMs: 2_000,
+    }
+    const bytes = Buffer.from([0xff, 0, 0xc3, 0x28, 10])
+    expect((await Effect.runPromise(service.runRaw(options))).stdout).toEqual(
+      bytes,
+    )
+    expect((await Effect.runPromise(service.run(options))).stdout).toBe(
+      bytes.toString("utf8"),
+    )
+  })
+
   test("bounds output and reports the captured stream", async () => {
     const service = makeProcessService()
     const exit = await Effect.runPromiseExit(

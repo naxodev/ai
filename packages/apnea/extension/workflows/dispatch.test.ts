@@ -1789,6 +1789,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
             let sent = false
             let closed = false
             const processService: ProcessService = {
+              runRaw: () => Effect.die("unexpected raw command"),
               run: ({ args = [] }) =>
                 Effect.gen(function* () {
                   if (args[1] === "split") {
@@ -1888,6 +1889,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
       const before = new Map(fakeFs.files)
       const commands: string[][] = []
       const processService: ProcessService = {
+        runRaw: () => Effect.die("unexpected raw command"),
         run: ({ args = [] }) =>
           Effect.sync(() => {
             commands.push([...args])
@@ -1926,6 +1928,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
       let launched = false
       let taskSent = false
       const processService: ProcessService = {
+        runRaw: () => Effect.die("unexpected raw command"),
         run: ({ args = [] }) =>
           Effect.sync(() => {
             if (args[1] === "close") closed.push(args[2] ?? "")
@@ -1967,6 +1970,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
           let label = ""
           let taskSent = false
           const processService: ProcessService = {
+            runRaw: () => Effect.die("unexpected raw command"),
             run: ({ args = [] }) =>
               Effect.gen(function* () {
                 if (args[1] === "run") {
@@ -2018,6 +2022,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
             const sending = yield* Latch.make()
             let sent = false
             const processService: ProcessService = {
+              runRaw: () => Effect.die("unexpected raw command"),
               run: ({ args = [] }) =>
                 Effect.gen(function* () {
                   if (args[1] === "run") sent = true
@@ -2070,6 +2075,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
     let label = ""
     const commands: string[][] = []
     const processService: ProcessService = {
+      runRaw: () => Effect.die("unexpected raw command"),
       run: ({ args = [] }) =>
         Effect.sync(() => {
           commands.push([...args])

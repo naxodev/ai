@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process"
 import {
   closeSync,
   constants as fsConstants,
@@ -112,69 +111,32 @@ function isUuid(value: string): boolean {
   )
 }
 
-function run(
-  cmd: string,
-  args: string[],
-  cwd: string,
-  env?: NodeJS.ProcessEnv,
-): { ok: boolean; stdout: string; stderr: string; code: number } {
-  const r = spawnSync(cmd, args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 10 * 1024 * 1024,
-    env: env === undefined ? undefined : { ...process.env, ...env },
-  })
-  return {
-    ok: r.status === 0,
-    stdout: (r.stdout ?? "").toString(),
-    stderr: (r.stderr ?? r.error?.message ?? "").toString(),
-    code: r.status ?? 1,
-  }
+type CommandResult = {
+  ok: boolean
+  stdout: string
+  stderr: string
+  code: number
 }
-
-function runRaw(
-  cmd: string,
-  args: string[],
-  cwd: string,
-  env?: NodeJS.ProcessEnv,
-): { ok: boolean; stdout: Buffer; stderr: string; code: number } {
-  const result = spawnSync(cmd, args, {
-    cwd,
-    encoding: null,
-    maxBuffer: 10 * 1024 * 1024,
-    env: env === undefined ? undefined : { ...process.env, ...env },
-  })
-  return {
-    ok: result.status === 0,
-    stdout: result.stdout ?? Buffer.alloc(0),
-    stderr: (result.stderr ?? result.error?.message ?? "").toString("utf8"),
-    code: result.status ?? 1,
-  }
-}
-
-type CommandResult = ReturnType<typeof run>
-export type VcsCommandRunner = typeof run
-export type VcsRawCommandRunner = typeof runRaw
-
-/**
- * Runner for repository-mutating VCS commands. Unlike the synchronous
- * `VcsCommandRunner` (bounded reads over spawnSync), mutations go through
- * the #107 Process service so they carry a hard timeout, kill their process
- * tree on cancellation, and surface typed failures.
- */
-export type VcsMutationRunner = (
+type RawCommandResult = Omit<CommandResult, "stdout"> & { stdout: Buffer }
+export type VcsCommandRunner = (
   command: string,
   args: string[],
   cwd: string,
   env?: NodeJS.ProcessEnv,
 ) => Effect.Effect<CommandResult, VcsError>
+export type VcsRawCommandRunner = (
+  command: string,
+  args: string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+) => Effect.Effect<RawCommandResult, VcsError>
 
-/** Upper bound for a single mutating VCS command (commit-tree, describe, …). */
-export const MUTATING_VCS_TIMEOUT_MS = 120_000
+/** Upper bound for every external VCS command, including reads and hooks. */
+export const VCS_COMMAND_TIMEOUT_MS = 120_000
 
-export function processMutationRunner(
+export function processCommandRunner(
   processService: ProcessService,
-): VcsMutationRunner {
+): VcsCommandRunner {
   return (command, args, cwd, env) =>
     processService
       .run({
@@ -182,7 +144,7 @@ export function processMutationRunner(
         args,
         cwd,
         env: env === undefined ? undefined : { ...process.env, ...env },
-        timeoutMs: MUTATING_VCS_TIMEOUT_MS,
+        timeoutMs: VCS_COMMAND_TIMEOUT_MS,
       })
       .pipe(
         Effect.map((result) => ({
@@ -191,6 +153,16 @@ export function processMutationRunner(
           stderr: result.stderr,
           code: result.exitCode,
         })),
+        // Git uses exit 1 for absent refs and config; only completed exits
+        // may enter a caller's fallback. Timeout and cancellation must fail.
+        Effect.catchTag("ProcessExitError", (error) =>
+          Effect.succeed({
+            ok: false,
+            stdout: error.stdout,
+            stderr: error.stderr,
+            code: error.exitCode,
+          }),
+        ),
         Effect.mapError(
           (error): VcsError =>
             new VcsError({
@@ -201,10 +173,39 @@ export function processMutationRunner(
       )
 }
 
-/** Test seam: lift a synchronous runner into the mutation-runner shape. */
-export function syncMutationRunner(
-  runCommand: VcsCommandRunner,
-): VcsMutationRunner {
+export function processRawRunner(
+  processService: ProcessService,
+): VcsRawCommandRunner {
+  return (command, args, cwd, env) =>
+    processService
+      .runRaw({
+        command,
+        args,
+        cwd,
+        env: env === undefined ? undefined : { ...process.env, ...env },
+        timeoutMs: VCS_COMMAND_TIMEOUT_MS,
+      })
+      .pipe(
+        Effect.map((result) => ({
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          code: result.exitCode,
+        })),
+        Effect.mapError(
+          (error) =>
+            new VcsError({
+              message: `${command} failed: ${error instanceof ProcessExitError ? error.stderr || error.stdout || error.message : error.message}`,
+              command: `${command} ${args[0] ?? ""}`.trim(),
+            }),
+        ),
+      )
+}
+
+/** Test seam: lift a synchronous command adapter into an Effect. */
+export function syncCommandRunner(
+  runCommand: (...args: Parameters<VcsCommandRunner>) => CommandResult,
+): VcsCommandRunner {
   return (command, args, cwd, env) =>
     Effect.sync(() => runCommand(command, args, cwd, env))
 }
@@ -220,9 +221,13 @@ export const UNTRACKED_FINGERPRINT_MAX_BYTES = 256 * 1024 * 1024
 export const UNTRACKED_FINGERPRINT_TIMEOUT_MS = 10_000
 
 function requireCommand(
-  result: CommandResult,
+  result: CommandResult | Effect.Effect<CommandResult, VcsError>,
   command: string,
 ): Effect.Effect<CommandResult, VcsError> {
+  if (Effect.isEffect(result))
+    return result.pipe(
+      Effect.flatMap((value) => requireCommand(value, command)),
+    )
   return result.ok
     ? Effect.succeed(result)
     : Effect.fail(
@@ -234,17 +239,21 @@ function requireCommand(
 }
 
 function requireRawCommand(
-  result: ReturnType<VcsRawCommandRunner>,
+  result: Effect.Effect<RawCommandResult, VcsError>,
   command: string,
-): Effect.Effect<ReturnType<VcsRawCommandRunner>, VcsError> {
-  return result.ok
-    ? Effect.succeed(result)
-    : Effect.fail(
-        new VcsError({
-          message: `${command} failed: ${result.stderr}`,
-          command,
-        }),
-      )
+): Effect.Effect<RawCommandResult, VcsError> {
+  return result.pipe(
+    Effect.flatMap((value) =>
+      value.ok
+        ? Effect.succeed(value)
+        : Effect.fail(
+            new VcsError({
+              message: `${command} failed: ${value.stderr}`,
+              command,
+            }),
+          ),
+    ),
+  )
 }
 
 function splitNullBuffers(value: Buffer): Buffer[] {
@@ -447,7 +456,7 @@ export function treeFingerprintWithCommand(
   root: string,
   vcs: VcsBackend,
   runCommand: VcsCommandRunner,
-  runRawCommand: VcsRawCommandRunner = runRaw,
+  runRawCommand: VcsRawCommandRunner,
 ): Effect.Effect<string, VcsError> {
   return Effect.gen(function* () {
     if (vcs === "jj") {
@@ -463,16 +472,16 @@ export function treeFingerprintWithCommand(
       return digest([result.stdout])
     }
     const pathspec = ["--", ".", ...APNEA_ICASE_EXCLUDES]
-    const staged = yield* requireCommand(
-      runCommand(
+    const staged = yield* requireRawCommand(
+      runRawCommand(
         "git",
         ["diff", "--binary", "--no-ext-diff", "--cached", ...pathspec],
         root,
       ),
       "git diff --cached",
     )
-    const unstaged = yield* requireCommand(
-      runCommand(
+    const unstaged = yield* requireRawCommand(
+      runRawCommand(
         "git",
         ["diff", "--binary", "--no-ext-diff", ...pathspec],
         root,
@@ -517,7 +526,7 @@ export function treeFingerprintWithCommand(
 export function jjRevisionFingerprintWithCommand(
   root: string,
   revision: string,
-  runCommand: VcsCommandRunner = run,
+  runCommand: VcsCommandRunner,
 ): Effect.Effect<string, VcsError> {
   return Effect.gen(function* () {
     const result = yield* requireCommand(
@@ -730,9 +739,7 @@ function gitCurrentBranchWithCommand(
   root: string,
   runCommand: VcsCommandRunner,
 ): Effect.Effect<string | null, VcsError> {
-  return Effect.sync(() =>
-    runCommand("git", ["symbolic-ref", "-q", "HEAD"], root),
-  ).pipe(
+  return runCommand("git", ["symbolic-ref", "-q", "HEAD"], root).pipe(
     Effect.flatMap((result) => {
       if (result.ok) return Effect.succeed(result.stdout.trim())
       if (result.code === 1 && result.stdout.trim() === "") {
@@ -758,7 +765,7 @@ function gitCurrentBranchWithCommand(
 export function gitPrepareWithCommand(
   root: string,
   message: string,
-  runCommand: VcsCommandRunner = run,
+  runCommand: VcsCommandRunner,
 ): Effect.Effect<PreparedCommit, VcsError> {
   return Effect.gen(function* () {
     yield* rejectCaseFoldedApneaAlias(root)
@@ -792,85 +799,80 @@ export function gitPrepareWithCommand(
         command: "git symbolic-ref -q HEAD",
       })
     }
-    const temporary = yield* Effect.try({
-      try: () => mkdtempSync(path.join(tmpdir(), "apnea-index-")),
-      catch: (error) =>
-        new VcsError({
-          message: `could not create isolated Git index: ${error instanceof Error ? error.message : String(error)}`,
-        }),
-    })
-    const index = path.join(temporary, "index")
-    const indexEnv = { GIT_INDEX_FILE: index }
-    try {
-      yield* requireCommand(
-        runCommand("git", ["read-tree", head.stdout.trim()], root, indexEnv),
-        "git read-tree HEAD",
-      )
-      yield* requireCommand(
-        runCommand(
-          "git",
-          ["add", "-A", "--", ".", ...APNEA_ICASE_EXCLUDES],
-          root,
-          indexEnv,
-        ),
-        "git add with isolated index",
-      )
-      yield* rejectCaseFoldedApneaAlias(root)
-      const isolatedRuntime = yield* requireCommand(
-        runCommand(
-          "git",
-          ["ls-files", "-z", "--", APNEA_ICASE_PATHSPEC],
-          root,
-          indexEnv,
-        ),
-        "git ls-files isolated index",
-      )
-      if (isolatedRuntime.stdout.length > 0) {
-        return yield* new VcsError({
-          message: "refusing commit: isolated tree contains .apnea",
-        })
-      }
-      const tree = yield* requireCommand(
-        runCommand("git", ["write-tree"], root, indexEnv),
-        "git write-tree",
-      )
-      const treeRuntime = yield* requireCommand(
-        runCommand(
-          "git",
-          ["ls-tree", "-r", "--name-only", "-z", tree.stdout.trim()],
-          root,
-        ),
-        "git ls-tree isolated tree",
-      )
-      if (
-        treeRuntime.stdout
-          .split("\0")
-          .filter(Boolean)
-          .some((file) => file.split("/", 1)[0]!.toLowerCase() === ".apnea")
-      ) {
-        return yield* new VcsError({
-          message: "refusing commit: written tree contains .apnea",
-        })
-      }
-      const id = randomUUID()
-      return {
-        backend: "git" as const,
-        id,
-        message: withTransactionTrailer(message, id),
-        branch,
-        parent_commit: head.stdout.trim(),
-        tree_id: tree.stdout.trim(),
-      }
-    } finally {
-      yield* Effect.try({
-        try: () => rmSync(temporary, { recursive: true, force: true }),
+    const temporary = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () => mkdtempSync(path.join(tmpdir(), "apnea-index-")),
         catch: (error) =>
           new VcsError({
-            message: `could not remove isolated Git index: ${error instanceof Error ? error.message : String(error)}`,
+            message: `could not create isolated Git index: ${error instanceof Error ? error.message : String(error)}`,
           }),
+      }),
+      (directory) =>
+        Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
+    )
+    // The inner Process finalizer joins descendants before this scope closes.
+    const index = path.join(temporary, "index")
+    const indexEnv = { GIT_INDEX_FILE: index }
+    yield* requireCommand(
+      runCommand("git", ["read-tree", head.stdout.trim()], root, indexEnv),
+      "git read-tree HEAD",
+    )
+    yield* requireCommand(
+      runCommand(
+        "git",
+        ["add", "-A", "--", ".", ...APNEA_ICASE_EXCLUDES],
+        root,
+        indexEnv,
+      ),
+      "git add with isolated index",
+    )
+    yield* rejectCaseFoldedApneaAlias(root)
+    const isolatedRuntime = yield* requireCommand(
+      runCommand(
+        "git",
+        ["ls-files", "-z", "--", APNEA_ICASE_PATHSPEC],
+        root,
+        indexEnv,
+      ),
+      "git ls-files isolated index",
+    )
+    if (isolatedRuntime.stdout.length > 0) {
+      return yield* new VcsError({
+        message: "refusing commit: isolated tree contains .apnea",
       })
     }
-  })
+    const tree = yield* requireCommand(
+      runCommand("git", ["write-tree"], root, indexEnv),
+      "git write-tree",
+    )
+    const treeRuntime = yield* requireCommand(
+      runCommand(
+        "git",
+        ["ls-tree", "-r", "--name-only", "-z", tree.stdout.trim()],
+        root,
+      ),
+      "git ls-tree isolated tree",
+    )
+    if (
+      treeRuntime.stdout
+        .split("\0")
+        .filter(Boolean)
+        .some((file) => file.split("/", 1)[0]!.toLowerCase() === ".apnea")
+    ) {
+      return yield* new VcsError({
+        message: "refusing commit: written tree contains .apnea",
+      })
+    }
+    const id = randomUUID()
+    return {
+      backend: "git" as const,
+      id,
+      message: withTransactionTrailer(message, id),
+      branch,
+      parent_commit: head.stdout.trim(),
+      tree_id: tree.stdout.trim(),
+    }
+  }).pipe(Effect.scoped)
 }
 
 type GitHeadInfo = {
@@ -917,8 +919,7 @@ function gitHeadInfoWithCommand(
 export function gitCompleteWithCommand(
   root: string,
   pending: GitPendingCommit,
-  runCommand: VcsCommandRunner = run,
-  runMutation: VcsMutationRunner = syncMutationRunner(run),
+  runCommand: VcsCommandRunner,
 ): Effect.Effect<string, VcsError> {
   return Effect.gen(function* () {
     if (!isUuid(pending.id)) {
@@ -964,7 +965,7 @@ export function gitCompleteWithCommand(
       runCommand("git", ["cat-file", "-e", `${pending.tree_id}^{tree}`], root),
       `git cat-file -e ${pending.tree_id}^{tree}`,
     )
-    const signing = runCommand(
+    const signing = yield* runCommand(
       "git",
       ["config", "--bool", "commit.gpgsign"],
       root,
@@ -985,7 +986,7 @@ export function gitCompleteWithCommand(
       ...(signing.ok && signing.stdout.trim() === "true" ? ["-S"] : []),
     ]
     const committed = yield* requireCommand(
-      yield* runMutation("git", commitArgs, root),
+      runCommand("git", commitArgs, root),
       "git commit-tree",
     )
 
@@ -996,11 +997,11 @@ export function gitCompleteWithCommand(
     // recover from; staleness is safe because the index is rebuilt from the
     // branch tip on the next checkout/reset.
     yield* requireCommand(
-      yield* runMutation("git", ["read-tree", committed.stdout.trim()], root),
+      runCommand("git", ["read-tree", committed.stdout.trim()], root),
       "git read-tree committed tree",
     )
     yield* requireCommand(
-      yield* runMutation(
+      runCommand(
         "git",
         [
           "update-ref",
@@ -1157,7 +1158,7 @@ function jjChangeIdWithCommand(
   root: string,
   revision: string,
   runCommand: VcsCommandRunner,
-): CommandResult {
+): Effect.Effect<CommandResult, VcsError> {
   return runCommand(
     "jj",
     ["log", "-r", revision, "--no-graph", "-T", "change_id"],
@@ -1179,8 +1180,7 @@ function jjChangeIdWithCommand(
 export function jjPrepareWithCommand(
   root: string,
   message: string,
-  runCommand: VcsCommandRunner = run,
-  runMutation: VcsMutationRunner = syncMutationRunner(run),
+  runCommand: VcsCommandRunner,
 ): Effect.Effect<PreparedCommit, VcsError> {
   return Effect.gen(function* () {
     yield* rejectCaseFoldedApneaAlias(root)
@@ -1228,7 +1228,7 @@ export function jjPrepareWithCommand(
     const id = randomUUID()
     const trailerMessage = withTransactionTrailer(message, id)
     yield* requireCommand(
-      yield* runMutation("jj", ["describe", "-m", trailerMessage], root),
+      runCommand("jj", ["describe", "-m", trailerMessage], root),
       "jj describe",
     )
     return {
@@ -1251,7 +1251,6 @@ function evictApneaFromTerminus(
   root: string,
   changeId: string,
   runCommand: VcsCommandRunner,
-  runMutation: VcsMutationRunner,
 ): Effect.Effect<void, VcsError> {
   return Effect.gen(function* () {
     const present = yield* requireCommand(
@@ -1264,7 +1263,7 @@ function evictApneaFromTerminus(
     )
     if (!present.stdout.trim()) return
     yield* requireCommand(
-      yield* runMutation(
+      runCommand(
         "jj",
         ["squash", "--from", changeId, "--into", "@", "--", JJ_APNEA_ICASE],
         root,
@@ -1286,8 +1285,7 @@ function evictApneaFromTerminus(
 export function jjCompleteWithCommand(
   root: string,
   pending: JjPendingCommit,
-  runCommand: VcsCommandRunner = run,
-  runMutation: VcsMutationRunner = syncMutationRunner(run),
+  runCommand: VcsCommandRunner,
 ): Effect.Effect<string, VcsError> {
   return Effect.gen(function* () {
     if (!isUuid(pending.id)) {
@@ -1343,12 +1341,7 @@ export function jjCompleteWithCommand(
           message: `refusing commit: prepared jj change ${pending.change_id} has no non-.apnea content; completing would abandon it and wedge the transaction. ${JJ_DRIFT_RECOVERY_GUIDANCE}`,
         })
       }
-      yield* evictApneaFromTerminus(
-        root,
-        pending.change_id,
-        runCommand,
-        runMutation,
-      )
+      yield* evictApneaFromTerminus(root, pending.change_id, runCommand)
       return pending.change_id
     }
 
@@ -1376,15 +1369,10 @@ export function jjCompleteWithCommand(
         })
       }
       yield* requireCommand(
-        yield* runMutation("jj", ["new", pending.change_id], root),
+        runCommand("jj", ["new", pending.change_id], root),
         `jj new ${pending.change_id}`,
       )
-      yield* evictApneaFromTerminus(
-        root,
-        pending.change_id,
-        runCommand,
-        runMutation,
-      )
+      yield* evictApneaFromTerminus(root, pending.change_id, runCommand)
       return pending.change_id
     }
 
@@ -1400,6 +1388,8 @@ export const VcsLive = Layer.effect(
   Effect.gen(function* () {
     const fs = yield* FileSystem
     const processService = yield* Process
+    const run = processCommandRunner(processService)
+    const runRaw = processRawRunner(processService)
 
     const detect = (root: string): Effect.Effect<VcsBackend | null> =>
       Effect.gen(function* () {
@@ -1414,7 +1404,7 @@ export const VcsLive = Layer.effect(
     ): Effect.Effect<string, VcsError> =>
       Effect.gen(function* () {
         yield* rejectCaseFoldedApneaAlias(root)
-        return yield* treeFingerprintWithCommand(root, vcs, run)
+        return yield* treeFingerprintWithCommand(root, vcs, run, runRaw)
       })
 
     const isDirty = (
@@ -1432,21 +1422,22 @@ export const VcsLive = Layer.effect(
     ): Effect.Effect<string, VcsError> =>
       Effect.gen(function* () {
         const branch = `apnea/${slug}`
-        const cur = yield* Effect.sync(() =>
+        const cur = yield* requireCommand(
           run("git", ["rev-parse", "--abbrev-ref", "HEAD"], root),
+          "git rev-parse HEAD",
         )
         if (cur.stdout.trim() === branch) return branch
-        const exists = yield* Effect.sync(() =>
-          run(
-            "git",
-            ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-            root,
-          ),
+        const exists = yield* run(
+          "git",
+          ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+          root,
         )
-        if (exists.ok) {
-          const co = yield* Effect.sync(() =>
-            run("git", ["checkout", branch], root),
+        if (!exists.ok && exists.code !== 1)
+          return yield* requireCommand(exists, "git show-ref").pipe(
+            Effect.as(branch),
           )
+        if (exists.ok) {
+          const co = yield* run("git", ["checkout", branch], root)
           if (!co.ok) {
             return yield* new VcsError({
               message: `git checkout ${branch}: ${co.stderr}`,
@@ -1455,9 +1446,7 @@ export const VcsLive = Layer.effect(
           }
           return branch
         }
-        const cr = yield* Effect.sync(() =>
-          run("git", ["checkout", "-b", branch], root),
-        )
+        const cr = yield* run("git", ["checkout", "-b", branch], root)
         if (!cr.ok) {
           return yield* new VcsError({
             message: `git checkout -b ${branch}: ${cr.stderr}`,
@@ -1472,9 +1461,8 @@ export const VcsLive = Layer.effect(
       vcs: VcsBackend,
       message: string,
     ): Effect.Effect<PreparedCommit, VcsError> => {
-      const mutate = processMutationRunner(processService)
       return vcs === "jj"
-        ? jjPrepareWithCommand(root, message, run, mutate)
+        ? jjPrepareWithCommand(root, message, run)
         : gitPrepareWithCommand(root, message, run)
     }
 
@@ -1483,7 +1471,6 @@ export const VcsLive = Layer.effect(
       vcs: VcsBackend,
       pending: PendingCommit,
     ): Effect.Effect<string, VcsError> => {
-      const mutate = processMutationRunner(processService)
       if (vcs === "jj") {
         if (pending.backend !== "jj") {
           return Effect.fail(
@@ -1492,7 +1479,7 @@ export const VcsLive = Layer.effect(
             }),
           )
         }
-        return jjCompleteWithCommand(root, pending, run, mutate)
+        return jjCompleteWithCommand(root, pending, run)
       }
       if (pending.backend !== "git") {
         return Effect.fail(
@@ -1501,7 +1488,7 @@ export const VcsLive = Layer.effect(
           }),
         )
       }
-      return gitCompleteWithCommand(root, pending, run, mutate)
+      return gitCompleteWithCommand(root, pending, run)
     }
 
     const setBookmarkAtTerminus = (
@@ -1510,9 +1497,9 @@ export const VcsLive = Layer.effect(
     ): Effect.Effect<void, VcsError> =>
       Effect.gen(function* () {
         const name = `apnea/${slug}`
-        const r = run("jj", ["bookmark", "set", name, "-r", "@-"], root)
+        const r = yield* run("jj", ["bookmark", "set", name, "-r", "@-"], root)
         if (!r.ok) {
-          const fallback = run(
+          const fallback = yield* run(
             "jj",
             ["bookmark", "create", name, "-r", "@-"],
             root,

@@ -10,6 +10,10 @@ export type ProcessResult = {
   readonly stderr: string
 }
 
+export type ProcessRawResult = Omit<ProcessResult, "stdout"> & {
+  readonly stdout: Buffer
+}
+
 type ProcessFailureFields = {
   readonly command: string
   readonly stdout: string
@@ -108,6 +112,10 @@ export interface ProcessService {
   readonly run: (
     options: ProcessOptions,
   ) => Effect.Effect<ProcessResult, ProcessError>
+  /** Preserve successful stdout bytes. Stderr and failure diagnostics remain UTF-8 text. */
+  readonly runRaw: (
+    options: ProcessOptions,
+  ) => Effect.Effect<ProcessRawResult, ProcessError>
 }
 
 export class Process extends Context.Service<Process, ProcessService>()(
@@ -310,91 +318,79 @@ function text(capture: Capture): string {
 export function makeProcessService(
   deps: ProcessRuntimeDeps = defaultRuntimeDeps,
 ): ProcessService {
-  return Process.of({
-    run: (options) =>
-      Effect.callback<ProcessResult, ProcessError>((resume) => {
-        const args = [...(options.args ?? [])]
-        const label = [options.command, ...args].join(" ")
-        const limit =
-          options.outputLimitBytes ?? DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES
-        const grace =
-          options.terminationGraceMs ?? DEFAULT_PROCESS_TERMINATION_GRACE_MS
-        if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
-          resume(
-            Effect.fail(
-              new ProcessTimeoutError(label, options.timeoutMs, "", ""),
-            ),
-          )
-          return
-        }
-        if (!Number.isInteger(limit) || limit <= 0) {
-          resume(
-            Effect.fail(new ProcessOutputError(label, "stdout", limit, "", "")),
-          )
-          return
-        }
+  const runRaw = (options: ProcessOptions) =>
+    Effect.callback<ProcessRawResult, ProcessError>((resume) => {
+      const args = [...(options.args ?? [])]
+      const label = [options.command, ...args].join(" ")
+      const limit =
+        options.outputLimitBytes ?? DEFAULT_PROCESS_OUTPUT_LIMIT_BYTES
+      const grace =
+        options.terminationGraceMs ?? DEFAULT_PROCESS_TERMINATION_GRACE_MS
+      if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+        resume(
+          Effect.fail(
+            new ProcessTimeoutError(label, options.timeoutMs, "", ""),
+          ),
+        )
+        return
+      }
+      if (!Number.isInteger(limit) || limit <= 0) {
+        resume(
+          Effect.fail(new ProcessOutputError(label, "stdout", limit, "", "")),
+        )
+        return
+      }
 
-        let child: ChildProcess
-        try {
-          child = (deps.spawn ?? spawn)(options.command, args, {
-            cwd: options.cwd,
-            env: options.env,
-            detached: deps.platform !== "win32",
-            stdio: [
-              options.stdin === undefined ? "ignore" : "pipe",
-              "pipe",
-              "pipe",
-            ],
-            windowsHide: true,
-          })
-        } catch (error) {
-          resume(Effect.fail(new ProcessSpawnError(label, error)))
-          return
-        }
-
-        const stdout: Capture = { chunks: [], bytes: 0 }
-        const stderr: Capture = { chunks: [], bytes: 0 }
-        let spawned = false
-        let settled = false
-        let pendingError: ProcessError | undefined
-        let cleanup: Promise<void> | undefined
-        const terminate = () =>
-          (cleanup ??= terminateProcessTree(child, grace, deps))
-        const diagnostics = () => ({
-          stdout: text(stdout),
-          stderr: text(stderr),
+      let child: ChildProcess
+      try {
+        child = (deps.spawn ?? spawn)(options.command, args, {
+          cwd: options.cwd,
+          env: options.env,
+          detached: deps.platform !== "win32",
+          stdio: [
+            options.stdin === undefined ? "ignore" : "pipe",
+            "pipe",
+            "pipe",
+          ],
+          windowsHide: true,
         })
-        const finish = (effect: Effect.Effect<ProcessResult, ProcessError>) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          options.signal?.removeEventListener("abort", onAbort)
-          resume(effect)
-        }
-        const failAfterCleanup = (error: ProcessError) => {
-          if (settled || pendingError !== undefined) return
-          pendingError = error
-          void terminate().then(() => finish(Effect.fail(error)))
-        }
-        const capture = (name: "stdout" | "stderr", chunk: Buffer) => {
-          const target = name === "stdout" ? stdout : stderr
-          const available = limit - target.bytes
-          if (available > 0) target.chunks.push(chunk.subarray(0, available))
-          target.bytes += Math.min(chunk.length, Math.max(0, available))
-          if (chunk.length > available) {
-            const captured = diagnostics()
-            failAfterCleanup(
-              new ProcessOutputError(
-                label,
-                name,
-                limit,
-                captured.stdout,
-                captured.stderr,
-              ),
-            )
-          }
-        }
-        const outputError = (name: "stdout" | "stderr", reason: unknown) => {
+      } catch (error) {
+        resume(Effect.fail(new ProcessSpawnError(label, error)))
+        return
+      }
+
+      const stdout: Capture = { chunks: [], bytes: 0 }
+      const stderr: Capture = { chunks: [], bytes: 0 }
+      let spawned = false
+      let settled = false
+      let pendingError: ProcessError | undefined
+      let cleanup: Promise<void> | undefined
+      const terminate = () =>
+        (cleanup ??= terminateProcessTree(child, grace, deps))
+      const diagnostics = () => ({
+        stdout: text(stdout),
+        stderr: text(stderr),
+      })
+      const finish = (
+        effect: Effect.Effect<ProcessRawResult, ProcessError>,
+      ) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        options.signal?.removeEventListener("abort", onAbort)
+        resume(effect)
+      }
+      const failAfterCleanup = (error: ProcessError) => {
+        if (settled || pendingError !== undefined) return
+        pendingError = error
+        void terminate().then(() => finish(Effect.fail(error)))
+      }
+      const capture = (name: "stdout" | "stderr", chunk: Buffer) => {
+        const target = name === "stdout" ? stdout : stderr
+        const available = limit - target.bytes
+        if (available > 0) target.chunks.push(chunk.subarray(0, available))
+        target.bytes += Math.min(chunk.length, Math.max(0, available))
+        if (chunk.length > available) {
           const captured = diagnostics()
           failAfterCleanup(
             new ProcessOutputError(
@@ -403,74 +399,103 @@ export function makeProcessService(
               limit,
               captured.stdout,
               captured.stderr,
-              reason,
             ),
           )
         }
-        const onAbort = () => {
-          const captured = diagnostics()
-          failAfterCleanup(
-            new ProcessCancelledError(label, captured.stdout, captured.stderr),
-          )
-        }
+      }
+      const outputError = (name: "stdout" | "stderr", reason: unknown) => {
+        const captured = diagnostics()
+        failAfterCleanup(
+          new ProcessOutputError(
+            label,
+            name,
+            limit,
+            captured.stdout,
+            captured.stderr,
+            reason,
+          ),
+        )
+      }
+      const onAbort = () => {
+        const captured = diagnostics()
+        failAfterCleanup(
+          new ProcessCancelledError(label, captured.stdout, captured.stderr),
+        )
+      }
 
-        child.once("spawn", () => {
-          spawned = true
-          if (options.stdin !== undefined) child.stdin?.end(options.stdin)
-        })
-        child.stdout?.on("data", (chunk: Buffer) => capture("stdout", chunk))
-        child.stderr?.on("data", (chunk: Buffer) => capture("stderr", chunk))
-        child.stdout?.once("error", (error) => outputError("stdout", error))
-        child.stderr?.once("error", (error) => outputError("stderr", error))
-        child.stdin?.once("error", (error) => {
-          if (
-            child.exitCode !== null ||
-            (spawned && (error as NodeJS.ErrnoException).code === "EPIPE")
-          ) {
-            return
-          }
-          failAfterCleanup(new ProcessSpawnError(label, error))
-        })
-        child.once("error", (error) => {
-          if (!spawned) finish(Effect.fail(new ProcessSpawnError(label, error)))
-          else outputError("stderr", error)
-        })
-        child.once("close", (code) => {
-          if (pendingError !== undefined) return
-          const captured = diagnostics()
-          const exitCode = code ?? 1
-          finish(
-            exitCode === 0
-              ? Effect.succeed({ exitCode, ...captured })
-              : Effect.fail(
-                  new ProcessExitError(
-                    label,
-                    exitCode,
-                    captured.stdout,
-                    captured.stderr,
-                  ),
+      child.once("spawn", () => {
+        spawned = true
+        if (options.stdin !== undefined) child.stdin?.end(options.stdin)
+      })
+      child.stdout?.on("data", (chunk: Buffer) => capture("stdout", chunk))
+      child.stderr?.on("data", (chunk: Buffer) => capture("stderr", chunk))
+      child.stdout?.once("error", (error) => outputError("stdout", error))
+      child.stderr?.once("error", (error) => outputError("stderr", error))
+      child.stdin?.once("error", (error) => {
+        if (
+          child.exitCode !== null ||
+          (spawned && (error as NodeJS.ErrnoException).code === "EPIPE")
+        ) {
+          return
+        }
+        failAfterCleanup(new ProcessSpawnError(label, error))
+      })
+      child.once("error", (error) => {
+        if (!spawned) finish(Effect.fail(new ProcessSpawnError(label, error)))
+        else outputError("stderr", error)
+      })
+      child.once("close", (code) => {
+        if (pendingError !== undefined) return
+        const exitCode = code ?? 1
+        finish(
+          exitCode === 0
+            ? Effect.succeed({
+                exitCode,
+                stdout: Buffer.concat(stdout.chunks),
+                stderr: text(stderr),
+              })
+            : Effect.fail(
+                new ProcessExitError(
+                  label,
+                  exitCode,
+                  text(stdout),
+                  text(stderr),
                 ),
-          )
-        })
+              ),
+        )
+      })
 
-        const timer = setTimeout(() => {
-          const captured = diagnostics()
-          failAfterCleanup(
-            new ProcessTimeoutError(
-              label,
-              options.timeoutMs,
-              captured.stdout,
-              captured.stderr,
-            ),
-          )
-        }, options.timeoutMs)
-        if (options.signal?.aborted) onAbort()
-        else options.signal?.addEventListener("abort", onAbort, { once: true })
+      const timer = setTimeout(() => {
+        const captured = diagnostics()
+        failAfterCleanup(
+          new ProcessTimeoutError(
+            label,
+            options.timeoutMs,
+            captured.stdout,
+            captured.stderr,
+          ),
+        )
+      }, options.timeoutMs)
+      if (options.signal?.aborted) onAbort()
+      else options.signal?.addEventListener("abort", onAbort, { once: true })
 
-        // Effect interruption runs this finalizer and waits for the process
-        // tree to stop before the caller's cancellation can complete.
-        return Effect.promise(terminate)
-      }),
+      // Effect interruption runs this finalizer and waits for the process
+      // tree to stop before the caller's cancellation can complete.
+      return Effect.promise(async () => {
+        clearTimeout(timer)
+        options.signal?.removeEventListener("abort", onAbort)
+        await terminate()
+      })
+    })
+  return Process.of({
+    runRaw,
+    run: (options) =>
+      runRaw(options).pipe(
+        Effect.map((result) => ({
+          ...result,
+          stdout: result.stdout.toString("utf8"),
+        })),
+      ),
   })
 }
 

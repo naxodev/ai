@@ -13,6 +13,7 @@ import {
   writeSync,
 } from "node:fs"
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 import { Effect, Exit, Fiber, Layer, Option } from "effect"
@@ -33,12 +34,10 @@ import {
   fingerprintUntrackedFiles,
   gitCompleteWithCommand,
   gitPrepareWithCommand,
-  jjCompleteWithCommand,
-  jjPrepareWithCommand,
   runVerifyWithProcess,
   treeFingerprintWithCommand,
   utf8BytesAfterAppend,
-  syncMutationRunner,
+  syncCommandRunner,
   verifyBlockDisplayByteLength,
   type PreparedCommit,
 } from "./vcs.ts"
@@ -46,8 +45,12 @@ import type { GitPendingCommit, JjPendingCommit } from "../domain/types.ts"
 import { FileSystemLive } from "./file-system.ts"
 import {
   ProcessLive,
+  Process,
+  makeProcessService,
   ProcessTimeoutError,
+  ProcessExitError,
   type ProcessService,
+  type ProcessOptions,
 } from "./process.ts"
 
 function withFake(initial: Record<string, string> = {}) {
@@ -142,7 +145,9 @@ function jjPendingOf(prepared: PreparedCommit): JjPendingCommit {
 }
 
 function gitPrepare(root: string, message = "test commit") {
-  return realVcs(gitPrepareWithCommand(root, message))
+  return realVcs(
+    Effect.flatMap(Vcs, (vcs) => vcs.prepareCommit(root, "git", message)),
+  )
 }
 
 function runVerify(
@@ -232,6 +237,292 @@ describe("filterAppPaths", () => {
 })
 
 describe("Vcs repository safety", () => {
+  test.each([
+    {
+      diagnostic: "stderr",
+      stdout: "ignored stdout",
+      stderr: "fatal: not a git repository",
+      expected: "fatal: not a git repository",
+    },
+    {
+      diagnostic: "stdout fallback",
+      stdout: "repository is unavailable",
+      stderr: "",
+      expected: "repository is unavailable",
+    },
+    {
+      diagnostic: "exit message fallback",
+      stdout: "",
+      stderr: "",
+      expected: "git diff exited with code 128",
+    },
+  ])(
+    "raw Git failures retain $diagnostic through Vcs",
+    async ({ stdout, stderr, expected }) => {
+      const root = makeProject()
+      const processService: ProcessService = {
+        run: () => Effect.die("unexpected text command"),
+        runRaw: () =>
+          Effect.fail(new ProcessExitError("git diff", 128, stdout, stderr)),
+      }
+      const error = await Effect.runPromise(
+        Effect.flip(
+          Effect.flatMap(Vcs, (vcs) => vcs.treeFingerprint(root, "git")).pipe(
+            Effect.provide(
+              Layer.provide(
+                VcsLive,
+                Layer.merge(
+                  FileSystemLive,
+                  Layer.succeed(Process, processService),
+                ),
+              ),
+            ),
+          ),
+        ),
+      )
+      expect(error).toBeInstanceOf(VcsError)
+      expect(error.message).toBe(`git failed: ${expected}`)
+      expect(error.command).toBe("git diff")
+    },
+  )
+
+  for (const operation of ["prepare", "checkout", "raw", "bookmark"] as const) {
+    test(`${operation} uses a finite Process deadline and surfaces a stalled command without fallback`, async () => {
+      const root = makeProject()
+      command(root, "git", ["init", "-q"])
+      command(root, "git", ["config", "user.email", "apnea@example.test"])
+      command(root, "git", ["config", "user.name", "Apnea"])
+      command(root, "git", ["commit", "--allow-empty", "-qm", "initial"])
+      const live = makeProcessService()
+      const calls: ProcessOptions[] = []
+      const stalled = (options: ProcessOptions) => {
+        expect(Number.isFinite(options.timeoutMs)).toBe(true)
+        expect(options.timeoutMs).toBeGreaterThan(0)
+        const target = {
+          prepare: "add",
+          checkout: "checkout",
+          raw: "ls-files",
+          bookmark: "bookmark",
+        }[operation]
+        if (options.args?.[0] !== target) return options
+        calls.push(options)
+        return {
+          ...options,
+          command: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+          timeoutMs: 30,
+        }
+      }
+      const processService: ProcessService = {
+        run: (options) => live.run(stalled(options)),
+        runRaw: (options) => live.runRaw(stalled(options)),
+      }
+      const program = Effect.flatMap(Vcs, (vcs) => {
+        switch (operation) {
+          case "prepare":
+            return vcs.prepareCommit(root, "git", "stalled").pipe(Effect.asVoid)
+          case "checkout":
+            return vcs.ensureGitBranch(root, "stalled").pipe(Effect.asVoid)
+          case "raw":
+            return vcs.treeFingerprint(root, "git").pipe(Effect.asVoid)
+          case "bookmark":
+            return vcs.setBookmarkAtTerminus(root, "stalled")
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.provide(
+            VcsLive,
+            Layer.merge(FileSystemLive, Layer.succeed(Process, processService)),
+          ),
+        ),
+      )
+      await expect(Effect.runPromise(program)).rejects.toThrow("timed out")
+      expect(calls).toHaveLength(1)
+      if (operation === "prepare") {
+        const index = calls[0]?.env?.GIT_INDEX_FILE
+        expect(index).toBeDefined()
+        expect(existsSync(path.dirname(index!))).toBe(false)
+      }
+    })
+
+    test(`${operation} propagates cancellation and joins Process finalization`, async () => {
+      const root = makeProject()
+      const started = Promise.withResolvers<void>()
+      let calls = 0
+      let joined = false
+      const stall = () =>
+        Effect.gen(function* () {
+          calls++
+          started.resolve()
+          return yield* Effect.never
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              joined = true
+            }),
+          ),
+        )
+      const processService: ProcessService = { run: stall, runRaw: stall }
+      const abort = new AbortController()
+      const program = Effect.flatMap(Vcs, (vcs) => {
+        switch (operation) {
+          case "prepare":
+            return vcs
+              .prepareCommit(root, "git", "cancelled")
+              .pipe(Effect.asVoid)
+          case "checkout":
+            return vcs.ensureGitBranch(root, "cancelled").pipe(Effect.asVoid)
+          case "raw":
+            return vcs.treeFingerprint(root, "git").pipe(Effect.asVoid)
+          case "bookmark":
+            return vcs.setBookmarkAtTerminus(root, "cancelled")
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.provide(
+            VcsLive,
+            Layer.merge(FileSystemLive, Layer.succeed(Process, processService)),
+          ),
+        ),
+      )
+      const running = Effect.runPromiseExit(program, { signal: abort.signal })
+      await started.promise
+      abort.abort()
+      expect(Exit.isFailure(await running)).toBe(true)
+      expect(joined).toBe(true)
+      expect(calls).toBe(1)
+    })
+  }
+
+  test("Git fingerprints hash the exact raw diff and newline filename bytes", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea"])
+    writeFileSync(path.join(root, "tracked"), Buffer.from([0xff, 10]))
+    command(root, "git", ["add", "."])
+    command(root, "git", ["commit", "-qm", "initial"])
+    writeFileSync(path.join(root, "tracked"), Buffer.from([0xfe, 10]))
+    const filename = "untracked\nname"
+    writeFileSync(path.join(root, filename), "content")
+    const rawDiff = spawnSync(
+      "git",
+      ["diff", "--binary", "--no-ext-diff", "--", "."],
+      { cwd: root },
+    ).stdout
+    expect(rawDiff.includes(0xfe)).toBe(true)
+    const untracked = createHash("sha256")
+      .update(filename)
+      .update("\0file\0content\0")
+      .digest("hex")
+    const expected = createHash("sha256")
+      .update("staged\0\0unstaged\0")
+      .update(rawDiff)
+      .update("\0untracked\0")
+      .update(untracked)
+      .digest("hex")
+    expect(
+      await realVcs(
+        Effect.flatMap(Vcs, (vcs) => vcs.treeFingerprint(root, "git")),
+      ),
+    ).toBe(expected)
+  })
+
+  test("preparation interruption joins escaped descendants before deleting the isolated index", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea"])
+    command(root, "git", ["commit", "--allow-empty", "-qm", "initial"])
+    const ready = path.join(root, "ready.json")
+    const stopped = path.join(root, "stopped")
+    const childSource = `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(stopped)}, String(fs.existsSync(process.env.GIT_INDEX_FILE))));
+      fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({pid: process.pid, index: process.env.GIT_INDEX_FILE}));
+      setInterval(() => {}, 1000);
+    `
+    const parentSource = `
+      process.on('SIGTERM', () => {});
+      require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(childSource)}], { detached: true, stdio: 'ignore' });
+      setInterval(() => {}, 1000);
+    `
+    const live = makeProcessService()
+    const processService: ProcessService = {
+      runRaw: live.runRaw,
+      run: (options) =>
+        live.run(
+          options.args?.[0] === "add"
+            ? {
+                ...options,
+                command: process.execPath,
+                args: ["-e", parentSource],
+              }
+            : options,
+        ),
+    }
+    const abort = new AbortController()
+    const running = Effect.runPromiseExit(
+      Effect.flatMap(Vcs, (vcs) =>
+        vcs.prepareCommit(root, "git", "cancelled"),
+      ).pipe(
+        Effect.provide(
+          Layer.provide(
+            VcsLive,
+            Layer.merge(FileSystemLive, Layer.succeed(Process, processService)),
+          ),
+        ),
+      ),
+      { signal: abort.signal },
+    )
+    try {
+      const deadline = performance.now() + 3_000
+      while (!existsSync(ready) && performance.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(existsSync(ready)).toBe(true)
+      const { pid, index } = JSON.parse(readFileSync(ready, "utf8")) as {
+        pid: number
+        index: string
+      }
+      abort.abort()
+      expect(Exit.isFailure(await running)).toBe(true)
+      expect(readFileSync(stopped, "utf8")).toBe("true")
+      expect(existsSync(path.dirname(index))).toBe(false)
+      expect(() => process.kill(pid, 0)).toThrow()
+      expect(command(root, "git", ["log", "--format=%s"]).trim()).toBe(
+        "initial",
+      )
+    } finally {
+      abort.abort()
+      await running
+    }
+  })
+
+  test("checkout hooks leave the host event loop live", async () => {
+    const root = makeProject()
+    command(root, "git", ["init", "-q"])
+    command(root, "git", ["config", "user.email", "apnea@example.test"])
+    command(root, "git", ["config", "user.name", "Apnea"])
+    command(root, "git", ["commit", "--allow-empty", "-qm", "initial"])
+    writeFileSync(
+      path.join(root, ".git/hooks/post-checkout"),
+      "#!/bin/sh\ntouch .git/hook-active\nsleep 0.3\nrm .git/hook-active\n",
+      { mode: 0o755 },
+    )
+    let heartbeats = 0
+    const timer = setInterval(() => {
+      if (existsSync(path.join(root, ".git/hook-active"))) heartbeats++
+    }, 10)
+    try {
+      await realVcs(
+        Effect.flatMap(Vcs, (vcs) => vcs.ensureGitBranch(root, "heartbeat")),
+      )
+      expect(heartbeats).toBeGreaterThan(0)
+    } finally {
+      clearInterval(timer)
+    }
+  })
+
   itEffect(
     "command seam fingerprints diff bytes rather than path summaries",
     () => {
@@ -240,23 +531,27 @@ describe("Vcs repository safety", () => {
         const first = yield* treeFingerprintWithCommand(
           "/project",
           "jj",
-          () => ({
-            ok: true,
-            stdout: diff,
-            stderr: "",
-            code: 0,
-          }),
+          () =>
+            Effect.succeed({
+              ok: true,
+              stdout: diff,
+              stderr: "",
+              code: 0,
+            }),
+          () => Effect.die("jj fingerprint must not query Git raw paths"),
         )
         diff = "diff --git a/file.txt b/file.txt\n-old\n+other\n"
         const second = yield* treeFingerprintWithCommand(
           "/project",
           "jj",
-          () => ({
-            ok: true,
-            stdout: diff,
-            stderr: "",
-            code: 0,
-          }),
+          () =>
+            Effect.succeed({
+              ok: true,
+              stdout: diff,
+              stderr: "",
+              code: 0,
+            }),
+          () => Effect.die("jj fingerprint must not query Git raw paths"),
         )
         expect(second).not.toBe(first)
       })
@@ -687,15 +982,14 @@ describe("Vcs repository safety", () => {
       return commandResult(cwd, bin, args, env)
     }
     const preparedInjected = await Effect.runPromise(
-      gitPrepareWithCommand(root, "must not move", injected),
+      gitPrepareWithCommand(root, "must not move", syncCommandRunner(injected)),
     )
     await expect(
       Effect.runPromise(
         gitCompleteWithCommand(
           root,
           asGitPending(preparedInjected),
-          injected,
-          syncMutationRunner(injected),
+          syncCommandRunner(injected),
         ),
       ),
     ).rejects.toThrow("injected")
@@ -760,7 +1054,13 @@ describe("Vcs repository safety", () => {
     writeFileSync(path.join(root, ".apnea", "state.json"), "runtime\n")
 
     const error = await Effect.runPromise(
-      Effect.flip(realVcsEffect(jjPrepareWithCommand(root, "empty content"))),
+      Effect.flip(
+        realVcsEffect(
+          Effect.flatMap(Vcs, (vcs) =>
+            vcs.prepareCommit(root, "jj", "empty content"),
+          ),
+        ),
+      ),
     )
     expect(error).toBeInstanceOf(VcsError)
     expect(error.message).toContain("no non-.apnea changes")
@@ -796,16 +1096,20 @@ describe("Vcs repository safety", () => {
 
     const error = await Effect.runPromise(
       Effect.flip(
-        jjCompleteWithCommand(root, {
-          backend: "jj",
-          id,
-          phase_index: 1,
-          message: `orphaned transaction\n\nApnea-Transaction: ${id}`,
-          no_remaining_phases: false,
-          verify_log: ".apnea/verify.log",
-          change_id: changeId,
-          content_fingerprint: EMPTY_JJ_DIFF_FINGERPRINT,
-        }),
+        realVcsEffect(
+          Effect.flatMap(Vcs, (vcs) =>
+            vcs.completeCommit(root, "jj", {
+              backend: "jj",
+              id,
+              phase_index: 1,
+              message: `orphaned transaction\n\nApnea-Transaction: ${id}`,
+              no_remaining_phases: false,
+              verify_log: ".apnea/verify.log",
+              change_id: changeId,
+              content_fingerprint: EMPTY_JJ_DIFF_FINGERPRINT,
+            }),
+          ),
+        ),
       ),
     )
     expect(error).toBeInstanceOf(VcsError)
@@ -1027,6 +1331,7 @@ describe("Vcs.runVerify", () => {
     const root = makeProject()
     const timeouts: number[] = []
     const processService: ProcessService = {
+      runRaw: () => Effect.die("unexpected raw command"),
       run: (options) => {
         timeouts.push(options.timeoutMs)
         if (timeouts.length === 1) {
