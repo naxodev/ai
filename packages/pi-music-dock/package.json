@@ -52,7 +52,8 @@
     "test": "bun test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "pack:check": "bun scripts/verify-pack.ts",
+    "pack:check": "bun ../../scripts/music-release.ts pi-music-dock --staged-only && bun scripts/verify-pack.ts",
+    "prepublish:core": "bun ../../scripts/music-release.ts pi-music-dock",
     "smoke:package": "bun scripts/package-smoke.ts"
   },
   "dependencies": {

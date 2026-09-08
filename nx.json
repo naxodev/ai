@@ -15,6 +15,8 @@
       "{workspaceRoot}/bun.lock",
       "{workspaceRoot}/nx.json",
       "{workspaceRoot}/tsconfig.base.json",
+      "{workspaceRoot}/scripts/bounded-process.ts",
+      "{workspaceRoot}/scripts/music-release.ts",
       "{workspaceRoot}/.github/workflows/*.yml",
       "{workspaceRoot}/.gitattributes",
       "{workspaceRoot}/.editorconfig",
@@ -44,7 +46,7 @@
     },
     "package:check": {
       "cache": true,
-      "inputs": ["default", { "runtime": "npm --version" }]
+      "inputs": ["default", "^default", { "runtime": "npm --version" }]
     },
     "smoke": {
       "cache": true,

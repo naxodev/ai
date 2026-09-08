@@ -62,7 +62,8 @@
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
     "test": "bun test --preload @opentui/solid/preload",
-    "pack:check": "bun run scripts/verify-pack.ts",
+    "pack:check": "bun run ../../scripts/music-release.ts opencode-music-player --staged-only && bun run scripts/verify-pack.ts",
+    "prepublish:core": "bun run ../../scripts/music-release.ts opencode-music-player",
     "smoke:package": "bun run scripts/package-smoke.ts",
     "validate": "bun run format:check && bun run check && bun run test && bun run pack:check"
   },
