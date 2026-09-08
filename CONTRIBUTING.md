@@ -39,6 +39,12 @@ gh workflow run publish.yml -f tag=<project>@vX.Y.Z
 
 The workflow is idempotent. It succeeds without republishing when the exact package version already exists.
 
+Music host package gates require the staged `music-core` version to satisfy the host's declared dependency range. Their coordinated-source smokes still install local core tarballs. Before publishing a new host version, CI also runs `bun run --cwd packages/<host> prepublish:core` for `opencode-music-player` and `pi-music-dock`.
+
+This network-only gate queries the public npm registry up to ten times, with a 15-second command deadline and five seconds between attempts. It then packs the host and installs it in a temporary consumer with a fresh npm cache, no workspace configuration, and no core override. Installation has a three-minute deadline. A 30-second probe verifies the resolved core manifest range and loads the host. Pi's supported peer versions use its development pins. Temporary files are removed afterward. Command termination may add up to ten seconds to each deadline.
+
+If the gate fails, publish a compatible core first, allow registry propagation, then rerun the host tag. A compatible published version is sufficient; the staged core need not be published. These network checks run only before new publication or when invoked manually, not in the offline unit suite or version preview. Already-published tags skip them.
+
 ### Trusted publishing
 
 After each package exists on npm, configure its npm Trusted Publisher with:
