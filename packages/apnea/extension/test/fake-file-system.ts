@@ -1,4 +1,5 @@
 import { Effect, Layer } from "effect"
+import { createHash } from "node:crypto"
 import { ConfigError } from "../errors.ts"
 import {
   FileSystem,
@@ -33,7 +34,10 @@ export function makeFakeFileSystem(
     files.set(p, content)
   }
 
-  const boundedRead = (path: string, limit: number) => {
+  const boundedRead = (
+    path: string,
+    limit: number,
+  ): Effect.Effect<string, ConfigError> => {
     const value = files.get(path)
     if (value === undefined) {
       return Effect.die(new Error(`ENOENT: ${path}`))
@@ -50,6 +54,32 @@ export function makeFakeFileSystem(
   }
 
   const service: FileSystemService = {
+    fingerprintProjectFile: (_root, path) =>
+      boundedRead(path, 64 * 1024 * 1024).pipe(
+        Effect.map((value) => createHash("sha256").update(value).digest("hex")),
+      ),
+    archiveProjectFile: (_root, source, destination) =>
+      Effect.gen(function* () {
+        if (files.has(destination))
+          return yield* new ConfigError({
+            message: "archive collision",
+            path: destination,
+          })
+        const value = files.get(source)
+        if (value === undefined)
+          return yield* new ConfigError({
+            message: "missing archive source",
+            path: source,
+          })
+        const failure = opts.failWrite?.(destination)
+        if (failure)
+          return yield* new ConfigError({
+            message: failure.message,
+            path: destination,
+          })
+        files.set(destination, value)
+        files.delete(source)
+      }),
     readFile: (path) =>
       Effect.sync(() => {
         const v = files.get(path)

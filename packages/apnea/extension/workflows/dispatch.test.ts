@@ -25,8 +25,27 @@ import {
 import { briefFiles } from "../test/briefs.ts"
 import { dispatchWorkflow } from "./dispatch.ts"
 import { waitWorkflow } from "./wait.ts"
+import { abandonWorkflow } from "./abandon.ts"
 
 const ROOT = "/proj"
+
+function expectRollbackRetainingPane(
+  fakeFs: ReturnType<typeof makeFakeFileSystem>,
+  before: Map<string, string>,
+  paneId: string,
+) {
+  const restored = savedState(fakeFs)
+  expect(restored.acquired_panes).toEqual([
+    { pane_id: paneId, label: expect.any(String) },
+  ])
+  expect({ ...restored, acquired_panes: undefined }).toEqual({
+    ...JSON.parse(before.get(statePath(ROOT)) ?? "{}"),
+    acquired_panes: undefined,
+  })
+  const expected = new Map(before)
+  expected.set(statePath(ROOT), fakeFs.files.get(statePath(ROOT)) ?? "")
+  expect(fakeFs.files).toEqual(expected)
+}
 
 function withHerdrEnvironment<A, E, R>(effect: Effect.Effect<A, E, R>) {
   return Effect.acquireUseRelease(
@@ -197,6 +216,34 @@ async function runDispatch(
 }
 
 describe("dispatchWorkflow (fake layers)", () => {
+  itEffect("namespaced plan rework points to the exact rejected review", () => {
+    const run_id = "11111111-1111-4111-8111-111111111111"
+    const review = `.apnea/runs/${run_id}/artifacts/plan-review/round-2.md`
+    const fakeFs = seedFs(
+      baseState({
+        run_id,
+        step: "plan_review",
+        rounds: { plan_review: 2 },
+        pending_artifact: review,
+        pending_role: "reviewer",
+      }),
+      {
+        [`${ROOT}/${review}`]:
+          "---\nstatus: done\nverdict: CHANGES_REQUIRED\n---\nFix the acceptance criteria.",
+      },
+    )
+    const { layer } = layerOf(fakeFs, { herdr: { enabled: false } })
+    return Effect.gen(function* () {
+      yield* waitWorkflow({}, ROOT)
+      expect(savedState(fakeFs).required_rework).toBe("plan")
+      const result = yield* dispatchWorkflow({ kind: "plan" }, ROOT)
+      if (!result.ok) throw new Error("plan rework refused")
+      const task = fakeFs.files.get(`${ROOT}/${String(result.data?.task)}`)
+      expect(task).toContain(review)
+      expect(task).not.toContain(".apnea/artifacts/")
+      expect(task).not.toContain("plan-review/round-3.md")
+    }).pipe(Effect.provide(layer))
+  })
   itEffect("wrong step → IllegalTool", () => {
     const fsFake = seedFs(baseState({ step: "committing" }))
     const { layer } = layerOf(fsFake)
@@ -459,6 +506,11 @@ describe("dispatchWorkflow (fake layers)", () => {
         expect(same.herdr.interactiveCalls[0]?.prefer).toEqual(matching)
         expect(profileChanged.herdr.interactiveCalls[0]?.prefer).toBeNull()
         expect(commandChanged.herdr.interactiveCalls[0]?.prefer).toBeNull()
+        // Replacement must not erase the old worker from abandon ownership.
+        expect(savedState(profileChanged.fakeFs).acquired_panes).toEqual([
+          { pane_id: "pane-old", label: "apnea:planner:old" },
+          { pane_id: "pane-1", label: "apnea:planner:fake" },
+        ])
         expect(
           savedState(profileChanged.fakeFs).role_panes.planner
             ?.profile_fingerprint,
@@ -1837,7 +1889,9 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
               expect(sent).toBe(false)
               if (failure) {
                 expect(closed).toBe(failure === "persistence")
-                expect(fakeFs.files).toEqual(before)
+                if (failure === "persistence")
+                  expectRollbackRetainingPane(fakeFs, before, "created-pane")
+                else expect(fakeFs.files).toEqual(before)
                 const retry = layerOf(fakeFs)
                 const result = yield* dispatchWorkflow(
                   { kind: "plan" },
@@ -1911,7 +1965,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
           expect(commands.filter((args) => args[1] === "close")).toEqual([
             ["pane", "close", "new-pane"],
           ])
-          expect(fakeFs.files).toEqual(before)
+          expectRollbackRetainingPane(fakeFs, before, "new-pane")
         }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService))),
       )
     },
@@ -1954,7 +2008,7 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
           expect(failure.message).toContain("malformed JSON")
           expect(taskSent).toBe(false)
           expect(closed).toEqual(["new-pane"])
-          expect(fakeFs.files).toEqual(before)
+          expectRollbackRetainingPane(fakeFs, before, "new-pane")
         }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService))),
       )
     },
@@ -1998,6 +2052,70 @@ describe("dispatchWorkflow through the real Herdr adapter", () => {
             expect(taskFiles(fakeFs)).toHaveLength(1)
           }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService)))
         }),
+      )
+    },
+  )
+
+  itEffect(
+    "failed readiness cleanup retains the orphan for abandon preview and stop",
+    () => {
+      const fakeFs = seedFs(baseState({ required_rework: "plan" }))
+      let launched = false
+      let readinessFailed = false
+      const closed: string[] = []
+      const processService: ProcessService = {
+        runRaw: () => Effect.die("unexpected raw command"),
+        run: ({ args = [] }) =>
+          Effect.gen(function* () {
+            if (args[1] === "close") {
+              closed.push(args[2] ?? "")
+              return yield* Effect.fail(
+                new ProcessExitError("herdr pane close", 1, "", "close denied"),
+              )
+            }
+            if (args[1] === "run") launched = true
+            if (args[1] === "get" && launched && !readinessFailed) {
+              readinessFailed = true
+              return { exitCode: 0, stdout: "not-json", stderr: "" }
+            }
+            const json =
+              args[1] === "layout"
+                ? { layout: { panes: [] } }
+                : { pane: { pane_id: "orphan-pane", agent_status: "idle" } }
+            return { exitCode: 0, stdout: JSON.stringify(json), stderr: "" }
+          }),
+      }
+      return withHerdrEnvironment(
+        Effect.gen(function* () {
+          const failure = expectFailure(
+            yield* Effect.result(dispatchWorkflow({ kind: "plan" }, ROOT)),
+            "HerdrError",
+          )
+          expect(failure.details?.pane_cleanup).toBe("failed")
+          const restored = savedState(fakeFs)
+          expect(restored.pending_artifact).toBeNull()
+          expect(restored.required_rework).toBe("plan")
+          expect(restored.acquired_panes).toEqual([
+            { pane_id: "orphan-pane", label: expect.any(String) },
+          ])
+          expect(restored.last_error).toContain("close denied")
+          const preview = yield* abandonWorkflow({}, ROOT)
+          if (!preview.ok || typeof preview.data?.confirmation !== "string")
+            throw new Error("missing preview")
+          expect(preview.data.acquired_panes).toEqual(restored.acquired_panes)
+          expect(preview.data.last_error).toContain("close denied")
+          expectFailure(
+            yield* Effect.result(
+              abandonWorkflow(
+                { confirm: preview.data.confirmation, stop_panes: true },
+                ROOT,
+              ),
+            ),
+            "GateRefused",
+          )
+          expect(closed).toEqual(["orphan-pane", "orphan-pane"])
+          expect(fakeFs.files.has(statePath(ROOT))).toBe(true)
+        }).pipe(Effect.provide(liveHerdrLayer(fakeFs, processService))),
       )
     },
   )

@@ -12,6 +12,7 @@ describe("OPERATIONS", () => {
     // Adding or renaming a command must be a deliberate edit here, not a
     // silent divergence between the Pi driver and the CLI.
     expect(OPERATIONS.map((o) => o.verb).sort()).toEqual([
+      "abandon",
       "commit",
       "dispatch",
       "reset-rounds",
@@ -41,8 +42,9 @@ describe("OPERATIONS", () => {
     expect(findByVerb("reset-rounds")?.tool).toBeNull()
   })
 
-  test("reset-rounds is the only humanOnly operation", () => {
+  test("abandon and reset-rounds are humanOnly operations", () => {
     expect(OPERATIONS.filter((o) => o.humanOnly).map((o) => o.verb)).toEqual([
+      "abandon",
       "reset-rounds",
     ])
   })
@@ -83,6 +85,13 @@ describe("OPERATIONS", () => {
       ok: false,
       error: "goal is required when action=start",
     })
+  })
+
+  test("the model-facing start cannot bypass abandon confirmation", async () => {
+    expect(findByVerb("abandon")?.tool).toBeNull()
+    expect(
+      await executeOperation("start", { action: "abandon" }),
+    ).toMatchObject({ ok: false, error: "invalid parameters for start" })
   })
 
   test('rejects allow_dirty: "false" instead of treating it as enabled', async () => {

@@ -74,6 +74,35 @@ const fullState = {
 }
 
 describe("RunStateSchema", () => {
+  test("new run identity and acquired history survive decoding; legacy paths stay legacy", () => {
+    const run_id = "1b4d2f0a-93c7-4c11-9a2f-5e6d8a7b9c01"
+    const acquired_panes = [
+      { pane_id: "old", label: "replaced" },
+      { pane_id: "p1", label: "latest" },
+    ]
+    const fresh = decodeRunState({
+      ...fullState,
+      run_id,
+      acquired_panes,
+      pending_artifact: `.apnea/runs/${run_id}/artifacts/coder-result.md`,
+    })
+    expect(Result.isSuccess(fresh)).toBe(true)
+    if (Result.isSuccess(fresh)) {
+      expect(fresh.success.run_id).toBe(run_id)
+      expect(fresh.success.acquired_panes).toEqual(acquired_panes)
+    }
+    const legacy = decodeRunState(fullState)
+    expect(Result.isSuccess(legacy)).toBe(true)
+    if (Result.isSuccess(legacy)) {
+      expect(legacy.success.run_id).toBeUndefined()
+      expect(legacy.success.pending_artifact).toBe(fullState.pending_artifact)
+    }
+    expect(
+      Result.isFailure(
+        decodeRunState({ ...fullState, run_id: "../../escape" }),
+      ),
+    ).toBe(true)
+  })
   test("round-trips a full fixture", () => {
     const r = decodeRunState(fullState)
     expect(Result.isSuccess(r)).toBe(true)

@@ -14,6 +14,7 @@ import {
   paneReadRecentArgs,
   probeHerdrAvailability,
   resolveExecutable,
+  requestPaneClose,
 } from "./herdr.ts"
 import { ProcessTimeoutError, type ProcessService } from "./process.ts"
 
@@ -97,6 +98,36 @@ describe("probeHerdrAvailability", () => {
 })
 
 describe("Herdr process boundary", () => {
+  test("abandon cannot close the invoking pane or guess it when unknown", async () => {
+    const service: ProcessService = {
+      runRaw: () => Effect.die("unexpected"),
+      run: () => Effect.die("must refuse before subprocess"),
+    }
+    for (const current of ["owned", undefined]) {
+      const result = await Effect.runPromise(
+        Effect.result(requestPaneClose(service, "owned", current)),
+      )
+      expect(Result.isFailure(result)).toBe(true)
+    }
+  })
+
+  test("abandon query failure preserves uncertainty and never closes", async () => {
+    const calls: string[][] = []
+    const service: ProcessService = {
+      runRaw: () => Effect.die("unexpected"),
+      run: (options) => {
+        calls.push([...(options.args ?? [])])
+        return Effect.fail(
+          new ProcessTimeoutError(options.command, options.timeoutMs, "", ""),
+        )
+      },
+    }
+    const result = await Effect.runPromise(
+      Effect.result(requestPaneClose(service, "owned", "invoking")),
+    )
+    expect(Result.isFailure(result)).toBe(true)
+    expect(calls).toEqual([["pane", "get", "owned"]])
+  })
   test("rejects malformed JSON even when Herdr exits zero", async () => {
     const processService: ProcessService = {
       runRaw: () => Effect.die("unexpected raw command"),

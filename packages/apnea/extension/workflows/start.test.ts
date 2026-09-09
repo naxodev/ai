@@ -172,20 +172,22 @@ describe("startWorkflow (fake layers)", () => {
     }).pipe(Effect.provide(layer))
   })
 
-  itEffect("abandon on corrupt state succeeds", () => {
-    const fsFake = makeFakeFileSystem({
-      [statePath(ROOT)]: "{bad",
-    })
-    const { layer, fakeFs } = layerOf(fsFake)
-    return Effect.gen(function* () {
-      const result = yield* startWorkflow({ goal: "", action: "abandon" }, ROOT)
-      expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(String(result.data?.backup)).toContain("abandoned")
-      }
-      expect(fakeFs.files.has(statePath(ROOT))).toBe(false)
-    }).pipe(Effect.provide(layer))
-  })
+  itEffect(
+    "start cannot bypass human confirmation even with corrupt state",
+    () => {
+      const fsFake = makeFakeFileSystem({
+        [statePath(ROOT)]: "{bad",
+      })
+      const { layer, fakeFs } = layerOf(fsFake)
+      return Effect.gen(function* () {
+        const result = yield* Effect.result(
+          startWorkflow({ goal: "", action: "abandon" }, ROOT),
+        )
+        expectFailure(result, "GateRefused")
+        expect(fakeFs.files.get(statePath(ROOT))).toBe("{bad")
+      }).pipe(Effect.provide(layer))
+    },
+  )
 
   itEffect("resume: pending_status classification and hint", () => {
     const pendingPath = ".apnea/artifacts/phase-01/round-1/coder-result.md"

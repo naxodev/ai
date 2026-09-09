@@ -48,8 +48,8 @@ Short message only, e.g.:
 ```text
 You are the reviewer.
 Read brief: <package>/briefs/reviewer.md
-Read task: .apnea/tasks/<id>.md
-Write artifact exactly at: .apnea/artifacts/phase-03/round-2/code-review.md
+Read task: .apnea/runs/<run-id>/tasks/<id>.md
+Write artifact exactly at: .apnea/runs/<run-id>/artifacts/phase-03/round-2/code-review.md
 Follow the brief. Do not invent paths.
 ```
 

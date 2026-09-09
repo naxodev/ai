@@ -18,7 +18,6 @@ import { executePiOperation, PI_OPERATIONS } from "./runtime.ts"
 export const SUBS = [
   ...PI_OPERATIONS.map((o) => o.verb),
   "resume",
-  "abandon",
   "help",
 ] as const satisfies readonly string[]
 
@@ -67,7 +66,7 @@ function helpText(operations: readonly Operation[]): string {
   return [
     "Apnea commands (tools remain for the model; you use /apnea):",
     ...lines,
-    "  /apnea resume | abandon        # actions on an existing run",
+    "  /apnea resume                  # resume an existing run",
     `      dispatch kinds: ${DISPATCH_KINDS.join(" | ")}`,
     "  /apnea help",
   ].join("\n")
@@ -223,7 +222,13 @@ export function registerApneaCommands(
           case "abandon":
             notify(
               ctx,
-              await run(ctx.signal, "start", { goal: "", action: "abandon" }),
+              await run(ctx.signal, "abandon", {
+                confirm: values.get("confirm"),
+                stop_panes: flags.has("stop-panes") || undefined,
+                stopped_work: flags.has("stopped-work") || undefined,
+                acknowledge_corrupt:
+                  flags.has("acknowledge-corrupt") || undefined,
+              }),
             )
             return
 

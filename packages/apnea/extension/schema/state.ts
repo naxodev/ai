@@ -96,6 +96,14 @@ export const RunStateSchema = Schema.Struct({
   // v1 on Encoded so legacy files still decode; decodeRunState always
   // outputs version 2.
   version: Schema.Union([Schema.Literal(1), Schema.Literal(2)]),
+  run_id: Schema.optionalKey(
+    Schema.String.check(
+      Schema.isPattern(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      ),
+    ),
+  ),
+  acquired_panes: Schema.optionalKey(Schema.Array(PaneRefSchema)),
   slug: Schema.String.check(Schema.isMinLength(1)),
   step: StepSchema,
   phase_index: PositiveSafeInteger,
@@ -151,7 +159,7 @@ function hasMatchingPendingCoderDispatch(d: DecodedRunState): boolean {
   return (
     d.pending_role === "coder" &&
     d.pending_artifact ===
-      `.apnea/artifacts/phase-${phase}/round-${round}/coder-result.md`
+      `.apnea/${d.run_id ? `runs/${d.run_id}/` : ""}artifacts/phase-${phase}/round-${round}/coder-result.md`
   )
 }
 
@@ -267,6 +275,15 @@ export function decodeRunState(
   // at the next normal save.
   const state: RunState = {
     version: 2,
+    ...(d.run_id === undefined ? {} : { run_id: d.run_id }),
+    ...(d.acquired_panes === undefined
+      ? {}
+      : {
+          acquired_panes: d.acquired_panes.map((pane) => ({
+            pane_id: pane.pane_id,
+            label: pane.label,
+          })),
+        }),
     slug: d.slug,
     step: d.step as Step,
     phase_index: d.phase_index,

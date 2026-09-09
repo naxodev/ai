@@ -80,16 +80,17 @@ single definition in `extension/registry.ts`, so they cannot drift apart (see
 [ADR 0009](docs/adr/0009-cli-driver-split.md)). The two were listed as separate tables until one
 of them went stale; a reader could not tell which.
 
-| Operation             | Pi tool                 | Flags                                        | Purpose                                                        |
-| --------------------- | ----------------------- | -------------------------------------------- | -------------------------------------------------------------- |
-| `setup`               | —                       | `[--project] [--force] [--agents-md]`        | global profiles, optional project bindings, `AGENTS.md` primer |
-| `start <goal>`        | `workflow_start`        | `[--allow-dirty] [--slug=name]` _(CLI only)_ | start a run                                                    |
-| `resume` / `abandon`  | `workflow_start`        |                                              | resume or abandon                                              |
-| `status`              | `workflow_status`       |                                              | read-only snapshot                                             |
-| `dispatch <kind>`     | `dispatch_role`         | `[--rework] [--redeliver]`                   | launch or explicitly redeliver a role                          |
-| `wait`                | `workflow_wait`         | `[--poll=<ms>] [--budget=<ms>]` _(CLI only)_ | wait for the pending artifact                                  |
-| `commit [message]`    | `workflow_commit_phase` | `[--done]`                                   | verify + commit phase                                          |
-| `reset-rounds <gate>` | —                       | `[--i-am-human]` _(CLI only)_                | **human only**                                                 |
+| Operation             | Pi tool                 | Flags                                                                         | Purpose                                                        |
+| --------------------- | ----------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `setup`               | —                       | `[--project] [--force] [--agents-md]`                                         | global profiles, optional project bindings, `AGENTS.md` primer |
+| `start <goal>`        | `workflow_start`        | `[--allow-dirty] [--slug=name]` _(CLI only)_                                  | start a run                                                    |
+| `resume`              | `workflow_start`        |                                                                               | resume an existing run                                         |
+| `abandon`             | —                       | `[--confirm=<token>] [--stop-panes] [--stopped-work] [--acknowledge-corrupt]` | human-only stop and archive                                    |
+| `status`              | `workflow_status`       |                                                                               | read-only snapshot                                             |
+| `dispatch <kind>`     | `dispatch_role`         | `[--rework] [--redeliver]`                                                    | launch or explicitly redeliver a role                          |
+| `wait`                | `workflow_wait`         | `[--poll=<ms>] [--budget=<ms>]` _(CLI only)_                                  | wait for the pending artifact                                  |
+| `commit [message]`    | `workflow_commit_phase` | `[--done]`                                                                    | verify + commit phase                                          |
+| `reset-rounds <gate>` | —                       | `[--i-am-human]` _(CLI only)_                                                 | **human only**                                                 |
 
 Prefix with `/` inside Pi (`/apnea status`), or run it as a shell command (`apnea status`).
 `/apnea-start` and `/apnea-status` are short aliases.
@@ -115,6 +116,30 @@ a terminal. See [ADR 0002](docs/adr/0002-orchestrator-authority.md).
 so call `apnea wait` again. Exit codes: `0` ok, `1` refused/error, `2` usage, `3` still waiting.
 See [`docs/protocol/config.md`](docs/protocol/config.md) for the budget-floor arithmetic behind
 `--poll` and `--budget`.
+
+### Abandon confirmation
+
+`apnea abandon` previews the pending role, pane, artifact, delivery mode, acquired panes, and full commit transaction.
+It returns a confirmation token bound to the repository and raw state bytes. Pi's `/apnea abandon` uses the same flags and checks.
+The model-facing `workflow_start` rejects `action=abandon`.
+
+`--confirm=<token> --stop-panes` requests closure of known panes through bounded Herdr calls.
+It records intent before closure and results afterward. It always retains active state: a successful pane close cannot prove descendant exit.
+The invoking pane is never closed. Unknown invoking identity, query failures, and missing panes refuse closure.
+Legacy pane history can be incomplete, and manual workers have no pane identity.
+
+After stopping all run workers and descendants, use `--confirm=<token> --stopped-work` to attest that termination is complete.
+This explicit attestation applies equally to CLI and Pi; it is not an OS-enforced process guarantee.
+Changed state requires another preview. An unresolved `pending_commit` always refuses abandonment; recover it with `apnea commit` first.
+
+Corrupt state additionally requires `--acknowledge-corrupt`, acknowledging unknown worker ownership and commit recovery risks.
+The escape preserves exact bytes, including invalid UTF-8. Raw fingerprinting is bounded to 64 MiB; larger files refuse unchanged.
+Archival writes audit evidence first, publishes an exclusive state archive, and removes active state last.
+Failures retain active state; an interrupted archival attempt may also leave an archive or audit file.
+
+Tasks and artifacts remain at their original paths. New runs persist a fresh UUID and use `.apnea/runs/<run-id>/` namespaces.
+Active legacy runs retain their original paths. A late write to an old run's artifact path cannot satisfy the new run's pending artifact.
+Workers still share repository access; namespaces do not sandbox arbitrary writes.
 
 ### Setup flags
 

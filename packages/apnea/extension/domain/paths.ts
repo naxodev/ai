@@ -25,33 +25,46 @@ export function globalConfigPath(home = os.homedir()): string {
   return path.join(home, ".config", "apnea", "config.json")
 }
 
-export function artifactsDir(root = cwd()): string {
-  return path.join(apneaRoot(root), "artifacts")
+export function artifactsDir(root = cwd(), runId?: string): string {
+  return path.join(
+    apneaRoot(root),
+    ...(runId ? ["runs", runId] : []),
+    "artifacts",
+  )
 }
 
-export function tasksDir(root = cwd()): string {
-  return path.join(apneaRoot(root), "tasks")
+export function tasksDir(root = cwd(), runId?: string): string {
+  return path.join(apneaRoot(root), ...(runId ? ["runs", runId] : []), "tasks")
 }
 
 export function phaseDir(
   phaseIndex: number,
   round: number,
   root = cwd(),
+  runId?: string,
 ): string {
   const n = String(phaseIndex).padStart(2, "0")
-  return path.join(artifactsDir(root), `phase-${n}`, `round-${round}`)
+  return path.join(artifactsDir(root, runId), `phase-${n}`, `round-${round}`)
 }
 
-export function planPath(root = cwd()): string {
-  return path.join(artifactsDir(root), "plan.md")
+export function planPath(root = cwd(), runId?: string): string {
+  return path.join(artifactsDir(root, runId), "plan.md")
 }
 
-export function planReviewPath(round: number, root = cwd()): string {
-  return path.join(artifactsDir(root), "plan-review", `round-${round}.md`)
+export function planReviewPath(
+  round: number,
+  root = cwd(),
+  runId?: string,
+): string {
+  return path.join(
+    artifactsDir(root, runId),
+    "plan-review",
+    `round-${round}.md`,
+  )
 }
 
-export function prDescriptionPath(root = cwd()): string {
-  return path.join(artifactsDir(root), "pr-description.md")
+export function prDescriptionPath(root = cwd(), runId?: string): string {
+  return path.join(artifactsDir(root, runId), "pr-description.md")
 }
 
 export function rel(p: string, root = cwd()): string {

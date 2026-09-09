@@ -54,7 +54,12 @@ const OPERATION_ARGS: Readonly<Record<string, OperationArgSpec>> = {
     maxPositionals: Number.POSITIVE_INFINITY,
   },
   resume: { switches: [], values: [], minPositionals: 0, maxPositionals: 0 },
-  abandon: { switches: [], values: [], minPositionals: 0, maxPositionals: 0 },
+  abandon: {
+    switches: ["stop-panes", "stopped-work", "acknowledge-corrupt"],
+    values: ["confirm"],
+    minPositionals: 0,
+    maxPositionals: 0,
+  },
   help: { switches: [], values: [], minPositionals: 0, maxPositionals: 0 },
   status: { switches: [], values: [], minPositionals: 0, maxPositionals: 0 },
   wait: {

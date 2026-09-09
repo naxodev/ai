@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { Effect } from "effect"
 import { packageRoot } from "../domain/paths.ts"
 import { resetRecoveryLadder } from "../domain/recovery.ts"
@@ -19,7 +20,7 @@ export type StartParams = {
 }
 
 /**
- * Start / resume / abandon an Apnea run.
+ * Start or resume an Apnea run. Legacy abandon calls refuse.
  * Refusals are tagged failures only — never ok:false ToolResults.
  */
 export const startWorkflow = (
@@ -34,8 +35,11 @@ export const startWorkflow = (
     const action = params.action ?? "start"
 
     if (action === "abandon") {
-      const bak = yield* store.abandon(root)
-      return ok(`abandoned run; state moved to ${bak}`, { backup: bak })
+      return yield* new GateRefused({
+        gate: "abandon",
+        message:
+          "Use the human-facing apnea abandon preview and confirmation flow.",
+      })
     }
 
     const existing = yield* store.load(root)
@@ -70,7 +74,7 @@ export const startWorkflow = (
     if (existing) {
       return yield* new GateRefused({
         gate: "start",
-        message: `state.json already exists (step=${existing.step}). Use action=resume or action=abandon.`,
+        message: `state.json already exists (step=${existing.step}). Use action=resume or the human-facing apnea abandon flow.`,
         details: { step: existing.step, slug: existing.slug },
       })
     }
@@ -101,6 +105,8 @@ export const startWorkflow = (
 
     const state: RunState = {
       version: 2,
+      run_id: randomUUID(),
+      acquired_panes: [],
       slug,
       step: "planning",
       phase_index: 1,
@@ -133,6 +139,14 @@ export const startWorkflow = (
     // The type checker only catches a missing REQUIRED field — a flag added
     // with a schema default would leave a fresh run carrying a stale rung.
     resetRecoveryLadder(state)
+    if (
+      yield* fs.projectPathExists(root, `${root}/.apnea/runs/${state.run_id}`)
+    )
+      return yield* new GateRefused({
+        gate: "start",
+        message:
+          "Run namespace already exists. Retry start to allocate a fresh identity.",
+      })
     yield* store.save(state, root)
 
     return ok(

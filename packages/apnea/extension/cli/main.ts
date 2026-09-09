@@ -26,7 +26,7 @@ function usage(): string {
     ...OPERATIONS.map(
       (o) => `  ${`${o.verb} ${o.usage ?? ""}`.trim().padEnd(38)} ${o.summary}`,
     ),
-    "  resume | abandon   actions on an existing run",
+    "  resume             resume an existing run",
     "",
     "apnea reset-rounds also accepts [--i-am-human] (CLI only — skips the TTY",
     "confirmation prompt that only this surface has; see README.md).",
@@ -69,8 +69,8 @@ export async function main(argv: string[]): Promise<number> {
     return 0
   }
 
-  // `resume` and `abandon` are actions on the start operation.
-  const isAction = verbRaw === "resume" || verbRaw === "abandon"
+  // Resume is an action on start; abandon has its own human confirmation.
+  const isAction = verbRaw === "resume"
   const op = findByVerb(isAction ? "start" : verbRaw)
   if (!op) {
     printUsageError(`unknown command: ${verbRaw}`, json)
@@ -99,7 +99,7 @@ export async function main(argv: string[]): Promise<number> {
     return EXIT_USAGE
   }
 
-  if (op.humanOnly) {
+  if (op.humanOnly && op.verb !== "abandon") {
     const gate = String(built.params.gate ?? "")
     const confirmed = await confirmHuman(
       gate,
@@ -172,6 +172,16 @@ export function buildParams(
   positional: string[],
 ): BuildParamsResult {
   switch (verb) {
+    case "abandon":
+      return {
+        ok: true,
+        params: {
+          confirm: values.get("confirm"),
+          stop_panes: flags.has("stop-panes") || undefined,
+          stopped_work: flags.has("stopped-work") || undefined,
+          acknowledge_corrupt: flags.has("acknowledge-corrupt") || undefined,
+        },
+      }
     case "start": {
       if (action) return { ok: true, params: { action } }
       const goal = positional.join(" ").trim()

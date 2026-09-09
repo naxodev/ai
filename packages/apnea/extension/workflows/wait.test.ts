@@ -1490,6 +1490,7 @@ describe("waitWorkflow (fake layers + TestClock)", () => {
       const hangingHerdr = Layer.succeed(
         Herdr,
         Herdr.of({
+          requestPaneClose: () => Effect.die("wait must never close a pane"),
           enabled: Effect.succeed(true),
           availability: Effect.succeed("available"),
           paneGet: () => Effect.succeed({ ok: true, agent_status: "idle" }),

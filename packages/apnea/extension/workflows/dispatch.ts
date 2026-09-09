@@ -431,34 +431,39 @@ export const dispatchWorkflow = (
 
     switch (params.kind) {
       case "plan":
-        artifactAbs = planPath(root)
+        artifactAbs = planPath(root, state.run_id)
         if (!extra) {
-          extra = `Produce full plan for goal. Vertical phases with acceptance + verify commands.\nIf rework, address plan-review under .apnea/artifacts/plan-review/.`
+          extra = `Produce full plan for goal. Vertical phases with acceptance + verify commands.`
+          if (round > 1)
+            extra += `\nAddress the review at \`${rel(planReviewPath(round - 1, root, state.run_id), root)}\`.`
         }
         break
       case "plan_review":
-        artifactAbs = planReviewPath(round, root)
+        artifactAbs = planReviewPath(round, root, state.run_id)
         extra =
           extra ||
-          `Review plan at \`${rel(planPath(root), root)}\`.\nWrite verdict front-matter.`
+          `Review plan at \`${rel(planPath(root, state.run_id), root)}\`.\nWrite verdict front-matter.`
         break
       case "phase_package": {
-        const d = phaseDir(state.phase_index, round, root)
+        const d = phaseDir(state.phase_index, round, root, state.run_id)
         artifactAbs = path.join(d, "phase-package.md")
         extra =
           extra ||
           (isRework || (redeliver && state.current_code_review !== null)
             ? `Revise the phase ${state.phase_index} package after code review \`${state.current_code_review}\`. Preserve approved-plan scope and address package findings.`
-            : `Emit phase package for phase ${state.phase_index} only from approved plan \`${rel(planPath(root), root)}\`.`)
+            : `Emit phase package for phase ${state.phase_index} only from approved plan \`${rel(planPath(root, state.run_id), root)}\`.`)
         break
       }
       case "code": {
-        const d = phaseDir(state.phase_index, round, root)
+        const d = phaseDir(state.phase_index, round, root, state.run_id)
         artifactAbs = path.join(d, "coder-result.md")
         const pkg =
           state.current_phase_package ??
           rel(
-            path.join(phaseDir(state.phase_index, 1, root), "phase-package.md"),
+            path.join(
+              phaseDir(state.phase_index, 1, root, state.run_id),
+              "phase-package.md",
+            ),
             root,
           )
         extra =
@@ -467,12 +472,15 @@ export const dispatchWorkflow = (
         break
       }
       case "code_review": {
-        const d = phaseDir(state.phase_index, round, root)
+        const d = phaseDir(state.phase_index, round, root, state.run_id)
         artifactAbs = path.join(d, "code-review.md")
         const pkg =
           state.current_phase_package ??
           rel(
-            path.join(phaseDir(state.phase_index, 1, root), "phase-package.md"),
+            path.join(
+              phaseDir(state.phase_index, 1, root, state.run_id),
+              "phase-package.md",
+            ),
             root,
           )
         const coder = rel(path.join(d, "coder-result.md"), root)
@@ -482,7 +490,7 @@ export const dispatchWorkflow = (
         break
       }
       case "pr_description":
-        artifactAbs = prDescriptionPath(root)
+        artifactAbs = prDescriptionPath(root, state.run_id)
         extra = extra || "Write PR description summarizing all phases."
         break
     }
@@ -575,13 +583,13 @@ export const dispatchWorkflow = (
 
     let taskFileMillis = yield* Clock.currentTimeMillis
     let taskFile = path.join(
-      tasksDir(root),
+      tasksDir(root, state.run_id),
       `${params.kind}-p${state.phase_index}-r${round}-${taskFileMillis}.md`,
     )
     while (yield* fs.projectPathExists(root, taskFile)) {
       taskFileMillis += 1
       taskFile = path.join(
-        tasksDir(root),
+        tasksDir(root, state.run_id),
         `${params.kind}-p${state.phase_index}-r${round}-${taskFileMillis}.md`,
       )
     }
@@ -628,6 +636,11 @@ export const dispatchWorkflow = (
           )
         }
         if (restoreState) {
+          // Delivery rollback does not establish termination of acquired panes.
+          if (state.acquired_panes?.length)
+            stateBeforeDispatch.acquired_panes = structuredClone(
+              state.acquired_panes,
+            )
           yield* attempt(
             "restore workflow state",
             store.save(stateBeforeDispatch, root),
@@ -702,6 +715,12 @@ export const dispatchWorkflow = (
     const prefer =
       remembered?.profile_fingerprint === profileFingerprint ? remembered : null
     const recordPaneOwnership = (pane: RolePaneRef) => {
+      state.acquired_panes ??= Object.values(state.role_panes).map((p) => ({
+        pane_id: p.pane_id,
+        label: p.label,
+      }))
+      if (!state.acquired_panes.some((p) => p.pane_id === pane.pane_id))
+        state.acquired_panes.push({ pane_id: pane.pane_id, label: pane.label })
       state.pending_pane_id = pane.pane_id
       state.pending_pane_label = pane.label
       state.role_panes[role] = {
@@ -737,6 +756,13 @@ export const dispatchWorkflow = (
       ),
     )
     if (Result.isFailure(launched)) {
+      const cleanupError = launched.failure.details?.pane_cleanup_error
+      if (typeof cleanupError === "string") {
+        stateBeforeDispatch.last_error = `Pane ${String(launched.failure.details?.pane_id)} cleanup failed: ${cleanupError}`
+        // Acquisition may already have rolled back before Herdr attempted cleanup.
+        if (acquisitionRollbackErrors !== undefined)
+          yield* store.save(stateBeforeDispatch, root)
+      }
       if (launched.failure.details?.delivery === "unknown") {
         const paneId = launched.failure.details.pane_id
         const paneLabel = launched.failure.details.pane_label

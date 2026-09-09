@@ -42,6 +42,8 @@ export interface HerdrService {
   /** Dispatch preflight that distinguishes a stale pane from CLI failures. */
   readonly availability: Effect.Effect<HerdrAvailability, HerdrError>
   readonly paneGet: (paneId: string) => Effect.Effect<PaneInfo, HerdrError>
+  /** Requests closure only; successful closure does not prove descendant exit. */
+  readonly requestPaneClose: (paneId: string) => Effect.Effect<void, HerdrError>
   readonly paneRun: (
     paneId: string,
     command: string,
@@ -448,6 +450,24 @@ function paneClose(
     }
   })
 }
+
+export const requestPaneClose = Effect.fn("Herdr.requestPaneClose")(function* (
+  processService: ProcessService,
+  paneId: string,
+  invokingPaneId: string | undefined,
+) {
+  if (!invokingPaneId || paneId === invokingPaneId)
+    return yield* new HerdrError({
+      message: "Refusing pane closure without a known distinct invoking pane.",
+    })
+  const info = yield* paneGet(processService, paneId)
+  if (!info.ok || info.missing)
+    return yield* new HerdrError({
+      message:
+        "Pane location is unknown; a missing pane does not prove worker exit.",
+    })
+  yield* paneClose(processService, paneId)
+})
 
 function withLaunchDetails(
   error: HerdrError,
@@ -893,6 +913,8 @@ export const makeHerdrLive = (hostAdapter: ApneaHostAdapter) =>
         availability: herdrAvailability(processService),
 
         paneGet: (paneId) => paneGet(processService, paneId),
+        requestPaneClose: (paneId) =>
+          requestPaneClose(processService, paneId, process.env.HERDR_PANE_ID),
 
         paneRun: (paneId, command) => paneRun(processService, paneId, command),
 
