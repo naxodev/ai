@@ -306,7 +306,7 @@ export function registerApneaCommands(
               ctx,
               await run(ctx.signal, "commit", {
                 message,
-                no_remaining_phases: flags.has("done"),
+                no_remaining_phases: flags.has("done") || undefined,
               }),
             )
             return

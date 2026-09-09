@@ -67,8 +67,13 @@ export function prDescriptionPath(root = cwd(), runId?: string): string {
   return path.join(artifactsDir(root, runId), "pr-description.md")
 }
 
-export function rel(p: string, root = cwd()): string {
-  return path.relative(root, p) || p
+export function rel(
+  p: string,
+  root = cwd(),
+  paths: Pick<typeof path, "relative" | "sep"> = path,
+): string {
+  // Persisted artifact paths use forward slashes on every platform.
+  return (paths.relative(root, p) || p).split(paths.sep).join("/")
 }
 
 export function abs(p: string, root = cwd()): string {
