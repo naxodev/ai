@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import { Effect, Exit, Option } from "effect"
 import { ConfigError } from "../errors.ts"
 import {
@@ -11,6 +12,60 @@ import {
 } from "./file-system.ts"
 
 const roots: string[] = []
+
+describe("abandon evidence filesystem", () => {
+  test("hashes and archives corrupt raw bytes without decoding or overwriting evidence", async () => {
+    const root = temp("apnea-archive-")
+    const source = path.join(root, "state.json")
+    const archive = path.join(root, "archive.json")
+    const bytes = Buffer.from([0xff, 0xfe, 0, 123, 10])
+    fs.writeFileSync(source, bytes)
+    fs.writeFileSync(archive, "prior evidence")
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const files = yield* FileSystem
+        expect(yield* files.fingerprintProjectFile(root, source)).toBe(
+          createHash("sha256").update(bytes).digest("hex"),
+        )
+        const collision = yield* Effect.exit(
+          files.archiveProjectFile(root, source, archive),
+        )
+        expect(Exit.isFailure(collision)).toBe(true)
+        expect(fs.readFileSync(archive, "utf8")).toBe("prior evidence")
+        expect(fs.readFileSync(source)).toEqual(bytes)
+        yield* files.archiveProjectFile(root, source, `${archive}.new`)
+        expect(fs.existsSync(source)).toBe(false)
+        expect(fs.readFileSync(`${archive}.new`)).toEqual(bytes)
+      }).pipe(Effect.provide(FileSystemLive)),
+    )
+  })
+
+  test("raw fingerprint and archive refuse symlink state", async () => {
+    const root = temp("apnea-archive-link-")
+    const source = path.join(root, "state.json")
+    const target = path.join(root, "target")
+    fs.writeFileSync(target, "evidence")
+    fs.symlinkSync(target, source)
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const files = yield* FileSystem
+        expect(
+          Exit.isFailure(
+            yield* Effect.exit(files.fingerprintProjectFile(root, source)),
+          ),
+        ).toBe(true)
+        expect(
+          Exit.isFailure(
+            yield* Effect.exit(
+              files.archiveProjectFile(root, source, `${source}.archive`),
+            ),
+          ),
+        ).toBe(true)
+        expect(fs.readFileSync(target, "utf8")).toBe("evidence")
+      }).pipe(Effect.provide(FileSystemLive)),
+    )
+  })
+})
 
 afterEach(() => {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true })

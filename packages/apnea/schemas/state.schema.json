@@ -16,6 +16,22 @@
     }
   ],
   "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "New runs use unique namespaces. Absent on legacy active runs."
+    },
+    "acquired_panes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pane_id", "label"],
+        "properties": {
+          "pane_id": { "type": "string" },
+          "label": { "type": "string" }
+        }
+      }
+    },
     "version": {
       "enum": [1, 2],
       "description": "Version 1 is accepted INPUT for migration (decodes with pending_commit=null); version 2 is the OUTPUT every save writes and must carry pending_commit explicitly."

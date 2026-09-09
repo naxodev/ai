@@ -1,12 +1,23 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { Context, Effect, Layer } from "effect"
 import { ConfigError } from "../errors.ts"
 
 export const PERSISTED_INPUT_MAX_BYTES = 1024 * 1024
 
 export interface FileSystemService {
+  /** Hash raw state bytes, including corrupt UTF-8, with bounded memory and IO. */
+  readonly fingerprintProjectFile: (
+    root: string,
+    source: string,
+  ) => Effect.Effect<string, ConfigError>
+  /** Publish an exclusive durable archive before removing the active file. */
+  readonly archiveProjectFile: (
+    root: string,
+    source: string,
+    destination: string,
+  ) => Effect.Effect<void, ConfigError>
   readonly readFile: (path: string) => Effect.Effect<string>
   readonly writeFile: (path: string, content: string) => Effect.Effect<void>
   readonly writeProjectFile: (
@@ -290,6 +301,66 @@ function fsyncParentDirectory(target: string): void {
 export const FileSystemLive = Layer.succeed(
   FileSystem,
   FileSystem.of({
+    fingerprintProjectFile: (root, source) =>
+      projectEffect(() => {
+        const target = secureProjectPath(root, source)
+        const descriptor = fs.openSync(
+          target,
+          fs.constants.O_RDONLY |
+            (fs.constants.O_NOFOLLOW ?? 0) |
+            (fs.constants.O_NONBLOCK ?? 0),
+        )
+        try {
+          if (!fs.fstatSync(descriptor).isFile())
+            throw new ConfigError({
+              message: "state fingerprint requires a regular file",
+              path: target,
+            })
+          const hash = createHash("sha256")
+          const bytes = Buffer.allocUnsafe(64 * 1024)
+          let total = 0
+          for (;;) {
+            const count = fs.readSync(descriptor, bytes, 0, bytes.length, null)
+            if (!count) break
+            total += count
+            if (total > 64 * 1024 * 1024)
+              throw new ConfigError({
+                message:
+                  "state fingerprint exceeds 64 MiB limit; active state retained",
+                path: target,
+              })
+            hash.update(bytes.subarray(0, count))
+          }
+          return hash.digest("hex")
+        } finally {
+          fs.closeSync(descriptor)
+        }
+      }),
+    archiveProjectFile: (root, source, destination) =>
+      projectEffect(() => {
+        const from = secureProjectPath(root, source)
+        const to = secureProjectPath(root, destination)
+        if (!fs.lstatSync(from).isFile())
+          throw new ConfigError({
+            message: "archive source must be a regular file",
+            path: from,
+          })
+        if (path.resolve(path.dirname(destination)) !== path.resolve(root))
+          createProjectDirectories(root, path.dirname(destination))
+        // link is exclusive: EEXIST cannot replace an earlier archive.
+        fs.linkSync(from, to)
+        const descriptor = fs.openSync(
+          to,
+          fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+        )
+        try {
+          fs.fsyncSync(descriptor)
+        } finally {
+          fs.closeSync(descriptor)
+        }
+        fsyncParentDirectory(to)
+        fs.unlinkSync(from)
+      }),
     readFile: (path) =>
       Effect.try({
         try: () => fs.readFileSync(path, "utf8"),

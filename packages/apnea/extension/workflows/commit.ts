@@ -112,7 +112,10 @@ export const commitWorkflow = (
     const pkgRel =
       state.current_phase_package ??
       rel(
-        path.join(phaseDir(state.phase_index, 1, root), "phase-package.md"),
+        path.join(
+          phaseDir(state.phase_index, 1, root, state.run_id),
+          "phase-package.md",
+        ),
         root,
       )
     const pkgAbs = abs(pkgRel, root)

@@ -1,4 +1,5 @@
 import * as path from "node:path"
+import { randomUUID } from "node:crypto"
 import { Clock, Context, Effect, Layer, Result } from "effect"
 import {
   apneaRoot,
@@ -24,6 +25,7 @@ export interface RunStoreService {
   ) => Effect.Effect<RunState, NoRunState | StateCorrupt | ConfigError>
   readonly abandon: (
     root: string,
+    audit?: unknown,
   ) => Effect.Effect<string, NoRunState | ConfigError>
 }
 
@@ -34,12 +36,13 @@ export class RunStore extends Context.Service<RunStore, RunStoreService>()(
 function ensureApneaDirs(
   fs: FileSystemService,
   root: string,
+  runId?: string,
 ): Effect.Effect<void, ConfigError> {
   const dirs = [
     apneaRoot(root),
-    artifactsDir(root),
-    tasksDir(root),
-    path.join(artifactsDir(root), "plan-review"),
+    artifactsDir(root, runId),
+    tasksDir(root, runId),
+    path.join(artifactsDir(root, runId), "plan-review"),
   ]
   return Effect.forEach(dirs, (d) => fs.mkdirProject(root, d), {
     discard: true,
@@ -88,9 +91,10 @@ export const RunStoreLive = Layer.effect(
       root: string,
     ): Effect.Effect<void, ConfigError> =>
       Effect.gen(function* () {
-        yield* ensureApneaDirs(fs, root)
+        yield* ensureApneaDirs(fs, root, state.run_id)
         const p = statePath(root)
-        const body = `${JSON.stringify(state, null, 2)}\n`
+        const { run_id, acquired_panes, ...fields } = state
+        const body = `${JSON.stringify({ ...fields, run_id, acquired_panes }, null, 2)}\n`
         yield* fs.writeProjectFile(root, p, body)
       })
 
@@ -105,14 +109,26 @@ export const RunStoreLive = Layer.effect(
 
     const abandon = (
       root: string,
+      audit?: unknown,
     ): Effect.Effect<string, NoRunState | ConfigError> =>
       Effect.gen(function* () {
         const p = statePath(root)
         const present = yield* fs.projectPathExists(root, p)
         if (!present) return yield* new NoRunState({})
         const millis = yield* Clock.currentTimeMillis
-        const bak = `${p}.abandoned.${millis}`
-        yield* fs.renameProjectFile(root, p, bak)
+        const bak = `${p}.abandoned.${millis}.${randomUUID()}`
+        if (yield* fs.projectPathExists(root, bak))
+          return yield* new ConfigError({
+            message: "archive collision; active state retained",
+            path: bak,
+          })
+        if (audit !== undefined)
+          yield* fs.writeProjectFile(
+            root,
+            `${bak}.audit.json`,
+            `${JSON.stringify(audit, null, 2)}\n`,
+          )
+        yield* fs.archiveProjectFile(root, p, bak)
         return bak
       })
 

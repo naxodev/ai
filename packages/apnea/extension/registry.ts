@@ -4,6 +4,7 @@ import { workflowCommitPhase } from "./adapters/commit.ts"
 import { workflowDispatch } from "./adapters/dispatch.ts"
 import { apneaSetup } from "./adapters/setup.ts"
 import { workflowStart } from "./adapters/start.ts"
+import { workflowAbandon } from "./adapters/abandon.ts"
 import { workflowResetRounds, workflowStatus } from "./adapters/status.ts"
 import { workflowWait } from "./adapters/wait.ts"
 import { DISPATCH_KINDS } from "./domain/state-machine.ts"
@@ -39,7 +40,7 @@ export type Operation = {
   /** Extra prose for the model only; omitted from `--help`. */
   readonly guidance?: string
   readonly params: TSchema
-  /** Gated behind the TTY check in the CLI; never registered as a tool. */
+  /** Human confirmation required; never registered as a tool. */
   readonly humanOnly?: true
 }
 
@@ -93,7 +94,7 @@ function createRegisteredOperations(
       tool: "workflow_start",
       verb: "start",
       usage: "<goal> [--allow-dirty] [--slug=name]",
-      summary: "Start, resume, or abandon an Apnea run.",
+      summary: "Start or resume an Apnea run.",
       guidance:
         "Start only writes state (step=planning) — it does NOT launch roles. After start succeeds you MUST immediately call dispatch_role kind=plan then workflow_wait. Resume never auto-dispatches. Refuses if state exists or tree dirty (unless allow_dirty).",
       params: operationParams({
@@ -105,11 +106,7 @@ function createRegisteredOperations(
         ),
         allow_dirty: Type.Optional(Type.Boolean()),
         action: Type.Optional(
-          Type.Union([
-            Type.Literal("start"),
-            Type.Literal("resume"),
-            Type.Literal("abandon"),
-          ]),
+          Type.Union([Type.Literal("start"), Type.Literal("resume")]),
         ),
       }),
       // Mirrors the guard in index.ts's execute(): without it, action=start
@@ -135,6 +132,27 @@ function createRegisteredOperations(
           hooks,
         )
       },
+    },
+    {
+      tool: null,
+      verb: "abandon",
+      humanOnly: true,
+      usage:
+        "[--confirm=<token> --stop-panes|--stopped-work] [--acknowledge-corrupt]",
+      summary:
+        "Preview ownership, then archive after human attestation that all run work stopped.",
+      params: operationParams({
+        confirm: Type.Optional(Type.String()),
+        stopped_work: Type.Optional(Type.Boolean()),
+        stop_panes: Type.Optional(Type.Boolean()),
+        acknowledge_corrupt: Type.Optional(Type.Boolean()),
+      }),
+      run: (p, hooks) =>
+        workflowAbandon(
+          p as Parameters<typeof workflowAbandon>[0],
+          hostAdapter,
+          hooks,
+        ),
     },
     {
       tool: "dispatch_role",

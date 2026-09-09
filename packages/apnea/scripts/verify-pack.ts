@@ -46,6 +46,7 @@ docs/protocol/artifacts.md
 docs/protocol/config.md
 docs/protocol/manual-gate.md
 docs/protocol/overview.md
+extension/adapters/abandon.ts
 extension/adapters/commit.ts
 extension/adapters/dispatch.ts
 extension/adapters/setup.ts
@@ -86,6 +87,7 @@ extension/services/operation-lock.ts
 extension/services/process.ts
 extension/services/run-store.ts
 extension/services/vcs.ts
+extension/workflows/abandon.ts
 extension/workflows/commit.ts
 extension/workflows/dispatch.ts
 extension/workflows/reset.ts

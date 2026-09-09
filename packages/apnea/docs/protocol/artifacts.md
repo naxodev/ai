@@ -6,24 +6,31 @@
 .apnea/                          # runtime; ignore in VCS
   config.json                    # optional project role→profile bindings only
   state.json                     # step, phase index, rounds, required rework target, slug
-  tasks/
-    <dispatch-id>.md             # human/agent-readable task payload
-  artifacts/
-    plan.md                      # or plan-round-N.md on plan rework
-    plan-review/
-      round-1.md
-    phase-01/
-      round-1/
-        phase-package.md
-        coder-result.md
-        code-review.md
-        verify.log               # written by workflow_commit_phase
-    phase-02/
-      ...
-    pr-description.md
+  runs/<run-id>/                  # UUID persisted in state.json for every new run
+    tasks/
+      <dispatch-id>.md           # human/agent-readable task payload
+    artifacts/
+      plan.md                    # or plan-round-N.md on plan rework
+      plan-review/
+        round-1.md
+      phase-01/
+        round-1/
+          phase-package.md
+          coder-result.md
+          code-review.md
+          verify.log             # written by workflow_commit_phase
+      phase-02/
+        ...
+      pr-description.md
 ```
 
 Package-owned briefs live in the installed package (`briefs/`), not under `.apnea/`.
+
+The task and artifact entries above are relative to `runs/<run-id>/`. Legacy active runs without
+`run_id` retain `.apnea/tasks/` and `.apnea/artifacts/`. Resume does not migrate their paths.
+Abandon retains this evidence in place and archives exact state bytes with an audit record.
+Restart always allocates a new namespace, including when the goal and slug match the old run.
+See [abandon confirmation](../../README.md#abandon-confirmation) for termination and commit recovery requirements.
 
 Persisted artifact references in `state.json` must be repository-relative paths below `.apnea/`.
 Absolute paths and paths containing NULs, empty, `.`, `..`, or backslash components are corrupt

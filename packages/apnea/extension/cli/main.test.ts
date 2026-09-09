@@ -172,6 +172,7 @@ describe("buildParams: every registry verb is routed, not defaulted", () => {
   // case is missing, deleted, or silently falls through. (Comment out any
   // one `case` in `buildParams` and the matching test below turns red.)
   const VALID_ARGV: Record<string, string[]> = {
+    abandon: [],
     setup: [],
     start: ["fix", "the", "bug"],
     dispatch: [DISPATCH_KINDS[0]],
@@ -197,7 +198,7 @@ describe("buildParams: every registry verb is routed, not defaulted", () => {
   }
 })
 
-describe("resume/abandon route to the start operation", () => {
+describe("resume and dedicated abandon routing", () => {
   // main() looks up findByVerb("start") for both, then passes the literal
   // verb through as `action` — this is the seam that makes that translation
   // correct instead of accidentally re-running a fresh `start`.
@@ -209,9 +210,20 @@ describe("resume/abandon route to the start operation", () => {
   })
 
   test("abandon", () => {
-    expect(build("start", "abandon", [])).toEqual({
+    expect(
+      build("abandon", null, [
+        "--confirm=state-token",
+        "--stopped-work",
+        "--acknowledge-corrupt",
+      ]),
+    ).toEqual({
       ok: true,
-      params: { action: "abandon" },
+      params: {
+        confirm: "state-token",
+        stopped_work: true,
+        acknowledge_corrupt: true,
+        stop_panes: undefined,
+      },
     })
   })
 })

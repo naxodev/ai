@@ -25,6 +25,7 @@ export type FakeHerdrOptions = {
    * "never attempted" (e.g. `tryNudge` in wait.ts must not skip the attempt).
    */
   failPaneRun?: HerdrError
+  failPaneClose?: HerdrError
   paneOutput?: string | null
   failPaneRead?: HerdrError
   /**
@@ -40,6 +41,7 @@ export type FakeHerdrOptions = {
 export type FakeHerdrRecorder = {
   paneRuns: Array<{ paneId: string; command: string }>
   paneReads: string[]
+  paneCloses: string[]
   interactiveCalls: Array<{
     role: string
     cmd: string[]
@@ -56,11 +58,17 @@ export function fakeHerdrLayer(opts: FakeHerdrOptions = {}): {
   const recorder: FakeHerdrRecorder = {
     paneRuns: [],
     paneReads: [],
+    paneCloses: [],
     interactiveCalls: [],
   }
 
   const service: HerdrService = {
     enabled: Effect.sync(() => opts.enabled ?? true),
+    requestPaneClose: (id) =>
+      Effect.gen(function* () {
+        recorder.paneCloses.push(id)
+        if (opts.failPaneClose) return yield* opts.failPaneClose
+      }),
 
     availability: Effect.gen(function* () {
       if (opts.availability instanceof HerdrError) {

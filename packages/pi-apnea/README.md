@@ -33,6 +33,10 @@ Run these commands inside Pi:
 
 The shorter `/apnea-start` and `/apnea-status` aliases are also available. See the [Apnea CLI and operation reference](../apnea/README.md#cli-reference) for the shared command surface and exit behavior.
 
+`/apnea abandon` previews ownership before any archival. Its confirmation, pane-close requests,
+stopped-work attestation, and corrupt-state acknowledgment use the same flags and behavior as the CLI.
+See [abandon confirmation](../apnea/README.md#abandon-confirmation). Abandon is not a model-facing tool.
+
 ## Verify
 
 Run `/apnea status` before starting a workflow. A clean installation reports no active run and identifies `workflow_start` as a legal next operation. If Pi does not register the commands, run `/reload` and inspect Pi's package-loading output.

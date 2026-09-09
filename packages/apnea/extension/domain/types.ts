@@ -85,6 +85,10 @@ export interface ApneaConfig {
 
 export interface RunState {
   version: 2
+  /** Absent only on legacy runs, which retain their original paths. */
+  run_id?: string
+  /** Append-only ownership, including replaced and completed workers. */
+  acquired_panes?: { pane_id: string; label: string }[]
   slug: string
   step: Step
   phase_index: number

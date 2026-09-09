@@ -44,6 +44,17 @@ describe("registerApneaCommands registry parity", () => {
 
     const fixtures = [
       {
+        input:
+          "abandon --confirm=state-token --stopped-work --acknowledge-corrupt",
+        verb: "abandon",
+        params: {
+          confirm: "state-token",
+          stopped_work: true,
+          acknowledge_corrupt: true,
+          stop_panes: undefined,
+        },
+      },
+      {
         input: "setup --project --force --agents-md",
         verb: "setup",
         params: { project: true, force: true, agents_md: true },
@@ -91,7 +102,7 @@ describe("registerApneaCommands registry parity", () => {
     )
   })
 
-  test("resume and abandon route through start with exact actions", async () => {
+  test("resume and abandon route through distinct operations", async () => {
     const calls: Array<{ verb: string; params: Record<string, unknown> }> = []
     const handler = captureApneaHandler(async (verb, params) => {
       calls.push({ verb, params })
@@ -103,7 +114,15 @@ describe("registerApneaCommands registry parity", () => {
 
     expect(calls).toEqual([
       { verb: "start", params: { goal: "", action: "resume" } },
-      { verb: "start", params: { goal: "", action: "abandon" } },
+      {
+        verb: "abandon",
+        params: {
+          confirm: undefined,
+          stopped_work: undefined,
+          acknowledge_corrupt: undefined,
+          stop_panes: undefined,
+        },
+      },
     ])
   })
 
