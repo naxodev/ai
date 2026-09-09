@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test"
+import { resolve } from "node:path"
 import { OPERATIONS, type ExecuteOperation } from "@naxodev/apnea"
+import { Effect, Layer } from "effect"
+import { abs, statePath } from "../../apnea/extension/domain/paths.ts"
+import type { RunState } from "../../apnea/extension/domain/types.ts"
+import {
+  RunStore,
+  RunStoreLive,
+} from "../../apnea/extension/services/run-store.ts"
+import { expectFailure } from "../../apnea/extension/test/expect-failure.ts"
+import { fakeConfigLayer } from "../../apnea/extension/test/fake-config.ts"
+import { makeFakeFileSystem } from "../../apnea/extension/test/fake-file-system.ts"
+import { fakeVcsLayer } from "../../apnea/extension/test/fake-vcs.ts"
+import { commitWorkflow } from "../../apnea/extension/workflows/commit.ts"
 import { registerApneaCommands } from "./commands.ts"
 
 type Notify = (message: string, level?: "info" | "warning" | "error") => void
@@ -34,6 +47,107 @@ async function run(handler: Handler, args: string) {
 }
 
 describe("registerApneaCommands registry parity", () => {
+  test("bare commit recovers an interrupted final phase without overriding durable options", async () => {
+    const root = resolve("/proj")
+    const state = {
+      version: 2,
+      slug: "demo",
+      step: "committing",
+      phase_index: 1,
+      phase_count_hint: null,
+      rounds: {},
+      vcs: "jj",
+      allow_dirty: false,
+      goal: "ship the final phase",
+      last_error: null,
+      pending_artifact: null,
+      pending_role: null,
+      pending_delivery: null,
+      pending_pane_id: null,
+      pending_pane_label: null,
+      pending_started_at: null,
+      pending_deadline_ms: null,
+      pending_nudged_at: null,
+      pending_final_grace: false,
+      pending_extended: false,
+      role_panes: {},
+      package_root: resolve("/pkg"),
+      reviewer_tree_fingerprint: null,
+      current_phase_package:
+        ".apnea/artifacts/phase-01/round-1/phase-package.md",
+      current_code_review: ".apnea/artifacts/phase-01/round-1/code-review.md",
+      required_rework: null,
+      pending_commit: null,
+    } satisfies RunState
+    const fs = makeFakeFileSystem({
+      [statePath(root)]: JSON.stringify(state),
+      [abs(state.current_code_review, root)]:
+        "---\nstatus: done\nverdict: APPROVED\n---\nlooks good\n",
+      [abs(state.current_phase_package, root)]:
+        "# Phase\n\n```sh\necho ok\n```\n",
+    })
+    const vcs = fakeVcsLayer({ crashAfterCommitOnce: true })
+    const layer = Layer.mergeAll(
+      Layer.provideMerge(RunStoreLive, fs.layer),
+      fakeConfigLayer(),
+      vcs.layer,
+    )
+    const execute: ExecuteOperation = async (verb, params) => {
+      expect(verb).toBe("commit")
+      return Effect.runPromise(
+        commitWorkflow(params, root).pipe(Effect.provide(layer)),
+      )
+    }
+    const handler = captureApneaHandler(execute)
+    const load = () =>
+      Effect.runPromise(
+        Effect.flatMap(RunStore, (store) => store.require(root)).pipe(
+          Effect.provide(layer),
+        ),
+      )
+
+    const first = await run(handler, "commit release fix --done")
+    expect(first.at(-1)?.level).toBe("error")
+    expect(first.at(-1)?.message).toContain("simulated crash")
+    const interrupted = await load()
+    expect(interrupted.step).toBe("committing")
+    if (!interrupted.pending_commit) {
+      throw new Error("interrupted commit must persist its recovery options")
+    }
+    expect(interrupted.pending_commit?.no_remaining_phases).toBe(true)
+    expect(interrupted.pending_commit?.message).toContain("release fix")
+    expect(interrupted.pending_commit.verify_log).toBe(
+      ".apnea/artifacts/phase-01/round-1/verify.log",
+    )
+
+    // Explicit false must remain a conflict, even though omission can recover.
+    const conflict = await Effect.runPromise(
+      Effect.result(commitWorkflow({ no_remaining_phases: false }, root)).pipe(
+        Effect.provide(layer),
+      ),
+    )
+    expect(expectFailure(conflict, "GateRefused").message).toContain(
+      "conflicting retry",
+    )
+    expect(await load()).toEqual(interrupted)
+    expect(vcs.recorder.completions).toHaveLength(1)
+
+    const retry = await run(captureApneaHandler(execute), "commit")
+    expect(retry.at(-1)?.level).toBe("info")
+    expect(retry.at(-1)?.message).toContain("recovered transaction")
+    const recovered = await load()
+    expect(recovered.step).toBe("finishing")
+    expect(recovered.phase_index).toBe(1)
+    expect(recovered.pending_commit).toBeNull()
+    expect(vcs.recorder.verifyRuns).toHaveLength(1)
+    expect(vcs.recorder.prepares).toHaveLength(1)
+    expect(vcs.recorder.completions).toHaveLength(2)
+    expect(vcs.recorder.completions[1]?.pending).toEqual(
+      interrupted.pending_commit,
+    )
+    expect(vcs.recorder.bookmarks).toEqual([{ root, slug: "demo" }])
+  })
+
   test("every verb dispatches exact parameters from valid command input", async () => {
     const calls: Array<{ verb: string; params: Record<string, unknown> }> = []
     const execute: ExecuteOperation = async (verb, params) => {

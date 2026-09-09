@@ -7,7 +7,32 @@ import {
   findPackageRootFrom,
   globalConfigPath,
   packageRoot,
+  rel,
 } from "./paths.ts"
+
+describe("rel", () => {
+  test("Windows verification logs use the persisted .apnea/ path format", () => {
+    expect(
+      rel(
+        String.raw`D:\proj\.apnea\artifacts\phase-01\round-1\verify.log`,
+        String.raw`D:\proj`,
+        path.win32,
+      ),
+    ).toBe(".apnea/artifacts/phase-01/round-1/verify.log")
+  })
+
+  test("paths outside the repository retain traversal for the decoder to reject", () => {
+    expect(
+      rel(String.raw`D:\outside\verify.log`, String.raw`D:\proj`, path.win32),
+    ).toBe("../outside/verify.log")
+  })
+
+  test("POSIX backslashes in filenames are not converted into directory separators", () => {
+    expect(rel(String.raw`/proj/.apnea/a\b.log`, "/proj", path.posix)).toBe(
+      String.raw`.apnea/a\b.log`,
+    )
+  })
+})
 
 describe("globalConfigPath", () => {
   test("uses os.homedir instead of HOME or USERPROFILE", () => {
