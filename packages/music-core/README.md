@@ -1,28 +1,77 @@
 # `@naxodev/music-core`
 
-Host-neutral music-session contracts, a same-user machine-local client boundary, and compatibility APIs for Pi and OpenCode.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/naxodev/ai/main/docs/media/music-core/waveform.gif" alt="Animated waveform rendered by the music-core wave engine" width="600" />
+</p>
 
-## Requirements
+[![npm](https://img.shields.io/npm/v/@naxodev/music-core)](https://www.npmjs.com/package/@naxodev/music-core)
+[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-- Node.js 22.19 or later, or Bun 1.3 or later
-- macOS for system media discovery and transport
-- A TypeScript-aware runtime or bundler because the package publishes TypeScript source
+Host-neutral music-session contracts, a same-user machine-local client boundary, and compatibility APIs for Pi and OpenCode. One daemon owns the media provider; every host connects to the same playback truth.
 
-## Install
+```ts
+import {
+  createReconnectingMusicSessionClient,
+  baselineCapabilities,
+} from "@naxodev/music-core"
 
-```sh
-bun add @naxodev/music-core
+const client = await createReconnectingMusicSessionClient({
+  clientId: "my-host-session",
+  hostKind: "test",
+  capabilities: [...baselineCapabilities],
+})
+
+const stopState = client.subscribeState((snapshot) => render(snapshot.state))
+const stopStatus = client.subscribeStatus((status) => renderStatus(status))
+
+await client.play()
+stopState()
+stopStatus()
+await client.dispose()
 ```
 
-The formatting, clock, reconciliation, waveform, and protocol APIs are platform-neutral. `createSystemMedia()` and the managed music-session daemon require macOS media providers.
+## Architecture
 
-## Session architecture
+```mermaid
+flowchart LR
+  S["Spotify / browser / Apple Music"] --> P["Daemon provider"]
+  subgraph daemon["music-session daemon (one per user, per machine)"]
+    P --> C["Playback clock + transport queue"]
+    C --> A["Native artwork reads"]
+  end
+  daemon -->|replay + revisioned updates| O["OpenCode"]
+  daemon -->|replay + revisioned updates| Pi["Pi"]
+  daemon -->|replay + revisioned updates| X["your host"]
+```
 
-Many host clients connect to one owner-only Unix socket daemon. The daemon selects and owns one provider, its event source, playback clock, recovery polling, state and status authority, global transport queue, and native artwork reads. Clients receive hello, status, and state replay on connection, followed by revisioned updates. Host presentation remains outside this package.
+Many host clients connect to one owner-only Unix socket daemon. The daemon selects and owns one provider, its event source, playback clock, recovery polling, state and status authority, global transport queue, and native artwork reads. Clients receive hello, status, and state replay on connection, followed by revisioned updates. Host presentation stays outside this package.
 
 The implementation uses Effect v4 ownership rather than host timers and provider processes: `Config` validates runtime limits and timing, `Schema` validates untrusted protocol and provider data, and Layers/scopes own the provider, coordinator, listener, connections, and finalizers. `Schedule` paces startup and reconnect, `SubscriptionRef` provides replayable status and state, and bounded queues, semaphores, and streams isolate command, sampling, fan-out, and artwork work.
 
-Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the complete ownership and failure model.
+Read the [music session architecture field guide](https://github.com/naxodev/ai/blob/main/docs/music-session-architecture.html) for the complete ownership and failure model.
+
+## Build on it
+
+Use a unique client ID and a valid host kind. Subscribe before rendering so replayed state and status can establish presentation, use the transport methods for commands, and await `dispose()` when the host lifecycle ends.
+
+```ts
+import { createEngine, stepEngine, displayLevel } from "@naxodev/music-core"
+
+const engine = createEngine(16, trackKey)
+stepEngine(engine, {
+  track_key: trackKey,
+  bars: 16,
+  progress_ms: state.progress_ms,
+  fetched_at: state.fetched_at,
+  is_playing: state.is_playing,
+  duration_ms: state.track.duration_ms,
+  now_ms: Date.now(),
+})
+// Per-bar 0..1 levels for your own waveform renderer.
+const levels = Array.from(engine.levels, (level, index) =>
+  displayLevel(level, index, state.is_playing),
+)
+```
 
 ## Public surface
 
@@ -100,34 +149,17 @@ import {
 
 The package also exports the track, device, player, formatting, clock, reconciliation, waveform, runner, and system-media compatibility symbols from `index.ts`. `createSystemMedia()` remains an intentional low-level provider API for compatibility and custom integrations. Production Pi and OpenCode hosts use the session client instead.
 
-### Reconnecting client
+## Requirements
 
-```ts
-import {
-  baselineCapabilities,
-  createReconnectingMusicSessionClient,
-} from "@naxodev/music-core"
+- Node.js 22.19 or later, or Bun 1.3 or later
+- macOS for system media discovery and transport
+- A TypeScript-aware runtime or bundler because the package publishes TypeScript source
 
-const client = await createReconnectingMusicSessionClient({
-  clientId: "my-host-session",
-  hostKind: "test",
-  capabilities: [...baselineCapabilities],
-})
-
-const stopState = client.subscribeState((snapshot) => {
-  render(snapshot.state)
-})
-const stopStatus = client.subscribeStatus((status) => {
-  renderStatus(status)
-})
-
-await client.play()
-stopState()
-stopStatus()
-await client.dispose()
+```sh
+bun add @naxodev/music-core
 ```
 
-Use a unique client ID and a valid host kind. Subscribe before rendering so replayed state and status can establish presentation, use the transport methods for commands, and await `dispose()` when the host lifecycle ends.
+The formatting, clock, reconciliation, waveform, and protocol APIs are platform-neutral. `createSystemMedia()` and the managed music-session daemon require macOS media providers.
 
 ## Lifecycle and compatibility
 
@@ -145,7 +177,7 @@ Frames, queues, and pending requests are finite. A slow or abusive connection ca
 
 ## Community
 
-Use [GitHub Discussions](https://github.com/naxodev/ai/discussions) for usage questions and [GitHub Issues](https://github.com/naxodev/ai/issues) for reproducible defects. Report vulnerabilities through the workspace [security policy](../../SECURITY.md).
+Use [GitHub Discussions](https://github.com/naxodev/ai/discussions) for usage questions and [GitHub Issues](https://github.com/naxodev/ai/issues) for reproducible defects. Report vulnerabilities through the workspace [security policy](https://github.com/naxodev/ai/blob/main/SECURITY.md).
 
 ## License
 

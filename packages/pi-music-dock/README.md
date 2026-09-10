@@ -1,63 +1,28 @@
-# @naxodev/pi-music-dock
+# `@naxodev/pi-music-dock`
 
-A [Pi](https://github.com/earendil-works/pi) extension that shows macOS system Now Playing in the status area and a responsive side panel. It renders a calm Tokyonight-blue waveform, track metadata, optional native album artwork, and transport controls.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/naxodev/ai/main/docs/media/pi-music-dock/card.png" alt="Pi music dock side panel playing Christian Löffler" width="360" />
+</p>
 
-The extension calls `ctx.ui.setStatus` for the footer line. The side panel is a `tui.showOverlay` owned by an empty `setWidget` host (not `ctx.ui.custom`), so reload and shutdown dispose it synchronously without hanging on a `done()` Promise. It does not replace Pi's footer, so it composes with the built-in footer and custom footers that render extension statuses.
+[![npm](https://img.shields.io/npm/v/@naxodev/pi-music-dock)](https://www.npmjs.com/package/@naxodev/pi-music-dock)
+[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## Architecture
-
-Each live Pi TUI session owns **one** reconnecting music-session client and its local status, side panel, waveform, artwork, and notification lifecycle. The same-user machine-local daemon owns provider discovery, provider stream and polling, the playback clock, global transport ordering, and native media reads.
-
-The side panel is a **plugin-only approximation**. Pi has no layout-reserving sidebar slot, so the panel is a right-center overlay that may cover transcript content. It is not a true layout sidebar.
-
-Reload and shutdown mark the old Pi session inactive, remove client listeners, stop the waveform interval, clear status, dispose artwork and images, hide the overlay exactly once, and await client disposal. Reloading or exiting Pi does not stop a daemon that still serves OpenCode or another client.
-
-Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the shared daemon's ownership, replay, reconnect, and idle-exit behavior.
-
-## Requirements
-
-- macOS
-- Node.js 22.19 or later
-- Pi 0.83.x or 0.84.x
-- [`media-control`](https://github.com/ungive/media-control), recommended:
-
-  ```sh
-  brew tap ungive/media-control
-  brew install media-control
-  ```
-
-[`nowplaying-cli`](https://github.com/kirtan-shah/nowplaying-cli) is supported as a fallback. Some applications expose less reliable playback state through this fallback.
-
-### Terminal image support
-
-Native album artwork renders through `pi-tui` `Image` when the terminal supports Kitty, iTerm2, Ghostty, WezTerm, or Warp graphics. Other terminals, missing artwork, and unsupported image bytes show a short text placeholder. MIME type is detected locally from bounded base64 or downloaded bytes (PNG, JPEG, GIF, WebP only). The session protocol is not widened for Content-Type.
-
-When native artwork is unavailable, too large for the daemon bound, unsupported, or fails with a provider error, the panel falls back to a **bounded exact iTunes catalog match** (same safety rules as OpenCode): HTTPS `.mzstatic.com` only, no redirects, 512KB search JSON / 3MB image caps, 4s deadlines, exact title+artist (album when present, duration ±1s). In-flight catalog work is aborted on track change, reload, and shutdown.
-
-## Install
-
-Install from npm:
+macOS Now Playing for [Pi](https://github.com/earendil-works/pi): a status-line dock, a solid side panel with artwork and a live waveform, and transport controls. While the agent streams, the panel collapses to a two-line chip so it never covers the transcript you are reading.
 
 ```sh
 pi install npm:@naxodev/pi-music-dock
 ```
 
-For local development, clone the workspace and install the package directory:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/naxodev/ai/main/docs/media/pi-music-dock/footer.png" alt="Pi footer status line with waveform, title, and artist" width="640" />
+</p>
 
-```sh
-git clone https://github.com/naxodev/ai.git
-cd ai
-bun install --frozen-lockfile
-pi install ./packages/pi-music-dock
-```
+## What you get
 
-Restart Pi or run `/reload` after installation.
-
-To remove the npm package:
-
-```sh
-pi remove npm:@naxodev/pi-music-dock
-```
+- **Status line** — play state, animated Tokyonight-blue waveform, title, and artist through `ctx.ui.setStatus`. It never replaces Pi's footer, so it composes with other extensions.
+- **Side panel** — album artwork (native Kitty/iterm2/Ghostty/WezTerm/Warp rendering, with a bounded iTunes catalog fallback), metadata, waveform, progress, and keyboard hints in a 30-column card.
+- **Stream-aware chip** — when the agent starts streaming, the panel hides and a compact two-line chip appears bottom-right; it expands again when the stream settles. `/music-focus` expands mid-stream on purpose.
+- **Transport** — play/pause, next, previous by slash command, shortcut, or focused panel keys.
 
 ## Commands and shortcuts
 
@@ -73,52 +38,45 @@ pi remove npm:@naxodev/pi-music-dock
 | `ctrl+alt+b`   | Play the previous track                 |
 | `ctrl+alt+m`   | Toggle side panel visibility            |
 
-Slash commands are the reliable fallback when a terminal does not forward a shortcut. The status icon describes the next action: `⏸` while playing and `▶` while paused.
+After `/music-focus`: <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> previous/next, <kbd>Esc</kbd> unfocus. The panel is `nonCapturing`, so the editor keeps normal input until you focus it.
 
-### Focused panel keys
+## Requirements
 
-After `/music-focus`:
+- macOS
+- Node.js 22.19 or later
+- Pi 0.83.x or 0.84.x
+- [`media-control`](https://github.com/ungive/media-control), recommended:
 
-| Key    | Action                          |
-| ------ | ------------------------------- |
-| Space  | Play or pause                   |
-| Left   | Previous track                  |
-| Right  | Next track                      |
-| Escape | Unfocus; return input to editor |
+  ```sh
+  brew tap ungive/media-control
+  brew install media-control
+  ```
 
-The panel is `nonCapturing` by default, so the editor keeps normal input until you focus it.
+[`nowplaying-cli`](https://github.com/kirtan-shah/nowplaying-cli) is supported as a fallback. Some applications expose less reliable playback state through this fallback.
 
-Shortcut constants are at the top of `extensions/music-dock/index.ts`. Edit them and run `/reload` to use different bindings.
-
-## Side panel behavior
+## Panel behavior
 
 - **Default:** visible on terminals 80 columns or wider, including common 82-column Herdr split panes.
 - **Responsive:** auto-hides below 80 columns, leaving at least 50 columns beside the 30-column overlay.
-- **Size:** about 30 columns wide, up to about 90% of terminal height, anchored `right-center`.
-- **Content:** artwork (or placeholder), title, artist, album, animated waveform, progress/time, play state, and concise keyboard help. Every line is clipped to the panel width.
-- **Overlay vs real sidebar:** this is an overlay approximation. It can cover transcript text. Pi does not currently expose a layout-reserving sidebar slot for extensions.
+- **Opaque card:** every row is width-padded and painted with the theme background, so transcript text cannot bleed through.
+- **Overlay, not a sidebar:** Pi exposes no layout-reserving sidebar slot, so the panel is a `tui.showOverlay` approximation and can cover transcript content. The streaming chip exists so it gets out of the way exactly when you are reading.
 
-`/music-view` and `ctrl+alt+m` toggle user visibility. Narrow-terminal auto-hide still applies when the user has not hidden the panel.
+## Architecture
 
-## How it composes
+Each live Pi TUI session owns **one** reconnecting music-session client and its local status, panel, waveform, artwork, and notification lifecycle. The same-user machine-local daemon owns provider discovery, the playback clock, global transport ordering, and native media reads. Reloading or exiting Pi never stops a daemon that still serves OpenCode or another client.
 
-`pi-music-dock` publishes one status line with `ctx.ui.setStatus("music-dock", value)`. It never calls `setFooter`, so another extension may own the footer without a conflict. Its ANSI waveform avoids plain spaces because status sanitizers may collapse adjacent spaces.
+Read the [music session architecture field guide](https://github.com/naxodev/ai/blob/main/docs/music-session-architecture.html) for the shared daemon's ownership, replay, reconnect, and idle-exit behavior.
 
-The side panel uses one `OverlayHandle` owned by the host widget. Clearing that widget key on reload or shutdown hides the handle and disposes the panel once. Transport commands and the status line stay unchanged whether the panel is visible, hidden, or focused.
+## Install from source
 
-## Manual verification
+```sh
+git clone https://github.com/naxodev/ai.git
+cd ai
+bun install --frozen-lockfile
+pi install ./packages/pi-music-dock
+```
 
-Automated tests cannot confirm live macOS media state or terminal rendering. Verify a release in a real Pi TUI:
-
-1. Start playback and confirm the status line shows the pause icon, an animated waveform, and the current title and artist.
-2. On a wide terminal, confirm the right-center side panel shows metadata, waveform, progress, and artwork or a placeholder.
-3. Resize below 80 columns and confirm the panel auto-hides; widen again and confirm it returns.
-4. Run `/music-view` and `ctrl+alt+m`; confirm toggle. Run `/music-focus`, then Space / arrows / Escape.
-5. Run `/music`, `/music-next`, and `/music-prev`; confirm controls and status reflect the shared daemon state.
-6. Try `ctrl+alt+p`, `ctrl+alt+n`, and `ctrl+alt+b`; use the slash commands if the terminal intercepts a chord.
-7. Run `/reload`; confirm one Pi client, one overlay, and one status remain.
-8. Keep another host connected, close Pi, and confirm the other host remains healthy.
-9. Exit the final client; confirm the daemon can complete idle shutdown and remove its owned socket artifacts.
+Restart Pi or run `/reload` after installation. To remove: `pi remove npm:@naxodev/pi-music-dock`.
 
 ## Development
 
@@ -128,9 +86,9 @@ bun run check
 bun packages/pi-music-dock/scripts/waveform-demo.ts
 ```
 
-The package smoke packs Pi and music-core, installs exact `@earendil-works/pi-coding-agent@0.84.2` and `@earendil-works/pi-tui@0.84.2`, loads the packed extension through RPC, checks the registered commands, and proves prompt process exit. Pi 0.83.x and 0.84.x remain the supported peer range. Run it on macOS because the package is macOS-only.
+The package smoke packs Pi and music-core, installs exact `@earendil-works/pi-coding-agent@0.84.2` and `@earendil-works/pi-tui@0.84.2`, loads the packed extension through RPC, checks the registered commands, and proves prompt process exit. Run it on macOS because the package is macOS-only.
 
-See the workspace [contribution guide](../../CONTRIBUTING.md) for contribution and release instructions.
+See the workspace [contribution guide](https://github.com/naxodev/ai/blob/main/CONTRIBUTING.md) for contribution and release instructions.
 
 ## License
 

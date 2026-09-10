@@ -1,8 +1,19 @@
-# @naxodev/apnea
+# `@naxodev/apnea`
 
-Apnea drives a multi-role development loop — plan, review, code, review, verify, commit — where
-each role runs in its own real terminal pane and hands off work through files on disk instead of
-a hidden subagent. Any harness that can run a shell command can hold the orchestrator seat.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/naxodev/ai/main/docs/media/apnea/cli.gif" alt="apnea help and apnea status running in a terminal" width="720" />
+</p>
+
+[![npm](https://img.shields.io/npm/v/@naxodev/apnea)](https://www.npmjs.com/package/@naxodev/apnea)
+[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+Apnea drives a multi-role development loop — plan, review, code, review, verify, commit — where each role runs in its own real terminal pane and hands off work through files on disk instead of a hidden subagent. Any harness that can run a shell command can hold the orchestrator seat.
+
+```sh
+bun install -g @naxodev/apnea
+apnea setup
+apnea start "migrate the auth module to the new session API"
+```
 
 ## The loop
 
@@ -11,18 +22,36 @@ plan → plan review → phase package → code → code review → verify+commi
 → pr-description
 ```
 
-Roles can be different harnesses (Pi, Claude, Codex, …) via **global profiles**. Project config
-only rebinds roles to profile names that already exist.
+Roles can be different harnesses (Pi, Claude, Codex, …) via **global profiles**. Project config only rebinds roles to profile names that already exist.
+
+## Why panes instead of subagents
+
+- **Watchable.** Every role is a live harness TUI in a Herdr pane. You see what the coder is doing while it does it.
+- **File-based handoff.** Roles exchange artifact files with front-matter, so state survives crashes and any harness can join.
+- **Refuses, not guesses.** Illegal tool calls refuse and name the legal next call. The state machine cannot be bribed into skipping review.
+
+## Sixty-second quickstart
+
+1. `apnea setup` — writes global profiles to `~/.config/apnea/config.json`.
+2. `apnea start "<goal>"` — starts a run against your working copy.
+3. `apnea status` — a read-only snapshot of where the run stands and what to call next.
+
+`apnea status` with no run in progress looks like this:
+
+```console
+$ apnea status
+OK: no active run
+next: apnea start
+{
+  "has_state": false
+}
+```
 
 ## Requirements
 
-- **bun `>=1.3.7`.** Needed to **run** the tool, not just to build it: the installed `bin` is
-  `dist/cli.js` with a `#!/usr/bin/env bun` shebang, and npm does not enforce the `engines.bun`
-  key. If you install `@naxodev/apnea` globally with only `node` on `PATH`, the `apnea` command
-  will fail on first invocation — this is the most likely first-run failure for a new user.
+- **bun `>=1.3.7`.** Needed to **run** the tool, not just to build it: the installed `bin` is `dist/cli.js` with a `#!/usr/bin/env bun` shebang, and npm does not enforce the `engines.bun` key. If you install `@naxodev/apnea` globally with only `node` on `PATH`, the `apnea` command will fail on first invocation — this is the most likely first-run failure for a new user.
 - **herdr**, for reusable interactive pane dispatch.
-- **jj or git.** Per [ADR 0007](docs/adr/0007-jj-first-commits.md), if neither is present
-  auto-commit is refused.
+- **jj or git.** Per [ADR 0007](docs/adr/0007-jj-first-commits.md), if neither is present auto-commit is refused.
 - **At least one agent CLI** — `pi`, `claude`, or `codex`.
 
 ## Install
@@ -50,35 +79,13 @@ bun run build
 
 Optionally put it on `PATH`, e.g. `ln -s "$(pwd)/dist/cli.js" ~/.local/bin/apnea`.
 
-## Sixty-second quickstart
-
-1. `apnea setup` — writes global profiles to `~/.config/apnea/config.json`.
-2. `apnea start "<goal>"` — starts a run against your working copy.
-3. `apnea status` — a read-only snapshot of where the run stands and what to call next.
-
-`apnea status` with no run in progress looks like this:
-
-```console
-$ apnea status
-OK: no active run
-next: apnea start
-{
-  "has_state": false
-}
-```
-
 ## CLI reference
 
-Any harness that can run a shell command can hold the orchestrator seat — the CLI and the Pi
-tools share one definition in `extension/registry.ts`, so they cannot drift apart (see
-[ADR 0009](docs/adr/0009-cli-driver-split.md)).
+Any harness that can run a shell command can hold the orchestrator seat — the CLI and the Pi tools share one definition in `extension/registry.ts`, so they cannot drift apart (see [ADR 0009](docs/adr/0009-cli-driver-split.md)).
 
 ### Operations
 
-One row per operation. The CLI verb and the `/apnea` subcommand are the same word — they share a
-single definition in `extension/registry.ts`, so they cannot drift apart (see
-[ADR 0009](docs/adr/0009-cli-driver-split.md)). The two were listed as separate tables until one
-of them went stale; a reader could not tell which.
+One row per operation. The CLI verb and the `/apnea` subcommand are the same word — they share a single definition in `extension/registry.ts`, so they cannot drift apart (see [ADR 0009](docs/adr/0009-cli-driver-split.md)). The two were listed as separate tables until one of them went stale; a reader could not tell which.
 
 | Operation             | Pi tool                 | Flags                                                                         | Purpose                                                        |
 | --------------------- | ----------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -92,30 +99,13 @@ of them went stale; a reader could not tell which.
 | `commit [message]`    | `workflow_commit_phase` | `[--done]`                                                                    | verify + commit phase                                          |
 | `reset-rounds <gate>` | —                       | `[--i-am-human]` _(CLI only)_                                                 | **human only**                                                 |
 
-Prefix with `/` inside Pi (`/apnea status`), or run it as a shell command (`apnea status`).
-`/apnea-start` and `/apnea-status` are short aliases.
+Prefix with `/` inside Pi (`/apnea status`), or run it as a shell command (`apnea status`). `/apnea-start` and `/apnea-status` are short aliases.
 
-`--rework` remains through 0.2.x as a deprecated assertion. Persisted review state selects and
-authorizes rework even when callers omit the flag. Caller input grants authority only for
-ambiguous version-1 plan or code migration. `--redeliver` reuses matching pending ownership without
-advancing the round. Use it only after proving the prior pane is dead; a manual dispatch with no
-pane requires the operator to request redelivery explicitly. Apnea persists whether pending work
-crossed a manual or interactive boundary. Interactive ownership without a saved pane id refuses as
-ambiguous. Legacy null-pane ownership has no safe discriminator and also refuses redelivery.
-Before any redelivery checks or mutations, Apnea reads the pending artifact. A complete artifact
-refuses redelivery and directs the caller to `workflow_wait`; review artifacts count as complete only
-with a valid verdict and legal, schema-valid rework metadata. Malformed or incomplete artifacts
-continue through normal liveness validation.
+`--rework` remains through 0.2.x as a deprecated assertion. Persisted review state selects and authorizes rework even when callers omit the flag. Caller input grants authority only for ambiguous version-1 plan or code migration. `--redeliver` reuses matching pending ownership without advancing the round. Use it only after proving the prior pane is dead; a manual dispatch with no pane requires the operator to request redelivery explicitly. Apnea persists whether pending work crossed a manual or interactive boundary. Interactive ownership without a saved pane id refuses as ambiguous. Legacy null-pane ownership has no safe discriminator and also refuses redelivery. Before any redelivery checks or mutations, Apnea reads the pending artifact. A complete artifact refuses redelivery and directs the caller to `workflow_wait`; review artifacts count as complete only with a valid verdict and legal, schema-valid rework metadata. Malformed or incomplete artifacts continue through normal liveness validation.
 
-`reset-rounds` is not a Pi tool. It exists only as `apnea reset-rounds` and `/apnea reset-rounds`.
-Only the CLI gates it — it refuses unless stdin/stdout are a terminal and a human retypes the gate
-key, or passes `--i-am-human`. The slash command has no such gate: `/apnea` is already a human at
-a terminal. See [ADR 0002](docs/adr/0002-orchestrator-authority.md).
+`reset-rounds` is not a Pi tool. It exists only as `apnea reset-rounds` and `/apnea reset-rounds`. Only the CLI gates it — it refuses unless stdin/stdout are a terminal and a human retypes the gate key, or passes `--i-am-human`. The slash command has no such gate: `/apnea` is already a human at a terminal. See [ADR 0002](docs/adr/0002-orchestrator-authority.md).
 
-`apnea wait` is resumable: exit `3` means the call's budget ran out but the role hasn't timed out,
-so call `apnea wait` again. Exit codes: `0` ok, `1` refused/error, `2` usage, `3` still waiting.
-See [`docs/protocol/config.md`](docs/protocol/config.md) for the budget-floor arithmetic behind
-`--poll` and `--budget`.
+`apnea wait` is resumable: exit `3` means the call's budget ran out but the role hasn't timed out, so call `apnea wait` again. Exit codes: `0` ok, `1` refused/error, `2` usage, `3` still waiting. See [`docs/protocol/config.md`](docs/protocol/config.md) for the budget-floor arithmetic behind `--poll` and `--budget`.
 
 ### Abandon confirmation
 
@@ -150,30 +140,21 @@ Workers still share repository access; namespaces do not sandbox arbitrary write
 /apnea setup --agents-md  # also write/refresh an AGENTS.md loop primer at the repo root
 ```
 
-Setup never silently destroys malformed JSON. Without `--force`, malformed existing global JSON
-is left byte-for-byte unchanged and setup refuses. `--force` atomically replaces it and reports
-the replacement. Malformed existing project config always fails closed.
+Setup never silently destroys malformed JSON. Without `--force`, malformed existing global JSON is left byte-for-byte unchanged and setup refuses. `--force` atomically replaces it and reports the replacement. Malformed existing project config always fails closed.
 
-After upgrading from a version with floating panes, old copied
-`~/.config/apnea/herdr-plugin` files are inert. Apnea does not unlink or delete them; remove that
-directory manually if you no longer need it.
+After upgrading from a version with floating panes, old copied `~/.config/apnea/herdr-plugin` files are inert. Apnea does not unlink or delete them; remove that directory manually if you no longer need it.
 
-The `@naxodev/pi-apnea` adapter applies Pi-specific role launch behavior. The core package remains
-host-neutral.
+The `@naxodev/pi-apnea` adapter applies Pi-specific role launch behavior. The core package remains host-neutral.
 
-Fallback: skill `apnea-setup` or prompt `/apnea-init` (both point at the same rules). **No config
-UI in v1.**
+Fallback: skill `apnea-setup` or prompt `/apnea-init` (both point at the same rules). **No config UI in v1.**
 
 ## Maturity status
 
-**What you can rely on:** the loop, the artifact contract, and the CLI are implemented, and the
-extension suite is green — CI runs it on every pull request.
+**What you can rely on:** the loop, the artifact contract, and the CLI are implemented, and the extension suite is green — CI runs it on every pull request.
 
-**What may still change:** the command surface and config shape may move before `1.0`. Breaking
-changes will land in minor bumps, not patches.
+**What may still change:** the command surface and config shape may move before `1.0`. Breaking changes will land in minor bumps, not patches.
 
-**Non-goals for v1:** worktrees, parallel coders, push/PR automation, memory store, native
-CLAUDE.md injection, force-approve, config UI.
+**Non-goals for v1:** worktrees, parallel coders, push/PR automation, memory store, native CLAUDE.md injection, force-approve, config UI.
 
 ## Docs
 
@@ -189,14 +170,11 @@ CLAUDE.md injection, force-approve, config UI.
 
 ## Contributing
 
-Build, test, typecheck commands, version-control conventions, and what CI enforces are in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+Build, test, typecheck commands, version-control conventions, and what CI enforces are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Security
 
-Apnea runs repo-controlled text through agent CLIs by design — read
-[`SECURITY.md`](SECURITY.md) for the trust model before pointing it at a repository you don't
-trust, and for how to report a vulnerability.
+Apnea runs repo-controlled text through agent CLIs by design — read [`SECURITY.md`](SECURITY.md) for the trust model before pointing it at a repository you don't trust, and for how to report a vulnerability.
 
 ## License
 
