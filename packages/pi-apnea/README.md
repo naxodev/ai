@@ -17,7 +17,11 @@ pi install npm:@naxodev/pi-apnea
 
 The normal `@naxodev/apnea` dependency installs transitively, including the `apnea` executable. Pi loads this package's `extension`, `skills`, and `prompts` resources.
 
-Pi role panes use a dedicated `PI_CODING_AGENT_DIR` without `pi-vimmode`. The user's orchestrator session remains unchanged.
+Pi role-pane launches use fresh `PI_CODING_AGENT_DIR` snapshots without `pi-vimmode`, published under `~/.config/apnea/pi-role-agent/`. Each snapshot captures filtered settings and resource links from the launching adapter's source agent directory. Concurrent launches cannot rebuild an earlier pane's resources or replace them with another source's resources.
+
+Snapshots retain links to source authentication, models, extensions, and installed resources. Authentication updates remain shared with that source, and modules keep their source dependency paths. Linked file contents remain live; these are not immutable copies of the source. Filesystems without symlink support use the existing copy fallback.
+
+Completed snapshots are retained because starting and running panes may still need them. Apnea does not automatically remove them. Failed materializations remove their own incomplete snapshot.
 
 ## Quickstart
 
