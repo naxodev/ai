@@ -81,9 +81,9 @@
     },
     "packages/pi-apnea": {
       "name": "@naxodev/pi-apnea",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "dependencies": {
-        "@naxodev/apnea": "^0.2.0",
+        "@naxodev/apnea": "^0.2.3",
       },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "0.84.2",

@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/pi-apnea",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Pi adapter for the Apnea multi-role workflow",
   "license": "MIT",
   "author": "Nacho Vazquez",
@@ -60,7 +60,7 @@
     "smoke:package": "bun scripts/package-smoke.ts"
   },
   "dependencies": {
-    "@naxodev/apnea": "^0.2.0"
+    "@naxodev/apnea": "^0.2.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0"
