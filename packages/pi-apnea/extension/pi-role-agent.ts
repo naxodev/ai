@@ -298,18 +298,6 @@ export function defaultRoleAgentDir(): string {
 
 function symlinkOrCopy(src: string, dest: string): void {
   if (!fs.existsSync(src)) return
-  if (path.resolve(src) === path.resolve(dest)) return
-  try {
-    if (fs.existsSync(dest) || fs.lstatSync(dest).isSymbolicLink()) {
-      fs.rmSync(dest, { recursive: true, force: true })
-    }
-  } catch {
-    try {
-      fs.rmSync(dest, { recursive: true, force: true })
-    } catch {
-      /* ignore */
-    }
-  }
   try {
     fs.symlinkSync(src, dest)
   } catch {
@@ -324,19 +312,21 @@ function symlinkOrCopy(src: string, dest: string): void {
 }
 
 /**
- * Build (or refresh) a PI_CODING_AGENT_DIR for Apnea role panes.
+ * Publish a fresh PI_CODING_AGENT_DIR for each Apnea role-pane launch.
  * - settings.json: user's packages/extensions minus pi-vimmode; piVimMode stripped
  * - extensions: safe entries linked individually from the real agent dir
  * - auth/npm/skills/themes/models: linked from the real agent dir
  *
- * Idempotent. Safe to call on every dispatch.
+ * destDir is the snapshot parent, not the returned agent directory. Completed
+ * snapshots are retained because starting/running panes may still use them.
+ * Settings and link selection are isolated; linked source contents remain live.
  */
 export function materializePiRoleAgentDir(opts?: {
   sourceAgentDir?: string
   destDir?: string
 }): string {
-  const source = opts?.sourceAgentDir ?? defaultSourceAgentDir()
-  const dest = opts?.destDir ?? defaultRoleAgentDir()
+  const source = path.resolve(opts?.sourceAgentDir ?? defaultSourceAgentDir())
+  const dest = path.resolve(opts?.destDir ?? defaultRoleAgentDir())
 
   if (safeIsSymlink(dest)) {
     throw new Error("destination Pi agent directory must not be a symlink")
@@ -374,6 +364,32 @@ export function materializePiRoleAgentDir(opts?: {
     throw new Error("destination Pi settings must not be a symlink")
   }
 
+  // Reserve a private directory atomically across processes. Publish only after
+  // every resource is ready; no caller ever refreshes a returned directory.
+  const staging = fs.mkdtempSync(path.join(dest, `.pending-${randomUUID()}-`))
+  const snapshot = path.join(
+    dest,
+    `snapshot-${path.basename(staging).slice(".pending-".length)}`,
+  )
+  let published = false
+  try {
+    buildRoleSnapshot(source, staging, snapshot)
+    fs.renameSync(staging, snapshot)
+    published = true
+    syncDirectoryAfterRename(dest)
+    return snapshot
+  } catch (error) {
+    fs.rmSync(published ? snapshot : staging, { recursive: true, force: true })
+    throw error
+  }
+}
+
+function buildRoleSnapshot(
+  source: string,
+  dest: string,
+  snapshot: string,
+): void {
+  const destSettingsPath = path.join(dest, "settings.json")
   const srcSettingsPath = path.join(source, "settings.json")
   let settings: Record<string, unknown> = {}
   if (fs.existsSync(srcSettingsPath) || safeIsSymlink(srcSettingsPath)) {
@@ -413,8 +429,8 @@ export function materializePiRoleAgentDir(opts?: {
   const extensions = Array.isArray(settings.extensions)
     ? (settings.extensions as string[])
     : []
-  settings.packages = normalizePackageSources(packages, source, dest)
-  settings.extensions = normalizeExtensionSources(extensions, source, dest)
+  settings.packages = normalizePackageSources(packages, source, snapshot)
+  settings.extensions = normalizeExtensionSources(extensions, source, snapshot)
   delete settings.piVimMode
 
   writeSettingsAtomically(
@@ -438,22 +454,9 @@ export function materializePiRoleAgentDir(opts?: {
   ]) {
     symlinkOrCopy(path.join(source, name), path.join(dest, name))
   }
-
-  // Optional: pi-vimmode.config.js must not apply either
-  const vimCfg = path.join(dest, "pi-vimmode.config.js")
-  if (fs.existsSync(vimCfg) || safeIsSymlink(vimCfg)) {
-    try {
-      fs.rmSync(vimCfg, { force: true })
-    } catch {
-      /* ignore */
-    }
-  }
-
-  return dest
 }
 
 function materializeExtensionsNoVim(sourceDir: string, destDir: string): void {
-  fs.rmSync(destDir, { recursive: true, force: true })
   if (!fs.existsSync(sourceDir)) return
   if (extensionPathHasVimModeMarker(sourceDir)) return
 

@@ -110,7 +110,7 @@ describe("materializePiRoleAgentDir", () => {
   // PI_CODING_AGENT_DIR launches never load modal vim.
   test("writes settings without vimmode and links auth", () => {
     const source = tmp()
-    const dest = path.join(tmp(), "role-agent")
+    let dest = path.join(tmp(), "role-agent")
     fs.writeFileSync(
       path.join(source, "settings.json"),
       JSON.stringify({
@@ -132,7 +132,8 @@ describe("materializePiRoleAgentDir", () => {
       sourceAgentDir: source,
       destDir: dest,
     })
-    expect(out).toBe(dest)
+    expect(path.dirname(out)).toBe(dest)
+    dest = out
 
     const settings = readJson(path.join(dest, "settings.json")) as {
       packages: unknown[]
@@ -155,7 +156,7 @@ describe("materializePiRoleAgentDir", () => {
     expect(fs.existsSync(path.join(dest, "npm", "marker"))).toBe(true)
   })
 
-  test("idempotent refresh drops newly-added vimmode", () => {
+  test("new launches filter updated settings without changing earlier snapshots", () => {
     const source = tmp()
     const dest = path.join(tmp(), "role-agent")
     fs.writeFileSync(
@@ -163,18 +164,28 @@ describe("materializePiRoleAgentDir", () => {
       JSON.stringify({ packages: ["npm:pi-lens"] }),
       "utf8",
     )
-    materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
+    const earlier = materializePiRoleAgentDir({
+      sourceAgentDir: source,
+      destDir: dest,
+    })
 
     fs.writeFileSync(
       path.join(source, "settings.json"),
-      JSON.stringify({ packages: ["npm:pi-lens", "npm:pi-vimmode"] }),
+      JSON.stringify({ packages: ["npm:pi-btw", "npm:pi-vimmode"] }),
       "utf8",
     )
-    materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
-    const settings = readJson(path.join(dest, "settings.json")) as {
+    const latest = materializePiRoleAgentDir({
+      sourceAgentDir: source,
+      destDir: dest,
+    })
+    const settings = readJson(path.join(latest, "settings.json")) as {
       packages: unknown[]
     }
-    expect(settings.packages).toEqual(["npm:pi-lens"])
+    expect(settings.packages).toEqual(["npm:pi-btw"])
+    expect(readJson(path.join(earlier, "settings.json"))).toEqual({
+      packages: ["npm:pi-lens"],
+      extensions: [],
+    })
   })
 
   test("refuses malformed source settings instead of replacing them with empty settings", () => {
@@ -230,7 +241,7 @@ describe("materializePiRoleAgentDir", () => {
 
   test("rebases safe relative sources and filters canonical vimmode aliases", () => {
     const source = tmp()
-    const dest = path.join(tmp(), "role-agent")
+    let dest = path.join(tmp(), "role-agent")
     const provider = path.join(source, "local-provider")
     const vimRoot = path.join(tmp(), "pi-vimmode-root")
     fs.mkdirSync(provider)
@@ -260,7 +271,7 @@ describe("materializePiRoleAgentDir", () => {
       "utf8",
     )
 
-    materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
+    dest = materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
 
     const settings = readJson(path.join(dest, "settings.json")) as {
       packages: Array<string | { source: string }>
@@ -284,7 +295,7 @@ describe("materializePiRoleAgentDir", () => {
 
   test("preserves exclusion operators while filtering positive vimmode patterns", () => {
     const source = tmp()
-    const dest = path.join(tmp(), "role-agent")
+    let dest = path.join(tmp(), "role-agent")
     const custom = path.join(source, "custom")
     const provider = path.join(custom, "provider.ts")
     const vimmode = path.join(custom, "pi-vimmode.ts")
@@ -311,7 +322,7 @@ describe("materializePiRoleAgentDir", () => {
       "utf8",
     )
 
-    materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
+    dest = materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
 
     const settings = readJson(path.join(dest, "settings.json")) as {
       extensions: string[]
@@ -343,7 +354,7 @@ describe("materializePiRoleAgentDir", () => {
 
   test("maps mirrored extension patterns to destination paths and rebases external paths", () => {
     const source = tmp()
-    const dest = path.join(tmp(), "role-agent")
+    let dest = path.join(tmp(), "role-agent")
     const sourceExtensions = path.join(source, "extensions")
     const external = path.join(source, "external")
     fs.mkdirSync(sourceExtensions)
@@ -374,7 +385,7 @@ describe("materializePiRoleAgentDir", () => {
       "utf8",
     )
 
-    materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
+    dest = materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
 
     const settings = readJson(path.join(dest, "settings.json")) as {
       extensions: string[]
@@ -435,7 +446,7 @@ describe("materializePiRoleAgentDir", () => {
 
   test("preserves provider extensions and excludes vimmode extension roots", () => {
     const source = tmp()
-    const dest = path.join(tmp(), "role-agent")
+    let dest = path.join(tmp(), "role-agent")
     fs.writeFileSync(
       path.join(source, "settings.json"),
       JSON.stringify({ packages: [] }),
@@ -468,7 +479,8 @@ describe("materializePiRoleAgentDir", () => {
     fs.mkdirSync(path.join(dest, "extensions"), { recursive: true })
     fs.writeFileSync(path.join(dest, "extensions", "stale.ts"), "", "utf8")
 
-    materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
+    const legacy = dest
+    dest = materializePiRoleAgentDir({ sourceAgentDir: source, destDir: dest })
 
     expect(
       fs.readFileSync(
@@ -483,6 +495,9 @@ describe("materializePiRoleAgentDir", () => {
       false,
     )
     expect(fs.existsSync(path.join(dest, "extensions", "stale.ts"))).toBe(false)
+    expect(fs.existsSync(path.join(legacy, "extensions", "stale.ts"))).toBe(
+      true,
+    )
   })
 
   test("refuses identical source and destination without mutating source files", () => {
@@ -612,12 +627,15 @@ describe("wrapInteractiveCmdNoVim", () => {
     })
     expect(wrapped).toEqual([
       "env",
-      `PI_CODING_AGENT_DIR=${dest}`,
+      expect.stringContaining(
+        `PI_CODING_AGENT_DIR=${dest}${path.sep}snapshot-`,
+      ),
       "pi",
       "--provider",
       "grok-cli",
     ])
-    const settings = readJson(path.join(dest, "settings.json")) as {
+    const snapshot = wrapped[1]!.slice("PI_CODING_AGENT_DIR=".length)
+    const settings = readJson(path.join(snapshot, "settings.json")) as {
       packages: unknown[]
     }
     expect(settings.packages).toEqual(["npm:pi-lens"])
@@ -637,7 +655,15 @@ describe("wrapInteractiveCmdNoVim", () => {
         sourceAgentDir: source,
         destDir: dest,
       }),
-    ).toEqual(["env", `PI_CODING_AGENT_DIR=${dest}`, "pi", "--provider", "x"])
+    ).toEqual([
+      "env",
+      expect.stringContaining(
+        `PI_CODING_AGENT_DIR=${dest}${path.sep}snapshot-`,
+      ),
+      "pi",
+      "--provider",
+      "x",
+    ])
     expect(
       wrapInteractiveCmdNoVim(["bunx", "pi", "--provider", "x"], {
         sourceAgentDir: source,
@@ -645,7 +671,9 @@ describe("wrapInteractiveCmdNoVim", () => {
       }),
     ).toEqual([
       "env",
-      `PI_CODING_AGENT_DIR=${dest}`,
+      expect.stringContaining(
+        `PI_CODING_AGENT_DIR=${dest}${path.sep}snapshot-`,
+      ),
       "bunx",
       "pi",
       "--provider",
@@ -661,7 +689,9 @@ describe("wrapInteractiveCmdNoVim", () => {
       JSON.stringify({ packages: [] }),
       "utf8",
     )
-    const isolated = `PI_CODING_AGENT_DIR=${dest}`
+    const isolated = expect.stringContaining(
+      `PI_CODING_AGENT_DIR=${dest}${path.sep}snapshot-`,
+    )
 
     expect(
       wrapInteractiveCmdNoVim(
@@ -731,7 +761,9 @@ describe("wrapInteractiveCmdNoVim", () => {
       JSON.stringify({ packages: [] }),
       "utf8",
     )
-    const isolated = `PI_CODING_AGENT_DIR=${dest}`
+    const isolated = expect.stringContaining(
+      `PI_CODING_AGENT_DIR=${dest}${path.sep}snapshot-`,
+    )
     for (const cmd of cases) {
       const piIndex = cmd.indexOf("pi")
       const expected =
