@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import type {
   ArtworkIdentity,
   ArtworkResult,
@@ -137,6 +137,167 @@ class FakeClient implements ReconnectingMusicSessionClient {
 const flush = () => Promise.resolve().then(() => Promise.resolve())
 
 describe("session media facade", () => {
+  test("disposal aborts cooperative acquisition without publishing a failure", async () => {
+    let signal: AbortSignal | undefined
+    let aborted = 0
+    const media = createSessionSystemMedia({
+      createClient: (acquisitionSignal) => {
+        signal = acquisitionSignal
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              aborted++
+              reject(signal?.reason)
+            },
+            { once: true },
+          )
+        })
+      },
+    })
+    const events: unknown[] = []
+    media.subscribe((event) => events.push(event))
+    await flush()
+    const disposal = media.dispose()
+    expect(media.dispose()).toBe(disposal)
+    await disposal
+    await flush()
+    expect(signal?.aborted).toBeTrue()
+    expect(aborted).toBe(1)
+    expect(events).toEqual([])
+  })
+
+  test("an uncooperative factory cannot hold disposal open", async () => {
+    let signal: AbortSignal | undefined
+    const media = createSessionSystemMedia({
+      createClient: (acquisitionSignal) => {
+        signal = acquisitionSignal
+        return new Promise(() => {})
+      },
+    })
+    await flush()
+    let settled = false
+    const disposal = media.dispose().then(() => {
+      settled = true
+    })
+    await flush()
+    expect(settled).toBeTrue()
+    expect(signal?.aborted).toBeTrue()
+    await disposal
+  })
+
+  test("late success is released once without installing subscriptions or artwork", async () => {
+    let resolve!: (client: ReconnectingMusicSessionClient) => void
+    const client = new FakeClient()
+    const media = createSessionSystemMedia({
+      createClient: () =>
+        new Promise((next) => {
+          resolve = next
+        }),
+    })
+    const events: unknown[] = []
+    media.subscribe((event) => events.push(event))
+    media.subscribePresentation((event) => events.push(event))
+    await flush()
+    let settled = false
+    const disposal = media.dispose()
+    void disposal.then(() => {
+      settled = true
+    })
+    await flush()
+    expect(settled).toBeTrue()
+    resolve(client)
+    await flush()
+    await media.dispose()
+    expect(media.dispose()).toBe(disposal)
+    expect(client.disposeCalls).toBe(1)
+    expect(client.stateListeners.size).toBe(0)
+    expect(client.statusListeners.size).toBe(0)
+    expect(client.connectionListeners.size).toBe(0)
+    expect(client.artworkCalls).toEqual([])
+    expect(events).toEqual([])
+    await expect(media.player()).rejects.toThrow("music session is disposed")
+  })
+
+  test("late cleanup failures are reported without an unhandled rejection", async () => {
+    const report = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      let resolve!: (client: ReconnectingMusicSessionClient) => void
+      const client = new FakeClient()
+      const failure = new Error("late cleanup failed")
+      client.dispose = async () => {
+        client.disposeCalls++
+        throw failure
+      }
+      const media = createSessionSystemMedia({
+        createClient: () =>
+          new Promise((next) => {
+            resolve = next
+          }),
+      })
+      await flush()
+      void media.dispose()
+      resolve(client)
+      await flush()
+      await flush()
+      expect(report).toHaveBeenCalledWith(
+        "Failed to dispose late music session client",
+        failure,
+      )
+      expect(client.disposeCalls).toBe(1)
+    } finally {
+      report.mockRestore()
+    }
+  })
+
+  test("a factory that rejects after disposal cannot publish into the old session", async () => {
+    let reject!: (error: Error) => void
+    const media = createSessionSystemMedia({
+      createClient: () =>
+        new Promise((_resolve, fail) => {
+          reject = fail
+        }),
+    })
+    const events: unknown[] = []
+    media.subscribe((event) => events.push(event))
+    await flush()
+    await media.dispose()
+    reject(new Error("obsolete acquisition failed"))
+    await flush()
+    expect(events).toEqual([])
+    await media.dispose()
+  })
+
+  test("cleanup releases every subscription and surfaces failures on repeated disposal", async () => {
+    const client = new FakeClient()
+    const failure = new Error("client cleanup failed")
+    const unsubscribeFailure = new Error("subscription cleanup failed")
+    const subscribeState = client.subscribeState.bind(client)
+    client.subscribeState = (listener) => {
+      const unsubscribe = subscribeState(listener)
+      return () => {
+        unsubscribe()
+        throw unsubscribeFailure
+      }
+    }
+    client.dispose = async () => {
+      client.disposeCalls++
+      throw failure
+    }
+    const media = createSessionSystemMedia({ createClient: async () => client })
+    await flush()
+    const disposal = media.dispose()
+    expect(media.dispose()).toBe(disposal)
+    await expect(disposal).rejects.toThrow("music session cleanup failed")
+    await expect(disposal).rejects.toMatchObject({
+      errors: [unsubscribeFailure, failure],
+    })
+    expect(client.disposeCalls).toBe(1)
+    expect(client.stateListeners.size).toBe(0)
+    expect(client.statusListeners.size).toBe(0)
+    expect(client.connectionListeners.size).toBe(0)
+  })
+
   test("keeps metadata cache keys separate from full identities", () => {
     const identity = {
       uid: "a",
@@ -748,6 +909,8 @@ describe("session media facade", () => {
     media.subscribe((event) => events.push(event))
     await media.player()
     await flush()
+    const presentations: unknown[] = []
+    media.subscribePresentation((event) => presentations.push(event))
     const first = media.dispose()
     const second = media.dispose()
     releaseArtwork({ type: "available", base64: "late" })
@@ -757,6 +920,9 @@ describe("session media facade", () => {
     expect(second).toBe(first)
     expect(client.disposeCalls).toBe(1)
     expect(client.stateListeners.size).toBe(0)
+    expect(client.statusListeners.size).toBe(0)
+    expect(client.connectionListeners.size).toBe(0)
+    expect(presentations).toEqual([])
     expect(resolverCalls).toBe(1)
     expect(events).not.toEqual(
       expect.arrayContaining([

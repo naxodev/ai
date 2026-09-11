@@ -52,7 +52,9 @@ const waitingArtwork = new Map<string, DeferredArtwork>()
 type ArtworkResolver = typeof resolveArtworkDetails
 
 /** Public-contract-only seam for the reconnecting session adapter. */
-export type SessionClientFactory = () => Promise<ReconnectingMusicSessionClient>
+export type SessionClientFactory = (
+  signal?: AbortSignal,
+) => Promise<ReconnectingMusicSessionClient>
 export type SessionSystemMediaOverrides = {
   readonly createClient?: SessionClientFactory
   readonly resolveArtworkDetails?: ArtworkResolver
@@ -60,11 +62,12 @@ export type SessionSystemMediaOverrides = {
 }
 
 let sessionClientSequence = 0
-const createOpenCodeSessionClient: SessionClientFactory = () =>
+const createOpenCodeSessionClient: SessionClientFactory = (signal) =>
   createReconnectingMusicSessionClient({
     clientId: `opencode-music-player-${++sessionClientSequence}`,
     hostKind: "opencode",
     capabilities: [...baselineCapabilities],
+    ...(signal ? { signal } : {}),
   })
 
 type PresentationHost = {
@@ -302,6 +305,7 @@ export function createSessionSystemMedia(
   const now = overrides.now ?? Date.now
   const listeners = new Set<(event: SessionMediaEvent) => void>()
   const presentationListeners = new Set<ArtworkPresentationListener>()
+  const acquisitionAbort = new AbortController()
   let disposed = false
   let currentArtworkIdentity: string | null = null
   let client: ReconnectingMusicSessionClient | undefined
@@ -315,10 +319,10 @@ export function createSessionSystemMedia(
   let clientReleased = false
   let disposal: Promise<void> | undefined
 
-  const releaseClient = (next: ReconnectingMusicSessionClient) => {
-    if (clientReleased) return Promise.resolve()
+  const releaseClient = async (next: ReconnectingMusicSessionClient) => {
+    if (clientReleased) return
     clientReleased = true
-    return Promise.resolve(next.dispose()).catch(() => {})
+    await next.dispose()
   }
   const emit = (event: SessionMediaEvent) => {
     if (disposed) return
@@ -458,10 +462,12 @@ export function createSessionSystemMedia(
     ]
   }
   const clientPromise = Promise.resolve()
-    .then(factory)
+    .then(() => factory(acquisitionAbort.signal))
     .then((next) => {
       if (disposed) {
-        void releaseClient(next)
+        void releaseClient(next).catch((error) => {
+          console.error("Failed to dispose late music session client", error)
+        })
         return next
       }
       install(next)
@@ -528,18 +534,30 @@ export function createSessionSystemMedia(
     dispose() {
       if (disposal) return disposal
       disposed = true
-      for (const unsubscribe of unsubscribers.splice(0)) {
-        try {
-          unsubscribe()
-        } catch {}
-      }
-      listeners.clear()
-      presentationListeners.clear()
-      removeArtworkInterests(host)
-      disposal = clientPromise.then(
-        (next) => releaseClient(next),
-        () => undefined,
-      )
+      disposal = Promise.resolve().then(async () => {
+        const errors: unknown[] = []
+        for (const unsubscribe of unsubscribers.splice(0)) {
+          try {
+            unsubscribe()
+          } catch (error) {
+            errors.push(error)
+          }
+        }
+        listeners.clear()
+        presentationListeners.clear()
+        removeArtworkInterests(host)
+        // Acquisition is cooperative. A late client is released by its callback.
+        if (client) {
+          try {
+            await releaseClient(client)
+          } catch (error) {
+            errors.push(error)
+          }
+        }
+        if (errors.length)
+          throw new AggregateError(errors, "music session cleanup failed")
+      })
+      acquisitionAbort.abort()
       return disposal
     },
   }
