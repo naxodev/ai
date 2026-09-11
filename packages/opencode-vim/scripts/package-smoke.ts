@@ -148,7 +148,11 @@ export { default } from "./index.tsx"
     join(config, "cli.json"),
     JSON.stringify({
       plugins: [
-        join(work, "node_modules", "@naxodev", "opencode-vim", "tui.tsx"),
+        {
+          package: tuiEntry,
+          // Exercise the Vim register without writing to the user's clipboard.
+          options: { clipboard: "none" },
+        },
       ],
     }),
   )

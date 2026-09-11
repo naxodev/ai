@@ -25,7 +25,8 @@ export interface ClipboardProcess {
   }
   on(event: "error", listener: () => void): unknown
   on(event: "exit", listener: (code: number | null) => void): unknown
-  kill?(): boolean
+  on(event: "close", listener: (code: number | null) => void): unknown
+  kill?(signal?: NodeJS.Signals): boolean
 }
 
 export interface ClipboardDependencies {
@@ -109,8 +110,8 @@ export function createClipboardWriter(
   const provider = selectClipboardProvider(option, dependencies)
   let warned = false
   let disposed = false
-  const children = new Set<ClipboardProcess>()
-  const timers = new Map<ClipboardProcess, ReturnType<typeof setTimeout>>()
+  let pending: string | undefined
+  let active: { stop(): void } | undefined
   const warnOnce = (message: string) => {
     if (disposed || warned) return
     warned = true
@@ -128,6 +129,10 @@ export function createClipboardWriter(
 
   const write = (text: string) => {
     if (disposed || !provider) return
+    if (active) {
+      pending = text
+      return
+    }
     try {
       const invocation = providerInvocation[provider]
       const child = dependencies.spawn(invocation.command, invocation.args, {
@@ -135,34 +140,57 @@ export function createClipboardWriter(
         stdio: ["pipe", "ignore", "ignore"],
         windowsHide: true,
       })
-      const failed = () =>
+      let completed = false
+      let stopping = false
+      let timer: ReturnType<typeof setTimeout>
+      const kill = (signal: NodeJS.Signals) => {
+        try {
+          child.kill?.(signal)
+        } catch {}
+      }
+      const stop = () => {
+        if (completed || stopping) return
+        stopping = true
+        clearTimeout(timer)
+        // Keep ownership until exit; sending a signal does not confirm death.
+        timer = setTimeout(() => kill("SIGKILL"), 100)
+        timer.unref()
+        kill("SIGTERM")
+      }
+      const failed = () => {
+        if (completed) return
         warnOnce(
           "System clipboard write failed; yank remains in the Vim register",
         )
-      children.add(child)
-      const timeout = setTimeout(() => {
-        child.kill?.()
-        children.delete(child)
-        timers.delete(child)
-        failed()
-      }, dependencies.timeoutMs)
-      timeout.unref()
-      timers.set(child, timeout)
-      const complete = () => {
-        clearTimeout(timeout)
-        timers.delete(child)
-        children.delete(child)
+        stop()
       }
-      child.on("error", () => {
-        complete()
-        failed()
-      })
+      active = { stop }
+      timer = setTimeout(failed, dependencies.timeoutMs)
+      timer.unref()
+      const complete = () => {
+        if (completed) return
+        completed = true
+        clearTimeout(timer)
+        active = undefined
+        if (pending !== undefined) {
+          const next = pending
+          pending = undefined
+          write(next)
+        }
+      }
+      child.on("error", failed)
       child.on("exit", (code) => {
-        complete()
         if (code !== 0) failed()
+        complete()
       })
+      // Failed spawns emit close without exit. Errors alone do not prove exit.
+      child.on("close", complete)
       child.stdin.on("error", failed)
-      child.stdin.end(text, "utf8")
+      try {
+        child.stdin.end(text, "utf8")
+      } catch {
+        failed()
+      }
     } catch {
       warnOnce(
         "System clipboard write failed; yank remains in the Vim register",
@@ -173,13 +201,8 @@ export function createClipboardWriter(
     dispose() {
       if (disposed) return
       disposed = true
-      for (const child of children) {
-        const timeout = timers.get(child)
-        if (timeout) clearTimeout(timeout)
-        child.kill?.()
-      }
-      children.clear()
-      timers.clear()
+      pending = undefined
+      active?.stop()
     },
   })
 }
