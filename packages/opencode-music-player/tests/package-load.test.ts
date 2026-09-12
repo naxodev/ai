@@ -164,6 +164,7 @@ test("setup rerenders fixed slots from one host session", async () => {
     },
     openApp: async () => {},
     refreshAll: async () => {},
+    refreshArtwork: async () => {},
     playPause: async () => {},
     seek: async () => {},
     next: async () => {},

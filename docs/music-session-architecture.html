@@ -874,8 +874,10 @@
               <tr>
                 <td>Artwork</td>
                 <td>
-                  OpenCode catalog, download, conversion, cache, rendering; Pi
-                  has none
+                  Both hosts use music-core catalog acquisition policy locally.
+                  OpenCode owns conversion and shared cache/jobs; Pi validates
+                  PNG bytes and owns one current artwork generation. Both render
+                  locally and expose an artwork refresh action.
                 </td>
                 <td>Bounded native read and recording-identity validation</td>
                 <td>Respective scoped owner</td>
@@ -1113,11 +1115,12 @@
                 </td>
               </tr>
               <tr>
-                <td>OpenCode catalog and rendering work</td>
-                <td>O(OpenCode clients)</td>
+                <td>Host catalog and rendering work</td>
+                <td>O(host clients)</td>
                 <td>
-                  Catalog, cache, and terminal presentation remain
-                  OpenCode-local
+                  Shared acquisition policy runs host-side with three serial
+                  attempts, bounded reads, and cancellation. Presentation caches
+                  and terminal rendering remain host-owned.
                 </td>
               </tr>
               <tr>
@@ -1187,7 +1190,7 @@
           <li>Global FIFO ordering spans OpenCode and Pi clients.</li>
           <li>Bounded local failures do not block healthy peers.</li>
           <li>Native artwork reads validate identity and remain bounded.</li>
-          <li>Presentation and OpenCode catalog work stay host-local.</li>
+          <li>Presentation and both hosts' catalog work stay host-local.</li>
         </ul>
       </section>
     </main>

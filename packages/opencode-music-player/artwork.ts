@@ -3,224 +3,31 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PNG } from "pngjs"
 import type { Artwork } from "./types.ts"
+import {
+  acquireCatalogArtwork,
+  MAX_ARTWORK_BYTES,
+  selectCatalogResolution,
+  type CatalogTarget as TrackIdentity,
+  type ArtworkFetcher as Fetcher,
+} from "@naxodev/music-core"
+export {
+  selectCatalogResolution,
+  selectCatalogTrack,
+  readLimitedResponse,
+  downloadCatalogImage,
+  type CatalogTrack,
+} from "@naxodev/music-core"
 
-const MAX_ARTWORK_BYTES = 3_000_000
-const MAX_CATALOG_RESPONSE_BYTES = 512_000
 const MAX_CONVERTED_PNG_BYTES = 1_000_000
 const MAX_IMAGE_DIMENSION = 4_096
 const MAX_IMAGE_PIXELS = 12_000_000
-const FETCH_TIMEOUT_MS = 4_000
 const CONVERSION_TIMEOUT_MS = 3_000
-// MediaRemote may expose whole seconds while catalogs retain milliseconds.
-const DURATION_TOLERANCE_MS = 1_000
-const MAX_CATALOG_DURATION_MS = 24 * 60 * 60 * 1_000
-
-type TrackIdentity = {
-  title: string
-  artist: string
-  album: string
-  duration_ms: number
-}
-
-export type CatalogTrack = {
-  trackName?: string
-  artistName?: string
-  collectionName?: string
-  trackTimeMillis?: number
-  artworkUrl100?: string
-}
-
-type Fetcher = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>
-
-function normalized(value: string | undefined): string {
-  return (value ?? "")
-    .normalize("NFKC")
-    .replace(/’/g, "'")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase()
-}
 
 export function selectArtworkUrl(
   target: TrackIdentity,
-  results: CatalogTrack[],
+  results: import("@naxodev/music-core").CatalogTrack[],
 ): string | null {
   return selectCatalogResolution(target, results).artworkUrl
-}
-
-function matchingCatalogTracks(
-  target: TrackIdentity,
-  results: CatalogTrack[],
-): CatalogTrack[] {
-  const title = normalized(target.title)
-  const artist = normalized(target.artist)
-  const album = normalized(target.album)
-  if (!title || !artist) return []
-
-  let matches = results.filter(
-    (item) =>
-      normalized(item.trackName) === title &&
-      normalized(item.artistName) === artist,
-  )
-  if (album) {
-    matches = matches.filter(
-      (item) => normalized(item.collectionName) === album,
-    )
-  }
-  return matches
-}
-
-function validCatalogDuration(value: number | undefined): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value) &&
-    value > 0 &&
-    value <= MAX_CATALOG_DURATION_MS
-  )
-}
-
-function selectCatalogCandidate(
-  target: TrackIdentity,
-  results: CatalogTrack[],
-): CatalogTrack | null {
-  let matches = matchingCatalogTracks(target, results)
-  if (target.duration_ms > 0) {
-    matches = matches.filter(
-      (item) =>
-        validCatalogDuration(item.trackTimeMillis) &&
-        Math.abs(item.trackTimeMillis! - target.duration_ms) <=
-          DURATION_TOLERANCE_MS,
-    )
-  } else if (matches.length !== 1) {
-    return null
-  }
-
-  return matches[0] ?? null
-}
-
-export function selectCatalogTrack(
-  target: TrackIdentity,
-  results: CatalogTrack[],
-): CatalogTrack | null {
-  const match = selectCatalogCandidate(target, results)
-  return validCatalogDuration(match?.trackTimeMillis) ? match : null
-}
-
-export function selectCatalogResolution(
-  target: TrackIdentity,
-  results: CatalogTrack[],
-): { artworkUrl: string | null; duration_ms: number } {
-  const match = selectCatalogCandidate(target, results)
-  return {
-    artworkUrl:
-      match?.artworkUrl100?.replace(/100x100(?=[a-z]*\.)/, "300x300") ?? null,
-    duration_ms: validCatalogDuration(match?.trackTimeMillis)
-      ? match.trackTimeMillis
-      : target.duration_ms,
-  }
-}
-
-function allowedCatalogImageUrl(raw: string | URL): URL | null {
-  try {
-    const url = new URL(raw)
-    if (url.protocol !== "https:" || !url.hostname.endsWith(".mzstatic.com")) {
-      return null
-    }
-    return url
-  } catch {
-    return null
-  }
-}
-
-export async function readLimitedResponse(
-  response: Response,
-  maxBytes: number,
-): Promise<Uint8Array | null> {
-  const declared = Number(response.headers.get("content-length"))
-  if (Number.isFinite(declared) && declared > maxBytes) return null
-  if (!response.body) return new Uint8Array()
-
-  const bytes = new Uint8Array(maxBytes)
-  const reader = response.body.getReader()
-  let total = 0
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (total + value.byteLength > maxBytes) {
-        await reader.cancel("artwork exceeds byte limit")
-        return null
-      }
-      bytes.set(value, total)
-      total += value.byteLength
-    }
-  } finally {
-    reader.releaseLock()
-  }
-
-  return bytes.slice(0, total)
-}
-
-export async function downloadCatalogImage(
-  rawUrl: string,
-  fetcher: Fetcher = fetch,
-): Promise<Uint8Array | null> {
-  const url = allowedCatalogImageUrl(rawUrl)
-  if (!url) return null
-  try {
-    const response = await fetcher(url, {
-      redirect: "error",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-    if (!response.ok || response.redirected) return null
-    if (response.url && !allowedCatalogImageUrl(response.url)) return null
-    return readLimitedResponse(response, MAX_ARTWORK_BYTES)
-  } catch {
-    return null
-  }
-}
-
-async function catalogArtwork(
-  target: TrackIdentity,
-  fetcher: Fetcher = fetch,
-): Promise<{ bytes: Uint8Array | null; duration_ms: number } | null> {
-  if (!target.title || !target.artist) return null
-  const term = [target.artist, target.title, target.album]
-    .filter(Boolean)
-    .join(" ")
-  const url = new URL("https://itunes.apple.com/search")
-  url.searchParams.set("term", term)
-  url.searchParams.set("entity", "song")
-  url.searchParams.set("limit", "10")
-
-  try {
-    const result = await fetcher(url, {
-      redirect: "error",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    })
-    if (!result.ok || result.redirected) return null
-    const responseBytes = await readLimitedResponse(
-      result,
-      MAX_CATALOG_RESPONSE_BYTES,
-    )
-    if (!responseBytes) return null
-    const payload = JSON.parse(new TextDecoder().decode(responseBytes)) as {
-      results?: CatalogTrack[]
-    }
-    const results = payload.results ?? []
-    const resolution = selectCatalogResolution(target, results)
-    const bytes = resolution.artworkUrl
-      ? await downloadCatalogImage(resolution.artworkUrl, fetcher)
-      : null
-    if (!resolution.artworkUrl && resolution.duration_ms === target.duration_ms)
-      return null
-    return { bytes, duration_ms: resolution.duration_ms }
-  } catch {
-    return null
-  }
 }
 
 export function imageDimensionsAreSafe(width: number, height: number): boolean {
@@ -356,7 +163,9 @@ export async function resolveArtworkDetails(
   nativeBase64: string | null,
   legacyId = id,
   fetcher: Fetcher = fetch,
+  signal?: AbortSignal,
 ): Promise<ArtworkResolution> {
+  if (signal?.aborted) return { artwork: null, duration_ms: target.duration_ms }
   const candidates: Uint8Array[] = []
   if (nativeBase64) {
     try {
@@ -390,8 +199,15 @@ export async function resolveArtworkDetails(
     }
   }
 
-  const catalog = await catalogArtwork(target, fetcher)
-  if (!catalog) return { artwork: null, duration_ms: target.duration_ms }
+  const catalog = await acquireCatalogArtwork(target, {
+    fetch: fetcher,
+    signal,
+  })
+  if (catalog.kind !== "available" || signal?.aborted)
+    return {
+      artwork: null,
+      duration_ms: catalog.duration_ms ?? target.duration_ms,
+    }
   if (!catalog.bytes) {
     return { artwork: null, duration_ms: catalog.duration_ms }
   }

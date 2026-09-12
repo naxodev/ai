@@ -68,6 +68,7 @@ export type SessionMediaDisposer = () => void
 /** The OpenCode controller's session-only media contract. */
 export type SessionMedia = {
   player: () => Promise<PlayerState | null>
+  refreshArtwork: () => Promise<void>
   play: () => Promise<unknown>
   pause: () => Promise<unknown>
   next: () => Promise<unknown>

@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test"
+import { acquireCatalogArtwork } from "@naxodev/music-core"
 import type {
   ArtworkIdentity,
   ArtworkResult,
@@ -137,6 +138,199 @@ class FakeClient implements ReconnectingMusicSessionClient {
 const flush = () => Promise.resolve().then(() => Promise.resolve())
 
 describe("session media facade", () => {
+  test("UID-only changes retain recording work and publish under the current full identity", async () => {
+    const client = new FakeClient()
+    client.state = state("uid-stable-recording")
+    const started = Promise.withResolvers<void>()
+    const response = Promise.withResolvers<Response>()
+    const completed = Promise.withResolvers<string>()
+    let signal: AbortSignal | null | undefined
+    let requests = 0
+    let resolutions = 0
+    const media = createSessionSystemMedia({
+      createClient: async () => client,
+      resolveArtworkDetails: async (
+        _key,
+        target,
+        _native,
+        _legacy,
+        _fetch,
+        ownerSignal,
+      ) => {
+        resolutions++
+        await acquireCatalogArtwork(target, {
+          signal: ownerSignal,
+          fetch: async (_url, init) => {
+            requests++
+            signal = init?.signal
+            started.resolve()
+            return response.promise
+          },
+        })
+        return { artwork: null, duration_ms: target.duration_ms }
+      },
+    })
+    media.subscribePresentation((event) =>
+      completed.resolve(event.identity.uid),
+    )
+    await media.player()
+    await started.promise
+    const replacement = state("uid-stable-recording", 2)
+    client.emitState({
+      ...replacement,
+      state: {
+        ...replacement.state,
+        track: { ...replacement.state.track!, id: "replacement-provider-id" },
+      },
+    })
+    await media.player()
+    expect(signal?.aborted).toBe(false)
+    expect(client.artworkCalls).toHaveLength(1)
+    expect(resolutions).toBe(1)
+    response.resolve(Response.json({ results: [] }))
+    expect(await completed.promise).toBe("replacement-provider-id")
+    expect(requests).toBe(1)
+    expect(resolutions).toBe(1)
+    await media.dispose()
+  })
+
+  test("shared acquisition exhausts once, refresh recovers the same track, and active refreshes share one job", async () => {
+    const client = new FakeClient()
+    client.state = state("catalog-refresh")
+    let online = false
+    let requests = 0
+    const searchGate = Promise.withResolvers<void>()
+    const completed: Array<string | null> = []
+    let nextCompletion = Promise.withResolvers<void>()
+    const media = createSessionSystemMedia({
+      createClient: async () => client,
+      resolveArtworkDetails: async (
+        key,
+        target,
+        _native,
+        _legacy,
+        _fetch,
+        signal,
+      ) => {
+        const result = await acquireCatalogArtwork(target, {
+          signal,
+          retryDelayMs: 0,
+          fetch: async (url) => {
+            requests++
+            if (!online) return new Response(null, { status: 503 })
+            if (new URL(String(url)).hostname === "itunes.apple.com") {
+              await searchGate.promise
+              return Response.json({
+                results: [
+                  {
+                    trackName: target.title,
+                    artistName: target.artist,
+                    collectionName: target.album,
+                    trackTimeMillis: target.duration_ms,
+                    artworkUrl100: "https://is1.mzstatic.com/100x100bb.jpg",
+                  },
+                ],
+              })
+            }
+            return new Response(new Uint8Array([1]))
+          },
+        })
+        return {
+          duration_ms: target.duration_ms,
+          artwork:
+            result.kind === "available"
+              ? {
+                  id: key,
+                  png_base64: "controlled",
+                  accent: "#000000",
+                  cells: [],
+                }
+              : null,
+        }
+      },
+    })
+    media.subscribePresentation((event) => {
+      completed.push(event.artwork?.png_base64 ?? null)
+      nextCompletion.resolve()
+    })
+    await media.player()
+    await nextCompletion.promise
+    expect(requests).toBe(3)
+    await media.player()
+    expect(requests).toBe(3)
+    online = true
+    nextCompletion = Promise.withResolvers<void>()
+    await Promise.all([media.refreshArtwork(), media.refreshArtwork()])
+    searchGate.resolve()
+    await nextCompletion.promise
+    expect(requests).toBe(5)
+    expect(completed).toEqual([null, "controlled"])
+    expect((await media.player())?.track?.name).toBe("catalog-refresh")
+    expect(client.calls).toEqual([])
+    await media.dispose()
+  })
+
+  test("track replacement and disposal abort shared catalog reads and fence late completions", async () => {
+    const client = new FakeClient()
+    client.state = state("catalog-stale-a")
+    const starts = [
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+    ]
+    const responses = [
+      Promise.withResolvers<Response>(),
+      Promise.withResolvers<Response>(),
+    ]
+    const signals: AbortSignal[] = []
+    const completions: unknown[] = []
+    let cancelled = 0
+    const media = createSessionSystemMedia({
+      createClient: async () => client,
+      resolveArtworkDetails: async (
+        _key,
+        target,
+        _native,
+        _legacy,
+        _fetch,
+        signal,
+      ) => {
+        await acquireCatalogArtwork(target, {
+          signal,
+          fetch: async (_url, init) => {
+            const index = signals.length
+            signals.push(init!.signal!)
+            starts[index]!.resolve()
+            return responses[index]!.promise
+          },
+        })
+        return { artwork: null, duration_ms: target.duration_ms }
+      },
+    })
+    media.subscribePresentation((event) => completions.push(event))
+    await media.player()
+    await starts[0]!.promise
+    client.emitState(state("catalog-stale-b", 2))
+    // Subscribe state projection so the facade observes replacement immediately.
+    await media.player()
+    await starts[1]!.promise
+    expect(signals[0]!.aborted).toBe(true)
+    await media.dispose()
+    expect(signals[1]!.aborted).toBe(true)
+    for (const response of responses)
+      response.resolve(
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled++
+            },
+          }),
+        ),
+      )
+    for (let i = 0; i < 30; i++) await flush()
+    expect(cancelled).toBe(2)
+    expect(completions).toEqual([])
+  })
+
   test("provider status recovery clears the host warning and fallback remains visible", async () => {
     const client = new FakeClient()
     const media = createSessionSystemMedia({ createClient: async () => client })
@@ -501,7 +695,7 @@ describe("session media facade", () => {
     await media.dispose()
   })
 
-  test("shares equal artwork work and retries null or rejected requests on its bounded schedule", async () => {
+  test("shares equal artwork work and only refresh explicitly retries a settled null", async () => {
     let now = 0
     const first = new FakeClient()
     first.state = state("shared-retry")
@@ -533,6 +727,9 @@ describe("session media facade", () => {
     expect(first.artworkCalls).toHaveLength(1)
     now = 2_000
     await backendB.player()
+    await flush()
+    expect(resolutions).toBe(1)
+    await backendB.refreshArtwork()
     await flush()
     expect(first.artworkCalls).toHaveLength(1)
     expect(second.artworkCalls).toHaveLength(1)

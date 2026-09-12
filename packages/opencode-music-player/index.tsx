@@ -26,6 +26,7 @@ export type Controller = {
   subscribe: (listener: (session: SessionStore) => void) => () => void
   openApp: () => Promise<void>
   refreshAll: () => Promise<void>
+  refreshArtwork: () => Promise<void>
   playPause: () => Promise<void>
   seek: (positionMs: number) => Promise<void>
   next: () => Promise<void>
@@ -321,6 +322,14 @@ export function createController(
       return () => sessionListeners.delete(listener)
     },
     refreshAll,
+    refreshArtwork: async () => {
+      if (!isActive()) return
+      try {
+        await media.refreshArtwork()
+      } catch (error) {
+        if (isActive()) setTransportError(errMsg(error))
+      }
+    },
     async openApp() {
       if (!isActive()) return
       try {
@@ -395,6 +404,14 @@ function AppHost(props: { context: Context; ctrl: Controller }) {
         palette: true,
         slash: { name: "music-app" },
         run: () => void ctrl.openApp(),
+      },
+      {
+        id: "music.refresh-artwork",
+        title: "Refresh artwork",
+        group: "Music",
+        palette: true,
+        slash: { name: "music-artwork" },
+        run: () => void ctrl.refreshArtwork(),
       },
     ],
   }))

@@ -45,6 +45,8 @@ This network-only gate queries the public npm registry up to ten times, with a 1
 
 If the gate fails, publish a compatible core first, allow registry propagation, then rerun the host tag. A compatible published version is sufficient; the staged core need not be published. These network checks run only before new publication or when invoked manually, not in the offline unit suite or version preview. Already-published tags skip them.
 
+The host-side catalog acquisition exports added for #129 and #140 require a new core release. Publish that core before either updated music host. Then set both host dependency floors to that published version and regenerate the lockfile before publishing hosts. The current `0.1.3` core does not provide these exports; a range that accepts it is insufficient for the updated hosts. Keep the source checkout's frozen install intact until the new core is available. Confirm the exact next core version with the release preview rather than reserving an unpublished version in host manifests.
+
 ### Trusted publishing
 
 After each package exists on npm, configure its npm Trusted Publisher with:
