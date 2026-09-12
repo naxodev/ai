@@ -16,6 +16,10 @@ Read the [music session architecture field guide](../../docs/music-session-archi
 
 The daemon performs the bounded native `media-control get --now` read and validates the complete recording identity before and after the read. OpenCode uses those bytes when available, then keeps iTunes Search fallback, image downloads, conversion, cache/job ownership, and terminal rendering locally. Artwork failure never blocks playback state.
 
+Catalog matching, bounded downloads, cancellation, and transient retries use the [shared host-side acquisition policy](../music-core/README.md#host-side-catalog-artwork). OpenCode keeps image conversion and its shared presentation cache/jobs. Track changes remove only the changing view's interest; another view can keep the same job alive.
+
+Run `/music-artwork`, or select **Music → Refresh artwork** in the command palette, to recover artwork for the current track after connectivity returns. Automatic recovery stops after three transient attempts. A settled mismatch does not retry on playback snapshots. Refresh starts a new bounded attempt set; repeated refreshes while a job is active share that job. This action does not change playback.
+
 Ghostty and other terminals with Kitty graphics support display the cover as a native image. Other terminals receive a true-color half-block rendering of the same cover.
 
 Terminal multiplexers must pass Kitty graphics through to use native images. The player uses the half-block rendering when the host does not expose that support.

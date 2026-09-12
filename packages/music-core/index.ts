@@ -1,3 +1,5 @@
+export * from "./catalog-artwork.ts"
+
 // types
 export type {
   Track,

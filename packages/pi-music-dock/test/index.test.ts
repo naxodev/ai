@@ -710,6 +710,96 @@ test("each rejected live command notifies its caller once", async () => {
 	await dock.shutdown();
 });
 
+test("same-track artwork refresh recovers after exhausted network failure and coalesces repeated commands", async () => {
+	const client = new FakeClient();
+	client.artworkResult = { type: "unavailable" };
+	const exhausted = deferred<void>();
+	const refreshed = deferred<void>();
+	const image = deferred<void>();
+	let calls = 0;
+	const dock = setup(async () => client, {
+		fetch: async (url) => {
+			calls++;
+			if (calls <= 3) {
+				if (calls === 3) exhausted.resolve();
+				return new Response(null, { status: 503 });
+			}
+			if (new URL(String(url)).hostname === "itunes.apple.com") {
+				await refreshed.promise;
+				return Response.json({
+					results: [
+						{
+							trackName: "Song",
+							artistName: "Artist",
+							collectionName: "Album",
+							trackTimeMillis: 10_000,
+							artworkUrl100: "https://is1.mzstatic.com/100x100bb.jpg",
+						},
+					],
+				});
+			}
+			image.resolve();
+			return new Response(PNG_1X1_BYTES);
+		},
+	});
+	await dock.start();
+	await exhausted.promise;
+	for (let i = 0; i < 30; i++) await flush();
+	expect(dock.overlays[0]!.component.render(30).join("\n")).toContain(
+		"no artwork",
+	);
+	client.emitState(player("paused"));
+	await flush();
+	expect(calls).toBe(3);
+	await dock.command("music-artwork");
+	await dock.command("music-artwork");
+	expect(client.artworkCalls).toHaveLength(2);
+	refreshed.resolve();
+	await image.promise;
+	for (let i = 0; i < 30; i++) await flush();
+	const rendered = dock.overlays[0]!.component.render(30).join("\n");
+	expect(rendered).not.toContain("no artwork");
+	expect(rendered).not.toContain("loading art");
+	expect(calls).toBe(5);
+	expect(client.calls).toEqual([]);
+	await dock.shutdown();
+});
+
+test("shutdown cancels shared catalog acquisition and discards a late response body", async () => {
+	const client = new FakeClient();
+	client.artworkResult = { type: "unavailable" };
+	const started = deferred<void>();
+	const late = deferred<Response>();
+	let signal: AbortSignal | null | undefined;
+	let cancelled = 0;
+	let calls = 0;
+	const dock = setup(async () => client, {
+		fetch: async (_url, init) => {
+			calls++;
+			signal = init?.signal;
+			started.resolve();
+			return late.promise;
+		},
+	});
+	await dock.start();
+	await started.promise;
+	await dock.shutdown();
+	expect(signal?.aborted).toBe(true);
+	late.resolve(
+		new Response(
+			new ReadableStream({
+				cancel() {
+					cancelled++;
+				},
+			}),
+		),
+	);
+	for (let i = 0; i < 30; i++) await flush();
+	expect(cancelled).toBe(1);
+	expect(calls).toBe(1);
+	expect(dock.overlays[0]!.handle.hideCalls).toBe(1);
+});
+
 test("provider failure falls back to catalog art and paints ready presentation", async () => {
 	// Why: media-control often fails native art (~1.5MB beyond daemon bound).
 	// Without catalog fallback the live panel shows "no artwork" for real tracks.

@@ -257,7 +257,7 @@ describe("artwork download boundaries", () => {
       artwork: null,
       duration_ms: 180_000,
     })
-    expect(calls).toBe(2)
+    expect(calls).toBe(4)
   })
 
   test("forbids redirects so an allowed CDN cannot redirect to another host", async () => {
@@ -279,7 +279,7 @@ describe("artwork download boundaries", () => {
         fetcher,
       ),
     ).toBeNull()
-    expect(redirect).toBe("error")
+    expect(redirect).toBe("manual")
   })
 
   test("stops reading once a streamed image exceeds the byte cap", async () => {

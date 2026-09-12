@@ -26,6 +26,24 @@ Read the [music session architecture field guide](../../docs/music-session-archi
 
 ## Public surface
 
+### Host-side catalog artwork
+
+`acquireCatalogArtwork(target, options)` runs in the host process. It returns bounded image bytes and matched duration, or an `unavailable`, `exhausted`, or `aborted` outcome. It does not modify daemon playback state, decode images, or cache presentation.
+
+Matching requires normalized exact title and artist, exact album when supplied, and duration within 1,000ms when known. A target without duration must have exactly one metadata match. Catalog durations must be positive, finite, and at most 24 hours. Search payloads must contain at most ten well-typed results.
+
+Each acquisition makes at most three serial attempts, with 500ms and 1,000ms retry delays. Only network/read failures, request timeouts, HTTP 408/429, and HTTP 5xx responses retry. Mismatches, invalid data, oversized responses, and redirects stop immediately. The request deadline includes body reads: 4 seconds per search or image request, with a 26-second acquisition deadline. Each attempt buffers at most 512,000 search bytes and 3,000,000 image bytes: six requests and 10,536,000 accepted bytes across all attempts.
+
+Image requests require HTTPS `.mzstatic.com` URLs without credentials or nondefault ports. Redirects are returned for rejection rather than followed. Rejected responses and interrupted readers are cancelled; reader locks and timers are released. Pass an `AbortSignal` to cancel replacement or disposed work. An injected fetcher must honor its request signal; late responses are still discarded and their bodies cancelled.
+
+Retries and physical job release await response and reader cancellation, including asynchronous cleanup. A stalled cleanup retains its job slot beyond the cancellation deadline instead of allowing replacement work to exceed the concurrency bound. Cleanup rejection settles ownership without replacing the original acquisition outcome.
+
+The `fetch` option supports controlled acquisition tests. `retryDelayMs` can reduce the base delay from 500ms, including zero; invalid or larger values cannot expand the budget. `format: "png"` requests a PNG catalog URL for Pi. Hosts still validate the actual format and decoded dimensions before rendering.
+
+OpenCode retains its 32 active jobs, 32 deferred keys, and 32 settled cache entries per module instance. Equal recording work is shared between its views. The last interested view aborts obsolete work, but the job keeps its slot until its resolver settles. Pi owns one current artwork generation per live session. Both hosts suppress automatic retries after a settled outcome and expose `/music-artwork` to start a fresh bounded acquisition for the same track. Repeated refreshes during active work share that work.
+
+### Other exports
+
 ```ts
 import {
   type Track,

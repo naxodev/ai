@@ -654,6 +654,25 @@ export function createMusicDock(
 				focusSidebar(currentSession);
 		},
 	});
+	pi.registerCommand("music-artwork", {
+		description: "Music: refresh artwork for the current track",
+		handler: async () => {
+			const session = currentSession;
+			if (
+				!session ||
+				!isLive(session) ||
+				!session.client ||
+				!session.player?.track ||
+				session.artwork.kind === "loading"
+			)
+				return;
+			requestArtwork(
+				session,
+				session.client,
+				trackArtworkIdentity(session.player.track),
+			);
+		},
+	});
 
 	/**
 	 * Stream-aware collapse: agent lifecycle events flip the session between

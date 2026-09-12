@@ -7,6 +7,7 @@ const expectedFiles = new Set([
   "LICENSE",
   "README.md",
   "clock.ts",
+  "catalog-artwork.ts",
   "format.ts",
   "index.ts",
   "package.json",

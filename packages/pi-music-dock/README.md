@@ -32,7 +32,9 @@ Read the [music session architecture field guide](../../docs/music-session-archi
 
 Native album artwork renders through `pi-tui` `Image` when the terminal supports Kitty, iTerm2, Ghostty, WezTerm, or Warp graphics. Other terminals, missing artwork, and unsupported image bytes show a short text placeholder. MIME type is detected locally from bounded base64 or downloaded bytes (PNG, JPEG, GIF, WebP only). The session protocol is not widened for Content-Type.
 
-When native artwork is unavailable, too large for the daemon bound, unsupported, or fails with a provider error, the panel falls back to a **bounded exact iTunes catalog match** (same safety rules as OpenCode): HTTPS `.mzstatic.com` only, no redirects, 512KB search JSON / 3MB image caps, 4s deadlines, exact title+artist (album when present, duration ±1s). In-flight catalog work is aborted on track change, reload, and shutdown.
+When native artwork is unavailable, too large for the daemon bound, unsupported, or fails with a provider error, the panel uses the [shared host-side catalog acquisition policy](../music-core/README.md#host-side-catalog-artwork). Pi requests and validates PNG bytes because its Kitty image path declares PNG. Image sniffing, dimension limits, and rendering stay local. Track changes, reload, and shutdown abort obsolete acquisition and fence late results.
+
+Run `/music-artwork` to recover artwork for the same track after connectivity returns. Automatic recovery stops after three transient attempts. A settled mismatch does not retry on playback snapshots. Refresh starts a new bounded attempt set; repeated refreshes during loading share that work. This action does not change playback.
 
 ## Install
 
@@ -61,17 +63,18 @@ pi remove npm:@naxodev/pi-music-dock
 
 ## Commands and shortcuts
 
-| Input          | Action                                  |
-| -------------- | --------------------------------------- |
-| `/music`       | Play or pause                           |
-| `/music-next`  | Play the next track                     |
-| `/music-prev`  | Play the previous track                 |
-| `/music-view`  | Toggle side panel visibility            |
-| `/music-focus` | Focus the side panel for transport keys |
-| `ctrl+alt+p`   | Play or pause                           |
-| `ctrl+alt+n`   | Play the next track                     |
-| `ctrl+alt+b`   | Play the previous track                 |
-| `ctrl+alt+m`   | Toggle side panel visibility            |
+| Input            | Action                                  |
+| ---------------- | --------------------------------------- |
+| `/music`         | Play or pause                           |
+| `/music-next`    | Play the next track                     |
+| `/music-prev`    | Play the previous track                 |
+| `/music-view`    | Toggle side panel visibility            |
+| `/music-focus`   | Focus the side panel for transport keys |
+| `/music-artwork` | Refresh artwork for the current track   |
+| `ctrl+alt+p`     | Play or pause                           |
+| `ctrl+alt+n`     | Play the next track                     |
+| `ctrl+alt+b`     | Play the previous track                 |
+| `ctrl+alt+m`     | Toggle side panel visibility            |
 
 Slash commands are the reliable fallback when a terminal does not forward a shortcut. The status icon describes the next action: `⏸` while playing and `▶` while paused.
 
