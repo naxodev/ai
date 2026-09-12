@@ -34,6 +34,50 @@ import {
 import type { MusicChangeEvent } from "../types.ts"
 import type { LineStreamCallbacks } from "../run.ts"
 
+test("provider health follows successful fallback observations and primary recovery", async () => {
+  let primary = true
+  let fallback = true
+  const backend = createSystemMediaAdapter({
+    detectBackend: () => "media-control",
+    hasNowPlayingCli: () => true,
+    startLineStream: () => () => {},
+    run: async ([command]) =>
+      (command === "media-control" ? primary : fallback)
+        ? { ok: true, out: JSON.stringify({ title: "Song", playing: true }) }
+        : { ok: false, timed_out: false, err: "controlled failure" },
+  })
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const provider = yield* SessionProvider
+        yield* provider.sample()
+        expect(yield* provider.status()).toMatchObject({
+          kind: "ready",
+          provider: "media-control",
+        })
+        primary = false
+        yield* provider.sample()
+        expect(yield* provider.status()).toMatchObject({
+          kind: "degraded",
+          provider: "nowplaying-cli",
+        })
+        fallback = false
+        yield* provider.sample()
+        expect(yield* provider.status()).toMatchObject({
+          kind: "unavailable",
+          provider: null,
+        })
+        primary = true
+        yield* provider.sample()
+        expect(yield* provider.status()).toMatchObject({
+          kind: "ready",
+          provider: "media-control",
+        })
+      }).pipe(Effect.provide(layerFromAttemptAdapter(backend))),
+    ),
+  )
+})
+
 class FakeLineStreamProcess extends EventEmitter {
   stdout = new EventEmitter()
   exitCode: number | null = null

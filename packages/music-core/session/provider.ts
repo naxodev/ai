@@ -14,8 +14,6 @@ import {
 } from "effect"
 import {
   createSystemMediaAdapter,
-  hasMediaControl,
-  hasNowPlayingCli,
   type SystemMediaAttemptAdapter,
 } from "../system-media.ts"
 import {
@@ -59,26 +57,6 @@ export class SessionProvider extends Context.Service<
     readonly events: Stream.Stream<MusicChangeEvent, ProviderError>
   }
 >()("@naxodev/music-core/SessionProvider") {}
-
-const status = (): ProviderStatus => {
-  if (hasMediaControl())
-    return {
-      kind: "ready",
-      provider: "media-control",
-      message: "media-control ready",
-    }
-  if (hasNowPlayingCli())
-    return {
-      kind: "degraded",
-      provider: "nowplaying-cli",
-      message: "media-control unavailable; using nowplaying-cli",
-    }
-  return {
-    kind: "unavailable",
-    provider: null,
-    message: "install media-control or nowplaying-cli",
-  }
-}
 
 const drainSnapshots = (
   snapshots: Queue.Dequeue<void>,
@@ -332,7 +310,14 @@ const serviceFromAdapter = (
     return SessionProvider.of({
       status: Effect.fn("MusicSession.Provider.status")(function* () {
         return yield* Effect.try({
-          try: hooks.statusProbe ?? status,
+          try:
+            hooks.statusProbe ??
+            backend.status ??
+            ((): ProviderStatus => ({
+              kind: "unavailable",
+              provider: null,
+              message: "provider health unavailable",
+            })),
           catch: (cause) => providerError("status", cause),
         })
       }),
@@ -440,6 +425,7 @@ export const layerFromLegacy = (provider: LegacySessionProvider) =>
 /** Effect-native coordinator fixture; controls are deliberately outside the service. */
 export type CoordinatorProviderFixture = {
   readonly layer: Layer.Layer<SessionProvider>
+  readonly setStatus: (status: ProviderStatus) => Effect.Effect<void>
   readonly emit: (event: MusicChangeEvent) => Effect.Effect<void>
   readonly setState: (state: PlayerState) => Effect.Effect<void>
   readonly enqueueSample: (state: PlayerState | null) => Effect.Effect<void>
@@ -491,6 +477,11 @@ export const makeCoordinatorProviderFixture = (
 ): Effect.Effect<CoordinatorProviderFixture> =>
   Effect.gen(function* () {
     const state = yield* Ref.make(initial)
+    const status = yield* Ref.make<ProviderStatus>({
+      kind: "ready",
+      provider: "media-control",
+      message: "fixture",
+    })
     const sampleGate = yield* Latch.make(true)
     const transportGate = yield* Latch.make(true)
     const artworkGate = yield* Latch.make(true)
@@ -571,12 +562,7 @@ export const makeCoordinatorProviderFixture = (
         ).pipe(
           Effect.as(
             SessionProvider.of({
-              status: () =>
-                Effect.succeed({
-                  kind: "ready",
-                  provider: "media-control",
-                  message: "fixture",
-                }),
+              status: () => Ref.get(status),
               nativeArtwork: () =>
                 Ref.updateAndGet(artworkCalls, (count) => count + 1).pipe(
                   Effect.tap((count) => Queue.offer(artworkStarts, count)),
@@ -702,6 +688,7 @@ export const makeCoordinatorProviderFixture = (
           if (!closed && sink) Queue.offerUnsafe(sink, event)
         }),
       setState: (next) => Ref.set(state, next),
+      setStatus: (next) => Ref.set(status, next),
       enqueueSample: (next) =>
         Ref.update(plannedSamples, (values) => [...values, next]),
       blockSample: Latch.close(sampleGate).pipe(Effect.asVoid),
