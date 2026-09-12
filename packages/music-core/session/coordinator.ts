@@ -178,10 +178,16 @@ export const layer = Layer.effect(
     const coordinatorScope = yield* Scope.Scope
     const provider = yield* SessionProvider
     const daemonInstanceId = instanceId()
-    const statusRef = yield* SubscriptionRef.make<ProviderStatus>({
-      kind: "unavailable",
-      provider: null,
-      message: "starting",
+    // Sampling can recover, but a terminated command worker cannot. Keep both
+    // facts in one atomic ref and project them onto the existing status stream.
+    const statusRef = yield* SubscriptionRef.make<{
+      readonly observation: ProviderStatus
+      readonly observationRevision: number
+      readonly commandWorkerFailed: boolean
+    }>({
+      observation: { kind: "unavailable", provider: null, message: "starting" },
+      observationRevision: 0,
+      commandWorkerFailed: false,
     })
     const stateRef = yield* SubscriptionRef.make<RevisionedState>({
       daemonInstanceId,
@@ -233,17 +239,48 @@ export const layer = Layer.effect(
     // Serializes trigger invalidation with a sample's stale check and commit.
     const samplingGate = yield* Semaphore.make(1)
 
-    const setStatus = (value: ProviderStatus) =>
-      SubscriptionRef.set(statusRef, value)
-    const degrade = (message: string) =>
-      SubscriptionRef.update(statusRef, (current) => ({
-        ...current,
-        kind:
-          current.kind === "unavailable"
-            ? ("unavailable" as const)
-            : ("degraded" as const),
-        message,
-      }))
+    // Health has its own order: unchanged samples and rejected snapshots do
+    // not advance state authority. Reserve before awaiting provider status.
+    const reserveObservation = () =>
+      SubscriptionRef.modify(statusRef, (current) => {
+        const observationRevision = current.observationRevision + 1
+        return [observationRevision, { ...current, observationRevision }]
+      })
+    const setStatus = (value: ProviderStatus, observationRevision: number) =>
+      SubscriptionRef.update(statusRef, (current) =>
+        current.observationRevision === observationRevision
+          ? { ...current, observation: value }
+          : current,
+      )
+    const degrade = (message: string, observationRevision?: number) =>
+      SubscriptionRef.update(statusRef, (current) =>
+        observationRevision !== undefined &&
+        current.observationRevision !== observationRevision
+          ? current
+          : {
+              ...current,
+              observationRevision: current.observationRevision + 1,
+              observation: {
+                ...current.observation,
+                kind:
+                  current.observation.kind === "unavailable"
+                    ? ("unavailable" as const)
+                    : ("degraded" as const),
+                message,
+              },
+            },
+      )
+    const refreshStatus = () =>
+      reserveObservation().pipe(
+        Effect.flatMap((observationRevision) =>
+          provider.status().pipe(
+            Effect.flatMap((status) => setStatus(status, observationRevision)),
+            Effect.catch(() =>
+              degrade("provider status unavailable", observationRevision),
+            ),
+          ),
+        ),
+      )
     // `stateRef.revision` is both the published revision and the authority
     // token. Every publication, including navigation authority invalidation,
     // is one atomic SubscriptionRef transition.
@@ -257,7 +294,7 @@ export const layer = Layer.effect(
           expectedRevision !== undefined &&
           previous.revision !== expectedRevision
         )
-          return ["unchanged" as const, previous]
+          return ["stale" as const, previous]
         const next = merge ? mergePlayer(previous.state, state) : state
         // Polling commonly returns the authoritative state unchanged. Such a
         // sample is not an authority transition and must not churn revisions
@@ -289,6 +326,8 @@ export const layer = Layer.effect(
       if (outcome === "invalid") yield* degrade("provider state is invalid")
       if (outcome === "too-large")
         yield* degrade("provider state exceeds frame limit")
+      if (outcome === "accepted" || outcome === "unchanged")
+        yield* refreshStatus()
       if (outcome === "accepted") yield* restartPoll()
       return outcome === "accepted"
     })
@@ -331,14 +370,7 @@ export const layer = Layer.effect(
                   : false
               }),
             )
-          } else {
-            const current = yield* SubscriptionRef.get(statusRef)
-            yield* setStatus({
-              ...current,
-              kind: current.kind === "ready" ? "degraded" : current.kind,
-              message: "provider sample failed",
-            })
-          }
+          } else yield* degrade("provider sample failed")
           // Transfer ownership directly to the coalesced pass. The lane never
           // becomes idle between completion and that pass's claim.
           const nextTicket = yield* samplingGate.withPermits(1)(
@@ -539,7 +571,10 @@ export const layer = Layer.effect(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
         const defect = Cause.squash(cause)
-        return degrade("command worker failed").pipe(
+        return SubscriptionRef.update(statusRef, (current) => ({
+          ...current,
+          commandWorkerFailed: true,
+        })).pipe(
           Effect.andThen(
             closeCommands((_job, potentiallyIssued) =>
               potentiallyIssued
@@ -586,6 +621,7 @@ export const layer = Layer.effect(
       Effect.forkScoped,
     )
 
+    const initialObservation = yield* reserveObservation()
     const initialStatus = yield* provider.status().pipe(
       Effect.catch(() =>
         Effect.succeed<ProviderStatus>({
@@ -595,7 +631,7 @@ export const layer = Layer.effect(
         }),
       ),
     )
-    yield* setStatus(initialStatus)
+    yield* setStatus(initialStatus, initialObservation)
     yield* sample("initial")
     yield* restartPoll()
 
@@ -787,7 +823,26 @@ export const layer = Layer.effect(
     })
     return MusicSessionCoordinator.of({
       daemonInstanceId,
-      status: SubscriptionRef.changes(statusRef),
+      status: SubscriptionRef.changes(statusRef).pipe(
+        Stream.map(({ observation, commandWorkerFailed }): ProviderStatus =>
+          commandWorkerFailed
+            ? {
+                ...observation,
+                kind:
+                  observation.kind === "unavailable"
+                    ? "unavailable"
+                    : "degraded",
+                message: "command worker failed",
+              }
+            : observation,
+        ),
+        Stream.changesWith(
+          (left, right) =>
+            left.kind === right.kind &&
+            left.provider === right.provider &&
+            left.message === right.message,
+        ),
+      ),
       states: SubscriptionRef.changes(stateRef),
       current: () => SubscriptionRef.get(stateRef),
       artwork,

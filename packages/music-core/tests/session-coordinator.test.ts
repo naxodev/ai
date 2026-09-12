@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import {
   ConfigProvider,
   Context,
+  Deferred,
   Effect,
   Exit,
   Fiber,
@@ -29,7 +30,12 @@ import {
   layer as coordinatorLayer,
   reservePollDeadline,
 } from "../session/coordinator.ts"
-import { makeCoordinatorProviderFixture } from "../session/provider.ts"
+import {
+  makeCoordinatorProviderFixture,
+  ProviderError,
+  SessionProvider,
+} from "../session/provider.ts"
+import type { ProviderStatus } from "../session/protocol.ts"
 
 const track = (name: string): PlayerState["track"] => ({
   id: name,
@@ -740,6 +746,140 @@ test("provider transport failure is tagged and leaves the FIFO lane live", async
   )
 })
 
+test("successful unchanged observations recover transient health without inventing a state revision", async () => {
+  const provider = await fixture()
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coordinator = yield* MusicSessionCoordinator
+        yield* awaitSubscription(provider)
+        yield* initialSample(provider)
+        const statuses = yield* Queue.unbounded<{
+          kind: string
+          message: string
+        }>()
+        yield* coordinator.status.pipe(
+          Stream.runForEach((status) => Queue.offer(statuses, status)),
+          Effect.forkScoped,
+        )
+        expect((yield* Queue.take(statuses)).kind).toBe("ready")
+        const before = yield* coordinator.current()
+        yield* provider.failNextSample()
+        yield* invalidation(provider)
+        expect((yield* Queue.take(statuses)).message).toBe(
+          "provider sample failed",
+        )
+        yield* invalidation(provider)
+        expect((yield* Queue.take(statuses)).kind).toBe("ready")
+        expect((yield* coordinator.current()).revision).toBe(before.revision)
+        yield* provider.failNextSample()
+        yield* invalidation(provider)
+        expect((yield* Queue.take(statuses)).message).toBe(
+          "provider sample failed",
+        )
+        yield* provider.setStatus({
+          kind: "degraded",
+          provider: "nowplaying-cli",
+          message: "using nowplaying-cli",
+        })
+        yield* invalidation(provider)
+        expect(yield* Queue.take(statuses)).toMatchObject({
+          kind: "degraded",
+          provider: "nowplaying-cli",
+          message: "using nowplaying-cli",
+        })
+        yield* provider.setStatus({
+          kind: "ready",
+          provider: "media-control",
+          message: "media-control ready",
+        })
+        yield* snapshot(provider, { ...emptyPlayer(), fetched_at: 100 })
+        expect((yield* Queue.take(statuses)).kind).toBe("ready")
+      }).pipe(Effect.provide(graph(provider)), Effect.timeout("2 seconds")),
+    ),
+  )
+})
+
+for (const lateResult of ["success", "failure"] as const) {
+  test(`late status ${lateResult} cannot replace a newer invalid observation; later sampling can recover`, async () => {
+    const provider = await fixture()
+    const control = await Effect.runPromise(
+      Effect.gen(function* () {
+        return {
+          holdNext: yield* Ref.make(false),
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        }
+      }),
+    )
+    const layer = Layer.effect(
+      SessionProvider,
+      Effect.gen(function* () {
+        const original = yield* SessionProvider
+        return SessionProvider.of({
+          ...original,
+          status: () =>
+            Effect.gen(function* () {
+              const captured = yield* original.status()
+              if (yield* Ref.getAndSet(control.holdNext, false)) {
+                yield* Deferred.succeed(control.started, undefined)
+                yield* Deferred.await(control.release)
+                if (lateResult === "failure")
+                  return yield* Effect.fail(
+                    new ProviderError({
+                      operation: "status",
+                      message: "delayed status failure",
+                      cause: {},
+                    }),
+                  )
+              }
+              return captured
+            }),
+        })
+      }),
+    ).pipe(Layer.provide(provider.layer))
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* MusicSessionCoordinator
+          yield* awaitSubscription(provider)
+          yield* initialSample(provider)
+          const statuses = yield* Queue.unbounded<ProviderStatus>()
+          yield* coordinator.status.pipe(
+            Stream.runForEach((status) => Queue.offer(statuses, status)),
+            Effect.forkScoped,
+          )
+          expect((yield* Queue.take(statuses)).kind).toBe("ready")
+          const before = yield* coordinator.current()
+          yield* Ref.set(control.holdNext, true)
+          yield* invalidation(provider)
+          yield* Deferred.await(control.started)
+          yield* snapshot(provider, { ...before.state, progress_ms: -1 })
+          yield* Queue.take(provider.eventConsumed)
+          const invalid = yield* Queue.take(statuses)
+          expect(invalid.message).toBe("provider state is invalid")
+          expect((yield* coordinator.current()).revision).toBe(before.revision)
+          yield* Deferred.succeed(control.release, undefined)
+          yield* Queue.take(provider.sampleStarts)
+          // A second sample starts only after the held status result was applied or discarded.
+          yield* provider.blockSample
+          yield* invalidation(provider)
+          yield* Queue.take(provider.sampleStarts)
+          expect(
+            yield* coordinator.status.pipe(Stream.take(1), Stream.runCollect),
+          ).toEqual([invalid])
+          yield* provider.releaseSample
+          expect((yield* Queue.take(statuses)).kind).toBe("ready")
+          expect((yield* coordinator.current()).revision).toBe(before.revision)
+        }).pipe(
+          Effect.provide(graph({ ...provider, layer })),
+          Effect.timeout("2 seconds"),
+        ),
+      ),
+    )
+  })
+}
+
 test("command worker defects close the lane and settle active, queued, and future submissions", async () => {
   const provider = await fixture()
   await Effect.runPromise(
@@ -789,6 +929,20 @@ test("command worker defects close the lane and settle active, queued, and futur
           "DISPOSED",
         )
         expect(yield* Ref.get(provider.calls)).toEqual([{ action: "play" }])
+        const updates = yield* subscribeStates(coordinator)
+        yield* provider.setState({ ...emptyPlayer(), fetched_at: 99 })
+        yield* invalidation(provider)
+        yield* Queue.take(updates)
+        yield* Queue.take(provider.sampleStarts)
+        // The next pass cannot start until the successful pass commits health.
+        yield* provider.blockSample
+        yield* invalidation(provider)
+        yield* Queue.take(provider.sampleStarts)
+        expect(
+          yield* coordinator.status.pipe(Stream.take(1), Stream.runCollect),
+        ).toMatchObject([
+          { kind: "degraded", message: "command worker failed" },
+        ])
       }).pipe(Effect.provide(graph(provider, 2))),
     ),
   )

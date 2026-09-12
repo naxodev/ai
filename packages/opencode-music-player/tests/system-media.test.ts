@@ -137,6 +137,45 @@ class FakeClient implements ReconnectingMusicSessionClient {
 const flush = () => Promise.resolve().then(() => Promise.resolve())
 
 describe("session media facade", () => {
+  test("provider status recovery clears the host warning and fallback remains visible", async () => {
+    const client = new FakeClient()
+    const media = createSessionSystemMedia({ createClient: async () => client })
+    const events: unknown[] = []
+    media.subscribe((event) => events.push(event))
+    await media.player()
+    for (const status of [
+      {
+        kind: "degraded",
+        provider: "media-control",
+        message: "provider sample failed",
+      },
+      {
+        kind: "ready",
+        provider: "media-control",
+        message: "media-control ready",
+      },
+      {
+        kind: "degraded",
+        provider: "nowplaying-cli",
+        message: "using nowplaying-cli",
+      },
+      {
+        kind: "degraded",
+        provider: "nowplaying-cli",
+        message: "command worker failed",
+      },
+    ] satisfies ProviderStatus[]) {
+      client.emitStatus(status)
+      expect(events.at(-1)).toEqual({
+        type: "lifecycle",
+        source: "provider",
+        message: status.kind === "ready" ? null : status.message,
+      })
+    }
+    expect(client.calls).toEqual([])
+    await media.dispose()
+  })
+
   test("disposal aborts cooperative acquisition without publishing a failure", async () => {
     let signal: AbortSignal | undefined
     let aborted = 0

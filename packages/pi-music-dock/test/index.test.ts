@@ -598,6 +598,46 @@ test("replay, replacement, reconnect, provider feedback, and terminal state stay
 	await dock.shutdown();
 });
 
+test("provider recovery rearms warnings while fallback and command failure remain visible", async () => {
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	const failure: ProviderStatus = {
+		kind: "degraded",
+		provider: "media-control",
+		message: "provider sample failed",
+	};
+	client.emitStatus(failure);
+	client.emitStatus(failure);
+	expect(dock.notifications).toEqual([failure.message]);
+	client.emitStatus({
+		kind: "ready",
+		provider: "media-control",
+		message: "media-control ready",
+	});
+	expect(dock.notifications).toEqual([failure.message]);
+	client.emitStatus(failure);
+	client.emitStatus({
+		kind: "degraded",
+		provider: "nowplaying-cli",
+		message: "using nowplaying-cli",
+	});
+	client.emitStatus({
+		kind: "degraded",
+		provider: "nowplaying-cli",
+		message: "command worker failed",
+	});
+	expect(dock.notifications).toEqual([
+		failure.message,
+		failure.message,
+		"using nowplaying-cli",
+		"command worker failed",
+	]);
+	expect(client.calls).toEqual([]);
+	await dock.shutdown();
+});
+
 test("commands and shortcuts delegate immediately once through the client", async () => {
 	const client = new FakeClient();
 	const gate = deferred<void>();

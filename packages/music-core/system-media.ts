@@ -14,7 +14,11 @@ import {
   type CommandResult,
   type LineStreamStarter,
 } from "./run.ts"
-import type { ArtworkIdentity, ArtworkResult } from "./session/protocol.ts"
+import type {
+  ArtworkIdentity,
+  ArtworkResult,
+  ProviderStatus,
+} from "./session/protocol.ts"
 import {
   emptyPlayer,
   type MusicBackend,
@@ -264,6 +268,8 @@ async function playerViaMediaControl(
   } catch {
     return null
   }
+  if (data !== null && (typeof data !== "object" || Array.isArray(data)))
+    return null
   return decodeMediaControlSample(data, clock, now())
 }
 
@@ -286,14 +292,15 @@ async function playerViaNowPlayingCli(
     "isPlaying",
   ])
   const arrival = now()
-  if (!r.ok) return idleState("nowplaying-cli error", clock, arrival)
+  if (!r.ok) return null
 
   let data: Record<string, unknown>
   try {
     data = JSON.parse(r.out) as Record<string, unknown>
   } catch {
-    return idleState("nowplaying-cli error", clock, arrival)
+    return null
   }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null
 
   const title =
     data.title != null && data.title !== "null" ? String(data.title) : ""
@@ -392,6 +399,8 @@ function isDataEnvelope(
 
 /** One raw `media-control stream` attempt. It deliberately owns no retry timer. */
 export type SystemMediaAttemptAdapter = MusicBackend & {
+  /** Health of the latest observation, including the source used for fallback. */
+  status?: () => ProviderStatus
   subscribeAttempt?: (listener: MusicChangeListener) => MusicChangeDisposer
   nativeArtwork?: (
     identity: ArtworkIdentity,
@@ -613,24 +622,75 @@ export function createSystemMedia(
   const clock = createPlaybackClock()
 
   const kind = deps.detectBackend()
-  const backend: MusicBackend = {
+  let observationStatus: ProviderStatus = {
+    kind: "unavailable",
+    provider: null,
+    message: "awaiting provider observation",
+  }
+  const observed = (provider: "media-control" | "nowplaying-cli") => {
+    observationStatus =
+      provider === "media-control"
+        ? { kind: "ready", provider, message: "media-control ready" }
+        : {
+            kind: "degraded",
+            provider,
+            message: "using nowplaying-cli; limited playback state",
+          }
+  }
+  const failedObservation = () => {
+    observationStatus = {
+      kind: "unavailable",
+      provider: null,
+      message: "provider sample failed",
+    }
+  }
+  const backend: SystemMediaAttemptAdapter = {
+    status: () => observationStatus,
     id: "system",
     label: "System media",
     remoteControl: true,
     authenticated: () => true,
 
     async player(): Promise<PlayerState | null> {
-      const kind = deps.detectBackend()
-      if (kind === "media-control") {
-        const player = await playerViaMediaControl(deps.run, clock, deps.now)
-        if (player) return player
-        if (deps.hasNowPlayingCli())
-          return playerViaNowPlayingCli(deps.run, clock, deps.now)
-        return idleState("media-control error", clock, deps.now())
+      try {
+        const kind = deps.detectBackend()
+        if (kind === "media-control") {
+          const player = await playerViaMediaControl(deps.run, clock, deps.now)
+          if (player) {
+            observed("media-control")
+            return player
+          }
+          if (deps.hasNowPlayingCli()) {
+            const fallback = await playerViaNowPlayingCli(
+              deps.run,
+              clock,
+              deps.now,
+            )
+            if (fallback) observed("nowplaying-cli")
+            else failedObservation()
+            return (
+              fallback ?? idleState("nowplaying-cli error", clock, deps.now())
+            )
+          }
+          failedObservation()
+          return idleState("media-control error", clock, deps.now())
+        }
+        if (kind === "nowplaying-cli") {
+          const player = await playerViaNowPlayingCli(deps.run, clock, deps.now)
+          if (player) observed("nowplaying-cli")
+          else failedObservation()
+          return player ?? idleState("nowplaying-cli error", clock, deps.now())
+        }
+        observationStatus = {
+          kind: "unavailable",
+          provider: null,
+          message: "install media-control or nowplaying-cli",
+        }
+        return idleState("install media-control", clock, deps.now())
+      } catch (error) {
+        failedObservation()
+        throw error
       }
-      if (kind === "nowplaying-cli")
-        return playerViaNowPlayingCli(deps.run, clock, deps.now)
-      return idleState("install media-control", clock, deps.now())
     },
 
     async play() {
@@ -746,7 +806,14 @@ export function createSystemMedia(
     // The daemon uses this unsupervised seam. It shares this exact backend's
     // playback clock with polling and transport; legacy hosts keep `subscribe`.
     ;(backend as SystemMediaAttemptAdapter).subscribeAttempt = (listener) =>
-      subscribeMediaControlAttempt(listener, deps, clock)
+      subscribeMediaControlAttempt(
+        (event) => {
+          if (event?.type === "snapshot") observed("media-control")
+          listener(event)
+        },
+        deps,
+        clock,
+      )
   }
   return backend
 }
