@@ -126,7 +126,9 @@ export async function checkRegistryConsumer(
       [manifest.name]: `file:${join(root, filename)}`,
     }
     // Pin the supported Pi host, but let its packed extension resolve music-core.
-    for (const peer of Object.keys(manifest.peerDependencies ?? {})) {
+    for (const peer of host === "pi-music-dock"
+      ? Object.keys(manifest.peerDependencies ?? {})
+      : []) {
       const pin = manifest.devDependencies?.[peer]
       if (!pin) throw new Error(`Missing tested peer pin: ${peer}`)
       dependencies[peer] = pin
@@ -157,7 +159,9 @@ export async function checkRegistryConsumer(
     if (packedManifest.dependencies[CORE] !== range)
       throw new Error("Packed core dependency range changed")
     const entry =
-      host === "pi-music-dock" ? "extensions/music-dock/index.ts" : "index.tsx"
+      host === "pi-music-dock"
+        ? "extensions/music-dock/index.ts"
+        : "dist/index.js"
     // Resolve from the installed host, including any nested dependency installation.
     const probe = `import { realpathSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -170,8 +174,7 @@ const manifest = JSON.parse(readFileSync(join(coreRoot, "package.json"), "utf8")
 if (manifest.name !== ${JSON.stringify(CORE)} || !Bun.semver.satisfies(manifest.version, ${JSON.stringify(range)})) throw new Error("Installed core violates declared range")
 ${
   host === "opencode-music-player"
-    ? `import plugin from ${JSON.stringify(join(installedHost, entry))}
-if (plugin.id !== "music-player" || typeof plugin.setup !== "function") throw new Error("Invalid music plugin")`
+    ? `if (!await Bun.file(hostEntry).exists()) throw new Error("Packed OpenCode entry is missing")`
     : `import extension from ${JSON.stringify(join(installedHost, entry))}
 const commands = []
 extension({ on() {}, registerShortcut() {}, registerCommand(name) { commands.push(name) } })
@@ -194,7 +197,7 @@ console.log(JSON.stringify({ version: manifest.version, coreEntry }))`
     )
     if (path.startsWith("..") || isAbsolute(path))
       throw new Error("Core resolved outside isolated consumer")
-    return `${host}: registry ${CORE}@${result.version} satisfies ${range}; host loaded from isolated tarball; core=${result.coreEntry}`
+    return `${host}: registry ${CORE}@${result.version} satisfies ${range}; packed host entry verified; core=${result.coreEntry}`
   } finally {
     await rm(root, { recursive: true, force: true })
   }

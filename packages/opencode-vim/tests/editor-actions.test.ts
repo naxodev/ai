@@ -143,6 +143,58 @@ function run(
 }
 
 describe("editor action adapter", () => {
+  test("reloading visual mode restores a selection that survives the next host reconciliation", async () => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 3 })
+    const editor = new TextareaRenderable(renderer, {
+      id: "reload-editor",
+      initialValue: "abc",
+    })
+    const runtime = createVimState("visual")
+    runtime.visual = { kind: "character", anchor: 0, active: 0 }
+    try {
+      syncVisualState(editor, runtime, mutableEffects(runtime), true)
+      syncVisualState(editor, runtime, mutableEffects(runtime), false)
+      expect(runtime.mode).toBe("visual")
+      expect(editor.getSelectedText()).toBe("a")
+    } finally {
+      editor.destroy()
+      renderer.destroy()
+    }
+  })
+
+  test.each([
+    ["$", "", "one two"],
+    ["w", " two", "one"],
+    ["e", " two", "one"],
+  ] as const)(
+    "change-%s keeps its selected text until the edit commits",
+    async (key, remaining, removed) => {
+      const { renderer } = await createTestRenderer({ width: 20, height: 3 })
+      const editor = new TextareaRenderable(renderer, {
+        id: "change-editor",
+        initialValue: "one two",
+      })
+      const runtime = createVimState("normal")
+      const register = { value: "", linewise: false }
+      try {
+        runActions(
+          editor,
+          [{ type: "operator-motion", operator: "change", key, count: 1 }],
+          register,
+          runtime,
+          createVimHistory(editor.plainText),
+          mutableEffects(runtime),
+        )
+        expect(editor.plainText).toBe(remaining)
+        expect(register.value).toBe(removed)
+        expect(runtime.mode).toBe("insert")
+      } finally {
+        editor.destroy()
+        renderer.destroy()
+      }
+    },
+  )
+
   test("deletes a complete emoji selected through the pinned EditBufferRenderable", async () => {
     const { renderer } = await createTestRenderer({ width: 20, height: 3 })
     const editor = new TextareaRenderable(renderer, {

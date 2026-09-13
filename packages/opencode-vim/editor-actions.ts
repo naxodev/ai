@@ -211,8 +211,9 @@ function selectionAnchor(editor: VimEditor) {
 }
 
 function selectTo(editor: VimEditor, target: number) {
-  setGraphemeInclusiveSelection(editor, selectionAnchor(editor), target)
+  const anchor = selectionAnchor(editor)
   editor.cursorOffset = target
+  setGraphemeInclusiveSelection(editor, anchor, target)
 }
 
 function renderVisualEndpoints(
@@ -221,6 +222,8 @@ function renderVisualEndpoints(
   anchor: number,
   active: number,
 ) {
+  // OpenTUI clears selection when assigning cursorOffset; select afterward.
+  editor.cursorOffset = active
   if (kind === "line") {
     const first = Math.min(
       lineBounds(editor.plainText, anchor).start,
@@ -232,7 +235,6 @@ function renderVisualEndpoints(
     )
     editor.setSelection(first, lineRange(editor.plainText, last, 1).end)
   } else setGraphemeInclusiveSelection(editor, anchor, active)
-  editor.cursorOffset = active
 }
 
 function renderedVisualRange(
@@ -871,7 +873,7 @@ function move(
     const target =
       key === "^" ? firstNonblank(editor.plainText, bounds.start) : bounds.start
     if (select) selectTo(editor, target)
-    editor.cursorOffset = target
+    else editor.cursorOffset = target
   }
   if (key === "$") {
     const row = Math.min(
@@ -886,7 +888,7 @@ function move(
       bounds.start,
     )
     if (select) selectTo(editor, target)
-    editor.cursorOffset = target
+    else editor.cursorOffset = target
   }
   if (key === "G" || key === "gg") {
     const target = firstNonblank(
@@ -894,12 +896,12 @@ function move(
       rowStart(editor.plainText, destinationRow(editor, key, count)),
     )
     if (select) selectTo(editor, target)
-    editor.cursorOffset = target
+    else editor.cursorOffset = target
   }
   if (key === "e") {
     const target = endOfWord(editor.plainText, editor.cursorOffset, count)
     if (select) selectTo(editor, target)
-    editor.cursorOffset = target
+    else editor.cursorOffset = target
   }
   if (key === "%") {
     const target = percentage
@@ -1122,8 +1124,8 @@ function applyOperatorMotion(
     !/\s/u.test(editor.plainText[editor.cursorOffset] ?? "")
   if (changeWord) {
     const target = endOfWord(editor.plainText, editor.cursorOffset, count, true)
-    setGraphemeInclusiveSelection(editor, original, target)
     editor.cursorOffset = target
+    setGraphemeInclusiveSelection(editor, original, target)
   } else move(editor, key, count, true, percentage)
   if (
     !changeWord &&

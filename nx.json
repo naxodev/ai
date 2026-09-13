@@ -17,6 +17,9 @@
       "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/scripts/bounded-process.ts",
       "{workspaceRoot}/scripts/music-release.ts",
+      "{workspaceRoot}/scripts/opencode-compatibility.*",
+      "{workspaceRoot}/scripts/opencode-build.ts",
+      "{workspaceRoot}/scripts/packed-registry.ts",
       "{workspaceRoot}/.github/workflows/*.yml",
       "{workspaceRoot}/.gitattributes",
       "{workspaceRoot}/.editorconfig",
@@ -77,7 +80,7 @@
     },
     "version": {
       "useLegacyVersioning": false,
-      "preVersionCommand": "bun run security:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1",
+      "preVersionCommand": "bun run security:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers",
       "conventionalCommits": true,
       "updateDependents": "auto",
       "fallbackCurrentVersionResolver": "disk",
@@ -97,8 +100,11 @@
       "commitMessageFormat": "conventional"
     },
     "conventionalCommits": {
-      "docs": {
-        "semverBump": "patch"
+      "useCommitScope": false,
+      "types": {
+        "docs": {
+          "semverBump": "patch"
+        }
       }
     },
     "releaseTag": {

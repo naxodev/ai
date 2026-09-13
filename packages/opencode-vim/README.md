@@ -3,12 +3,12 @@
 Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 
 > [!IMPORTANT]
-> This package is tested with exactly `opencode2 v0.0.0-next-17444` and matching `@opencode-ai/plugin` and `@opencode-ai/theme` packages. The OpenCode V2 TUI plugin API is beta and may change before its stable release.
+> This source targets stable `opencode v2.0.3`. It requires the matching `@opencode/plugin` and `@opencode/theme` compatibility set. The previous beta host is unsupported.
 
 ## Requirements
 
-- OpenCode 2 `v0.0.0-next-17444`
-- Bun 1.3 or later, which OpenCode uses to load TypeScript plugin packages
+- OpenCode `v2.0.3`
+- The Bun-based OpenCode runtime; Bun 1.3.7 for workspace development
 - Neovim, required only for development parity tests
 - A supported clipboard executable for system clipboard yanks: macOS `pbcopy`,
   Wayland `wl-copy`, X11 `xclip` or `xsel`, or Windows PowerShell
@@ -49,9 +49,9 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 
 ## Compatibility
 
-Version `0.1.0` supports only OpenCode 2 `v0.0.0-next-17444`. Its TUI plugin API is not stable, so newer or older OpenCode builds may not load this package.
+The supported host is exactly OpenCode `2.0.3`, with OpenTUI core and Solid `0.5.10` and SolidJS `1.9.15`. See the [compatibility contract](../../docs/opencode-compatibility.md) for migration and release requirements.
 
-The package intentionally ships TypeScript and TSX source because this OpenCode release loads TUI plugins with Bun. It is not a precompiled JavaScript library and does not support direct loading by Node.js.
+The package ships precompiled JavaScript for the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. The plugin API and OpenTUI are optional peers. Solid is required from the host but omitted from npm peer metadata because of an upstream peer-version conflict. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
 
 ## Key Reference
 
@@ -135,7 +135,9 @@ bun install --frozen-lockfile
 bun run check
 ```
 
-The workspace check verifies formatting and types, runs unit and headless Neovim parity tests, verifies the tarball, and imports the installed tarball from an isolated consumer. The parity suites compare text, cursor, mode, and unnamed register semantics for implemented Vim commands. OpenCode host mappings are outside this contract.
+The workspace check verifies formatting and types, runs unit and headless Neovim parity tests, and verifies the tarball. Workspace tests check exports with the exact development dependencies. Real-host smokes cover package-name installation from an empty cache and plugin reload without installed host libraries. The isolated production-consumer audit requires no installed host libraries or consumer overrides. The parity suites compare text, cursor, mode, and unnamed register semantics for implemented Vim commands. OpenCode host mappings are outside the parity contract.
+
+For local host testing, run `bun run --cwd packages/opencode-vim build` from the workspace root. Configure the absolute `packages/opencode-vim/dist` directory in `cli.json`. Rebuild after source edits; the host watches the generated entrypoints. `npm pack` runs the build automatically.
 
 Buffer jumps intentionally land on the first nonblank character. Headless Neovim's default `nostartofline` setting preserves the desired column for `gg` and `G`. The parity suite records both exact outcomes when those columns differ.
 

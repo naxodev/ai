@@ -1,4 +1,4 @@
-import type { Plugin } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 
 type Context = Plugin.Context
 export type ExCommand = ReturnType<Context["keymap"]["commands"]>[number]

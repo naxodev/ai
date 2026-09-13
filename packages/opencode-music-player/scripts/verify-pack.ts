@@ -1,20 +1,17 @@
+import { assertOpenCodeCompatibility } from "../../../scripts/opencode-compatibility.ts"
+
+assertOpenCodeCompatibility([
+  await Bun.file(new URL("../package.json", import.meta.url)).json(),
+])
+
 const expectedFiles = new Set([
   "CHANGELOG.md",
   "LICENSE",
   "README.md",
   "SUPPORT.md",
-  "artwork-placement.ts",
-  "artwork.ts",
-  "artwork.tsx",
-  "index.tsx",
-  "kitty-graphics.ts",
+  "dist/index.js",
+  "dist/tui.js",
   "package.json",
-  "system-media.ts",
-  "tmux-offset.ts",
-  "tui.tsx",
-  "types.ts",
-  "ui.tsx",
-  "waveform.tsx",
 ])
 
 const process = Bun.spawn(["npm", "pack", "--dry-run", "--json"], {

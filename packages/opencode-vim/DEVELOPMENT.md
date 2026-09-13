@@ -1,18 +1,19 @@
 # OpenCode V2 API Findings
 
-These findings target `opencode2 v0.0.0-next-17444`. Recheck them when updating
+These findings target stable `opencode v2.0.3`. Recheck them when updating
 the pinned OpenCode dependencies.
 
 ## Package Loading
 
 - TUI plugins are configured through the global `~/.config/opencode/cli.json`.
-- A package must expose `./tui`. A root export alone imports in a Bun consumer
-  but is not a valid TUI package entrypoint.
-- The npm `./tui` export resolves to `tui.tsx`. For local development on this
-  release, configure the absolute `tui.tsx` path because a configured package
-  directory probes a literal `tui` path before package export resolution.
-- OpenCode loads the TSX source entrypoint directly. The packed-consumer smoke
-  test verifies the same export after an isolated installation.
+- A package must expose `./tui`. Workspace tests check the root export with
+  exact development dependencies; standalone consumer loading is unsupported.
+- The npm `./tui` export resolves to `dist/tui.js`. Build and configure the absolute
+  `dist` directory for local development. The stable local loader resolves the
+  `tui` basename rather than package exports and ignores single-file paths.
+- JSX is precompiled because the host cannot resolve a source JSX pragma without
+  an installed OpenTUI package. Every package import remains external so the host
+  supplies one renderer and Solid runtime. Packed smokes verify name loading and reload.
 
 ## EX Command Bridge
 
@@ -31,6 +32,8 @@ the pinned OpenCode dependencies.
 ## Insert Transactions
 
 - `EditBufferRenderable` exposes public text, cursor, and selection state.
+- OpenTUI `0.5.10` clears selection when assigning `cursorOffset`. Move the
+  cursor before setting selection, including visual remount and operator motions.
 - It also exposes one `onContentChange` callback property, not a composable event
   subscription. Replacing that callback would risk conflicting with the host.
 - Insert transactions should therefore snapshot public editor state on entry

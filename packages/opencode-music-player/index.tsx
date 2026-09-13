@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { Plugin } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode/plugin/tui"
 import { createSessionSystemMedia, openNowPlayingApp } from "./system-media.ts"
 import {
   isMac,
