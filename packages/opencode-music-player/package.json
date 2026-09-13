@@ -27,22 +27,12 @@
     "media-control"
   ],
   "exports": {
-    ".": "./index.tsx",
-    "./tui": "./tui.tsx"
+    ".": "./dist/index.js",
+    "./tui": "./dist/tui.js"
   },
   "files": [
     "CHANGELOG.md",
-    "artwork-placement.ts",
-    "artwork.ts",
-    "artwork.tsx",
-    "index.tsx",
-    "tui.tsx",
-    "kitty-graphics.ts",
-    "ui.tsx",
-    "system-media.ts",
-    "tmux-offset.ts",
-    "types.ts",
-    "waveform.tsx",
+    "dist",
     "SUPPORT.md",
     "LICENSE",
     "README.md"
@@ -58,6 +48,8 @@
     "darwin"
   ],
   "scripts": {
+    "build": "bun run scripts/build.ts",
+    "prepack": "bun run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
@@ -69,17 +61,33 @@
   },
   "dependencies": {
     "@naxodev/music-core": "^0.1.4",
-    "@opencode-ai/plugin": "0.0.0-next-17444",
-    "@opentui/core": "0.5.4",
-    "@opentui/solid": "0.5.4",
-    "pngjs": "^7.0.0",
-    "solid-js": "1.9.15"
+    "pngjs": "^7.0.0"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "2.0.3",
+    "@opentui/core": "0.5.10",
+    "@opentui/solid": "0.5.10"
   },
   "devDependencies": {
-    "@opencode-ai/theme": "0.0.0",
+    "@opencode/plugin": "2.0.3",
+    "@opentui/core": "0.5.10",
+    "@opentui/solid": "0.5.10",
+    "solid-js": "1.9.15",
+    "@opencode/theme": "2.0.3",
     "@types/bun": "^1.3.14",
     "@types/pngjs": "^6.0.5",
     "prettier": "3.9.6",
     "typescript": "7.0.2"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    }
   }
 }

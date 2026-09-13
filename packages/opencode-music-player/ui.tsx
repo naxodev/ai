@@ -7,7 +7,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js"
-import type { Plugin } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 import {
   MouseButton,
   type BoxRenderable,

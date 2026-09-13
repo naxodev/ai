@@ -1,20 +1,18 @@
+import { assertOpenCodeCompatibility } from "../../../scripts/opencode-compatibility.ts"
+
 const expectedFiles = new Set([
   "LICENSE",
   "LICENSE.vimcode",
   "README.md",
-  "clipboard.ts",
-  "editor-actions.ts",
-  "engine.ts",
-  "ex-command.ts",
-  "host-keymap.ts",
-  "index.tsx",
+  "dist/index.js",
+  "dist/tui.js",
   "package.json",
-  "tui.tsx",
 ])
 
 const manifest = (await Bun.file(
   new URL("../package.json", import.meta.url),
 ).json()) as { name: string; version: string }
+assertOpenCodeCompatibility([manifest])
 
 const packed = Bun.spawnSync(["npm", "pack", "--dry-run", "--json"], {
   stdout: "pipe",

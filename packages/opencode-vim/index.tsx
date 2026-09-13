@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { Plugin } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode/plugin/tui"
 import type { EditBufferRenderable, TextRenderable } from "@opentui/core"
 import { createEffect, createSignal, onCleanup, untrack } from "solid-js"
 import {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ReleaseClient } from "nx/release"
 import nx from "../nx.json"
+import workspace from "../package.json"
 
 const temporaryWorkspaces: string[] = []
 
@@ -14,6 +15,52 @@ afterEach(async () => {
 })
 
 describe("release policy", () => {
+  test("pack gates cannot delete shared build output while another target archives it", async () => {
+    const [publish, ci, contributing] = await Promise.all([
+      readFile(
+        new URL("../.github/workflows/publish.yml", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+      readFile(new URL("../CONTRIBUTING.md", import.meta.url), "utf8"),
+    ])
+    const workflowCommands = `${publish}\n${ci}`
+      .split("\n")
+      .filter((line) => /run: bunx nx (run-many|affected)\b/.test(line))
+    const documentedCommands = [
+      ...contributing.matchAll(/`(bunx nx (?:run-many|affected)[^`]+)`/g),
+    ].map((match) => match[1]!)
+    expect(workflowCommands.length).toBeGreaterThan(0)
+    expect(documentedCommands.length).toBeGreaterThan(0)
+    const commands = [
+      workspace.scripts.check,
+      nx.release.version.preVersionCommand,
+      ...workflowCommands,
+      ...documentedCommands,
+    ]
+    for (const command of commands) {
+      // Separate shell stages finish before the next stage can pack the same project.
+      for (const stage of command.split("&&")) {
+        if (!/\bnx (run-many|affected)\b/.test(stage)) continue
+        const targets =
+          stage
+            .match(/(?:-t|--targets?)\s+(.+?)(?=\s+--|$)/)?.[1]
+            ?.trim()
+            .split(/[\s,]+/) ?? []
+        expect(targets.length, stage).toBeGreaterThan(0)
+        const writers = targets.filter((target) =>
+          ["build", "package:check", "smoke"].includes(target),
+        )
+        // Smokes can also pack a shared dependency such as music-core.
+        if (writers.length > 1 || targets.includes("smoke"))
+          expect(
+            stage,
+            "Concurrent pack targets can remove dist before npm reads it",
+          ).toMatch(/(?:^|\s)--parallel(?:=|\s+)1(?:\s|$)/)
+      }
+    }
+  })
+
   test("a filtered compatible Apnea patch versions only Apnea", async () => {
     const config = structuredClone(nx.release) as ConstructorParameters<
       typeof ReleaseClient

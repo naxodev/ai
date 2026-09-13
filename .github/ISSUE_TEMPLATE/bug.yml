@@ -53,9 +53,9 @@ body:
     id: runtime-versions
     attributes:
       label: Host and runtime versions
-      description: Include relevant `opencode2`, Pi, Bun, Node.js, Herdr, agent CLI, and VCS versions.
+      description: Include relevant `opencode`, Pi, Bun, Node.js, Herdr, agent CLI, and VCS versions.
       placeholder: |
-        opencode2: not applicable
+        opencode: not applicable
         Pi: 0.84.0
         Bun: 1.3.7
         Node.js: 22.19.0

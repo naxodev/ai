@@ -1,6 +1,8 @@
 import {
+  cp,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rename,
   rm,
@@ -9,18 +11,20 @@ import {
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import {
+  checkOpenCodeCompatibility,
+  compatibility,
+  hostDependencies,
+} from "../../../scripts/opencode-compatibility.ts"
+import { packedRegistry } from "../../../scripts/packed-registry.ts"
 
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url))
 const coreDirectory = fileURLToPath(
   new URL("../../music-core/", import.meta.url),
 )
-const manifest = (await Bun.file(
-  join(packageDirectory, "package.json"),
-).json()) as {
-  dependencies: { "@opencode-ai/plugin": string }
-}
-const openCodePin = manifest.dependencies["@opencode-ai/plugin"]
-const expectedOpenCode = `opencode2 v${openCodePin}`
+await checkOpenCodeCompatibility()
+const openCodePin = compatibility.host.version
+const expectedOpenCode = `${compatibility.host.binary} v${openCodePin}`
 const root = await mkdtemp(join(tmpdir(), "opencode-music-player-smoke-"))
 const socket = `opencode-music-player-smoke-${process.pid}-${crypto.randomUUID()}`
 const session = "smoke"
@@ -100,6 +104,7 @@ const terminateTmux = async () => {
 }
 
 let workFailure: unknown
+let registry: Awaited<ReturnType<typeof packedRegistry>> | undefined
 let cleanupFailure: unknown
 let summary:
   | {
@@ -118,42 +123,48 @@ try {
       dependencies: {
         "@naxodev/music-core": `file:${coreArchive}`,
         "@naxodev/opencode-music-player": `file:${archive}`,
-        "@opencode-ai/cli": openCodePin,
+        [compatibility.host.package]: openCodePin,
       },
-      overrides: {
-        "@naxodev/music-core": `file:${coreArchive}`,
-      },
-      // The real CLI alone needs its platform-executable installation hook.
-      trustedDependencies: ["@opencode-ai/cli"],
     }),
   )
 
-  const install = Bun.spawnSync(["bun", "install", "--silent"], {
-    cwd: root,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const install = Bun.spawnSync(
+    ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"],
+    {
+      cwd: root,
+      timeout: 180_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
   if (!install.success)
     throw new Error(`package install failed: ${output(install)}`)
+
+  // Execute only the exact CLI's platform-executable installation hook.
+  const cliHook = Bun.spawnSync(
+    [
+      "node",
+      join(root, "node_modules", compatibility.host.package, "postinstall.mjs"),
+    ],
+    { cwd: root, timeout: 30_000, stdout: "pipe", stderr: "pipe" },
+  )
+  if (!cliHook.success)
+    throw new Error(`CLI installation hook failed: ${output(cliHook)}`)
 
   const nodeModules = await realpath(join(root, "node_modules"))
   const installedManifest = async (name: string) =>
     (await Bun.file(join(nodeModules, name, "package.json")).json()) as {
       version?: string
     }
-  const [cliManifest, pluginManifest] = await Promise.all([
-    installedManifest("@opencode-ai/cli"),
-    installedManifest("@opencode-ai/plugin"),
-  ])
-  if (
-    cliManifest.version !== openCodePin ||
-    pluginManifest.version !== openCodePin
-  )
+  const cliManifest = await installedManifest(compatibility.host.package)
+  if (cliManifest.version !== openCodePin)
     throw new Error(
-      `installed OpenCode versions do not match ${openCodePin}: cli=${cliManifest.version}, plugin=${pluginManifest.version}`,
+      `installed OpenCode version does not match ${openCodePin}: cli=${cliManifest.version}`,
     )
 
-  const openCodeBinary = await realpath(join(nodeModules, ".bin", "opencode2"))
+  const openCodeBinary = await realpath(
+    join(nodeModules, ".bin", compatibility.host.binary),
+  )
   if (!inside(openCodeBinary, nodeModules))
     throw new Error(
       `installed OpenCode binary escaped temporary install: ${openCodeBinary}`,
@@ -172,16 +183,18 @@ try {
     [
       "bun",
       "-e",
-      `const plugin = (await import("@naxodev/opencode-music-player")).default
-const tui = (await import("@naxodev/opencode-music-player/tui")).default
-if (plugin.id !== "music-player" || typeof plugin.setup !== "function" || tui !== plugin) throw new Error("invalid plugin export")
-await import("@naxodev/music-core")
-console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-music-player"), core: import.meta.resolve("@naxodev/music-core") }))`,
+      `console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-music-player"), core: import.meta.resolve("@naxodev/music-core") }))`,
     ],
     { cwd: root, stdout: "pipe", stderr: "pipe" },
   )
   if (!resolved.success)
-    throw new Error(`isolated package import failed: ${output(resolved)}`)
+    throw new Error(`isolated package resolution failed: ${output(resolved)}`)
+  for (const name of Object.keys(hostDependencies)) {
+    if (await Bun.file(join(nodeModules, name, "package.json")).exists())
+      throw new Error(
+        `Host-provided ${name} must not be installed in the smoke consumer`,
+      )
+  }
   const paths = JSON.parse(resolved.stdout.toString()) as {
     plugin: string
     core: string
@@ -205,12 +218,11 @@ console.log(JSON.stringify({ plugin: import.meta.resolve("@naxodev/opencode-musi
       )
 
   const packageDir = join(nodeModules, "@naxodev", "opencode-music-player")
-  const packageEntry = join(packageDir, "index.tsx")
-  const tuiEntry = join(packageDir, "tui.tsx")
-  const originalEntry = join(packageDir, "index.original.tsx")
+  const packageEntry = join(packageDir, "dist", "index.js")
+  const originalEntry = join(packageDir, "dist", "index.original.js")
   await rename(packageEntry, originalEntry)
   const fixtureSource = `import { appendFileSync, existsSync } from "node:fs"
-import { createController, createMusicPlayerPlugin } from "./index.original.tsx"
+import { createController, createMusicPlayerPlugin } from "./index.original.js"
 
 const track = {
   uri: "system:smoke-track",
@@ -378,11 +390,27 @@ export default {
 `
   await writeFile(packageEntry, fixtureSource)
 
-  const config = join(root, "config")
-  await mkdir(config)
+  // Keep the existing deterministic media boundary while testing npm resolution.
+  const registryRoot = join(root, "registry")
+  await mkdir(registryRoot)
+  await cp(packageDir, join(registryRoot, "package"), {
+    recursive: true,
+    dereference: true,
+  })
+  const fixtureArchive = join(root, "music-loader-fixture.tgz")
+  const fixturePack = Bun.spawnSync(
+    ["tar", "-czf", fixtureArchive, "-C", registryRoot, "package"],
+    { timeout: 30_000 },
+  )
+  if (!fixturePack.success)
+    throw new Error(`Fixture packing failed: ${fixturePack.stderr}`)
+  registry = await packedRegistry([fixtureArchive, coreArchive])
+
+  const config = join(root, "xdg", "config", "opencode")
+  await mkdir(config, { recursive: true })
   await writeFile(
     join(config, "cli.json"),
-    JSON.stringify({ plugins: [tuiEntry] }),
+    JSON.stringify({ plugins: ["@naxodev/opencode-music-player"] }),
   )
   const graphicsTrace = join(root, "native-graphics.bin")
   const finalSnapshotMarker = join(root, "final-snapshot")
@@ -391,11 +419,12 @@ export default {
   await writeFile(graphicsTrace, "")
   const env = {
     ...process.env,
+    HOME: root,
+    npm_config_registry: registry.url,
     XDG_CONFIG_HOME: join(root, "xdg", "config"),
     XDG_STATE_HOME: join(root, "xdg", "state"),
     XDG_DATA_HOME: join(root, "xdg", "data"),
     XDG_CACHE_HOME: join(root, "xdg", "cache"),
-    OPENCODE_CONFIG_DIR: config,
     OPENCODE_CONFIG_PROJECT_DISABLE: "1",
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_DISABLE_AUTOUPDATE: "1",
@@ -409,7 +438,7 @@ export default {
     openCodeBinary,
     "--standalone",
     "--log-level",
-    "error",
+    "debug",
     root,
   ]
     .map(shellQuote)
@@ -448,21 +477,35 @@ export default {
     for (let attempt = 0; attempt < attempts; attempt++) {
       const pane = capturePane()
       if (predicate(pane)) return pane
+      if (/\b\d+ plugins? failed\b/.test(pane)) {
+        tmux("send-keys", "-t", session, "-l", "/plugins")
+        tmux("send-keys", "-t", session, "Enter")
+        await Bun.sleep(500)
+        tmux("send-keys", "-t", session, "Enter")
+        await Bun.sleep(500)
+        throw new Error(
+          `OpenCode reported a plugin failure while waiting for ${description}`,
+        )
+      }
       await Bun.sleep(200)
     }
     throw new Error(`timed out waiting for ${description}`)
   }
   const waitForPlayer = () =>
-    waitForPane("music player startup", (pane) => {
-      const compact = pane.replaceAll(/\s/g, "")
-      return (
-        compact.includes("SMOKECOMPACTTRACKMARKER") &&
-        compact.includes("SMOKECOMPACTARTISTMARKER") &&
-        pane.includes("Build ·") &&
-        pane.includes("shift+tab agents") &&
-        !pane.includes("Finishing startup")
-      )
-    })
+    waitForPane(
+      "music player startup",
+      (pane) => {
+        const compact = pane.replaceAll(/\s/g, "")
+        return (
+          compact.includes("SMOKECOMPACTTRACKMARKER") &&
+          compact.includes("SMOKECOMPACTARTISTMARKER") &&
+          pane.includes("Build ·") &&
+          pane.includes("shift+tab agents") &&
+          !pane.includes("Finishing startup")
+        )
+      },
+      900,
+    )
   const waitForFile = async (description: string, path: string) => {
     for (let attempt = 0; attempt < 100; attempt++) {
       if (await Bun.file(path).exists()) return
@@ -474,6 +517,11 @@ export default {
   try {
     launchTui()
     await waitForPlayer()
+    registry.assertInstalled("@naxodev/opencode-music-player")
+    registry.assertInstalled("@naxodev/music-core")
+    console.log(
+      "OpenCode installed both packed music packages by name from an empty host cache.",
+    )
     if (!tmux("has-session", "-t", session).success)
       throw new Error("OpenCode exited after rendering plugin UI")
     await waitForPane("settled expanded player", (pane) =>
@@ -569,6 +617,10 @@ export default {
 
     await terminateTmux()
     await writeFile(
+      join(config, "cli.json"),
+      JSON.stringify({ plugins: [join(packageDir, "dist")] }),
+    )
+    await writeFile(
       packageEntry,
       fixtureSource.replace("let playing = true", "let playing = false"),
     )
@@ -615,8 +667,12 @@ export default {
     )
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
+    const log = await readFile(
+      join(root, "xdg", "data", "opencode", "log", "opencode.log"),
+      "utf8",
+    ).catch(() => "(host log unavailable)")
     throw new Error(
-      `OpenCode package smoke failed: ${detail}\n\nSanitized pane:\n${capturePane() || "(empty)"}`,
+      `OpenCode package smoke failed: ${detail}\n\nSanitized pane:\n${capturePane() || "(empty)"}\nHost log:\n${log.slice(-24000)}`,
     )
   }
 
@@ -624,6 +680,7 @@ export default {
 } catch (error) {
   workFailure = error
 } finally {
+  registry?.stop()
   try {
     await terminateTmux()
     await rm(root, { recursive: true, force: true })

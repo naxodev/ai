@@ -10,7 +10,7 @@ import {
 } from "@naxodev/music-core"
 import { onCleanup, onMount } from "solid-js"
 import { StyledText, fg, type TextRenderable } from "@opentui/core"
-import type { Plugin } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 import type { PlayerState } from "./types.ts"
 
 type Context = Plugin.Context

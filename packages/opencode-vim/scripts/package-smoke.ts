@@ -8,13 +8,17 @@ import {
   writeFile,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
+import {
+  checkOpenCodeCompatibility,
+  compatibility,
+  hostDependencies,
+} from "../../../scripts/opencode-compatibility.ts"
+import { packedRegistry } from "../../../scripts/packed-registry.ts"
 
-const manifest = (await Bun.file(
-  new URL("../package.json", import.meta.url),
-).json()) as { dependencies: { "@opencode-ai/plugin": string } }
-const openCodePin = manifest.dependencies["@opencode-ai/plugin"]
-const expectedOpenCode = `opencode2 v${openCodePin}`
+await checkOpenCodeCompatibility()
+const openCodePin = compatibility.host.version
+const expectedOpenCode = `${compatibility.host.binary} v${openCodePin}`
 
 const socket = `opencode-vim-smoke-${process.pid}-${crypto.randomUUID()}`
 const session = "smoke"
@@ -34,10 +38,21 @@ const capturePane = () => {
 const waitForPane = async (
   matches: (pane: string) => boolean,
   description: string,
+  attempts = 80,
 ) => {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const pane = capturePane()
     if (matches(pane)) return
+    if (/\b\d+ plugins? failed\b/.test(pane)) {
+      tmux("send-keys", "-t", session, "-l", "/plugins")
+      tmux("send-keys", "-t", session, "Enter")
+      await Bun.sleep(500)
+      tmux("send-keys", "-t", session, "Enter")
+      await Bun.sleep(500)
+      throw new Error(
+        `OpenCode reported a plugin failure while waiting for ${description}`,
+      )
+    }
     await Bun.sleep(250)
   }
   throw new Error(`timed out waiting for ${description}`)
@@ -75,22 +90,37 @@ try {
       private: true,
       dependencies: {
         "@naxodev/opencode-vim": `file:${archive}`,
-        "@opencode-ai/cli": openCodePin,
+        [compatibility.host.package]: openCodePin,
       },
-      trustedDependencies: ["@opencode-ai/cli"],
     }),
   )
 
-  const install = Bun.spawnSync(["bun", "install", "--silent"], {
-    cwd: work,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  console.log(`Installing packed Vim plugin and OpenCode ${openCodePin}`)
+  const install = Bun.spawnSync(
+    ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"],
+    {
+      cwd: work,
+      timeout: 180_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
   if (!install.success)
     throw new Error(`package install failed: ${install.stderr}`)
 
+  const cliHook = Bun.spawnSync(
+    [
+      "node",
+      join(work, "node_modules", compatibility.host.package, "postinstall.mjs"),
+    ],
+    { cwd: work, timeout: 30_000, stdout: "pipe", stderr: "pipe" },
+  )
+  if (!cliHook.success)
+    throw new Error(`CLI installation hook failed: ${cliHook.stderr}`)
+
+  console.log("Checking the isolated OpenCode executable")
   const openCodeBinary = await realpath(
-    join(work, "node_modules", ".bin", "opencode2"),
+    join(work, "node_modules", ".bin", compatibility.host.binary),
   )
   const openCodeVersion = Bun.spawnSync([openCodeBinary, "--version"], {
     cwd: work,
@@ -105,24 +135,95 @@ try {
       `temporary OpenCode install must provide ${expectedOpenCode}`,
     )
 
+  for (const name of Object.keys(hostDependencies)) {
+    if (
+      await Bun.file(join(work, "node_modules", name, "package.json")).exists()
+    )
+      throw new Error(
+        `Host-provided ${name} must not be installed in the smoke consumer`,
+      )
+  }
+
+  const registry = await packedRegistry([archive])
+  const nameHome = join(work, "package-name")
+  const nameConfig = join(nameHome, "config", "opencode")
+  await mkdir(nameConfig, { recursive: true })
   await writeFile(
-    join(work, "smoke.ts"),
-    'import plugin from "@naxodev/opencode-vim/tui"\nif (plugin.id !== "vimcode-v2" || typeof plugin.setup !== "function") process.exit(1)\n',
+    join(nameConfig, "cli.json"),
+    JSON.stringify({
+      plugins: [
+        {
+          package: "@naxodev/opencode-vim",
+          options: { startMode: "normal", clipboard: "none" },
+        },
+      ],
+    }),
   )
-  const loaded = Bun.spawnSync(["bun", "run", "smoke.ts"], {
-    cwd: work,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  if (!loaded.success)
-    throw new Error(`package import failed: ${loaded.stderr}`)
+  try {
+    const named = Bun.spawnSync(
+      [
+        "tmux",
+        "-L",
+        socket,
+        "new-session",
+        "-d",
+        "-s",
+        session,
+        "-c",
+        nameHome,
+        "-x",
+        "240",
+        "-y",
+        "40",
+        [openCodeBinary, "--standalone", nameHome].map(shellQuote).join(" "),
+      ],
+      {
+        env: {
+          ...process.env,
+          HOME: nameHome,
+          XDG_CONFIG_HOME: join(nameHome, "config"),
+          XDG_CACHE_HOME: join(nameHome, "cache"),
+          XDG_DATA_HOME: join(nameHome, "data"),
+          XDG_STATE_HOME: join(nameHome, "state"),
+          npm_config_registry: registry.url,
+          OPENCODE_DISABLE_AUTOUPDATE: "1",
+          OPENCODE_CONFIG_PROJECT_DISABLE: "1",
+          OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        },
+        timeout: 10_000,
+      },
+    )
+    if (!named.success)
+      throw new Error(`Package-name launch failed: ${named.stderr}`)
+    await waitForPane(
+      (pane) => pane.replaceAll(/\s/g, "").includes("--NORMAL--"),
+      "package-name NORMAL footer",
+      720,
+    )
+    registry.assertInstalled("@naxodev/opencode-vim")
+    console.log(
+      "OpenCode installed the packed package by name from an empty cache; startMode=normal took effect.",
+    )
+  } catch (error) {
+    const log = await readFile(
+      join(nameHome, "data", "opencode", "log", "opencode.log"),
+      "utf8",
+    ).catch(() => "(host log unavailable)")
+    throw new Error(
+      `Package-name Vim smoke failed: ${error}\n${capturePane()}\nHost log:\n${log.slice(-24000)}`,
+    )
+  } finally {
+    tmux("kill-server")
+    registry.stop()
+  }
 
   const tuiEntry = join(
     work,
     "node_modules",
     "@naxodev",
     "opencode-vim",
-    "tui.tsx",
+    "dist",
+    "tui.js",
   )
   const reloadMarker = join(work, "reload.log")
   await writeFile(
@@ -130,26 +231,29 @@ try {
     `import { appendFileSync } from "node:fs"
 const marker = process.env.OPENCODE_VIM_SMOKE_MARKER
 if (marker) appendFileSync(marker, "loaded\\n")
-export { default } from "./index.tsx"
+export { default } from "./index.js"
 `,
   )
   const waitForLoads = async (count: number) => {
     for (let attempt = 0; attempt < 80; attempt++) {
       const loaded = await readFile(reloadMarker, "utf8").catch(() => "")
-      if (loaded.split("\n").filter(Boolean).length >= count) return
+      if (
+        loaded.split("\n").filter((line) => line === "loaded").length >= count
+      )
+        return
       await Bun.sleep(250)
     }
     throw new Error(`timed out waiting for plugin load ${count}`)
   }
 
-  const config = join(work, "config")
-  await mkdir(config)
+  const config = join(work, "xdg", "config", "opencode")
+  await mkdir(config, { recursive: true })
   await writeFile(
     join(config, "cli.json"),
     JSON.stringify({
       plugins: [
         {
-          package: tuiEntry,
+          package: dirname(tuiEntry),
           // Exercise the Vim register without writing to the user's clipboard.
           options: { clipboard: "none" },
         },
@@ -159,18 +263,18 @@ export { default } from "./index.tsx"
 
   const env = {
     ...process.env,
+    HOME: work,
     XDG_CONFIG_HOME: join(work, "xdg", "config"),
     XDG_STATE_HOME: join(work, "xdg", "state"),
     XDG_DATA_HOME: join(work, "xdg", "data"),
     XDG_CACHE_HOME: join(work, "xdg", "cache"),
-    OPENCODE_CONFIG_DIR: config,
     OPENCODE_CONFIG_PROJECT_DISABLE: "1",
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_DISABLE_AUTOUPDATE: "1",
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_VIM_SMOKE_MARKER: reloadMarker,
   }
-  const command = [openCodeBinary, "--standalone", "--log-level", "error", work]
+  const command = [openCodeBinary, "--standalone", "--log-level", "debug", work]
     .map(shellQuote)
     .join(" ")
   let stage = "launching OpenCode"
@@ -263,8 +367,12 @@ export { default } from "./index.tsx"
   } catch (error) {
     const pane = capturePane()
     const detail = error instanceof Error ? error.message : String(error)
+    const log = await readFile(
+      join(work, "xdg", "data", "opencode", "log", "opencode.log"),
+      "utf8",
+    ).catch(() => "(host log unavailable)")
     throw new Error(
-      `OpenCode package smoke failed during ${stage}: ${detail}\n\nSanitized pane:\n${pane || "(empty)"}`,
+      `OpenCode package smoke failed during ${stage}: ${detail}\n\nSanitized pane:\n${pane || "(empty)"}\nHost log:\n${log.slice(-30000)}`,
     )
   } finally {
     tmux("kill-server")

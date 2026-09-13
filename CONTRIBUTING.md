@@ -4,19 +4,20 @@ Contributions are welcome. By participating, you agree to follow the [Code of Co
 
 ## Development
 
-Install Bun 1.3.7 and Node.js 22.19 or later. The full workspace gate requires macOS, Neovim, and tmux because it runs media integration and real-TUI smoke tests. Linux and Windows contributors can run the supported targets for a specific cross-platform package. The bootstrap command below installs the OpenCode CLI version pinned by `packages/opencode-vim/package.json`.
+Install Bun 1.3.7 and Node.js 22.19 or later. The full workspace gate requires macOS, Neovim, and tmux because it runs media integration and real-TUI smoke tests. Linux and Windows contributors can run the supported targets for a specific cross-platform package. Each OpenCode smoke installs its exact CLI in a temporary consumer. A global CLI installation is unnecessary.
 
 ```sh
 git clone https://github.com/naxodev/ai.git
 cd ai
 bun install --frozen-lockfile
-bun add --global --trust "@opencode-ai/cli@$(node -p \"require('./packages/opencode-vim/package.json').dependencies['@opencode-ai/plugin']\")"
 bun run check
 ```
 
-Run one project's checks with `bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=<project>`. The project names are `music-core`, `opencode-music-player`, `opencode-vim`, `pi-music-dock`, `apnea`, and `pi-apnea`. Nx skips targets that a selected project does not define.
+Run one project's checks with `bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=<project> --parallel=1`. Packing and smoke targets must run serially because OpenCode's prepack build replaces shared output. The project names are `music-core`, `opencode-music-player`, `opencode-vim`, `pi-music-dock`, `apnea`, and `pi-apnea`. Nx skips targets that a selected project does not define.
 
 Keep changes focused and preserve each host integration contract. Add tests that explain why changed behavior matters. Use Conventional Commit messages, such as `fix(pi-music-dock): keep paused waveform still`.
+
+The [OpenCode compatibility contract](docs/opencode-compatibility.md) records the supported host set and dependency proposal decisions. Update `scripts/opencode-compatibility.json`, both package manifests, and `bun.lock` together. Run `bun run compatibility:check` before the full workspace gate.
 
 ## Releasing
 

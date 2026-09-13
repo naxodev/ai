@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { For, onCleanup, onMount } from "solid-js"
-import type { Plugin } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 import type { Artwork } from "./types.ts"
 import {
   planNativeArtworkPlacement,

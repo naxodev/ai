@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Plugin } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 import {
   openExDialog,
   parseExCommand,

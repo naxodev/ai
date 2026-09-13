@@ -123,13 +123,13 @@ jobs:
         if: steps.published.outputs.skip != 'true'
         run: bun run policy:check
 
-      - name: Install tested OpenCode CLI
+      - name: Validate tested OpenCode compatibility set
         if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
-        env:
-          PROJECT: ${{ steps.release.outputs.project }}
-        run: |
-          OPENCODE_VERSION=$(node -p "require('./packages/$PROJECT/package.json').dependencies['@opencode-ai/plugin']")
-          bun add --global --trust "@opencode-ai/cli@$OPENCODE_VERSION"
+        run: bun run compatibility:check
+
+      - name: Audit isolated packed OpenCode consumers
+        if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
+        run: bun run security:consumers
 
       - name: Install TUI test dependencies
         if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
@@ -141,7 +141,7 @@ jobs:
 
       - name: Run package release gates
         if: steps.published.outputs.skip != 'true'
-        run: bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=${{ steps.release.outputs.project }}
+        run: bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=${{ steps.release.outputs.project }} --parallel=1
 
       - name: Verify compatible Apnea core is published
         if: steps.published.outputs.skip != 'true' && steps.release.outputs.project == 'pi-apnea'

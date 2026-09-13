@@ -5,8 +5,17 @@ updates:
     schedule:
       interval: weekly
     groups:
+      opencode-host:
+        patterns:
+          - "@opencode/*"
+          - "@opentui/*"
+          - "solid-js"
       development-dependencies:
         dependency-type: development
+        exclude-patterns:
+          - "@opencode/*"
+          - "@opentui/*"
+          - "solid-js"
   - package-ecosystem: github-actions
     directory: /
     schedule:

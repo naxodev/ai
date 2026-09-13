@@ -38,13 +38,13 @@ set -g allow-passthrough on
 ```
 
 > [!IMPORTANT]
-> This package targets the beta OpenCode 2 TUI plugin API in `opencode2 v0.0.0-next-17444`. OpenCode may change this API before its stable release.
+> This source targets stable `opencode v2.0.3`. The previous beta host is unsupported. See the [compatibility contract](../../docs/opencode-compatibility.md) for the exact dependency set and release requirements.
 
 ## Requirements
 
 - macOS
-- OpenCode 2 `v0.0.0-next-17444`
-- Bun, which OpenCode uses to load TypeScript plugin packages
+- OpenCode `v2.0.3`
+- The Bun-based OpenCode runtime; Bun 1.3.7 for workspace development
 - [`media-control`](https://github.com/ungive/media-control), recommended:
 
   ```sh
@@ -56,16 +56,18 @@ set -g allow-passthrough on
 
 ## Install
 
-Add the package to the `plugin` array in your global `~/.config/opencode/tui.jsonc` or project `.opencode/tui.jsonc`:
+Add the package to `plugins` in your global `~/.config/opencode/cli.json` (or `$XDG_CONFIG_HOME/opencode/cli.json`):
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["@naxodev/opencode-music-player"],
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": ["@naxodev/opencode-music-player"],
 }
 ```
 
 OpenCode installs npm plugin packages and their production dependencies in its isolated cache. Restart OpenCode after changing the package entry.
+
+This package requires the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. The plugin API and OpenTUI are optional peers. Solid is required from the host but omitted from npm peer metadata because of an upstream peer-version conflict. Music-core and pngjs remain production dependencies. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
 
 ### Local checkout
 
@@ -75,26 +77,23 @@ OpenCode imports local packages directly and does not install their dependencies
 git clone https://github.com/naxodev/ai.git
 cd ai
 bun install --frozen-lockfile
+bun run --cwd packages/opencode-music-player build
 ```
 
 Then reference the absolute package path:
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["/absolute/path/to/ai/packages/opencode-music-player"],
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": ["/absolute/path/to/ai/packages/opencode-music-player/dist"],
 }
 ```
 
 ## Verify
 
-Start OpenCode and list active plugin IDs:
+The package precompiles JSX to JavaScript and keeps every package import external. `npm pack` builds the artifact automatically. Rebuild after source edits for local testing; the host watches the generated entrypoints.
 
-```sh
-opencode2 api get /api/plugin
-```
-
-The response should include `music-player`. If it does not, inspect `~/.local/share/opencode/log/opencode.log` for package resolution or setup errors.
+Start `opencode` and run `/plugins` in the TUI. The list should include `music-player`. CLI-only plugins do not appear in the server plugin API. Inspect `~/.local/share/opencode/log/opencode.log` for package resolution or setup errors.
 
 ## Controls
 
