@@ -939,8 +939,10 @@ test("reconnecting disposal owns a client that loses the reservation-to-adoption
   let connects = 0
   let managed: ReconnectingMusicSessionClient | undefined
   let resolveDisposed: (() => void) | undefined
-  const disposed = new Promise<void>((resolve) => {
+  let rejectDisposed: ((error: unknown) => void) | undefined
+  const disposed = new Promise<void>((resolve, reject) => {
     resolveDisposed = resolve
+    rejectDisposed = reject
   })
   try {
     managed = await Effect.runPromise(
@@ -955,7 +957,10 @@ test("reconnecting disposal owns a client that loses the reservation-to-adoption
           },
           onReserved: () => {
             if (connects === 2)
-              void managed?.dispose().then(() => resolveDisposed?.())
+              managed?.dispose().then(
+                () => resolveDisposed?.(),
+                (error) => rejectDisposed?.(error),
+              )
           },
         },
       ).pipe(Effect.provideService(Scope.Scope, scope)),
@@ -1149,7 +1154,7 @@ test("reconnecting fences late A callbacks and replays retained listeners", asyn
     })
     const replacementPlay = managed.play()
     let replacementSettled = false
-    void replacementPlay.then(() => {
+    const observedReplacement = replacementPlay.then(() => {
       replacementSettled = true
     })
     await expect(oldPlay).rejects.toMatchObject({
@@ -1160,6 +1165,7 @@ test("reconnecting fences late A callbacks and replays retained listeners", asyn
     expect(replacementSettled).toBe(false)
     second.respondPlay()
     await expect(replacementPlay).resolves.toEqual({ action: "play" })
+    await observedReplacement
     expect(managed.status).toEqual(bStatus)
     expect(managed.state).toEqual(bState)
     expect(statuses).toEqual(["generation A", "generation B"])
@@ -3551,11 +3557,21 @@ test("startup waiter confirms the daemon after its marker is released during hel
     const acquired = await acquireStartupMarkerLease(runtime)
     if (acquired.type !== "acquired") throw new Error("expected marker lease")
     let connections = 0
-    server = net.createServer(async (connection) => {
+    let release: Promise<void> | undefined
+    let releaseError: unknown
+    server = net.createServer((connection) => {
       connections++
       if (connections === 1) {
-        await acquired.lease.release()
-        connection.destroy()
+        // The test joins this callback's work and fails on release errors.
+        release = acquired.lease.release().then(
+          () => {
+            connection.destroy()
+          },
+          (error) => {
+            releaseError = error
+            connection.destroy()
+          },
+        )
         return
       }
       const framer = new NdjsonFramer()
@@ -3578,6 +3594,8 @@ test("startup waiter confirms the daemon after its marker is released during hel
       clientId: "post-marker-confirm",
       hostKind: "pi",
     })
+    await release
+    if (releaseError) throw releaseError
     expect(found.type).toBe("healthy")
     expect(connections).toBe(2)
     if (found.type === "healthy") {

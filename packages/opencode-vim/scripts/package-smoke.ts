@@ -214,7 +214,7 @@ try {
     )
   } finally {
     tmux("kill-server")
-    registry.stop()
+    await registry.stop()
   }
 
   const tuiEntry = join(

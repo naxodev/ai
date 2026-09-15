@@ -419,13 +419,21 @@ export function createMusicDock(
 			sidebarTheme,
 			{
 				onTogglePlayback: () => {
-					void playPause(ctx);
+					// command() reports transport errors and fences notifications by
+					// session. Session disposal owns the client's in-flight work.
+					playPause(ctx).catch((error) =>
+						console.error("Failed to report music playback command", error),
+					);
 				},
 				onNext: () => {
-					void skipNext(ctx);
+					skipNext(ctx).catch((error) =>
+						console.error("Failed to report next-track command", error),
+					);
 				},
 				onPrevious: () => {
-					void skipPrev(ctx);
+					skipPrev(ctx).catch((error) =>
+						console.error("Failed to report previous-track command", error),
+					);
 				},
 				onUnfocus: () => unfocusSidebar(session),
 				onChange: () => tui.requestRender(),

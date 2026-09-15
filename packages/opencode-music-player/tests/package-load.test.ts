@@ -121,7 +121,7 @@ test("production session adapter is shared by both slots and disposes only its c
   expect(clientFactories).toBe(1)
   expect([...slots.keys()]).toEqual(["session.composer.top", "sidebar.content"])
   expect(session.error).toBe("daemon fallback")
-  cleanup?.()
+  await cleanup?.()
   await Promise.resolve()
   expect(disposals).toBe(1)
 })
@@ -250,7 +250,7 @@ test("setup rerenders fixed slots from one host session", async () => {
   expect(keymapLayers).toBe(1)
 
   app.renderer.destroy()
-  cleanup?.()
+  await cleanup?.()
   expect(unsubscriptions).toBe(2)
   expect(disposed).toBe(1)
 })

@@ -15,6 +15,8 @@
       "{workspaceRoot}/bun.lock",
       "{workspaceRoot}/nx.json",
       "{workspaceRoot}/tsconfig.base.json",
+      "{workspaceRoot}/.oxlintrc.json",
+      "{workspaceRoot}/scripts/async-lint.*",
       "{workspaceRoot}/scripts/bounded-process.ts",
       "{workspaceRoot}/scripts/music-release.ts",
       "{workspaceRoot}/scripts/opencode-compatibility.*",
@@ -80,7 +82,7 @@
     },
     "version": {
       "useLegacyVersioning": false,
-      "preVersionCommand": "bun run security:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers",
+      "preVersionCommand": "bun run security:check && bun run policy:check && bunx nx run-many -t lint typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers",
       "conventionalCommits": true,
       "updateDependents": "auto",
       "fallbackCurrentVersionResolver": "disk",

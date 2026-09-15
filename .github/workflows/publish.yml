@@ -123,6 +123,10 @@ jobs:
         if: steps.published.outputs.skip != 'true'
         run: bun run policy:check
 
+      - name: Check asynchronous correctness across the workspace
+        if: steps.published.outputs.skip != 'true'
+        run: bun run lint
+
       - name: Validate tested OpenCode compatibility set
         if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
         run: bun run compatibility:check

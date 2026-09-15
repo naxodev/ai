@@ -201,10 +201,18 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   const scheduleNativeImage = () => {
     if (paintPending || disposed) return
     paintPending = true
-    void props.context.renderer.idle().then(() => {
-      paintPending = false
-      if (!disposed && ownership.isCurrent()) paintNativeImage()
-    })
+    // The mount owns this deferred paint. Cleanup fences late renderer work.
+    props.context.renderer
+      .idle()
+      .then(() => {
+        paintPending = false
+        if (!disposed && ownership.isCurrent()) paintNativeImage()
+      })
+      .catch((error) => {
+        paintPending = false
+        if (!disposed && ownership.isCurrent())
+          console.error("Failed to paint music artwork", error)
+      })
   }
 
   onMount(() => props.context.renderer.on("frame", scheduleNativeImage))

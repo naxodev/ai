@@ -124,6 +124,37 @@ describe("Process", () => {
 
     expect(result).toEqual({ exitCode: 0, stdout: "", stderr: "" })
   })
+
+  test("a cleanup rejection resumes the cancelled operation instead of stranding its fiber", async () => {
+    const controller = new AbortController()
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42,
+      kill: () => true,
+    }) as unknown as ChildProcess
+    const service = makeProcessService({
+      platform: "linux",
+      kill: () => {},
+      sleep: async () => {},
+      snapshotDescendants: async () => {
+        throw new Error("process snapshot failed")
+      },
+      taskkill: async () => false,
+      processRunning: () => false,
+      spawn: (() => {
+        queueMicrotask(() => controller.abort())
+        return child
+      }) as typeof spawn,
+    })
+    await expect(
+      Effect.runPromise(
+        service.run({
+          command: "fake",
+          timeoutMs: 1_000,
+          signal: controller.signal,
+        }),
+      ),
+    ).rejects.toThrow("Process cleanup failed")
+  })
 })
 
 describe("terminateProcessTree", () => {

@@ -680,9 +680,12 @@ export default {
 } catch (error) {
   workFailure = error
 } finally {
-  registry?.stop()
   try {
-    await terminateTmux()
+    try {
+      await registry?.stop()
+    } finally {
+      await terminateTmux()
+    }
     await rm(root, { recursive: true, force: true })
   } catch (error) {
     cleanupFailure = error

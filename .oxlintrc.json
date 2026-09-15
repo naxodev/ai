@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript"],
+  "categories": { "correctness": "off" },
+  "options": { "typeAware": true },
+  "rules": {
+    "typescript/no-floating-promises": [
+      "error",
+      { "ignoreVoid": false, "ignoreIIFE": false, "checkThenables": true }
+    ],
+    "typescript/no-misused-promises": [
+      "error",
+      {
+        "checksConditionals": true,
+        "checksSpreads": true,
+        "checksVoidReturn": true
+      }
+    ]
+  }
+}

@@ -434,11 +434,12 @@ describe("session media facade", () => {
     await flush()
     let settled = false
     const disposal = media.dispose()
-    void disposal.then(() => {
+    const observedDisposal = disposal.then(() => {
       settled = true
     })
     await flush()
     expect(settled).toBeTrue()
+    await observedDisposal
     resolve(client)
     await flush()
     await media.dispose()
@@ -469,7 +470,7 @@ describe("session media facade", () => {
           }),
       })
       await flush()
-      void media.dispose()
+      const disposal = media.dispose()
       resolve(client)
       await flush()
       await flush()
@@ -478,6 +479,7 @@ describe("session media facade", () => {
         failure,
       )
       expect(client.disposeCalls).toBe(1)
+      await disposal
     } finally {
       report.mockRestore()
     }

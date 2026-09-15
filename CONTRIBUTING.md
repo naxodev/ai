@@ -19,6 +19,20 @@ Keep changes focused and preserve each host integration contract. Add tests that
 
 The [OpenCode compatibility contract](docs/opencode-compatibility.md) records the supported host set and dependency proposal decisions. Update `scripts/opencode-compatibility.json`, both package manifests, and `bun.lock` together. Run `bun run compatibility:check` before the full workspace gate.
 
+### Asynchronous correctness
+
+`bun run lint` runs the workspace-wide async gate. `bunx nx run tooling:lint` runs the same gate without caching. The local check, CI quality matrix, Nx pre-version hook, and publication workflow all include it. A package-only check does not replace this workspace gate.
+
+[`.oxlintrc.json`](.oxlintrc.json) enables exactly two error-level rules: `typescript/no-floating-promises` and `typescript/no-misused-promises`. Floating-promise checks include thenables and async IIFEs; `void` does not suppress them. Misused-promise checks include conditions, spreads, and every void-return callback position, including JSX attributes. Prettier owns formatting.
+
+Oxlint 1.83.0 and oxlint-tsgolint 7.0.2001 use native TypeScript analysis. [Oxlint's type-aware implementation requires TypeScript 7](https://oxc.rs/docs/guide/usage/linter/type-aware), matching the project's TypeScript 7.0.2 compiler. This avoids a second legacy compiler installation. The gate adds no recommended rule preset or formatting rules.
+
+The scanner independently enumerates `.ts`, `.tsx`, `.mts`, and `.cts` files, including declarations, production code, tests, and root tooling. It verifies each file against its nearest `tsconfig.json` using compiler file lists before passing explicit paths to Oxlint. Missing projects or omitted files fail the gate. Only dependency, generated-output, VCS, Nx-cache, and Apnea-state directories are excluded: `node_modules`, `dist`, `.git`, `.jj`, `.nx`, and `.apnea`. Nested lint configurations and ignore files cannot narrow the gate.
+
+Await or return work when its caller owns completion. For synchronous event callbacks, handle rejection and identify the lifecycle owner in a nearby comment. Session disposal owns music commands; renderer cleanup fences pending artwork paints. Tests must join their background work and teardown. Do not replace an error path with an empty catch or a bare `void`.
+
+`scripts/async-lint.test.ts` runs the real scanner and linter on temporary source projects. It proves both rules reject production, test, TSX, and tooling fixtures, accepts repaired fixtures, and rejects omitted TSX and orphan automation files.
+
 ## Releasing
 
 The packages release independently. Nx derives versions from Conventional Commits, creates `<project>@v<version>` tags, pushes the release commit and tag, and creates GitHub releases with generated notes. No committed changelog update is required after the initial package snapshots.

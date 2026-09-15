@@ -383,7 +383,20 @@ export function makeProcessService(
       const failAfterCleanup = (error: ProcessError) => {
         if (settled || pendingError !== undefined) return
         pendingError = error
-        void terminate().then(() => finish(Effect.fail(error)))
+        // The callback waits for process-tree cleanup before resuming its
+        // owner. A cleanup rejection must also resume the waiting fiber.
+        terminate().then(
+          () => finish(Effect.fail(error)),
+          (cleanupError) =>
+            finish(
+              Effect.die(
+                new AggregateError(
+                  [error, cleanupError],
+                  "Process cleanup failed",
+                ),
+              ),
+            ),
+        )
       }
       const capture = (name: "stdout" | "stderr", chunk: Buffer) => {
         const target = name === "stdout" ? stdout : stderr
