@@ -194,12 +194,18 @@ export function createController(
             settle(resolve)
           }
         })
+        .catch((error) => {
+          // Command errors are shown above. Report failures in host callbacks
+          // after settlement so they cannot strand the controller's callers.
+          console.error("Failed to settle music command", error)
+        })
     })
   }
 
   const runSeek = (intent: SeekIntent) => {
     activeSeek = intent
-    void runCommand(
+    // runCommand owns transport errors and disposal settles queued callers.
+    runCommand(
       () => media.seek(intent.positionMs),
       () => {
         if (activeSeek !== intent) return
@@ -211,7 +217,9 @@ export function createController(
         if (isActive() && next) runSeek(next)
         else next?.resolves.splice(0).forEach((resolve) => resolve())
       },
-    )
+    ).catch((error) => {
+      console.error("Failed to start music seek", error)
+    })
   }
 
   const refreshAll = async () => {
@@ -312,7 +320,10 @@ export function createController(
       draft.player = mergeArtworkCompletion(draft.player, event)
     })
   })
-  void refreshAll()
+  // The generation fence prevents startup refresh from updating a disposed UI.
+  refreshAll().catch((error) => {
+    console.error("Failed to publish initial music state", error)
+  })
 
   return {
     session,

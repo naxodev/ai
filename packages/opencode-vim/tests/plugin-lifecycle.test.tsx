@@ -242,7 +242,7 @@ test("live durable settings control bindings and persistence gates success", asy
       { message: "Vim mode disabled", variant: "info" },
     ])
   } finally {
-    host.cleanup?.()
+    await host.cleanup?.()
     host.rendered.renderer.destroy()
   }
 })
@@ -269,7 +269,7 @@ test("a durable setting rejection keeps Vim enabled and reports the failure", as
       },
     ])
   } finally {
-    host.cleanup?.()
+    await host.cleanup?.()
     host.rendered.renderer.destroy()
   }
 })
@@ -305,7 +305,7 @@ test("overlapping toggles serialize against durable state", async () => {
       "Vim mode enabled",
     ])
   } finally {
-    host.cleanup?.()
+    await host.cleanup?.()
     host.rendered.renderer.destroy()
   }
 })
@@ -322,7 +322,7 @@ test("plugin disposal fences a pending durable toggle", async () => {
   })
 
   const pending = command(host.layers, "vimcode-v2.toggle")!.run()
-  host.cleanup?.()
+  await host.cleanup?.()
   persisted.resolve()
   await pending
   expect(host.toasts).toEqual([])
@@ -343,7 +343,7 @@ test("leaving normal host mode finalizes the active insert session", async () =>
     expect(history.changeSession).toBeNull()
     expect(history.undo).toHaveLength(1)
   } finally {
-    host.cleanup?.()
+    await host.cleanup?.()
     host.rendered.renderer.destroy()
   }
 })
@@ -361,7 +361,7 @@ test("plugin disposal fences a pending EX prompt", async () => {
       .find((candidate) => candidate.bind === "shift+semicolon")
     expect(ex).toBeDefined()
     ex.run()
-    host.cleanup?.()
+    await host.cleanup?.()
     prompt.resolve(":review late")
     await Promise.resolve()
     await Promise.resolve()

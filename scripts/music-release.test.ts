@@ -77,7 +77,7 @@ test("npm registry boundary rejects absent and incompatible packages and tolerat
     await expect(checkPublishedCore("^0.1.0", options)).resolves.toBe("0.1.2")
     expect(requests).toBe(2)
   } finally {
-    server.stop(true)
+    await server.stop(true)
   }
 }, 20_000)
 

@@ -14,7 +14,8 @@
     "smol-toml": "1.8.0"
   },
   "scripts": {
-    "check": "bun run compatibility:check && bun run format:check && bun run security:check && bun run policy:check && bunx nx run-many -t typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers",
+    "check": "bun run compatibility:check && bun run format:check && bun run security:check && bun run policy:check && bunx nx run-many -t lint typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers",
+    "lint": "bun run scripts/async-lint.ts",
     "compatibility:check": "bun run scripts/opencode-compatibility.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -27,6 +28,8 @@
     "@nx/js": "23.1.1",
     "@types/bun": "^1.3.14",
     "nx": "23.1.1",
+    "oxlint": "1.83.0",
+    "oxlint-tsgolint": "7.0.2001",
     "prettier": "3.9.6",
     "typescript": "7.0.2"
   },

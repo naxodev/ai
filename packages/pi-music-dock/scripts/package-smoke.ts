@@ -362,8 +362,8 @@ try {
 			throw new Error("Pi RPC host did not provide piped standard streams");
 		stdout = captureOutput(child.stdout);
 		stderr = captureOutput(child.stderr);
-		child.stdin.write('{"type":"get_commands","id":"smoke"}\n');
-		child.stdin.end();
+		await child.stdin.write('{"type":"get_commands","id":"smoke"}\n');
+		await child.stdin.end();
 		exitCode = await waitForExit(child, "Pi RPC host", 10_000);
 		await waitForProcessGroupExit(child.pid, "Pi RPC host");
 		requireNoOwnedCoreProcess(coreRoot);

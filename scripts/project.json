@@ -5,6 +5,12 @@
   "sourceRoot": "scripts",
   "tags": ["scope:private", "type:tooling"],
   "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bun run lint"
+      }
+    },
     "typecheck": {
       "executor": "nx:run-commands",
       "options": {

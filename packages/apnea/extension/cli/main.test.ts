@@ -119,7 +119,7 @@ describe("CLI operation signals", () => {
     expect(listeners.get("SIGTERM")?.size).toBe(0)
   })
 
-  test("a second Ctrl+C force-exits even when the operation stopped observing the abort", () => {
+  test("a second Ctrl+C force-exits even when the operation stopped observing the abort", async () => {
     const listeners = new Map<"SIGINT" | "SIGTERM", Set<() => void>>()
     const target: SignalTarget = {
       on: (signal: "SIGINT" | "SIGTERM", listener: () => void) => {
@@ -132,17 +132,17 @@ describe("CLI operation signals", () => {
       },
     }
     const exits: number[] = []
-    // The operation aborts cleanly but then hangs anyway — exactly the
-    // stuck-finalizer shape where default termination is gone.
-    void executeWithSignals(
+    // Hold the operation after abort to simulate a stuck finalizer. The test
+    // releases and joins it after verifying the forced-exit path.
+    const finalizer = Promise.withResolvers<void>()
+    const running = executeWithSignals(
       async (_verb, _params, hooks) => {
         await new Promise<void>((resolve) => {
           hooks?.signal?.addEventListener("abort", () => resolve(), {
             once: true,
           })
         })
-        await new Promise<void>(() => {})
-        // Unreachable: this operation never settles, which is the point.
+        await finalizer.promise
         return { ok: true, message: "" }
       },
       "wait",
@@ -154,10 +154,15 @@ describe("CLI operation signals", () => {
     const fire = (signal: "SIGINT" | "SIGTERM") => {
       for (const listener of [...(listeners.get(signal) ?? [])]) listener()
     }
-    fire("SIGINT")
-    expect(exits).toEqual([])
-    fire("SIGINT")
-    expect(exits).toEqual([130])
+    try {
+      fire("SIGINT")
+      expect(exits).toEqual([])
+      fire("SIGINT")
+      expect(exits).toEqual([130])
+    } finally {
+      finalizer.resolve()
+      await running
+    }
   })
 })
 

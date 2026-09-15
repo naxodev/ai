@@ -1941,8 +1941,10 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
   }
   dispose() {
     let resolve: (() => void) | undefined
-    const completion = new Promise<void>((next) => {
+    let reject: ((error: unknown) => void) | undefined
+    const completion = new Promise<void>((next, fail) => {
       resolve = next
+      reject = fail
     })
     const winner = this.#modify((current) => {
       if (current.dispose) return [undefined, current]
@@ -1955,13 +1957,21 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
       ] as const
     })
     if (!winner) return Ref.getUnsafe(this.#managed).dispose ?? completion
-    void winner
-      .close()
-      .catch(() => {})
-      .then(() => {
+    // Every caller shares completion. Scope close owns cancellation; shutdown
+    // still fences clients when a scope finalizer fails.
+    const close = async () => {
+      try {
+        await winner.close()
+      } catch (error) {
+        console.error("Failed to close music session scope", error)
+      } finally {
         this.shutdown()
-        resolve?.()
-      })
+      }
+    }
+    close().then(
+      () => resolve?.(),
+      (error) => reject?.(error),
+    )
     return winner.completion
   }
 
