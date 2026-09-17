@@ -4,7 +4,7 @@ Host-neutral music-session contracts, a same-user machine-local client boundary,
 
 ## Requirements
 
-- Node.js 22.19 or later, or Bun 1.3 or later
+- Node.js or Bun within the [declared runtime ranges](../../docs/package-compatibility.md); the reference distinguishes these lower bounds from tested runtime evidence
 - macOS for system media discovery and transport
 - A TypeScript-aware runtime or bundler because the package publishes TypeScript source
 

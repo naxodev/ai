@@ -75,7 +75,7 @@ In your PR, list your platform, commands, results, and any checks you could not 
 
 Keep changes focused and preserve each host integration contract. Add tests that explain why changed behavior matters. Use Conventional Commit messages, such as `fix(pi-music-dock): keep paused waveform still`.
 
-The [OpenCode compatibility contract](docs/opencode-compatibility.md) records the supported host set and dependency proposal decisions. Update `scripts/opencode-compatibility.json`, both package manifests, and `bun.lock` together. Run `bun run compatibility:check` before the full workspace gate.
+The [OpenCode compatibility contract](docs/opencode-compatibility.md) records the supported host set and dependency proposal decisions. Update `scripts/opencode-compatibility.json`, both package manifests, and `bun.lock` together. Run `bun run compatibility:docs:write` after changing compatibility metadata, then review [the generated reference](docs/package-compatibility.md). `bun run compatibility:check` rejects stale reference content during local checks, CI integration, version preparation, and publication. Generation copies declarations; it does not prove a new runtime minimum or broaden tested support.
 
 ### Asynchronous correctness
 

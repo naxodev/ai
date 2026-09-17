@@ -127,8 +127,8 @@ jobs:
         if: steps.published.outputs.skip != 'true'
         run: bun run lint
 
-      - name: Validate tested OpenCode compatibility set
-        if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
+      - name: Validate compatibility metadata and documentation
+        if: steps.published.outputs.skip != 'true'
         run: bun run compatibility:check
 
       - name: Audit isolated packed OpenCode consumers

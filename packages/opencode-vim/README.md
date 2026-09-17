@@ -3,12 +3,11 @@
 Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 
 > [!IMPORTANT]
-> This source targets stable `opencode v2.0.3`. It requires the matching `@opencode/plugin` and `@opencode/theme` compatibility set. The previous beta host is unsupported.
+> This source requires the exact stable host in the [validated compatibility metadata](../../docs/package-compatibility.md). The host supplies its plugin API and theme; users do not install a separate theme package. The previous beta host is unsupported.
 
 ## Requirements
 
-- OpenCode `v2.0.3`
-- The Bun-based OpenCode runtime; Bun 1.3.7 for workspace development
+- The exact tested OpenCode host and workspace Bun pin listed in the compatibility metadata
 - Neovim, required only for development parity tests
 - A supported clipboard executable for system clipboard yanks: macOS `pbcopy`,
   Wayland `wl-copy`, X11 `xclip` or `xsel`, or Windows PowerShell
@@ -49,7 +48,7 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 
 ## Compatibility
 
-The supported host is exactly OpenCode `2.0.3`, with OpenTUI core and Solid `0.5.10` and SolidJS `1.9.15`. See the [compatibility contract](../../docs/opencode-compatibility.md) for migration and release requirements.
+The supported host and renderer versions are exact pins, not a wider range. See the [compatibility contract](../../docs/opencode-compatibility.md) for migration and release requirements.
 
 The package ships precompiled JavaScript for the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. The plugin API and OpenTUI are optional peers. Solid is required from the host but omitted from npm peer metadata because of an upstream peer-version conflict. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
 
