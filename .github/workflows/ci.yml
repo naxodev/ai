@@ -122,3 +122,6 @@ jobs:
 
       - name: Audit isolated packed OpenCode consumers
         run: bun run security:consumers
+
+      - name: Verify declared Bun minimums in isolated consumers
+        run: bun run compatibility:minimum-bun

@@ -79,6 +79,8 @@ The [OpenCode compatibility contract](docs/opencode-compatibility.md) records th
 
 ### Asynchronous correctness
 
+For isolated minimum-runtime evidence, run `bun run compatibility:minimum-bun`. See [minimum Bun verification](docs/minimum-runtimes.md) for the tested behavior and the distinction between compiled plugin entrypoints and the embedded OpenCode host runtime.
+
 `bun run lint` runs the workspace-wide async gate. `bunx nx run tooling:lint` runs the same gate without caching. The local check, CI quality matrix, Nx pre-version hook, and publication workflow all include it. A package-only check does not replace this workspace gate.
 
 [`.oxlintrc.json`](.oxlintrc.json) enables exactly two error-level rules: `typescript/no-floating-promises` and `typescript/no-misused-promises`. Floating-promise checks include thenables and async IIFEs; `void` does not suppress them. Misused-promise checks include conditions, spreads, and every void-return callback position, including JSX attributes. Prettier owns formatting.

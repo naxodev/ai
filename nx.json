@@ -82,7 +82,7 @@
     },
     "version": {
       "useLegacyVersioning": false,
-      "preVersionCommand": "bun run compatibility:check && bun run security:check && bun run policy:check && bunx nx run-many -t lint typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers",
+      "preVersionCommand": "bun run compatibility:check && bun run security:check && bun run policy:check && bunx nx run-many -t lint typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers && bun run compatibility:minimum-bun",
       "conventionalCommits": true,
       "updateDependents": "auto",
       "fallbackCurrentVersionResolver": "disk",

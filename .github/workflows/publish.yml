@@ -131,6 +131,10 @@ jobs:
         if: steps.published.outputs.skip != 'true'
         run: bun run compatibility:check
 
+      - name: Verify declared Bun minimums in isolated consumers
+        if: steps.published.outputs.skip != 'true'
+        run: bun run compatibility:minimum-bun
+
       - name: Audit isolated packed OpenCode consumers
         if: steps.published.outputs.skip != 'true' && startsWith(steps.release.outputs.project, 'opencode-')
         run: bun run security:consumers
