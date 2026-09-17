@@ -804,7 +804,7 @@
         >
           <div class="flow-node">
             <strong>OpenCode and Pi clients</strong
-            ><span>host UI · subscriptions · local presentation</span>
+            ><span>host UI · subscriptions · catalog acquisition · images</span>
           </div>
           <div class="flow-arrow" aria-hidden="true">→</div>
           <div class="flow-node core">
@@ -815,6 +815,28 @@
           <div class="flow-node">
             <strong>macOS provider</strong
             ><span>one event source · clock · poll · native artwork</span>
+          </div>
+        </div>
+        <div
+          class="flow"
+          role="img"
+          aria-label="Both OpenCode and Pi acquire catalog artwork directly in their host processes, then validate and render images locally; catalog traffic does not pass through the daemon"
+        >
+          <div class="flow-node">
+            <strong>Each OpenCode or Pi host</strong
+            ><span>shared music-core acquisition policy · local ownership</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">↔</div>
+          <div class="flow-node core">
+            <strong>Catalog and image service</strong
+            ><span>bounded requests · matching · transient retry</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>Host-local image presentation</strong
+            ><span
+              >validation · conversion where needed · terminal resources</span
+            >
           </div>
         </div>
         <div class="margin-note">
@@ -832,7 +854,7 @@
         <p class="intro">
           Effect v4 Layers and scopes acquire the provider, coordinator,
           listener, connections, and finalizers as one daemon graph. Clients own
-          only their connection and presentation lifecycle.
+          their connection, catalog acquisition, and presentation lifecycle.
         </p>
         <div class="table-wrap">
           <table>
@@ -872,15 +894,21 @@
                 <td>Coordinator scope</td>
               </tr>
               <tr>
-                <td>Artwork</td>
+                <td>Catalog artwork and terminal images</td>
                 <td>
                   Both hosts use music-core catalog acquisition policy locally.
                   OpenCode owns conversion and shared cache/jobs; Pi validates
                   PNG bytes and owns one current artwork generation. Both render
                   locally and expose an artwork refresh action.
                 </td>
+                <td>No catalog requests or terminal image ownership</td>
+                <td>Host acquisition cancellation and image disposal</td>
+              </tr>
+              <tr>
+                <td>Native provider artwork</td>
+                <td>Request bytes for a recording identity</td>
                 <td>Bounded native read and recording-identity validation</td>
-                <td>Respective scoped owner</td>
+                <td>Daemon provider and coordinator scopes</td>
               </tr>
             </tbody>
           </table>
@@ -1059,9 +1087,11 @@
             <p>
               One reconnecting client feeds compact and sidebar Solid UI.
               OpenCode owns optimistic presentation, seek coalescing,
-              notifications, waveform projection, iTunes lookup and image
-              conversion, bounded cache/jobs, Kitty graphics, and half-block
-              fallback rendering.
+              notifications, waveform projection, and catalog acquisition using
+              shared music-core policy. It keeps image conversion, bounded
+              cache/jobs, Kitty graphics, and half-block fallback rendering
+              local. Shared jobs and cache entries are shared within the host
+              process, not across all clients through the daemon.
             </p>
           </article>
           <article class="host">
@@ -1069,21 +1099,29 @@
             <p>
               One live TUI session owns one reconnecting client, a composable
               status line, waveform, notifications, commands, and shortcuts. Pi
-              does not request or render artwork.
+              requests native artwork through its session client, then falls
+              back to host-side catalog acquisition when native artwork is
+              unusable. Catalog results must contain PNG bytes. Local validation
+              and the pi-tui Image component own image presentation; unsupported
+              terminals show a placeholder. Track replacement, reload, and
+              shutdown fence stale results and dispose owned image resources.
             </p>
           </article>
         </div>
         <p class="intro" style="margin-top: 2rem">
           Neither host owns provider discovery, provider polling, the playback
           clock, native media reads, or cross-host transport ordering. Disposing
-          one client leaves the daemon available to every other client.
+          one client leaves the daemon available to every other client. Both
+          hosts expose artwork refresh without changing playback. Shared catalog
+          policy means shared code, not one machine-wide catalog worker or
+          cache.
         </p>
       </section>
 
       <section id="capacity" aria-labelledby="capacity-title">
         <p class="section-index">07 / Capacity</p>
         <h2 id="capacity-title">
-          Provider cost stays constant while delivery scales with clients
+          Provider observation is shared; catalog and rendering costs stay local
         </h2>
         <div class="table-wrap">
           <table>
@@ -1118,9 +1156,21 @@
                 <td>Host catalog and rendering work</td>
                 <td>O(host clients)</td>
                 <td>
-                  Shared acquisition policy runs host-side with three serial
-                  attempts, bounded reads, and cancellation. Presentation caches
-                  and terminal rendering remain host-owned.
+                  OpenCode and Pi each perform their own catalog work. Identical
+                  tracks in separate host processes can produce separate
+                  requests. Each acquisition has three serial attempts, bounded
+                  reads, and cancellation; this is not a machine-wide request
+                  budget.
+                </td>
+              </tr>
+              <tr>
+                <td>Host memory and terminal images</td>
+                <td>Per host and presentation</td>
+                <td>
+                  OpenCode bounds active jobs, deferred keys, and settled
+                  entries to 32 each. Pi retains its current artwork generation.
+                  Both retain local image data and own their terminal resources.
+                  Cleanup follows view/session disposal, not daemon shutdown.
                 </td>
               </tr>
               <tr>
