@@ -14,8 +14,9 @@
     "smol-toml": "1.8.0"
   },
   "scripts": {
-    "check": "bun run compatibility:check && bun run format:check && bun run security:check && bun run policy:check && bunx nx run-many -t lint typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers",
+    "check": "bun run compatibility:check && bun run format:check && bun run security:check && bun run policy:check && bunx nx run-many -t lint typecheck test parity format:check package:check && bunx nx run-many -t smoke --parallel=1 && bun run security:consumers && bun run compatibility:minimum-bun",
     "lint": "bun run scripts/async-lint.ts",
+    "compatibility:minimum-bun": "bun run scripts/minimum-bun.ts",
     "compatibility:check": "bun run scripts/opencode-compatibility.ts && bun run scripts/compatibility-docs.ts",
     "compatibility:docs:write": "bun run scripts/compatibility-docs.ts --write",
     "format": "prettier --write .",
