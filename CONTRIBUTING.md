@@ -4,16 +4,74 @@ Contributions are welcome. By participating, you agree to follow the [Code of Co
 
 ## Development
 
-Install Bun 1.3.7 and Node.js 22.19 or later. The full workspace gate requires macOS, Neovim, and tmux because it runs media integration and real-TUI smoke tests. Linux and Windows contributors can run the supported targets for a specific cross-platform package. Each OpenCode smoke installs its exact CLI in a temporary consumer. A global CLI installation is unnecessary.
+Install Git, Bun 1.3.7, and Node.js 22.19 or later with npm available on `PATH`. Run the setup commands in Bash on macOS/Linux or PowerShell on Windows:
 
 ```sh
 git clone https://github.com/naxodev/ai.git
 cd ai
 bun install --frozen-lockfile
+```
+
+Run the following shared checks from the repository root on any of those platforms:
+
+```sh
+bun run compatibility:check
+bun run security:check
+bun run format:check
+bun run lint
+bunx nx run-many -t build typecheck
+```
+
+Each OpenCode smoke installs the exact CLI selected by `scripts/opencode-compatibility.json` in a temporary consumer. No global CLI installation or shell command substitution is needed. Inspect the pinned version without installing anything:
+
+```sh
+bun -p 'require("./scripts/opencode-compatibility.json").host.version'
+```
+
+### macOS checks
+
+Install Neovim (`nvim`) and tmux for parity and real-TUI checks. With Homebrew, use `brew install neovim tmux`. The full gate also needs network access for package installation and dependency audits.
+
+```sh
 bun run check
 ```
 
-Run one project's checks with `bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=<project> --parallel=1`. Packing and smoke targets must run serially because OpenCode's prepack build replaces shared output. The project names are `music-core`, `opencode-music-player`, `opencode-vim`, `pi-music-dock`, `apnea`, and `pi-apnea`. Nx skips targets that a selected project does not define.
+This runs the shared checks, policy tests, package tests, parity, package-content checks, installed-package smokes, and consumer audits. A successful run exits zero. Mocked-provider tests do not replace manual checks of real music playback.
+
+### Linux checks
+
+After the shared checks, run the same unit and package-content targets as the Linux CI job:
+
+```sh
+bun run policy:check
+bunx nx run-many -t test format:check package:check
+```
+
+These checks do not require the macOS music provider. Platform-gated tests may skip unsupported integration cases. Leave real-host smokes and Neovim parity to the macOS integration job unless you are specifically investigating platform support.
+
+### Windows checks
+
+Use PowerShell for the shared commands and the following Windows CI targets:
+
+```powershell
+bunx nx run-many -t test format:check package:check --exclude=apnea
+```
+
+CI excludes Apnea's test and package-content targets on Windows and does not run the release-policy suite there. Apnea still receives type-check and lint coverage through the shared checks. Real-host smokes and parity run in the macOS integration job. WSL results are Linux evidence, not native Windows evidence.
+
+### Focused checks and reporting
+
+For a small change, select a project rather than running all package targets. For example, on macOS or Linux:
+
+```sh
+bunx nx run-many -t typecheck test format:check package:check --projects=opencode-vim
+```
+
+The package project names are `music-core`, `opencode-music-player`, `opencode-vim`, `pi-music-dock`, `apnea`, and `pi-apnea`. Root automation is the `tooling` project. Keep the workspace-wide lint gate even for package-only changes.
+
+On macOS with the required tools, include integrations with `bunx nx run-many -t typecheck test parity format:check package:check smoke --projects=opencode-vim --parallel=1`. Packing and smoke targets must run serially because OpenCode's prepack build replaces shared output. Nx skips targets that a selected project does not define.
+
+In your PR, list your platform, commands, results, and any checks you could not run with the missing prerequisite. Do not mark an unavailable check as passed. CI remains responsible for the complete platform matrix and macOS integrations.
 
 Keep changes focused and preserve each host integration contract. Add tests that explain why changed behavior matters. Use Conventional Commit messages, such as `fix(pi-music-dock): keep paused waveform still`.
 
