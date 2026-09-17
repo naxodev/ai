@@ -5,8 +5,8 @@ Pi adapter for the [Apnea workflow engine](../apnea/README.md). It registers Apn
 ## Requirements
 
 - Node.js 22.19 or later
-- Pi 0.83.x or 0.84.x
-- Bun 1.3.7 or later for the transitive `apnea` executable
+- A Pi version in the [declared peer range](../../docs/package-compatibility.md), which also lists the exact test dependency
+- Bun within core's declared runtime range for the transitive `apnea` executable
 - Herdr and at least one supported agent CLI, as documented by [`@naxodev/apnea`](../apnea/README.md#requirements)
 
 ## Install
@@ -49,7 +49,7 @@ Apnea executes repository-controlled text through configured agent CLIs and can 
 
 ## Versioning
 
-This incompatible adapter line requires core `^0.2.0`. Compatible core patch releases flow through that range. Future incompatible host interface changes require coordinated minor releases of both packages.
+The required core range comes from the adapter manifest and appears in the validated compatibility metadata. Compatible core patch releases flow through that range. Future incompatible host interface changes require coordinated minor releases of both packages.
 
 ## Contributing
 

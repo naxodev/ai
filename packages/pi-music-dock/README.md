@@ -18,7 +18,7 @@ Read the [music session architecture field guide](../../docs/music-session-archi
 
 - macOS
 - Node.js 22.19 or later
-- Pi 0.83.x or 0.84.x
+- A Pi version in the [declared peer ranges](../../docs/package-compatibility.md), which also list the exact test dependencies
 - [`media-control`](https://github.com/ungive/media-control), recommended:
 
   ```sh
@@ -131,7 +131,7 @@ bun run check
 bun packages/pi-music-dock/scripts/waveform-demo.ts
 ```
 
-The package smoke packs Pi and music-core, installs exact `@earendil-works/pi-coding-agent@0.84.2` and `@earendil-works/pi-tui@0.84.2`, loads the packed extension through RPC, checks the registered commands, and proves prompt process exit. Pi 0.83.x and 0.84.x remain the supported peer range. Run it on macOS because the package is macOS-only.
+The package smoke packs Pi and music-core, installs the exact development pins listed in the compatibility metadata, loads the packed extension through RPC, checks the registered commands, and proves prompt process exit. Declared peer ranges are broader than this exact tested pair. Run it on macOS because the package is macOS-only.
 
 See the workspace [contribution guide](../../CONTRIBUTING.md) for contribution and release instructions.
 

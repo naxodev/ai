@@ -38,13 +38,12 @@ set -g allow-passthrough on
 ```
 
 > [!IMPORTANT]
-> This source targets stable `opencode v2.0.3`. The previous beta host is unsupported. See the [compatibility contract](../../docs/opencode-compatibility.md) for the exact dependency set and release requirements.
+> This source targets the exact stable host in the [validated compatibility metadata](../../docs/package-compatibility.md). The previous beta host is unsupported. See the [compatibility contract](../../docs/opencode-compatibility.md) for runtime ownership and release requirements.
 
 ## Requirements
 
 - macOS
-- OpenCode `v2.0.3`
-- The Bun-based OpenCode runtime; Bun 1.3.7 for workspace development
+- The exact tested OpenCode host and workspace Bun pin listed in the compatibility metadata
 - [`media-control`](https://github.com/ungive/media-control), recommended:
 
   ```sh

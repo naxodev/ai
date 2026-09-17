@@ -16,7 +16,7 @@ only rebinds roles to profile names that already exist.
 
 ## Requirements
 
-- **bun `>=1.3.7`.** Needed to **run** the tool, not just to build it: the installed `bin` is
+- **Bun within the [declared runtime range](../../docs/package-compatibility.md).** Needed to **run** the tool, not just to build it: the installed `bin` is
   `dist/cli.js` with a `#!/usr/bin/env bun` shebang, and npm does not enforce the `engines.bun`
   key. If you install `@naxodev/apnea` globally with only `node` on `PATH`, the `apnea` command
   will fail on first invocation — this is the most likely first-run failure for a new user.
