@@ -47,7 +47,7 @@ bun run policy:check
 bunx nx run-many -t test format:check package:check
 ```
 
-These checks do not require the macOS music provider. Platform-gated tests may skip unsupported integration cases. Leave real-host smokes and Neovim parity to the macOS integration job unless you are specifically investigating platform support.
+These checks do not require the macOS music provider. Platform-gated tests may skip unsupported integration cases. Music-host smokes and Neovim parity remain in the macOS integration job. Vim has a separate Linux installed-host job with tmux and an isolated X11 clipboard; see its [Linux integration recipe](packages/opencode-vim/README.md#linux-integration).
 
 ### Windows checks
 
