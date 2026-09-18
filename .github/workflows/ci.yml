@@ -71,6 +71,16 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: bunx nx affected -t test --exclude=apnea
 
+      - name: Verify native Windows clipboard lifecycle
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 2
+        run: bun packages/opencode-vim/scripts/windows-clipboard-smoke.ts --isolated-clipboard
+
+      - name: Verify native Windows installed host executable
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 5
+        run: ./packages/opencode-vim/scripts/windows-host-smoke.ps1
+
       - name: Check affected package formatting
         run: bunx nx affected -t format:check
 

@@ -62,7 +62,11 @@ This creates an isolated X11 display, temporary host HOME/XDG directories, and a
 
 Wayland uses `wl-copy` during normal operation, but this CI job verifies X11 only. Host waits and subprocesses have finite deadlines; failures print the stage, captured pane, and host log before temporary resources are removed. Native Windows host and clipboard evidence remains separate from this Linux path.
 
-### Host contract
+### Windows evidence
+
+Windows CI verifies the native host executable, packed installation, real-renderer/unit behavior, and actual Unicode clipboard writes through PowerShell. Interactive modal editing, submission, reload, and exit in Windows Terminal require the [native Windows procedure](../../docs/windows-vim-verification.md). Those interactive checks remain manual; a green quality job or WSL result does not establish them.
+
+### Host runtime
 
 The supported host and renderer versions are exact pins, not a wider range. See the [compatibility contract](../../docs/opencode-compatibility.md) for migration and release requirements.
 
