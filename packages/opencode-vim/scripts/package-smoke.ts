@@ -19,11 +19,17 @@ import { packedRegistry } from "../../../scripts/packed-registry.ts"
 await checkOpenCodeCompatibility()
 const openCodePin = compatibility.host.version
 const expectedOpenCode = `${compatibility.host.binary} v${openCodePin}`
+const linuxClipboard = process.env.OPENCODE_VIM_SMOKE_X11 === "1"
+if (linuxClipboard && (process.platform !== "linux" || !process.env.DISPLAY))
+  throw new Error(
+    "X11 clipboard smoke requires Linux and an isolated Xvfb DISPLAY",
+  )
 
 const socket = `opencode-vim-smoke-${process.pid}-${crypto.randomUUID()}`
 const session = "smoke"
 const tmux = (...args: string[]) =>
   Bun.spawnSync(["tmux", "-L", socket, ...args], {
+    timeout: 10_000,
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -72,6 +78,7 @@ const runTmux = (...args: string[]) => {
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 
 const packed = Bun.spawnSync(["npm", "pack", "--silent"], {
+  timeout: 30_000,
   stdout: "pipe",
   stderr: "pipe",
 })
@@ -124,6 +131,7 @@ try {
   )
   const openCodeVersion = Bun.spawnSync([openCodeBinary, "--version"], {
     cwd: work,
+    timeout: 10_000,
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -254,8 +262,8 @@ export { default } from "./index.js"
       plugins: [
         {
           package: dirname(tuiEntry),
-          // Exercise the Vim register without writing to the user's clipboard.
-          options: { clipboard: "none" },
+          // Opt in only under a dedicated Xvfb display; ordinary smokes never write the desktop clipboard.
+          options: { clipboard: linuxClipboard ? "xclip" : "none" },
         },
       ],
     }),
@@ -296,7 +304,7 @@ export { default } from "./index.js"
         "40",
         command,
       ],
-      { env, stdout: "pipe", stderr: "pipe" },
+      { env, timeout: 10_000, stdout: "pipe", stderr: "pipe" },
     )
     if (!launched.success)
       throw new Error(
@@ -364,6 +372,46 @@ export { default } from "./index.js"
     await waitForFooter("INSERT")
     if (capturePane().includes("abcX"))
       throw new Error("c$ left the original prompt text unchanged")
+    if (linuxClipboard) {
+      stage = "round-tripping Unicode through the isolated X11 clipboard"
+      const text = "Café 音楽 🎵"
+      runTmux("send-keys", "-t", session, "-l", text)
+      runTmux("send-keys", "-t", session, "Escape")
+      await waitForFooter("NORMAL")
+      runTmux("send-keys", "-t", session, "-l", "0v$y")
+      let received = ""
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const read = Bun.spawnSync(["xclip", "-selection", "clipboard", "-o"], {
+          env,
+          timeout: 1_000,
+          stdout: "pipe",
+          stderr: "pipe",
+        })
+        received = read.stdout.toString()
+        if (read.success && received === text) break
+        await Bun.sleep(100)
+      }
+      if (received !== text)
+        throw new Error(
+          `Unicode clipboard mismatch: ${JSON.stringify(received)}`,
+        )
+      runTmux("send-keys", "-t", session, "-l", "0c$")
+      await waitForFooter("INSERT")
+    }
+    stage = "submitting a harmless shell command through the host"
+    // Octal escapes keep the expected output distinct from the text in the prompt.
+    runTmux(
+      "send-keys",
+      "-t",
+      session,
+      "-l",
+      "!printf '\\126\\111\\115\\137\\123\\125\\102\\115\\111\\124\\117\\113'",
+    )
+    runTmux("send-keys", "-t", session, "Enter")
+    await waitForPane(
+      (pane) => pane.includes("VIM_SUBMITOK"),
+      "submitted shell output",
+    )
   } catch (error) {
     const pane = capturePane()
     const detail = error instanceof Error ? error.message : String(error)

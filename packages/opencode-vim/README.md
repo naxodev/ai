@@ -48,6 +48,22 @@ Use `/vim` or the command palette action **Toggle Vim mode** to persistently ena
 
 ## Compatibility
 
+### Linux integration
+
+CI runs the packed plugin in the exact supported OpenCode host on Ubuntu. It verifies package-name loading, insert/normal/visual modes, undo and register retention across reload, shell-command submission, and Unicode clipboard output through `xclip`.
+
+For a local reproduction, install `tmux`, `xvfb`, `xauth`, and `xclip` with your system package manager. From `packages/opencode-vim`, run:
+
+```sh
+xvfb-run -a env OPENCODE_VIM_SMOKE_X11=1 bun run smoke:package
+```
+
+This creates an isolated X11 display, temporary host HOME/XDG directories, and a dedicated tmux server. The TUI itself needs a terminal, not a graphical desktop. Xvfb is needed only for the clipboard check. Do not enable `OPENCODE_VIM_SMOKE_X11` against your desktop display: it writes test text to that display's clipboard. Ordinary smokes keep clipboard access disabled.
+
+Wayland uses `wl-copy` during normal operation, but this CI job verifies X11 only. Host waits and subprocesses have finite deadlines; failures print the stage, captured pane, and host log before temporary resources are removed. Native Windows host and clipboard evidence remains separate from this Linux path.
+
+### Host contract
+
 The supported host and renderer versions are exact pins, not a wider range. See the [compatibility contract](../../docs/opencode-compatibility.md) for migration and release requirements.
 
 The package ships precompiled JavaScript for the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. The plugin API and OpenTUI are optional peers. Solid is required from the host but omitted from npm peer metadata because of an upstream peer-version conflict. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
