@@ -519,10 +519,20 @@ test("focused panel keys delegate transport exactly once through the same client
 	component.handleInput(" ");
 	component.handleInput("\x1b[C");
 	component.handleInput("\x1b[D");
+	component.handleInput("]");
+	component.handleInput("[");
 	await flush();
-	expect(client.calls).toEqual(["toggle", "next", "previous"]);
+	expect(client.calls).toEqual([
+		"toggle",
+		"next",
+		"previous",
+		"seek:9000",
+		"seek:0",
+	]);
 	component.handleInput("\x1b");
 	expect(dock.overlays[0]!.handle.focused).toBe(false);
+	component.handleInput("]");
+	expect(client.calls).toHaveLength(5);
 	await dock.shutdown();
 });
 

@@ -435,6 +435,12 @@ export function createMusicDock(
 						console.error("Failed to report previous-track command", error),
 					);
 				},
+				onSeek: (positionMs) => {
+					// The live session owns transport and error reporting; the daemon publishes the result.
+					command(ctx, (client) => client.seek(positionMs)).catch((error) =>
+						console.error("Failed to report seek command", error),
+					);
+				},
 				onUnfocus: () => unfocusSidebar(session),
 				onChange: () => tui.requestRender(),
 			},
