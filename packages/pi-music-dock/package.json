@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/pi-music-dock",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Pi status-line dock and responsive side panel for macOS system Now Playing (media-control)",
   "license": "MIT",
   "author": "Nacho Vazquez",
