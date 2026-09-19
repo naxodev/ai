@@ -118,7 +118,7 @@ Automated tests cannot confirm live macOS media state or terminal rendering. Ver
 3. Resize below 80 columns and confirm the panel auto-hides; widen again and confirm it returns.
 4. Run `/music-view` and `ctrl+alt+m`; confirm toggle. Run `/music-focus`, then Space / arrows / Escape.
 5. Run `/music`, `/music-next`, and `/music-prev`; confirm controls and status reflect the shared daemon state.
-6. Try `ctrl+alt+p`, `ctrl+alt+n`, and `ctrl+alt+b`; use the slash commands if the terminal intercepts a chord.
+6. Try `ctrl+alt+p`, `ctrl+alt+n`, and `ctrl+alt+b`; use the slash commands if the terminal intercepts a chord. Run `/music-focus`, then use `[` and `]` to seek backward/forward ten seconds. The targets use the accepted playback snapshot projected to the current time, clamp at zero and one second before the track end, and leave playback commands to the daemon. Missing position or duration displays `Seek unavailable`. Escape returns focus to the prompt; unfocused brackets do not seek.
 7. Run `/reload`; confirm one Pi client, one overlay, and one status remain.
 8. Keep another host connected, close Pi, and confirm the other host remains healthy.
 9. Exit the final client; confirm the daemon can complete idle shutdown and remove its owned socket artifacts.

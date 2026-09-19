@@ -41,6 +41,7 @@ export type MusicSidebarHandlers = {
 	onTogglePlayback: () => void;
 	onNext: () => void;
 	onPrevious: () => void;
+	onSeek?: (positionMs: number) => void;
 	onUnfocus: () => void;
 	onChange?: () => void;
 };
@@ -300,6 +301,11 @@ export function createMusicSidebar(
 
 	const handleInput = (data: string) => {
 		if (disposed || !state.focused) return;
+		if (data === "[" || data === "]") {
+			const position = seekFromSnapshot(data === "[" ? -10_000 : 10_000);
+			if (position !== null) handlers.onSeek?.(position);
+			return;
+		}
 		if (matchesKey(data, Key.escape)) {
 			handlers.onUnfocus();
 			return;
@@ -318,6 +324,28 @@ export function createMusicSidebar(
 	};
 
 	const liveProgressMs = (): number => liveProgressOf(state.player, now());
+	const seekFromSnapshot = (delta: number): number | null => {
+		const player = state.player;
+		const duration = player?.track?.duration_ms;
+		if (
+			!player ||
+			!handlers.onSeek ||
+			typeof duration !== "number" ||
+			!Number.isFinite(duration) ||
+			duration <= 0 ||
+			!Number.isFinite(player.progress_ms) ||
+			player.progress_ms < 0 ||
+			!Number.isFinite(player.fetched_at)
+		)
+			return null;
+		const progress = liveProgressMs();
+		if (!Number.isFinite(progress)) return null;
+		// Match the shared host convention: seeking must not finish the track.
+		return Math.max(
+			0,
+			Math.min(Math.max(0, duration - 1_000), Math.round(progress + delta)),
+		);
+	};
 
 	const renderArtwork = (inner: number): string[] => {
 		const reserveSlot = (lines: string[]) => {
@@ -421,6 +449,16 @@ export function createMusicSidebar(
 		if (state.focused) {
 			lines.push(line(theme.fg("dim", " Space play/pause")));
 			lines.push(line(theme.fg("dim", " ← prev  → next")));
+			lines.push(
+				line(
+					theme.fg(
+						"dim",
+						seekFromSnapshot(0) === null
+							? " Seek unavailable"
+							: " [ -10s  ] +10s",
+					),
+				),
+			);
 			lines.push(line(theme.fg("dim", " Esc unfocus")));
 		} else {
 			lines.push(line(theme.fg("dim", " /music-focus focus")));

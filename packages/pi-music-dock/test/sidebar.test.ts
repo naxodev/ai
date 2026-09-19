@@ -54,6 +54,7 @@ function panel(options?: {
 		toggle: 0,
 		next: 0,
 		prev: 0,
+		seeks: [] as number[],
 		unfocus: 0,
 		change: 0,
 		render: 0,
@@ -78,6 +79,9 @@ function panel(options?: {
 			onTogglePlayback: () => calls.toggle++,
 			onNext: () => calls.next++,
 			onPrevious: () => calls.prev++,
+			onSeek: (position) => {
+				calls.seeks.push(position);
+			},
 			onUnfocus: () => calls.unfocus++,
 			onChange: () => calls.change++,
 		},
@@ -85,6 +89,67 @@ function panel(options?: {
 	);
 	return { sidebar, calls, writes };
 }
+
+test("focused seeking projects the accepted playback clock and leaves unfocused prompt keys alone", () => {
+	const { sidebar, calls } = panel({ now: () => 11_000 });
+	sidebar.update({
+		player: player("Seek", { progress_ms: 20_000, fetched_at: 1_000 }),
+		focused: false,
+	});
+	sidebar.handleInput?.("]");
+	expect(calls.seeks).toEqual([]);
+	sidebar.update({ focused: true });
+	expect(sidebar.render(40).join("\n")).toContain("[ -10s  ] +10s");
+	sidebar.handleInput?.("]");
+	sidebar.handleInput?.("[");
+	expect(calls.seeks).toEqual([40_000, 20_000]);
+	sidebar.update({
+		player: player("Paused", {
+			is_playing: false,
+			progress_ms: 20_000,
+			fetched_at: 1_000,
+		}),
+	});
+	sidebar.handleInput?.("]");
+	expect(calls.seeks.at(-1)).toBe(30_000);
+	sidebar.dispose();
+	sidebar.handleInput?.("]");
+	expect(calls.seeks).toHaveLength(3);
+});
+
+test("seek clamps before both boundaries and disables unknown duration or position", () => {
+	const { sidebar, calls } = panel({ now: () => 1_000 });
+	sidebar.update({
+		focused: true,
+		player: player("Near start", {
+			is_playing: false,
+			progress_ms: 500,
+			fetched_at: 1_000,
+		}),
+	});
+	sidebar.handleInput?.("[");
+	expect(calls.seeks).toEqual([0]);
+	sidebar.update({
+		player: player("Near end", {
+			is_playing: false,
+			progress_ms: 179_500,
+			fetched_at: 1_000,
+		}),
+	});
+	sidebar.handleInput?.("]");
+	expect(calls.seeks.at(-1)).toBe(179_000);
+	for (const invalid of [
+		null,
+		player("Unknown", { progress_ms: Number.NaN }),
+		player("Unknown", { track: { ...player().track!, duration_ms: 0 } }),
+	]) {
+		sidebar.update({ player: invalid });
+		sidebar.handleInput?.("]");
+		expect(sidebar.render(40).join("\n")).toContain("Seek unavailable");
+	}
+	expect(calls.seeks).toHaveLength(2);
+	sidebar.dispose();
+});
 
 test("track metadata cannot inject terminal controls into themed panel text", () => {
 	// Why: metadata comes from external players. OSC 52 and line controls must
