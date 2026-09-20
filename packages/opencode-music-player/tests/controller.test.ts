@@ -2,6 +2,16 @@ import { expect, test } from "bun:test"
 import { createController } from "../index.tsx"
 import { createSessionSystemMedia } from "../system-media.ts"
 import type { PlayerState } from "../types.ts"
+import { mkdtemp, rm } from "node:fs/promises"
+import {
+  createReconnectingMusicSessionClient,
+  type ReconnectingMusicSessionClient,
+  type ReconnectingMusicSessionClientOptions,
+} from "../../music-core/session/client.ts"
+import { resolveMusicSessionRuntimePaths } from "../../music-core/session/config.ts"
+import { createFakeProvider } from "../../music-core/session/provider.ts"
+import { startMusicSessionServer } from "../../music-core/session/server.ts"
+import { createMusicDock } from "../../pi-music-dock/extensions/music-dock/index.ts"
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void
@@ -84,8 +94,8 @@ function createClient(initial = player("A")) {
       this.connection = next
       for (const listener of [...connectionListeners]) listener(next)
     },
-    async toggle() {
-      return { action: "toggle" as const }
+    toggle() {
+      return this.command("toggle")
     },
     async command(name: string) {
       calls.push(name)
@@ -191,7 +201,7 @@ test("commands delegate immediately, retain narrow latest seek, and preserve loa
   const firstSeek = view.controller.seek(10_000)
   const latestSeek = view.controller.seek(20_000)
   await flush()
-  expect(calls).toEqual(["play", "next", "seek:10000"])
+  expect(calls).toEqual(["toggle", "next", "seek:10000"])
   expect(view.session.loading).toBeTrue()
   expect(view.session.player).toMatchObject({
     is_playing: false,
@@ -201,7 +211,7 @@ test("commands delegate immediately, retain narrow latest seek, and preserve loa
   })
   gate.resolve()
   await Promise.all([play, next, firstSeek, latestSeek])
-  expect(calls).toEqual(["play", "next", "seek:10000", "seek:20000"])
+  expect(calls).toEqual(["toggle", "next", "seek:10000", "seek:20000"])
   expect(view.session.loading).toBeFalse()
   expect(view.session.player).toMatchObject({
     is_playing: false,
@@ -244,6 +254,180 @@ test("session artwork completion merges through the controller without replacing
   expect(view.session.player?.track?.artwork_loading).toBeFalse()
   view.controller.dispose()
 })
+
+test.skipIf(process.platform === "win32")(
+  "Pi and OpenCode adapters toggle one daemon despite stale views and rapid clicks",
+  async () => {
+    const provider = createFakeProvider(player("shared"))
+    // The Unix socket limit requires a short temporary runtime path.
+    const root = await mkdtemp("/tmp/music-toggle-")
+    const runtime = resolveMusicSessionRuntimePaths({ root })
+    let server: Awaited<ReturnType<typeof startMusicSessionServer>> | undefined
+    const clients: ReconnectingMusicSessionClient[] = []
+    const connect = (options: ReconnectingMusicSessionClientOptions) =>
+      createReconnectingMusicSessionClient({
+        ...options,
+        runtime,
+        launcher: async () => {
+          throw new Error("Fixture daemon must already be running")
+        },
+      })
+    const events: Record<string, (...args: any[]) => Promise<void>> = {}
+    const commands: Record<
+      string,
+      { handler: (...args: any[]) => Promise<void> }
+    > = {}
+    const notifications: string[] = []
+    const ctx = {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        setWidget() {},
+        setStatus() {},
+        theme: { fg: (_color: string, text: string) => text },
+        notify: (text: string) => notifications.push(text),
+      },
+    }
+    let view: ReturnType<typeof harness> | undefined
+    const admitted = Array.from({ length: 5 }, () => deferred<void>())
+    const releases = Array.from({ length: 3 }, () => deferred<void>())
+    let admissionCount = 0
+    try {
+      server = await startMusicSessionServer({ runtime }, provider, {
+        onCommandAdmission: () => admitted[admissionCount++]?.resolve(),
+      })
+      const oc = await connect({
+        hostKind: "opencode",
+        clientId: "toggle-opencode",
+      })
+      clients.push(oc)
+      expect(oc.daemonInstanceId).toBe(server.coordinator.daemonInstanceId)
+      // Delay OpenCode state delivery while real transport acknowledgements flow.
+      const subscribe = oc.subscribeState.bind(oc)
+      oc.subscribeState = (listener) => {
+        let replayed = false
+        return subscribe((snapshot) => {
+          if (replayed) return
+          replayed = true
+          listener(snapshot)
+        })
+      }
+      view = harness(oc)
+      const installed = deferred<void>()
+      createMusicDock(
+        {
+          registerShortcut() {},
+          registerCommand: (name: string, command: any) => {
+            commands[name] = command
+          },
+          on: (name: string, handler: any) => {
+            events[name] = handler
+          },
+        } as never,
+        {
+          createClient: async (options) => {
+            const client = await connect(options)
+            clients.push(client)
+            const subscribeConnection = client.subscribeConnection.bind(client)
+            client.subscribeConnection = (listener) => {
+              const dispose = subscribeConnection(listener)
+              installed.resolve()
+              return dispose
+            }
+            return client
+          },
+          fetch: async () => new Response(null, { status: 404 }),
+        },
+      )
+      await events.session_start!({}, ctx)
+      await installed.promise
+      expect(clients[0]!.daemonInstanceId).toBe(clients[1]!.daemonInstanceId)
+      expect(view.session.player?.track?.id).toBe("shared")
+      expect(provider.counts.subscriptions).toBe(1)
+      await commands.music!.handler("", ctx)
+      expect(notifications).toEqual([])
+      expect(provider.calls).toEqual(["play"])
+      expect(provider.state.is_playing).toBeTrue()
+      expect(view.session.player?.is_playing).toBeFalse()
+      await view.controller.playPause()
+      expect(provider.state.is_playing).toBeFalse()
+
+      const started = Array.from({ length: 3 }, () => deferred<void>())
+      let transportIndex = 0
+      const transport = provider.transport.bind(provider)
+      provider.transport = async (action, position) => {
+        const index = transportIndex++
+        started[index]!.resolve()
+        await releases[index]!.promise
+        if (index === 1) provider.failNextTransport()
+        await transport(action, position)
+      }
+      const settlements: string[] = []
+      const first = view.controller.playPause().then(() => {
+        settlements.push("opencode-first")
+      })
+      await admitted[2]!.promise
+      await started[0]!.promise
+      const second = commands.music!.handler("", ctx).then(() => {
+        settlements.push("pi")
+      })
+      await admitted[3]!.promise
+      const third = view.controller.playPause().then(() => {
+        settlements.push("opencode-third")
+      })
+      expect(view.session.loading).toBeTrue()
+      expect(settlements).toEqual([])
+      releases[0]!.resolve()
+      await first
+      expect(settlements).toEqual(["opencode-first"])
+      expect(view.session.loading).toBeTrue()
+      // Each socket processes requests serially; its next request enters after the first acknowledgement.
+      await admitted[4]!.promise
+      await started[1]!.promise
+      releases[1]!.resolve()
+      await second
+      expect(settlements).toEqual(["opencode-first", "pi"])
+      expect(notifications).toEqual(["provider transport failed"])
+      expect(view.toasts).toEqual([])
+      expect(view.session.loading).toBeTrue()
+      expect(provider.state.is_playing).toBeTrue()
+      await started[2]!.promise
+      releases[2]!.resolve()
+      await third
+      expect(settlements).toEqual(["opencode-first", "pi", "opencode-third"])
+      // The failed Pi toggle must not project pause before the final OpenCode toggle.
+      expect(provider.calls).toEqual([
+        "play",
+        "pause",
+        "play",
+        "pause",
+        "pause",
+      ])
+      expect(provider.state.is_playing).toBeFalse()
+      expect(view.session.player?.is_playing).toBeFalse()
+      expect(view.session.loading).toBeFalse()
+      expect(view.toasts).toEqual([])
+    } finally {
+      for (const release of releases) release.resolve()
+      const errors: unknown[] = []
+      for (const cleanup of [
+        () => events.session_shutdown?.({}, ctx),
+        () => view?.controller.dispose(),
+        ...clients.map((client) => () => client.dispose()),
+        () => server?.close(),
+        () => rm(root, { recursive: true, force: true }),
+      ]) {
+        try {
+          await cleanup()
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+      if (errors.length)
+        throw new AggregateError(errors, "Toggle fixture cleanup failed")
+    }
+  },
+)
 
 test("same-track polling does not reopen completed artwork", async () => {
   let now = 1_000
@@ -336,7 +520,7 @@ test("very short tracks clamp end-of-bar seeks to the start rather than negative
   view.controller.dispose()
 })
 
-test("playback intent survives command success until daemon acknowledgement", async () => {
+test("clicks remain toggles when command acknowledgement precedes state replay", async () => {
   const { client, calls } = createClient()
   const gate = deferred<void>()
   client.gate = gate.promise
@@ -349,12 +533,12 @@ test("playback intent survives command success until daemon acknowledgement", as
   const pause = view.controller.playPause()
   await pause
 
-  expect(calls).toEqual(["play", "pause"])
+  expect(calls).toEqual(["toggle", "toggle"])
   expect(view.session.player?.is_playing).toBeFalse()
   view.controller.dispose()
 })
 
-test("connection loss clears playback intent before replacement authority", async () => {
+test("replacement authority receives toggles without retained local intent", async () => {
   const { client, calls } = createClient()
   const view = harness(client)
   await flush()
@@ -367,7 +551,7 @@ test("connection loss clears playback intent before replacement authority", asyn
   client.emitState(player("replacement", false), 1, "daemon-b")
   await view.controller.playPause()
 
-  expect(calls).toEqual(["play", "play"])
+  expect(calls).toEqual(["toggle", "toggle"])
   view.controller.dispose()
 })
 
@@ -525,7 +709,7 @@ test("disposal settles callers and fences held command and late state", async ()
   client.emitState(player("late", true))
   gate.resolve()
   await flush()
-  expect(calls).toEqual(["play"])
+  expect(calls).toEqual(["toggle"])
   expect(client.disposeCalls).toBe(1)
   expect(view.session.player).toBe(before)
   expect(view.session.loading).toBeFalse()

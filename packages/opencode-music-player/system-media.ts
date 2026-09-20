@@ -515,6 +515,9 @@ export function createSessionSystemMedia(
     async play() {
       await (await activeClient()).play()
     },
+    async toggle() {
+      await (await activeClient()).toggle()
+    },
     async pause() {
       await (await activeClient()).pause()
     },

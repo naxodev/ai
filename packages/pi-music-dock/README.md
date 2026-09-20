@@ -6,6 +6,8 @@ The extension calls `ctx.ui.setStatus` for the footer line. The side panel is a 
 
 ## Architecture
 
+Play/pause follows the shared [playback toggle contract](../music-core/README.md#playback-toggle-contract). Each activation toggles the daemon's accepted state in queue order, including actions interleaved with OpenCode.
+
 Each live Pi TUI session owns **one** reconnecting music-session client and its local status, side panel, waveform, artwork, and notification lifecycle. The same-user machine-local daemon owns provider discovery, provider stream and polling, the playback clock, global transport ordering, and native media reads.
 
 The side panel is a **plugin-only approximation**. Pi has no layout-reserving sidebar slot, so the panel is a right-center overlay that may cover transcript content. It is not a true layout sidebar.

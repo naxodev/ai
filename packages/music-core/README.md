@@ -26,6 +26,16 @@ Read the [music session architecture field guide](../../docs/music-session-archi
 
 ## Public surface
 
+### Playback toggle contract
+
+Pi and OpenCode send one `toggle()` command for each play/pause activation. The daemon resolves each toggle against its latest accepted playback state when the command leaves the global queue. It sends `pause` if playback is active and `play` otherwise. It does not resample the provider before each command.
+
+A stale view therefore cannot choose the action. If Pi starts playback while OpenCode still shows paused, the next OpenCode activation pauses playback. The displayed icon describes the last received state; it does not bind the command to that displayed action.
+
+Rapid activations remain separate queued commands. Two successful toggles with no intervening state change return playback to its starting state. Actions from other clients share the queue in daemon admission order. Provider events can also update the accepted state between commands.
+
+Command acknowledgements settle loading and error feedback. Hosts update playback presentation from revisioned state snapshots, not from acknowledgements or local click counts. A failed toggle does not project a successful state change. Disconnected commands fail rather than replaying after reconnect. Explicit `play()` and `pause()` remain available for callers that need a specific action.
+
 ### Host-side catalog artwork
 
 `acquireCatalogArtwork(target, options)` runs in the host process. It returns bounded image bytes and matched duration, or an `unavailable`, `exhausted`, or `aborted` outcome. It does not modify daemon playback state, decode images, or cache presentation.
