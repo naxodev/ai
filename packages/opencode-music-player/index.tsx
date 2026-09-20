@@ -105,14 +105,6 @@ export function createController(
   } = { message: null, source: undefined }
   let transportError: string | null = null
   let receivedSnapshot = false
-  let snapshotEpoch = 0
-  let playbackIntent:
-    | {
-        readonly target: boolean
-        readonly startedAtEpoch: number
-        settled: boolean
-      }
-    | undefined
   let activeSeek: SeekIntent | null = null
   let latestSeek: SeekIntent | null = null
   const pending = new Set<() => void>()
@@ -159,7 +151,7 @@ export function createController(
 
   const runCommand = (
     command: () => Promise<unknown>,
-    onSettled?: (succeeded: boolean) => void,
+    onSettled?: () => void,
   ) => {
     if (!isActive()) return Promise.resolve()
     const generation = lifecycleGeneration
@@ -172,11 +164,9 @@ export function createController(
       } catch (error) {
         result = Promise.reject(error)
       }
-      let succeeded = false
       void Promise.resolve(result)
         .then(
           () => {
-            succeeded = true
             if (!isActive() || generation !== lifecycleGeneration) return
             if (transportError !== null) setTransportError(null)
           },
@@ -189,7 +179,7 @@ export function createController(
         )
         .finally(() => {
           try {
-            onSettled?.(succeeded)
+            onSettled?.()
           } finally {
             settle(resolve)
           }
@@ -238,33 +228,8 @@ export function createController(
     }
   }
 
-  const playPause = () => {
-    const nextPlaying = !(
-      playbackIntent?.target ?? !!session.player?.is_playing
-    )
-    const intent = {
-      target: nextPlaying,
-      startedAtEpoch: snapshotEpoch,
-      settled: false,
-    }
-    playbackIntent = intent
-    return runCommand(
-      () => (nextPlaying ? media.play() : media.pause()),
-      (succeeded) => {
-        if (playbackIntent !== intent) return
-        if (!succeeded) {
-          playbackIntent = undefined
-          return
-        }
-        intent.settled = true
-        if (
-          snapshotEpoch > intent.startedAtEpoch &&
-          session.player?.is_playing === intent.target
-        )
-          playbackIntent = undefined
-      },
-    )
-  }
+  // Each click toggles daemon state at dequeue time, including rapid clicks.
+  const playPause = () => runCommand(() => media.toggle())
 
   const seek = (positionMs: number) => {
     const target = seekTarget(positionMs, session.player?.track?.duration_ms)
@@ -288,16 +253,9 @@ export function createController(
     if (!isActive()) return
     if (event?.type === "snapshot") {
       receivedSnapshot = true
-      snapshotEpoch++
       setSession((draft) => {
         draft.player = mergePlayerSnapshot(draft.player, event.state)
       })
-      if (
-        playbackIntent?.settled &&
-        snapshotEpoch > playbackIntent.startedAtEpoch &&
-        event.state.is_playing === playbackIntent.target
-      )
-        playbackIntent = undefined
       return
     }
     if (event?.type === "lifecycle") {
@@ -306,8 +264,6 @@ export function createController(
       // takes precedence over provider status, and clearing it restores the
       // latest daemon lifecycle state without requiring a repeated event.
       setLifecycleError(event.message, event.source)
-      if (event.source === "connection" && event.message !== null)
-        playbackIntent = undefined
       if (event.message !== null && latestSeek) {
         latestSeek.resolves.splice(0).forEach((resolve) => resolve())
         latestSeek = null

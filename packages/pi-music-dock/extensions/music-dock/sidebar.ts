@@ -25,7 +25,7 @@ export type SidebarTheme = {
 	 * Optional so fake themes without a background seam fall back to an
 	 * ANSI default-background fill that still erases content underneath.
 	 */
-	bg?: (color: string, text: string) => string;
+	bg?: ((color: string, text: string) => string) | undefined;
 	bold?: (text: string) => string;
 };
 

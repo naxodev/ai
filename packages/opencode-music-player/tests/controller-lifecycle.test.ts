@@ -85,6 +85,7 @@ function client(name: string) {
       for (const listener of [...listeners]) listener(next)
     },
     async toggle() {
+      await this.gate
       return { action: "toggle" as const }
     },
     async play() {

@@ -311,6 +311,7 @@ const plugin = createMusicPlayerPlugin({
       createSessionMedia: () => ({
         player: async () => null,
         play: async () => { playing = true },
+        toggle: async () => { playing = !playing },
         pause: async () => { playing = false },
         next: async () => {},
         previous: async () => {},

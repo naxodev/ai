@@ -70,6 +70,7 @@ export type SessionMedia = {
   player: () => Promise<PlayerState | null>
   refreshArtwork: () => Promise<void>
   play: () => Promise<unknown>
+  toggle: () => Promise<unknown>
   pause: () => Promise<unknown>
   next: () => Promise<unknown>
   previous: () => Promise<unknown>

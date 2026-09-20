@@ -8,7 +8,7 @@ It supports browsers, Spotify, Apple Music, Kaset, and other apps exposed throug
 
 One reconnecting music-session client supplies replayed and live state, provider status, transport, and daemon-owned native artwork bytes. The shared same-user daemon owns provider discovery, provider events and polling, the playback clock, and global transport ordering.
 
-OpenCode keeps plugin/controller lifecycle, the Solid compact and sidebar UI, optimistic transport presentation, seek coalescing, notifications, waveform projection, iTunes catalog fallback and downloads, conversion, bounded presentation cache/jobs, and Kitty or half-block rendering. Plugin disposal removes local listeners and presentation work, then disposes only its session client. Other clients keep the shared daemon alive.
+OpenCode keeps plugin/controller lifecycle, the Solid compact and sidebar UI, transport loading feedback, seek coalescing, notifications, waveform projection, iTunes catalog fallback and downloads, conversion, bounded presentation cache/jobs, and Kitty or half-block rendering. Plugin disposal removes local listeners and presentation work, then disposes only its session client. Other clients keep the shared daemon alive.
 
 Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the daemon protocol, replay, reconnect, and cleanup model.
 
@@ -95,6 +95,8 @@ The package precompiles JSX to JavaScript and keeps every package import externa
 Start `opencode` and run `/plugins` in the TUI. The list should include `music-player`. CLI-only plugins do not appear in the server plugin API. Inspect `~/.local/share/opencode/log/opencode.log` for package resolution or setup errors.
 
 ## Controls
+
+Play/pause uses the shared [playback toggle contract](../music-core/README.md#playback-toggle-contract). Each activation toggles the daemon's accepted state in queue order, even when this view's icon is stale. Rapid clicks remain separate commands.
 
 The compact bar appears below the active route whenever a current track exists, including while playback is paused. It remains visible when the session sidebar is collapsed. Wide terminals show the playback marker, title, and artist. Medium terminals omit the artist. Narrow terminals truncate the title, then keep only the playback marker when metadata cannot fit safely. The bar always stays on one row.
 
