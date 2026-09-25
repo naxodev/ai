@@ -6,15 +6,15 @@ import { emptyPlayer } from "../types.ts"
 
 const theme = {
   text: {
-    default: "white",
-    subdued: "gray",
-    action: { primary: { default: "blue" } },
-    feedback: { error: { default: "red" } },
+    base: "white",
+    muted: "gray",
+    action: { primary: { base: "blue" } },
+    feedback: { error: { base: "red" } },
   },
-  border: { default: "gray" },
+  border: { base: "gray" },
   background: {
-    surface: { offset: "black" },
-    action: { primary: { default: "black" } },
+    raised: { base: "black" },
+    action: { primary: { base: "black" } },
   },
 }
 

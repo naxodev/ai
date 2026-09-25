@@ -1,13 +1,13 @@
 {
   "host": {
     "package": "@opencode/cli",
-    "version": "2.0.3",
+    "version": "2.0.16",
     "binary": "opencode"
   },
   "peerDependencies": {
-    "@opencode/plugin": "2.0.3",
+    "@opencode/plugin": "2.0.16",
     "@opentui/core": "0.5.10",
     "@opentui/solid": "0.5.10"
   },
-  "devDependencies": { "@opencode/theme": "2.0.3", "solid-js": "1.9.15" }
+  "devDependencies": { "@opencode/theme": "2.0.16", "solid-js": "1.9.15" }
 }

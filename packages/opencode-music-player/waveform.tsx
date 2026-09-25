@@ -138,7 +138,7 @@ const BLUE = [
 ] as const
 
 function blueFor(level: number, playing: boolean, theme: Theme) {
-  if (!playing && level < 0.05) return theme.text.subdued
+  if (!playing && level < 0.05) return theme.text.muted
   if (level <= 0.02) return BLUE[1]!
   const idx = Math.min(BLUE.length - 1, Math.floor(level * (BLUE.length - 1)))
   return BLUE[Math.max(2, idx)]!

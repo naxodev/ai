@@ -6,7 +6,7 @@ Declared ranges describe installation metadata, not proof that every version or 
 
 Workspace checks use `bun@1.3.7`. This is not a claim that all declared minimum runtimes were exercised.
 
-The tested OpenCode host is `@opencode/cli@2.0.3`. It supplies `@opencode/plugin@2.0.3`, `@opencode/theme@2.0.3`, `@opentui/core@0.5.10`, `@opentui/solid@0.5.10`, and `solid-js@1.9.15`. These are exact tested pins, not a broader host range. See the [OpenCode compatibility contract](opencode-compatibility.md) for runtime ownership and package-name verification.
+The tested OpenCode host is `@opencode/cli@2.0.16`. It supplies `@opencode/plugin@2.0.16`, `@opencode/theme@2.0.16`, `@opentui/core@0.5.10`, `@opentui/solid@0.5.10`, and `solid-js@1.9.15`. These are exact tested pins, not a broader host range. See the [OpenCode compatibility contract](opencode-compatibility.md) for runtime ownership and package-name verification.
 
 ## @naxodev/apnea
 
@@ -24,7 +24,7 @@ The tested OpenCode host is `@opencode/cli@2.0.3`. It supplies `@opencode/plugin
 - Declared bun range: `>=1.3.0`.
 - Manifest OS restriction: `darwin`.
 - Required core: `@naxodev/music-core@^0.1.4`.
-- Declared peer: `@opencode/plugin@2.0.3`.
+- Declared peer: `@opencode/plugin@2.0.16`.
 - Declared peer: `@opentui/core@0.5.10`.
 - Declared peer: `@opentui/solid@0.5.10`.
 
@@ -32,7 +32,7 @@ The tested OpenCode host is `@opencode/cli@2.0.3`. It supplies `@opencode/plugin
 
 - Declared bun range: `>=1.3.0`.
 - No manifest OS restriction; this does not establish tested platform support.
-- Declared peer: `@opencode/plugin@2.0.3`.
+- Declared peer: `@opencode/plugin@2.0.16`.
 - Declared peer: `@opentui/core@0.5.10`.
 - Declared peer: `@opentui/solid@0.5.10`.
 

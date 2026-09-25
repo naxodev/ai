@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/opencode-vim",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Native Vim-style modal prompt editing for the OpenCode 2 TUI",
   "license": "MIT",
   "author": {
@@ -55,16 +55,16 @@
     "validate": "bun run format:check && bun run check && bun run test && bun run test:parity && bun run pack:check && bun run smoke:package"
   },
   "peerDependencies": {
-    "@opencode/plugin": "2.0.3",
+    "@opencode/plugin": "2.0.16",
     "@opentui/core": "0.5.10",
     "@opentui/solid": "0.5.10"
   },
   "devDependencies": {
-    "@opencode/plugin": "2.0.3",
+    "@opencode/plugin": "2.0.16",
     "@opentui/core": "0.5.10",
     "@opentui/solid": "0.5.10",
     "solid-js": "1.9.15",
-    "@opencode/theme": "2.0.3",
+    "@opencode/theme": "2.0.16",
     "@types/bun": "^1.3.14",
     "prettier": "3.9.6",
     "typescript": "7.0.2"

@@ -2,15 +2,21 @@
 
 Both OpenCode plugins share one exact supported host set in [scripts/opencode-compatibility.json](../scripts/opencode-compatibility.json).
 
-- `@opencode/cli`, `@opencode/plugin`, and `@opencode/theme`: `2.0.3`.
+- `@opencode/cli`, `@opencode/plugin`, and `@opencode/theme`: `2.0.16`.
 - `@opentui/core` and `@opentui/solid`: `0.5.10`.
 - `solid-js`: `1.9.15`.
 
-The [stable CLI source catalog](https://github.com/anomalyco/opencode/blob/v2.0.3/package.json) selects these OpenTUI and Solid versions. Upstream `@opencode/plugin@2.0.3` declares optional OpenTUI peers `>=0.5.10` and theme `2.0.3`. OpenTUI Solid still declares a `solid-js` peer of `1.9.12`; the host uses `1.9.15`. Bun reports that metadata mismatch. Type-checks and packed real-host smokes establish support for the exact host combination, not a wider range.
+The [stable CLI source catalog](https://github.com/anomalyco/opencode/blob/v2.0.16/package.json) selects these OpenTUI and Solid versions. Upstream `@opencode/plugin@2.0.16` declares optional OpenTUI peers `>=0.5.10` and theme `2.0.16`. OpenTUI Solid still declares a `solid-js` peer of `1.9.12`; the host uses `1.9.15`. Bun reports that metadata mismatch. Type-checks and packed real-host smokes establish support for the exact host combination, not a wider range.
 
 `bun run compatibility:check` checks both manifests, their lockfile workspace entries, and all coupled lockfile resolutions. It rejects mixed versions and ranges before packing or launching a host. Policy tests prove that a core-only update and a mismatched host fail. Both package smokes use the same host manifest and verify the installed executable's version. Dependabot groups OpenCode, OpenTUI, and Solid updates outside the development-only group. A grouped proposal still requires updating the compatibility contract and passing the full gates.
 
-## Stable V2 migration
+## OpenCode 2.0.16 theme migration
+
+The newer host replaces `text.default` with `text.base`, `text.subdued` with `text.muted`, and action/feedback/border `default` tokens with `base`. Music transport backgrounds use `background.raised.base` instead of `background.surface.offset`. The old lookup crashes the music sidebar when a session opens, although the plugin loads and its compact bar can still appear.
+
+Both plugins use the [2.0.16 resolved theme contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/theme/src/tui/types.ts). This requires coordinated pre-1.0 minor releases. Users retaining OpenCode 2.0.3 must retain music-player 0.3.1 and Vim 0.2.0. OpenTUI remains 0.5.10 because that is the host's embedded version; dependency proposal #194's 0.5.12 is not the host set.
+
+## Original stable V2 migration (2.0.3)
 
 The previous set used `@opencode-ai/plugin@0.0.0-next-17444`, theme `0.0.0`, and different OpenTUI versions across the plugins. Stable V2 uses the `@opencode` namespace and the `opencode` executable. Plugin imports now use `@opencode/plugin/tui`.
 
@@ -68,7 +74,9 @@ The former production dependencies installed two unnecessary advisory chains: Op
 
 npm `11.12.1` and `10.9.4` reject even absent optional peers when their prospective graph conflicts. A reduced tarball containing only optional peers `@opentui/solid: 0.5.10` and `solid-js: 1.9.15` reproduces `ERESOLVE`. Removing development dependencies does not help. Therefore Solid has no npm peer declaration. The compatibility guard still requires its exact development pin and rejects production dependencies, peer metadata, or mixed lockfile resolutions. This metadata choice does not widen supported host versions.
 
-## Bundled host security boundary
+## Bundled host security boundary (2.0.3 assessment)
+
+The source assessment below applies to the original 2.0.3 host. It does not certify the 2.0.16 binary. The consumer audit covers installed plugin dependencies only.
 
 The [tagged host lockfile](https://github.com/anomalyco/opencode/blob/v2.0.3/bun.lock) resolves fixed Babel `7.29.7` and affected OpenTelemetry core `2.6.1`. The binary's npm manifest cannot audit its bundled dependencies. A clean plugin-consumer audit does not establish an audit-clean binary.
 
