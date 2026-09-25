@@ -460,7 +460,8 @@ export default {
         "-x",
         "240",
         "-y",
-        "40",
+        // Leave room for the fresh host's provider onboarding footer below the player.
+        "60",
         command,
       ],
       { env, stdout: "pipe", stderr: "pipe" },

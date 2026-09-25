@@ -304,7 +304,7 @@ export function CompactPlayer(props: {
             }}
             wrapMode="none"
             truncate
-            fg={theme().text.action.primary.default}
+            fg={theme().text.action.primary.base}
           >
             {renderLine()}
           </text>
@@ -396,7 +396,7 @@ function ProgressBar(props: {
         <span
           ref={(element) => (leftNode = element)}
           style={{
-            fg: props.accent ?? props.theme.text.action.primary.default,
+            fg: props.accent ?? props.theme.text.action.primary.base,
           }}
         >
           {rendered().left}
@@ -404,14 +404,14 @@ function ProgressBar(props: {
         <span
           ref={(element) => (thumbNode = element)}
           style={{
-            fg: props.accent ?? props.theme.text.action.primary.default,
+            fg: props.accent ?? props.theme.text.action.primary.base,
           }}
         >
           {rendered().thumb}
         </span>
         <span
           ref={(element) => (rightNode = element)}
-          style={{ fg: props.theme.text.subdued }}
+          style={{ fg: props.theme.text.muted }}
         >
           {rendered().right}
         </span>
@@ -439,7 +439,7 @@ function LiveElapsed(props: {
     })
   })
   return (
-    <text ref={(element) => (text = element)} fg={props.theme.text.subdued}>
+    <text ref={(element) => (text = element)} fg={props.theme.text.muted}>
       {formatMs(liveProgress(props.source.current()))}
     </text>
   )
@@ -467,23 +467,23 @@ function IconBtn(props: {
 
   const bg = () => {
     if (press() || props.active) {
-      return props.theme.background.action.primary.default
+      return props.theme.background.action.primary.base
     }
     // Idle + hover share offset so the cluster reads as one control strip
-    return props.theme.background.surface.offset
+    return props.theme.background.raised.base
   }
 
   const fg = () => {
     if (press() || props.active)
-      return props.accent ?? props.theme.text.action.primary.default
+      return props.accent ?? props.theme.text.action.primary.base
     if (props.primary) {
       return hover()
-        ? props.theme.text.action.primary.default
-        : props.theme.text.default
+        ? props.theme.text.action.primary.base
+        : props.theme.text.base
     }
     return hover()
-      ? props.theme.text.action.primary.default
-      : props.theme.text.default
+      ? props.theme.text.action.primary.base
+      : props.theme.text.base
   }
 
   const w = () => props.width ?? 3
@@ -567,8 +567,8 @@ export function SidebarPlayer(props: {
       border={["top"]}
       borderColor={
         playing()
-          ? (track()?.artwork?.accent ?? theme().text.action.primary.default)
-          : theme().border.default
+          ? (track()?.artwork?.accent ?? theme().text.action.primary.base)
+          : theme().border.base
       }
       paddingLeft={1}
       paddingRight={1}
@@ -579,7 +579,7 @@ export function SidebarPlayer(props: {
     >
       <Show when={props.state.error}>
         {(err) => (
-          <text fg={theme().text.feedback.error.default}>
+          <text fg={theme().text.feedback.error.base}>
             {sanitizeTerminalText(err())}
           </text>
         )}
@@ -596,7 +596,7 @@ export function SidebarPlayer(props: {
                 alignItems="center"
                 justifyContent="center"
               >
-                <text fg={theme().text.subdued}>
+                <text fg={theme().text.muted}>
                   {track()
                     ? track()?.artwork_loading
                       ? "Loading artwork…"
@@ -616,23 +616,23 @@ export function SidebarPlayer(props: {
       <Show
         when={track()}
         fallback={
-          <text fg={theme().text.subdued}>
+          <text fg={theme().text.muted}>
             {props.state.loading ? "Syncing…" : "Nothing playing"}
           </text>
         }
       >
         {(t) => (
           <box flexDirection="column" gap={0}>
-            <text fg={theme().text.default}>
+            <text fg={theme().text.base}>
               <b>{sanitizeTerminalText(t().name, "Unknown track")}</b>
             </text>
             <Show when={t().artists}>
-              <text fg={theme().text.subdued}>
+              <text fg={theme().text.muted}>
                 {sanitizeTerminalText(t().artists)}
               </text>
             </Show>
             <Show when={t().album}>
-              <text fg={theme().text.subdued}>
+              <text fg={theme().text.muted}>
                 {sanitizeTerminalText(t().album)}
               </text>
             </Show>
@@ -655,7 +655,7 @@ export function SidebarPlayer(props: {
           />
           <box flexDirection="row" justifyContent="space-between">
             <LiveElapsed theme={theme()} source={source} />
-            <text fg={theme().text.subdued}>{formatMs(duration())}</text>
+            <text fg={theme().text.muted}>{formatMs(duration())}</text>
           </box>
         </box>
       </Show>

@@ -65,8 +65,8 @@ function VimHost(props: {
   const label = () => (active() ? mode().toUpperCase() : "VIM OFF")
   const color = () =>
     mode() === "insert"
-      ? props.context.theme.text.feedback.success.default
-      : props.context.theme.text.action.primary.default
+      ? props.context.theme.text.feedback.success.base
+      : props.context.theme.text.action.primary.base
   let indicator: TextRenderable | undefined
   let activeInsert:
     { editor: EditBufferRenderable; history: VimHistory } | undefined
