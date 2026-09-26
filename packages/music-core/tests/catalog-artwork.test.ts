@@ -3,6 +3,7 @@ import {
   acquireCatalogArtwork,
   allowedCatalogImageUrl,
   readLimitedResponse,
+  selectCatalogTrack,
   type ArtworkFetcher,
 } from "../catalog-artwork.ts"
 
@@ -20,6 +21,115 @@ const track = {
   artworkUrl100: "https://is1-ssl.mzstatic.com/cover/100x100bb.jpg",
 }
 const search = () => Response.json({ results: [track] })
+
+const collaboration = {
+  title: "Baltimore",
+  artist: "Atli Örvarsson, Talos",
+  album: "",
+  duration_ms: 0,
+}
+const catalogCollaboration = {
+  ...track,
+  trackName: "Baltimore",
+  artistName: "Talos & Atli Örvarsson",
+  collectionName: "Sun Divider - EP",
+  trackTimeMillis: 181_943,
+}
+
+test("catalog acquisition finds reordered collaborative credits when native metadata lacks album and duration", async () => {
+  const urls: string[] = []
+  const result = await acquireCatalogArtwork(collaboration, {
+    fetch: async (input) => {
+      urls.push(String(input))
+      return urls.length === 1
+        ? Response.json({ results: [catalogCollaboration] })
+        : new Response(new Uint8Array([1, 2, 3]))
+    },
+  })
+  expect(result.kind).toBe("available")
+  expect(result.duration_ms).toBe(181_943)
+  expect(urls).toHaveLength(2)
+})
+
+test("collaboration fallback requires all complete credits and a unique compatible recording", () => {
+  expect(
+    selectCatalogTrack(
+      { ...collaboration, album: "Sun Divider - EP", duration_ms: 182_000 },
+      [catalogCollaboration],
+    ),
+  ).toBe(catalogCollaboration)
+  expect(
+    selectCatalogTrack(
+      { ...collaboration, artist: " TALOS & Atli Örvarsson " },
+      [{ ...catalogCollaboration, artistName: "Atli Örvarsson, Talos" }],
+    ),
+  ).not.toBeNull()
+  for (const artistName of [
+    "Talos",
+    "Talos & Someone Else",
+    "Talos & Atli",
+    "Talos & Atli Örvarsson & Guest",
+    "Talos & Talos",
+    "Talos && Atli Örvarsson",
+  ])
+    expect(
+      selectCatalogTrack(collaboration, [
+        { ...catalogCollaboration, artistName },
+      ]),
+    ).toBeNull()
+  expect(
+    selectCatalogTrack(collaboration, [
+      { ...catalogCollaboration, trackName: "Baltimore (Live)" },
+    ]),
+  ).toBeNull()
+  expect(
+    selectCatalogTrack({ ...collaboration, album: "Another album" }, [
+      catalogCollaboration,
+    ]),
+  ).toBeNull()
+  expect(
+    selectCatalogTrack({ ...collaboration, duration_ms: 200_000 }, [
+      catalogCollaboration,
+    ]),
+  ).toBeNull()
+  const another = {
+    ...catalogCollaboration,
+    collectionName: "Baltimore - Single",
+  }
+  for (const duration_ms of [0, 181_943])
+    expect(
+      selectCatalogTrack({ ...collaboration, duration_ms }, [
+        catalogCollaboration,
+        another,
+      ]),
+    ).toBeNull()
+  const exact = { ...catalogCollaboration, artistName: collaboration.artist }
+  expect(selectCatalogTrack(collaboration, [catalogCollaboration, exact])).toBe(
+    exact,
+  )
+  expect(
+    selectCatalogTrack({ ...collaboration, artist: "AC/DC" }, [
+      { ...catalogCollaboration, artistName: "DC & AC" },
+    ]),
+  ).toBeNull()
+})
+
+test("an incompatible exact artist result cannot hide a compatible collaboration", () => {
+  const exact = { ...catalogCollaboration, artistName: collaboration.artist }
+  const target = {
+    ...collaboration,
+    album: "Sun Divider - EP",
+    duration_ms: 182_000,
+  }
+  for (const incompatible of [
+    { ...exact, collectionName: "Another album" },
+    { ...exact, trackTimeMillis: 200_000 },
+  ]) {
+    expect(
+      selectCatalogTrack(target, [incompatible, catalogCollaboration]),
+    ).toBe(catalogCollaboration)
+  }
+})
 
 test("retries and exhaustion wait for each response cancellation to settle", async () => {
   const starts = Array.from({ length: 3 }, () => Promise.withResolvers<void>())
