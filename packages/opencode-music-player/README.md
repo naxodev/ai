@@ -14,6 +14,8 @@ Read the [music session architecture field guide](../../docs/music-session-archi
 
 ## Artwork
 
+The player retains a completed cover when the same recording loses duration metadata or reports a duration within one second of the resolved value. Conflicting recording metadata starts a new acquisition. A catalog duration keeps the seek bar usable when the provider has no duration; this host-only fallback does not change daemon playback state. A valid provider duration takes priority.
+
 The daemon performs the bounded native `media-control get --now` read and validates the complete recording identity before and after the read. OpenCode uses those bytes when available, then keeps iTunes Search fallback, image downloads, conversion, cache/job ownership, and terminal rendering locally. Artwork failure never blocks playback state.
 
 Catalog matching, bounded downloads, cancellation, and transient retries use the [shared host-side acquisition policy](../music-core/README.md#host-side-catalog-artwork). OpenCode keeps image conversion and its shared presentation cache/jobs. Track changes remove only the changing view's interest; another view can keep the same job alive.

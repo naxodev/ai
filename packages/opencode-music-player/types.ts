@@ -42,6 +42,8 @@ export type ArtworkPresentationListener = (
 export type Track = CoreTrack & {
   artwork: Artwork | null
   artwork_loading?: boolean
+  /** Host-only catalog duration; never replaces daemon playback metadata. */
+  artwork_duration_ms?: number
 }
 
 export type PlayerState = Omit<CorePlayerState, "track"> & {
@@ -89,6 +91,34 @@ export function emptyPlayer(): PlayerState {
   }
 }
 
+export function presentationDuration(track: Track | null | undefined): number {
+  for (const duration of [track?.duration_ms, track?.artwork_duration_ms])
+    if (
+      typeof duration === "number" &&
+      Number.isFinite(duration) &&
+      duration > 0 &&
+      duration <= 86_400_000
+    )
+      return duration
+  return 0
+}
+
+/** Match the catalog's one-second tolerance without treating missing duration as a new recording. */
+export function compatibleArtworkDuration(
+  previous: number,
+  resolved: number | undefined,
+  next: number,
+): boolean {
+  return (
+    next === previous ||
+    next === 0 ||
+    (typeof resolved === "number" &&
+      resolved > 0 &&
+      Number.isFinite(resolved) &&
+      Math.abs(next - resolved) <= 1_000)
+  )
+}
+
 /** Merge an independent artwork result without accepting stale playback data. */
 export function mergeArtworkCompletion(
   player: PlayerState | null,
@@ -110,6 +140,7 @@ export function mergeArtworkCompletion(
       ...track,
       artwork: event.artwork,
       artwork_loading: false,
+      artwork_duration_ms: event.duration_ms,
     },
   }
 }
@@ -127,9 +158,11 @@ export function mergePlayerSnapshot(
     current.name !== next.name ||
     current.artists !== next.artists ||
     current.album !== next.album ||
-    (current.duration_ms > 0 &&
-      next.duration_ms > 0 &&
-      current.duration_ms !== next.duration_ms) ||
+    !compatibleArtworkDuration(
+      current.duration_ms,
+      current.artwork_duration_ms,
+      next.duration_ms,
+    ) ||
     (current.artwork === null && current.artwork_loading !== false)
   ) {
     return snapshot
@@ -140,6 +173,8 @@ export function mergePlayerSnapshot(
       ...next,
       artwork: next.artwork ?? current.artwork,
       artwork_loading: false,
+      artwork_duration_ms:
+        next.artwork_duration_ms || current.artwork_duration_ms || 0,
     },
   }
 }

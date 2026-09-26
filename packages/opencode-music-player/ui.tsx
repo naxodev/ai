@@ -14,7 +14,7 @@ import {
   type TextNodeRenderable,
   type TextRenderable,
 } from "@opentui/core"
-import { formatMs } from "./types.ts"
+import { formatMs, presentationDuration } from "./types.ts"
 import { AlbumArtwork } from "./artwork.tsx"
 import { Waveform, type PlayerPresentationSource } from "./waveform.tsx"
 
@@ -288,7 +288,7 @@ export function CompactPlayer(props: {
             const position = seekPositionForCell(
               cell,
               seekWidth,
-              current.duration_ms,
+              presentationDuration(current),
             )
             if (position === null) return
 
@@ -318,7 +318,7 @@ function liveProgress(player: UiState["player"], now = Date.now()): number {
   if (!player?.track) return 0
   if (!player.is_playing) return player.progress_ms
   return Math.min(
-    player.track.duration_ms,
+    presentationDuration(player.track),
     player.progress_ms + (Math.max(now, player.fetched_at) - player.fetched_at),
   )
 }
@@ -351,7 +351,7 @@ function ProgressBar(props: {
     const player = props.source.current()
     return progressSegments(
       liveProgress(player),
-      player?.track?.duration_ms ?? 0,
+      presentationDuration(player?.track),
       width(),
     )
   }
@@ -384,7 +384,7 @@ function ProgressBar(props: {
         const position = seekPositionForCell(
           event.x - bar.x,
           bar.width,
-          props.source.current()?.track?.duration_ms ?? 0,
+          presentationDuration(props.source.current()?.track),
         )
         if (position === null) return
         event.preventDefault()
@@ -559,7 +559,7 @@ export function SidebarPlayer(props: {
   const track = createMemo(() => player()?.track)
   const playing = createMemo(() => !!player()?.is_playing)
 
-  const duration = createMemo(() => track()?.duration_ms ?? 0)
+  const duration = createMemo(() => presentationDuration(track()))
 
   return (
     <box

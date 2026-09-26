@@ -118,3 +118,54 @@ test("SidebarPlayer seeks through its visible progress bar", async () => {
     app.renderer.destroy()
   }
 })
+
+test("catalog duration keeps the seek bar mounted when playback snapshots omit duration", async () => {
+  const [current, setCurrent] = createStore({
+    ...state,
+    player: {
+      ...state.player,
+      track: { ...state.player.track, duration_ms: 0, artwork_duration_ms: 0 },
+    },
+  })
+  const seeks: number[] = []
+  const app = await testRender(
+    () => (
+      <SidebarPlayer
+        context={{ theme } as any}
+        state={current}
+        onPlayPause={() => {}}
+        onNext={() => {}}
+        onPrev={() => {}}
+        onSeek={(position) => seeks.push(position)}
+      />
+    ),
+    { width: 40, height: 30 },
+  )
+  try {
+    expect(
+      app.renderer.root.findDescendantById("music-sidebar-seek"),
+    ).toBeUndefined()
+    setCurrent("player", "track", "artwork_duration_ms", 90_000)
+    await app.waitFor(
+      () => !!app.renderer.root.findDescendantById("music-sidebar-seek"),
+    )
+    const bar = app.renderer.root.findDescendantById(
+      "music-sidebar-seek",
+    ) as BoxRenderable
+    for (const [duration, total] of [
+      [100_000, "1:40"],
+      [0, "1:30"],
+    ] as const) {
+      setCurrent("player", "track", "duration_ms", duration)
+      setCurrent("player", "is_playing", true)
+      await app.waitForFrame((frame) => frame.includes(total))
+      expect(app.renderer.root.findDescendantById("music-sidebar-seek")).toBe(
+        bar,
+      )
+      await app.mockMouse.click(bar.x + 12, bar.y)
+    }
+    expect(seeks).toEqual([52_174, 46_957])
+  } finally {
+    app.renderer.destroy()
+  }
+})

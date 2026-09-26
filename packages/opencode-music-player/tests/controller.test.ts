@@ -255,6 +255,60 @@ test("session artwork completion merges through the controller without replacing
   view.controller.dispose()
 })
 
+test("resume metadata churn keeps resolved artwork and a usable seek duration without rewriting daemon state", async () => {
+  const sparse = player("resume-sparse", false)
+  sparse.track!.duration_ms = 0
+  const { client, calls } = createClient(sparse)
+  const cover = { id: "resume-cover", png_base64: "", accent: "", cells: [] }
+  let resolutions = 0
+  const view = harness(client, async () => {
+    resolutions++
+    return { artwork: cover, duration_ms: 181_943 }
+  })
+  try {
+    for (let index = 0; index < 8; index++) await flush()
+    expect(view.session.player?.track?.duration_ms).toBe(0)
+    expect(view.session.player?.track?.artwork).toEqual(cover)
+    await view.controller.seek(500_000)
+    expect(calls).toEqual(["seek:180943"])
+    for (const duration_ms of [182_000, 0, 181_943, 0]) {
+      client.emitState({
+        ...sparse,
+        is_playing: true,
+        track: { ...sparse.track!, duration_ms },
+      })
+      for (let index = 0; index < 4; index++) await flush()
+      expect(view.session.player?.track?.artwork).toEqual(cover)
+      expect(view.session.player?.track?.artwork_loading).toBeFalse()
+      expect(view.session.player?.track?.duration_ms).toBe(duration_ms)
+    }
+    expect(resolutions).toBe(1)
+    await view.controller.seek(500_000)
+    expect(calls).toEqual(["seek:180943", "seek:180943"])
+    await view.controller.refreshArtwork()
+    for (let index = 0; index < 8; index++) await flush()
+    expect(resolutions).toBe(2)
+    client.emitState({
+      ...sparse,
+      track: { ...sparse.track!, duration_ms: 182_843 },
+    })
+    expect(view.session.player?.track?.artwork_duration_ms).toBe(181_943)
+    client.emitState({
+      ...sparse,
+      track: { ...sparse.track!, duration_ms: 183_743 },
+    })
+    expect(view.session.player?.track?.artwork).toBeNull()
+    expect(view.session.player?.track?.artwork_loading).toBeTrue()
+    for (let index = 0; index < 8; index++) await flush()
+    expect(resolutions).toBe(3)
+    client.emitState(player("idle"))
+    await view.controller.seek(500_000)
+    expect(calls).toHaveLength(2)
+  } finally {
+    view.controller.dispose()
+  }
+})
+
 test.skipIf(process.platform === "win32")(
   "Pi and OpenCode adapters toggle one daemon despite stale views and rapid clicks",
   async () => {

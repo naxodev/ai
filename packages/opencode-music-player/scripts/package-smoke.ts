@@ -311,7 +311,11 @@ const plugin = createMusicPlayerPlugin({
       createSessionMedia: () => ({
         player: async () => null,
         play: async () => { playing = true },
-        toggle: async () => { playing = !playing },
+        toggle: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50))
+          playing = !playing
+          publishSnapshot()
+        },
         pause: async () => { playing = false },
         next: async () => {},
         previous: async () => {},
@@ -603,6 +607,18 @@ export default {
     ).toString("latin1")
     const transmissions = occurrences(graphics, "a=T")
     const imageDeletes = occurrences(graphics, "a=d,d=I")
+    // Exercise the real command path, including loading ownership and acknowledgement.
+    for (const marker of ["▶", "⏸"]) {
+      tmux("send-keys", "-t", session, "C-p")
+      await Bun.sleep(300)
+      tmux("send-keys", "-t", session, "-l", "Play / pause")
+      await Bun.sleep(300)
+      tmux("send-keys", "-t", session, "Enter")
+      await waitForPane(
+        `command playback ${marker}`,
+        (pane) => occurrences(pane, marker) >= 2,
+      )
+    }
     await Bun.sleep(1_000)
     const settledGraphics = Buffer.from(
       await Bun.file(graphicsTrace).arrayBuffer(),
@@ -613,7 +629,8 @@ export default {
       throw new Error(`native artwork image was deleted ${imageDeletes} times`)
     if (
       occurrences(settledGraphics, "a=T") !== transmissions ||
-      occurrences(settledGraphics, "a=d,d=I") !== imageDeletes
+      occurrences(settledGraphics, "a=d,d=I") !== imageDeletes ||
+      occurrences(settledGraphics, "a=p") !== occurrences(graphics, "a=p")
     )
       throw new Error("native artwork changed after presentation settled")
 
