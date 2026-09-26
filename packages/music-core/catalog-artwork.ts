@@ -38,6 +38,13 @@ function validDuration(value: number | undefined): value is number {
     value <= 86_400_000
   )
 }
+
+function artistCredits(value: string): string[] | null {
+  const parts = value.split(/\s*,\s*|\s+&\s+/).map((part) => part.trim())
+  if (parts.length < 2 || parts.some((part) => !part || part.includes("&")))
+    return null
+  return parts.sort()
+}
 function candidate(
   target: CatalogTarget,
   results: CatalogTrack[],
@@ -46,21 +53,32 @@ function candidate(
   const artist = normalized(target.artist)
   const album = normalized(target.album)
   if (!title || !artist) return null
-  let matches = results.filter(
+  const compatible = results.filter(
     (item) =>
       normalized(item.trackName) === title &&
-      normalized(item.artistName) === artist &&
-      (!album || normalized(item.collectionName) === album),
+      (!album || normalized(item.collectionName) === album) &&
+      (!(target.duration_ms > 0) ||
+        (validDuration(item.trackTimeMillis) &&
+          Math.abs(item.trackTimeMillis - target.duration_ms) <=
+            DURATION_TOLERANCE_MS)),
   )
-  if (target.duration_ms > 0)
-    matches = matches.filter(
-      (item) =>
-        validDuration(item.trackTimeMillis) &&
-        Math.abs(item.trackTimeMillis - target.duration_ms) <=
-          DURATION_TOLERANCE_MS,
+  const exact = compatible.filter(
+    (item) => normalized(item.artistName) === artist,
+  )
+  if (exact.length)
+    return target.duration_ms > 0 || exact.length === 1 ? exact[0]! : null
+  // Providers format collaboration credits differently. Never use a partial artist match.
+  const credits = artistCredits(artist)
+  if (!credits) return null
+  const matches = compatible.filter((item) => {
+    const other = artistCredits(normalized(item.artistName))
+    return (
+      other?.length === credits.length &&
+      other.every((part, index) => part === credits[index])
     )
-  else if (matches.length !== 1) return null
-  return matches[0] ?? null
+  })
+  // A relaxed artist match must identify one recording even when duration is known.
+  return matches.length === 1 ? matches[0]! : null
 }
 export function selectCatalogTrack(
   target: CatalogTarget,

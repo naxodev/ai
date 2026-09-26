@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/opencode-music-player",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "macOS system Now Playing controls for the OpenCode 2 TUI",
   "license": "MIT",
   "author": {
@@ -60,7 +60,7 @@
     "validate": "bun run format:check && bun run check && bun run test && bun run pack:check"
   },
   "dependencies": {
-    "@naxodev/music-core": "^0.1.4",
+    "@naxodev/music-core": "^0.1.5",
     "pngjs": "^7.0.0"
   },
   "peerDependencies": {

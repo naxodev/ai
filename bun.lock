@@ -33,7 +33,7 @@
     },
     "packages/music-core": {
       "name": "@naxodev/music-core",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "bin": {
         "naxodev-music-sessiond": "./dist/music-sessiond.js",
       },
@@ -48,9 +48,9 @@
     },
     "packages/opencode-music-player": {
       "name": "@naxodev/opencode-music-player",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "dependencies": {
-        "@naxodev/music-core": "^0.1.4",
+        "@naxodev/music-core": "^0.1.5",
         "pngjs": "^7.0.0",
       },
       "devDependencies": {
