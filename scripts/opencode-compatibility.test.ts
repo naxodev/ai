@@ -56,7 +56,8 @@ test("a plugin or host upgrade needs a newly tested compatibility set", () => {
 
 test("ranges cannot claim compatibility beyond executable evidence", () => {
   const widened = manifest()
-  widened.peerDependencies["@opentui/solid"] = "^0.5.10"
+  widened.peerDependencies["@opentui/solid"] =
+    `^${compatibility.peerDependencies["@opentui/solid"]}`
   expect(() => assertOpenCodeCompatibility([widened])).toThrow(
     "@opentui/solid must be exactly",
   )

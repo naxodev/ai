@@ -2,13 +2,19 @@
 
 Both OpenCode plugins share one exact supported host set in [scripts/opencode-compatibility.json](../scripts/opencode-compatibility.json).
 
-- `@opencode/cli`, `@opencode/plugin`, and `@opencode/theme`: `2.0.16`.
-- `@opentui/core` and `@opentui/solid`: `0.5.10`.
+- `@opencode/cli`, `@opencode/plugin`, and `@opencode/theme`: `2.0.18`.
+- `@opentui/core` and `@opentui/solid`: `0.5.12`.
 - `solid-js`: `1.9.15`.
 
-The [stable CLI source catalog](https://github.com/anomalyco/opencode/blob/v2.0.16/package.json) selects these OpenTUI and Solid versions. Upstream `@opencode/plugin@2.0.16` declares optional OpenTUI peers `>=0.5.10` and theme `2.0.16`. OpenTUI Solid still declares a `solid-js` peer of `1.9.12`; the host uses `1.9.15`. Bun reports that metadata mismatch. Type-checks and packed real-host smokes establish support for the exact host combination, not a wider range.
+The [stable CLI source catalog](https://github.com/anomalyco/opencode/blob/v2.0.18/package.json) selects these OpenTUI and Solid versions. Upstream `@opencode/plugin@2.0.18` declares optional OpenTUI peers `>=0.5.12` and theme `2.0.18`. OpenTUI Solid still declares a `solid-js` peer of `1.9.12`; the host uses `1.9.15`. Bun reports that metadata mismatch. Type-checks and packed real-host smokes establish support for the exact host combination, not a wider range.
 
 `bun run compatibility:check` checks both manifests, their lockfile workspace entries, and all coupled lockfile resolutions. It rejects mixed versions and ranges before packing or launching a host. Policy tests prove that a core-only update and a mismatched host fail. Both package smokes use the same host manifest and verify the installed executable's version. Dependabot groups OpenCode, OpenTUI, and Solid updates outside the development-only group. A grouped proposal still requires updating the compatibility contract and passing the full gates.
+
+## OpenCode 2.0.18 renderer update
+
+Music-player 0.5.0 and Vim 0.4.0 require the exact 2.0.18 host set. Users retaining OpenCode 2.0.16 must retain music-player 0.4.2 and Vim 0.3.2.
+
+The host now embeds OpenTUI 0.5.12. [Dependency proposal #199](https://github.com/naxodev/ai/pull/199) updates the renderers but retains plugin/theme 2.0.16, introducing a second OpenTUI core through the older theme dependency. Updating the host, plugin API, theme, renderer peers, and development pins together preserves one renderer identity. Solid remains at the host's 1.9.15 pin.
 
 ## OpenCode 2.0.16 theme migration
 
@@ -60,7 +66,7 @@ This build step is required by the exact host: packed TSX failed with `Cannot fi
 
 Both packages require the exact supported OpenCode Bun host. They declare `@opencode/plugin`, `@opentui/core`, and `@opentui/solid` as exact optional peers and exact development dependencies. Solid remains a required host-supplied module with an exact `1.9.15` development pin, but no npm peer metadata. The executable supplies all four modules; npm does not install copies for ordinary plugin consumers. Music-core and pngjs remain production dependencies.
 
-The [official CLI plugin guide](https://opencode.ai/v2/docs/build/plugins/cli) documents runtime resolution of `@opencode/plugin/tui`. The [stable host setup](https://github.com/anomalyco/opencode/blob/v2.0.3/packages/tui/src/plugin/runtime-plugin-support.bun.ts) registers that module with OpenTUI's runtime resolver. The [OpenTUI Solid configurator](https://unpkg.com/@opentui/solid@0.5.10/scripts/runtime-plugin-support-configure.js) supplies OpenTUI, JSX runtimes, Solid, and Solid store. The [core resolver](https://unpkg.com/@opentui/core@0.5.10/runtime-plugin.js) rewrites external ESM imports, including packages under `node_modules`, to the host's module instances. This preserves renderer and reactive-context identity.
+The [official CLI plugin guide](https://opencode.ai/v2/docs/build/plugins/cli) documents runtime resolution of `@opencode/plugin/tui`. The [stable host setup](https://github.com/anomalyco/opencode/blob/v2.0.18/packages/tui/src/plugin/runtime-plugin-support.bun.ts) registers that module with OpenTUI's runtime resolver. The [OpenTUI Solid configurator](https://unpkg.com/@opentui/solid@0.5.12/scripts/runtime-plugin-support-configure.js) supplies OpenTUI, JSX runtimes, Solid, and Solid store. The [core resolver](https://unpkg.com/@opentui/core@0.5.12/runtime-plugin.js) rewrites external ESM imports, including packages under `node_modules`, to the host's module instances. This preserves renderer and reactive-context identity.
 
 Optional peers describe host provision, not an optional feature. npm peer metadata cannot validate an executable's embedded versions. The compatibility guard and packed real-host smokes enforce that requirement. The upstream documentation's publication example uses a runtime plugin dependency and ordinary OpenTUI peers; these packages deliberately use the narrower host-provided contract.
 
@@ -76,7 +82,7 @@ npm `11.12.1` and `10.9.4` reject even absent optional peers when their prospect
 
 ## Bundled host security boundary (2.0.3 assessment)
 
-The source assessment below applies to the original 2.0.3 host. It does not certify the 2.0.16 binary. The consumer audit covers installed plugin dependencies only.
+The source assessment below applies to the original 2.0.3 host. It does not certify the 2.0.18 binary. The consumer audit covers installed plugin dependencies only.
 
 The [tagged host lockfile](https://github.com/anomalyco/opencode/blob/v2.0.3/bun.lock) resolves fixed Babel `7.29.7` and affected OpenTelemetry core `2.6.1`. The binary's npm manifest cannot audit its bundled dependencies. A clean plugin-consumer audit does not establish an audit-clean binary.
 
