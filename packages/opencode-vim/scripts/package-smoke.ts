@@ -396,6 +396,53 @@ export { default } from "./index.js"
     await waitForFooter("INSERT")
     if (capturePane().includes("abcX"))
       throw new Error("c$ left the original prompt text unchanged")
+    stage = "comparing word deletion before and after visual selection"
+    runTmux("send-keys", "-t", session, "-l", "Review the release checklist.")
+    runTmux("send-keys", "-t", session, "Escape")
+    await waitForFooter("NORMAL")
+    const wordDeletionFailures: string[] = []
+    for (const visualFirst of [false, true]) {
+      if (visualFirst) {
+        runTmux("send-keys", "-t", session, "-l", "0wwv2e")
+        await waitForFooter("VISUAL")
+        runTmux("send-keys", "-t", session, "Escape")
+        await waitForFooter("NORMAL")
+      }
+      runTmux("send-keys", "-t", session, "-l", "0dw")
+      await waitForPane(
+        (pane) => !pane.includes("Review the release checklist."),
+        "word deletion",
+      )
+      const deleted = capturePane()
+      if (!/┃\s+the release checklist\.\s*$/m.test(deleted))
+        wordDeletionFailures.push(
+          `${visualFirst ? "after visual" : "without visual"}: ${deleted
+            .split("\n")
+            .find((line) => line.includes("release checklist."))
+            ?.trim()}`,
+        )
+      else {
+        runTmux("send-keys", "-t", session, "-l", ".")
+        await waitForPane(
+          (pane) => /┃\s+release checklist\.\s*$/m.test(pane),
+          "repeat word deletion",
+        )
+        runTmux("send-keys", "-t", session, "-l", "u")
+        await waitForPane(
+          (pane) => /┃\s+the release checklist\.\s*$/m.test(pane),
+          "undo repeated word deletion",
+        )
+      }
+      runTmux("send-keys", "-t", session, "-l", "u")
+      await waitForPane(
+        (pane) => pane.includes("Review the release checklist."),
+        "undo word deletion",
+      )
+    }
+    if (wordDeletionFailures.length)
+      throw new Error(wordDeletionFailures.join("\n"))
+    runTmux("send-keys", "-t", session, "-l", "0c$")
+    await waitForFooter("INSERT")
     if (linuxClipboard) {
       stage = "round-tripping Unicode through the isolated X11 clipboard"
       const text = "Café 音楽 🎵"

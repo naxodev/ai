@@ -143,6 +143,178 @@ function run(
 }
 
 describe("editor action adapter", () => {
+  test.each([
+    {
+      key: "w",
+      operator: "delete",
+      count: 1,
+      cursor: 3,
+      remaining: "onetwo three",
+      removed: " ",
+    },
+    {
+      key: "w",
+      operator: "delete",
+      count: 2,
+      cursor: 3,
+      remaining: "onethree",
+      removed: " two ",
+    },
+    {
+      key: "w",
+      operator: "change",
+      count: 1,
+      cursor: 3,
+      remaining: "onetwo three",
+      removed: " ",
+    },
+    {
+      key: "b",
+      operator: "change",
+      count: 1,
+      cursor: 4,
+      remaining: "two three",
+      removed: "one ",
+    },
+    {
+      key: "l",
+      operator: "change",
+      count: 1,
+      cursor: 0,
+      remaining: "ne two three",
+      removed: "o",
+    },
+    {
+      key: "w",
+      operator: "delete",
+      count: 1,
+      cursor: 0,
+      remaining: "two three",
+      removed: "one ",
+    },
+    {
+      key: "w",
+      operator: "delete",
+      count: 2,
+      cursor: 0,
+      remaining: "three",
+      removed: "one two ",
+    },
+    {
+      key: "w",
+      operator: "yank",
+      count: 1,
+      cursor: 0,
+      remaining: "one two three",
+      removed: "one ",
+    },
+    {
+      key: "b",
+      operator: "delete",
+      count: 1,
+      cursor: 4,
+      remaining: "two three",
+      removed: "one ",
+    },
+    {
+      key: "h",
+      operator: "delete",
+      count: 1,
+      cursor: 1,
+      remaining: "ne two three",
+      removed: "o",
+    },
+    {
+      key: "l",
+      operator: "delete",
+      count: 1,
+      cursor: 0,
+      remaining: "ne two three",
+      removed: "o",
+    },
+  ] as const)(
+    "$operator motion $key (count $count) excludes the destination character in the real editor",
+    async ({ key, operator, count, cursor, remaining, removed }) => {
+      const { renderer, renderOnce } = await createTestRenderer({
+        width: 40,
+        height: 3,
+      })
+      const editor = new TextareaRenderable(renderer, {
+        id: "exclusive-motion",
+        initialValue: "one two three",
+      })
+      renderer.root.add(editor)
+      editor.focus()
+      const runtime = createVimState("normal")
+      const register = { value: "", linewise: false }
+      try {
+        await renderOnce()
+        editor.cursorOffset = cursor
+        runActions(
+          editor,
+          [{ type: "operator-motion", operator, key, count }],
+          register,
+          runtime,
+          createVimHistory(editor.plainText),
+          mutableEffects(runtime),
+        )
+        expect(editor.plainText).toBe(remaining)
+        expect(register.value).toBe(removed)
+        expect(editor.hasSelection()).toBeFalse()
+        expect(runtime.mode).toBe(operator === "change" ? "insert" : "normal")
+        expect(editor.cursorOffset).toBe(
+          operator !== "yank" && (key === "b" || key === "h")
+            ? cursor - removed.length
+            : cursor,
+        )
+      } finally {
+        editor.destroy()
+        renderer.destroy()
+      }
+    },
+  )
+
+  test.each([
+    { grapheme: "😀", key: "l" },
+    { grapheme: "😀", key: "h" },
+    { grapheme: "e\u0301", key: "l" },
+    { grapheme: "e\u0301", key: "h" },
+  ] as const)(
+    "exclusive motion $key preserves complete grapheme $grapheme",
+    async ({ grapheme, key }) => {
+      const { renderer, renderOnce } = await createTestRenderer({
+        width: 40,
+        height: 3,
+      })
+      const editor = new TextareaRenderable(renderer, {
+        id: "exclusive-unicode",
+        initialValue: `a${grapheme}b`,
+      })
+      renderer.root.add(editor)
+      editor.focus()
+      const runtime = createVimState("normal")
+      const register = { value: "", linewise: false }
+      try {
+        await renderOnce()
+        editor.cursorOffset = key === "l" ? 1 : 1 + grapheme.length
+        runActions(
+          editor,
+          [{ type: "operator-motion", operator: "delete", key, count: 1 }],
+          register,
+          runtime,
+          createVimHistory(editor.plainText),
+          mutableEffects(runtime),
+        )
+        expect(editor.plainText).toBe("ab")
+        expect(register.value).toBe(grapheme)
+        expect(editor.cursorOffset).toBe(1)
+      } finally {
+        editor.destroy()
+        renderer.destroy()
+      }
+    },
+  )
+
   test("reloading visual mode restores a selection that survives the next host reconciliation", async () => {
     const { renderer } = await createTestRenderer({ width: 20, height: 3 })
     const editor = new TextareaRenderable(renderer, {

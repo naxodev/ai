@@ -129,8 +129,6 @@ Windows provider remains named `clip` in configuration. On Linux it prefers
 
 ## Limitations
 
-- A separate capture observed `dw` deleting an extra character after leaving visual mode. [Issue #208](https://github.com/naxodev/ai/issues/208) tracks reproduction and diagnosis. The demo above verifies character deletion with `x`, not this word-deletion sequence.
-
 - The public V2 keymap API cannot intercept arbitrary printable Unicode. An unlisted Unicode key may reach the editor in normal or visual mode.
 - Character finds register every printable ASCII target with the public keymap. Unicode find targets remain subject to the public keymap limitation above.
 - Active leader prefixes are left to OpenCode except `v`, `V`, and `$`, which Vim reserves for visual and line-end motions. The API does not expose inactive or dynamically changed leader configuration.
