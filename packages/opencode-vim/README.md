@@ -16,7 +16,7 @@ Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 
 ![Vim visual mode selecting release checklist inside an OpenCode prompt](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/opencode-vim/preview.png)
 
-[Watch the silent editing demo (9 seconds)](https://cap.so/s/690b7p6p2q2rkdz). It demonstrates insert, normal motions, and visual selection. The [key reference](#key-reference) also covers `u` for undo and `.` for repeating a change. The longer dot-repeat capture needs investigation in [#206](https://github.com/naxodev/ai/issues/206); this clip does not verify that interaction.
+[Watch the silent editing demo (20 seconds)](https://cap.so/s/fab9gyem6ecsazq). It demonstrates insert, normal motions, visual selection, `x` deletion, `.` repeat, and two separate `u` operations that restore the original prompt. The capture verifies each resulting text in Vim 0.3.1 on OpenCode 2.0.16. See the [key reference](#key-reference) for the full command set.
 
 Add the npm package to `plugins` in the global `~/.config/opencode/cli.json`:
 
@@ -128,6 +128,8 @@ Windows provider remains named `clip` in configuration. On Linux it prefers
 `wl-copy` in Wayland sessions, then `xclip` and `xsel` when X11 is available.
 
 ## Limitations
+
+- A separate capture observed `dw` deleting an extra character after leaving visual mode. [Issue #208](https://github.com/naxodev/ai/issues/208) tracks reproduction and diagnosis. The demo above verifies character deletion with `x`, not this word-deletion sequence.
 
 - The public V2 keymap API cannot intercept arbitrary printable Unicode. An unlisted Unicode key may reach the editor in normal or visual mode.
 - Character finds register every printable ASCII target with the public keymap. Unicode find targets remain subject to the public keymap limitation above.
