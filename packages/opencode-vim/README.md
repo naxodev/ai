@@ -14,6 +14,10 @@ Native Vim-style modal prompt editing for the OpenCode 2 TUI.
 
 ## Install
 
+![Vim visual mode selecting release checklist inside an OpenCode prompt](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/opencode-vim/preview.png)
+
+[Watch the silent editing demo (9 seconds)](https://cap.so/s/690b7p6p2q2rkdz). It demonstrates insert, normal motions, and visual selection. The [key reference](#key-reference) also covers `u` for undo and `.` for repeating a change. The longer dot-repeat capture needs investigation in [#206](https://github.com/naxodev/ai/issues/206); this clip does not verify that interaction.
+
 Add the npm package to `plugins` in the global `~/.config/opencode/cli.json`:
 
 ```jsonc

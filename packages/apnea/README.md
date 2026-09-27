@@ -27,6 +27,10 @@ only rebinds roles to profile names that already exist.
 
 ## Install
 
+![Apnea status showing the planning step, release-checklist goal, and next dispatch and wait actions](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/apnea/preview.png)
+
+[Watch the silent CLI demo (16 seconds)](https://cap.so/s/0ywqb45v5bc209y). This staged run uses an isolated repository. The visible `head -n 18` command shortens the status output; no roles are dispatched.
+
 ```bash
 bun install -g @naxodev/apnea
 # or

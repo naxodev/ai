@@ -40,6 +40,10 @@ Run `/music-artwork` to recover artwork for the same track after connectivity re
 
 ## Install
 
+![Pi music panel with a native sunset cover, Northern Lights metadata, waveform, and playback progress](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/pi-music-dock/preview.png)
+
+[Watch the silent dock demo (14 seconds)](https://cap.so/s/m1vdnkznatga1fy): focus the panel, seek, pause, resume, and return to the prompt. The real interface uses staged playback and original cover artwork, captured directly in Ghostty.
+
 Install from npm:
 
 ```sh

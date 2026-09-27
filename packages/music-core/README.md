@@ -10,6 +10,10 @@ Host-neutral music-session contracts, a same-user machine-local client boundary,
 
 ## Install
 
+![Music-core architecture linking OpenCode and Pi to one daemon, with playback visualization output](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/music-core/preview.png)
+
+[Watch the silent library demo (18 seconds)](https://cap.so/s/sejery4s2bkx78a). The example runs `createEngine`, `stepEngine`, and `displayLevel` with synthetic playback samples. The diagram describes the architecture; the visualization does not analyze audio.
+
 ```sh
 bun add @naxodev/music-core
 ```
