@@ -46,6 +46,8 @@ export const vimKeyBindings: readonly VimKeyBinding[] = [
   ["shift+slash", "?"],
   ["shift+backquote", "~"],
   ["$", "$"],
+  // Raw and Kitty terminal events name this key literally, not "period".
+  [".", "."],
 ]
 
 const reservedBindings = new Set(["ctrl+[", "v", "shift+v", "$", "shift+4"])
