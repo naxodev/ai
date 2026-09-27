@@ -1,7 +1,30 @@
 import { describe, expect, test } from "bun:test"
+import { parseKeypress } from "@opentui/core"
 import { printableHostPrefix, selectVimKeyBindings } from "../host-keymap.ts"
 
 describe("Vim host keymap", () => {
+  test("terminal period events reach dot-repeat instead of falling through to prompt insertion", () => {
+    const bindings = selectVimKeyBindings(new Set(), {
+      respectHostPrefixes: true,
+    })
+    for (const sequence of [".", "\x1b[46u"]) {
+      const event = parseKeypress(sequence, { useKittyKeyboard: true })
+      expect(event?.name).toBe(".")
+      expect(bindings.find(({ bind }) => bind === event?.name)?.key).toBe(".")
+    }
+  })
+
+  test("a literal period leader remains native except while Vim awaits an operand", () => {
+    const normal = selectVimKeyBindings(new Set(["."]), {
+      respectHostPrefixes: true,
+    })
+    const pending = selectVimKeyBindings(new Set(["."]), {
+      respectHostPrefixes: false,
+    })
+    expect(normal.some(({ bind }) => bind === ".")).toBeFalse()
+    expect(pending.find(({ bind }) => bind === ".")?.key).toBe(".")
+  })
+
   test("reserves visual entry while leaving unrelated host prefixes active", () => {
     const selected = selectVimKeyBindings(new Set(["v", "x", "ctrl+["]), {
       respectHostPrefixes: true,

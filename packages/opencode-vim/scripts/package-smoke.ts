@@ -320,6 +320,30 @@ export { default } from "./index.js"
     runTmux("send-keys", "-t", session, "Escape")
     stage = "waiting for NORMAL"
     await waitForFooter("NORMAL")
+    for (const [encoding, sequence] of [
+      ["raw", "."],
+      ["Kitty", "\x1b[46u"],
+    ] as const) {
+      stage = `repeating a deletion through the real host keymap (${encoding})`
+      runTmux("send-keys", "-t", session, "-l", "0x")
+      await waitForPane(
+        (pane) => /┃\s+bc\s*$/m.test(pane),
+        "deleted prompt text bc",
+      )
+      runTmux("send-keys", "-t", session, "-l", sequence)
+      await waitForPane(
+        (pane) => /┃\s+c\s*$/m.test(pane),
+        "dot-repeat prompt text c",
+      )
+      stage = "undoing the repeat and original deletion separately"
+      runTmux("send-keys", "-t", session, "-l", "u")
+      await waitForPane((pane) => /┃\s+bc\s*$/m.test(pane), "undo repeat to bc")
+      runTmux("send-keys", "-t", session, "-l", "u")
+      await waitForPane(
+        (pane) => /┃\s+abc\s*$/m.test(pane),
+        "undo original edit to abc",
+      )
+    }
     stage = "setting the unnamed register"
     runTmux("send-keys", "-t", session, "-l", "0")
     runTmux("send-keys", "-t", session, "-l", "y")
