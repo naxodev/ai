@@ -1122,11 +1122,45 @@ function applyOperatorMotion(
     operator === "change" &&
     key === "w" &&
     !/\s/u.test(editor.plainText[editor.cursorOffset] ?? "")
+  // Native selecting motions include the destination character. Vim's h/l/w/b
+  // operators need half-open ranges, so use movement endpoints instead.
+  const exclusive =
+    !changeWord && (key === "h" || key === "l" || key === "w" || key === "b")
   if (changeWord) {
     const target = endOfWord(editor.plainText, editor.cursorOffset, count, true)
     editor.cursorOffset = target
     setGraphemeInclusiveSelection(editor, original, target)
-  } else move(editor, key, count, true, percentage)
+  } else if (key === "h" || key === "l") {
+    // Host cursor steps can stop inside a combining sequence.
+    editor.cursorOffset =
+      key === "h"
+        ? retreatGraphemes(
+            editor.plainText,
+            original,
+            count,
+            originalBounds.start,
+          )
+        : advanceGraphemes(
+            editor.plainText,
+            original,
+            count,
+            originalBounds.end,
+          )
+  } else if (
+    exclusive &&
+    key === "w" &&
+    /\s/u.test(editor.plainText[original] ?? "")
+  ) {
+    // From whitespace, Vim skips only that run; the host also skips the next word.
+    let target = original
+    while (
+      target < editor.plainText.length &&
+      /\s/u.test(editor.plainText[target] ?? "")
+    )
+      target = nextGraphemeStart(editor.plainText, target)
+    editor.cursorOffset = target
+    move(editor, key, count - 1, false, percentage)
+  } else move(editor, key, count, !exclusive, percentage)
   if (
     !changeWord &&
     editor.cursorOffset === original &&
@@ -1136,7 +1170,12 @@ function applyOperatorMotion(
     editor.clearSelection()
     return false
   }
-  const selection = editor.getSelection()
+  const selection = exclusive
+    ? {
+        start: Math.min(original, editor.cursorOffset),
+        end: Math.max(original, editor.cursorOffset),
+      }
+    : editor.getSelection()
   if (!selection) return false
   const selected = editor.plainText.slice(selection.start, selection.end)
   if (selected) setRegister(selected)
