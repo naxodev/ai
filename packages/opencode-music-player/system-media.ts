@@ -11,6 +11,7 @@ import {
   type RevisionedState,
 } from "@naxodev/music-core"
 import { resolveArtworkDetails } from "./artwork.ts"
+import { compatibleArtworkDuration } from "./types.ts"
 import type {
   Artwork,
   ArtworkCompletionEvent,
@@ -315,6 +316,7 @@ export function createSessionSystemMedia(
   let disposed = false
   let currentArtworkIdentity: string | null = null
   let currentArtworkKey: string | null = null
+  let currentArtworkTrack: ArtworkIdentity | null = null
   let client: ReconnectingMusicSessionClient | undefined
   let installed = false
   let latest: RevisionedState | undefined
@@ -395,11 +397,32 @@ export function createSessionSystemMedia(
     emit(event)
   }
   const project = (state: RevisionedState | undefined): PlayerState | null => {
-    const nextKey = state?.state.track
-      ? artworkCacheKey(identityFromTrack(state.state.track))
+    const nextIdentity = state?.state.track
+      ? identityFromTrack(state.state.track)
       : null
+    let nextKey = nextIdentity ? artworkCacheKey(nextIdentity) : null
+    const retained = currentArtworkKey
+      ? artworkCache.get(currentArtworkKey)
+      : undefined
+    // Retain a completed cover across sparse metadata and catalog-compatible rounding.
+    // Use the catalog matcher's one-second tolerance; larger conflicts reacquire.
+    if (
+      nextIdentity &&
+      currentArtworkTrack &&
+      retained?.value &&
+      nextIdentity.title === currentArtworkTrack.title &&
+      nextIdentity.artist === currentArtworkTrack.artist &&
+      nextIdentity.album === currentArtworkTrack.album &&
+      compatibleArtworkDuration(
+        currentArtworkTrack.duration_ms,
+        retained.duration_ms,
+        nextIdentity.duration_ms,
+      )
+    )
+      nextKey = currentArtworkKey
     if (nextKey !== currentArtworkKey) removeArtworkInterests(host)
     currentArtworkKey = nextKey
+    currentArtworkTrack = nextIdentity
     if (!state) {
       currentArtworkIdentity = null
       return null
@@ -412,7 +435,7 @@ export function createSessionSystemMedia(
     const identity = identityFromTrack(track)
     currentArtworkIdentity = artworkIdentityKey(identity)
     const artworkState = artworkForTrack(
-      artworkCacheKey(identity),
+      currentArtworkKey!,
       artworkIdentityKey(identity),
       {
         title: track.name,
@@ -445,6 +468,7 @@ export function createSessionSystemMedia(
         ...track,
         artwork: artworkState.artwork,
         artwork_loading: artworkState.loading,
+        artwork_duration_ms: artworkState.duration_ms,
       },
     }
   }
@@ -506,10 +530,12 @@ export function createSessionSystemMedia(
       await activeClient()
       const track = latest?.state.track
       if (!track) return
-      const key = artworkCacheKey(identityFromTrack(track))
+      const key = currentArtworkKey ?? artworkCacheKey(identityFromTrack(track))
+      const requestedKey = artworkCacheKey(identityFromTrack(track))
       // Repeated refreshes join active work; no new slot or retry budget.
-      if (artworkJobs.has(key)) return
+      if (artworkJobs.has(key) || artworkJobs.has(requestedKey)) return
       artworkCache.delete(key)
+      artworkCache.delete(requestedKey)
       emit({ type: "snapshot", state: project(latest)! })
     },
     async play() {

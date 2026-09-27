@@ -5,6 +5,7 @@ import {
   isMac,
   mergeArtworkCompletion,
   mergePlayerSnapshot,
+  presentationDuration,
   type SessionMedia,
 } from "./types.ts"
 import {
@@ -232,7 +233,10 @@ export function createController(
   const playPause = () => runCommand(() => media.toggle())
 
   const seek = (positionMs: number) => {
-    const target = seekTarget(positionMs, session.player?.track?.duration_ms)
+    const target = seekTarget(
+      positionMs,
+      presentationDuration(session.player?.track),
+    )
     if (!session.player?.track || target === null || !isActive())
       return Promise.resolve()
     return new Promise<void>((resolve) => {

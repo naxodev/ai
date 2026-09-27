@@ -666,6 +666,53 @@ describe("session media facade", () => {
     await media.dispose()
   })
 
+  test("explicit refresh bypasses both retained and current metadata cache variants", async () => {
+    const sparse = new FakeClient()
+    const complete = new FakeClient()
+    const snapshot = state("refresh-duration-variants")
+    complete.state = snapshot
+    sparse.state = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        track: { ...snapshot.state.track!, duration_ms: 0 },
+      },
+    }
+    let resolutions = 0
+    const resolver = async () => ({
+      artwork: {
+        id: `variant-${++resolutions}`,
+        png_base64: "",
+        accent: "",
+        cells: [],
+      },
+      duration_ms: 180_000,
+    })
+    const a = createSessionSystemMedia({
+      createClient: async () => sparse,
+      resolveArtworkDetails: resolver,
+    })
+    const b = createSessionSystemMedia({
+      createClient: async () => complete,
+      resolveArtworkDetails: resolver,
+    })
+    try {
+      await a.player()
+      for (let index = 0; index < 6; index++) await flush()
+      await b.player()
+      for (let index = 0; index < 6; index++) await flush()
+      expect(resolutions).toBe(2)
+      sparse.emitState(snapshot)
+      expect((await a.player())?.track?.artwork?.id).toBe("variant-1")
+      await a.refreshArtwork()
+      for (let index = 0; index < 6; index++) await flush()
+      expect(resolutions).toBe(3)
+      expect((await a.player())?.track?.artwork?.id).toBe("variant-3")
+    } finally {
+      await Promise.all([a.dispose(), b.dispose()])
+    }
+  })
+
   test("falls back for all non-available artwork results and bounds distinct jobs", async () => {
     let now = 0
     const client = new FakeClient()
