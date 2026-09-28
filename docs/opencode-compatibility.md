@@ -30,7 +30,7 @@ The [stable CLI plugin contract](https://opencode.ai/v2/docs/build/plugins/cli) 
 
 OpenTUI `0.5.10` clears selection when assigning `EditBufferRenderable.cursorOffset`. Vim must move the cursor before restoring selection. Real-renderer regression tests cover visual reload reconciliation and change motions. The packed host gate also preserves visual mode, undo history, and the unnamed register across reload.
 
-Music-core and Apnea retain Effect `4.0.0-rc.111`. OpenCode's published packages use `4.0.0-rc.112` in their own dependency graph. The music adapter crosses the host boundary through ordinary values, callbacks, and Promises, not host Effect services or fibers. No workspace-wide Effect override is introduced.
+Music-core and Apnea pin Effect `4.0.0-rc.117`. OpenCode's plugin and theme packages pin `4.0.0-rc.112`; other upstream packages retain their own pins. The music adapter crosses the host boundary through ordinary values, callbacks, and Promises, not host Effect services or fibers. The workspace does not override Effect across those dependency graphs.
 
 The workspace overrides `@opentelemetry/core` to `2.8.0` and Babel to `7.29.7` for development dependencies. Packed consumers do not need these overrides. The prebuilt host has a separate dependency boundary, described below.
 
