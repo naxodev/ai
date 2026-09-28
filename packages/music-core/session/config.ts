@@ -376,11 +376,11 @@ export const layer = (options: MusicSessionOptions) =>
     ),
   )
 
-const socketPathConfig = Config.string("MUSIC_SESSION_SOCKET").pipe(
+const socketPathConfig = Config.String("MUSIC_SESSION_SOCKET").pipe(
   Config.withDefault(""),
 )
 const optionalNumber = (name: string, fallback: number) =>
-  Config.string(name).pipe(Config.withDefault(String(fallback)))
+  Config.String(name).pipe(Config.withDefault(String(fallback)))
 export const layerFromConfig = Layer.effect(
   MusicSessionConfig,
   Effect.gen(function* () {
