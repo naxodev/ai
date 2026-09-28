@@ -194,11 +194,12 @@ describe("vim transition engine", () => {
     expect(state.mode).toBe("insert")
   })
 
-  test("uses Enter for newlines and Ctrl+Enter for submission", () => {
+  test("leaves Enter and Shift+Enter to the host while retaining Ctrl+Enter submission", () => {
     const state = createVimState()
-    expect(transition(state, "return").actions).toEqual([
-      { type: "command", id: "input.newline" },
-    ])
+    for (const key of ["return", "shift+return"]) {
+      expect(transition(state, key)).toEqual({ consume: false, actions: [] })
+      expect(state.mode).toBe("insert")
+    }
     expect(transition(state, "ctrl+return")).toEqual({
       consume: true,
       actions: [{ type: "command", id: "input.submit" }],

@@ -208,6 +208,34 @@ function command(layers: Array<() => any>, id: string) {
     .find((candidate) => candidate.id === id)
 }
 
+test("insert Enter reaches native submission and Shift+Enter reaches native newline handling", async () => {
+  const host = await harness()
+  const nativeKeys: string[] = []
+  try {
+    for (const key of ["return", "shift+return"]) {
+      const layers = host.layers
+        .map((layer) => layer())
+        .filter((layer) => layer.enabled?.())
+        .sort((a, b) => b.priority - a.priority)
+      let consumed = false
+      for (const layer of layers) {
+        const binding = layer.commands?.find((item: any) => item.bind === key)
+        if (binding && binding.run() !== false) {
+          consumed = true
+          break
+        }
+      }
+      if (!consumed) nativeKeys.push(key)
+    }
+    // Native handling owns submission, autocomplete, and escaped newlines.
+    expect(nativeKeys).toEqual(["return", "shift+return"])
+    expect(host.dispatched).toEqual([])
+  } finally {
+    await host.cleanup?.()
+    host.rendered.renderer.destroy()
+  }
+})
+
 test("live durable settings control bindings and persistence gates success", async () => {
   const persisted = deferred<void>()
   const host = await harness({

@@ -246,11 +246,6 @@ function VimHost(props: {
         run: () => handle("ctrl+o"),
       },
       {
-        id: "vimcode-v2.insert.return",
-        bind: "return",
-        run: () => handle("return"),
-      },
-      {
         id: "vimcode-v2.insert.ctrl-return",
         bind: "ctrl+return",
         run: () => handle("ctrl+return"),
