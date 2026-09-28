@@ -101,7 +101,7 @@
     },
     "packages/pi-apnea": {
       "name": "@naxodev/pi-apnea",
-      "version": "0.2.3",
+      "version": "0.3.0",
       "dependencies": {
         "@naxodev/apnea": "^0.2.3",
       },
@@ -119,7 +119,7 @@
     },
     "packages/pi-music-dock": {
       "name": "@naxodev/pi-music-dock",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@naxodev/music-core": "^0.1.4",
       },
