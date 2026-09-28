@@ -77,7 +77,7 @@
     },
     "packages/opencode-vim": {
       "name": "@naxodev/opencode-vim",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "devDependencies": {
         "@opencode/plugin": "2.0.18",
         "@opencode/theme": "2.0.18",
