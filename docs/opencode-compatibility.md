@@ -56,7 +56,9 @@ Before publication, the package smokes serve the current packed artifacts throug
 
 Vim loads its unmodified packed artifact through an options object and asserts `startMode: "normal"`. Its instrumented directory-based reload scenario then runs separately. Music loads through the string form and checks both its host and core tarball downloads. It retains the existing deterministic media fixture wrapper around the packed implementation, then runs the directory-based paused and resized presentations. No user media provider is used.
 
-This covers the prepublication package-resolver contract in #134. After publication, verify each exact released `@naxodev/<package>@<version>` in a new isolated host configuration against the public registry. That publication check remains unrun because these versions have not been published. The loopback checks verify the current source artifacts, not public-registry propagation.
+This covers the prepublication package-resolver contract in #134. After publication, verify each exact released `@naxodev/<package>@<version>` in a new isolated host configuration against the public registry. The loopback checks verify the current source artifacts, not public-registry propagation.
+
+After [the 2.0.18 release](https://github.com/naxodev/ai/pull/211), an isolated OpenCode 2.0.18 session loaded public `@naxodev/opencode-music-player@0.5.0` and `@naxodev/opencode-vim@0.4.0` together. The check verified the music sidebar and Vim's mode transitions, word deletion, dot-repeat, and separate undo steps before and after visual selection. It disabled clipboard access and issued no playback commands. Deterministic playback and native-artwork rendering remain covered by the packed-host fixture gates.
 
 ## Host-provided dependencies
 
