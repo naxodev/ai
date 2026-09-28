@@ -32,24 +32,8 @@ const parseVersion = (value: string | undefined, label: string) => {
 		throw new Error(`${label} must be an exact major.minor.patch pin`);
 	return match.slice(1).map(Number) as [number, number, number];
 };
-const compareVersions = (left: readonly number[], right: readonly number[]) => {
-	for (let index = 0; index < left.length; index++) {
-		const difference = left[index]! - right[index]!;
-		if (difference !== 0) return Math.sign(difference);
-	}
-	return 0;
-};
 const requirePeerCompatible = (pin: string, range: string, label: string) => {
-	const bounds = range.match(/^>=(\d+\.\d+\.\d+) <(\d+\.\d+\.\d+)$/);
-	if (!bounds)
-		throw new Error(`${label} peer range must be a >=version <version range`);
-	const version = parseVersion(pin, `${label} tested pin`);
-	const lower = parseVersion(bounds[1], `${label} peer lower bound`);
-	const upper = parseVersion(bounds[2], `${label} peer upper bound`);
-	if (
-		compareVersions(version, lower) < 0 ||
-		compareVersions(version, upper) >= 0
-	)
+	if (!Bun.semver.satisfies(pin, range))
 		throw new Error(
 			`${label} tested pin ${pin} is outside peer range ${range}`,
 		);

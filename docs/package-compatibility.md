@@ -41,15 +41,15 @@ The tested OpenCode host is `@opencode/cli@2.0.18`. It supplies `@opencode/plugi
 - Declared node range: `>=22.19.0`.
 - No manifest OS restriction; this does not establish tested platform support.
 - Required core: `@naxodev/apnea@^0.2.3`.
-- Declared peer: `@earendil-works/pi-coding-agent@>=0.83.0 <0.85.0`.
-- Pi test dependency: `@earendil-works/pi-coding-agent@0.84.2`.
+- Declared peer: `@earendil-works/pi-coding-agent@>=0.83.0 <0.85.0 || 0.87.1`.
+- Pi test dependency: `@earendil-works/pi-coding-agent@0.87.1`.
 
 ## @naxodev/pi-music-dock
 
 - Declared node range: `>=22.19.0`.
 - Manifest OS restriction: `darwin`.
 - Required core: `@naxodev/music-core@^0.1.4`.
-- Declared peer: `@earendil-works/pi-coding-agent@>=0.83.0 <0.85.0`.
-- Declared peer: `@earendil-works/pi-tui@>=0.83.0 <0.85.0`.
-- Pi test dependency: `@earendil-works/pi-coding-agent@0.84.2`.
-- Pi test dependency: `@earendil-works/pi-tui@0.84.2`.
+- Declared peer: `@earendil-works/pi-coding-agent@>=0.83.0 <0.85.0 || 0.87.1`.
+- Declared peer: `@earendil-works/pi-tui@>=0.83.0 <0.85.0 || 0.87.1`.
+- Pi test dependency: `@earendil-works/pi-coding-agent@0.87.1`.
+- Pi test dependency: `@earendil-works/pi-tui@0.87.1`.
