@@ -3708,8 +3708,9 @@ test("reset classification fails closed when endpoint or marker changes during i
         root,
         uid,
         dependencies: {
-          readFile: (async (path) => {
-            const contents = await readFile(path, "utf8")
+          readFile: (async (...args: Parameters<typeof readFile>) => {
+            const [path] = args
+            const contents = await readFile(...args)
             if (path === base.markerPath && ++markerReads === 2) {
               replaced = true
               if (artifact === "endpoint") {
@@ -3805,8 +3806,9 @@ test("reset classification rejects an in-place marker generation rewrite", async
       root,
       uid,
       dependencies: {
-        readFile: (async (path) => {
-          const contents = await readFile(path, "utf8")
+        readFile: (async (...args: Parameters<typeof readFile>) => {
+          const [path] = args
+          const contents = await readFile(...args)
           if (path === base.markerPath && ++markerReads === 2) {
             await writeFile(
               base.markerPath,
