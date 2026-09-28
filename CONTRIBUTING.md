@@ -85,7 +85,7 @@ For isolated minimum-runtime evidence, run `bun run compatibility:minimum-bun`. 
 
 [`.oxlintrc.json`](.oxlintrc.json) enables exactly two error-level rules: `typescript/no-floating-promises` and `typescript/no-misused-promises`. Floating-promise checks include thenables and async IIFEs; `void` does not suppress them. Misused-promise checks include conditions, spreads, and every void-return callback position, including JSX attributes. Prettier owns formatting.
 
-Oxlint 1.83.0 and oxlint-tsgolint 7.0.2001 use native TypeScript analysis. [Oxlint's type-aware implementation requires TypeScript 7](https://oxc.rs/docs/guide/usage/linter/type-aware), matching the project's TypeScript 7.0.2 compiler. This avoids a second legacy compiler installation. The gate adds no recommended rule preset or formatting rules.
+Oxlint 1.85.0 and oxlint-tsgolint 7.0.2003 use native TypeScript analysis. [Oxlint's type-aware implementation requires TypeScript 7](https://oxc.rs/docs/guide/usage/linter/type-aware), matching the project's TypeScript 7.0.2 compiler. This avoids a second legacy compiler installation. The gate adds no recommended rule preset or formatting rules.
 
 The scanner independently enumerates `.ts`, `.tsx`, `.mts`, and `.cts` files, including declarations, production code, tests, and root tooling. It verifies each file against its nearest `tsconfig.json` using compiler file lists before passing explicit paths to Oxlint. Missing projects or omitted files fail the gate. Only dependency, generated-output, VCS, Nx-cache, and Apnea-state directories are excluded: `node_modules`, `dist`, `.git`, `.jj`, `.nx`, and `.apnea`. Nested lint configurations and ignore files cannot narrow the gate.
 
