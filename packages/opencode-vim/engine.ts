@@ -246,12 +246,6 @@ function operatorFor(key: string): Operator | null {
 export function transition(state: VimState, key: string): Transition {
   if (key === "ctrl+[") key = "escape"
   if (state.mode === "insert") {
-    if (key === "return") {
-      return {
-        consume: true,
-        actions: [{ type: "command", id: "input.newline" }],
-      }
-    }
     if (key === "ctrl+return") {
       return {
         consume: true,

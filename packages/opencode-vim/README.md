@@ -113,7 +113,7 @@ The package ships precompiled JavaScript for the supported OpenCode Bun host. Th
 | `>`, `<` in visual mode         | Indent or outdent selected lines                |
 | `u`, `ctrl+r`                   | Undo or redo one Vim command                    |
 | `J`                             | Join lines                                      |
-| `return` in insert              | Insert a newline                                |
+| `return` in insert              | Submit through OpenCode's native input handling |
 | `return` in normal              | Submit with the native OpenCode binding         |
 | `ctrl+return` in insert         | Submit with the native OpenCode binding         |
 | `:`                             | Open the EX command dialog                      |
