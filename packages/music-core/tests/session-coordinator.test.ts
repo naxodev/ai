@@ -111,8 +111,8 @@ test("config defaults, overrides, ConfigProvider parity, and typed failures", as
   const defaults = await Effect.runPromise(
     resolve(configLayer({ socketPath: "/tmp/config.sock" })),
   )
-  expect(defaults.maxFrameBytes).toBe(64 * 1024)
-  expect(defaults.nativeArtworkMaxBytes).toBe(1024)
+  expect(defaults.maxFrameBytes).toBe(768 * 1024)
+  expect(defaults.nativeArtworkMaxBytes).toBe(512 * 1024)
   const concrete = await Effect.runPromise(
     resolve(
       configLayer({
@@ -157,7 +157,7 @@ test("config defaults, overrides, ConfigProvider parity, and typed failures", as
       ),
     ),
   )
-  expect(missing.maxFrameBytes).toBe(64 * 1024)
+  expect(missing.maxFrameBytes).toBe(768 * 1024)
   const malformed = await Effect.runPromise(
     resolve(layerFromConfig).pipe(
       Effect.provide(

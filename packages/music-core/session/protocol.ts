@@ -2,7 +2,11 @@ import { Effect } from "effect"
 import * as Schema from "effect/Schema"
 import { Buffer } from "node:buffer"
 import type { PlayerState as CorePlayerState } from "../types.ts"
-import { MAX_ARTWORK_BASE64_CHARS, PACKAGE_VERSION } from "./config.ts"
+import {
+  MAX_ARTWORK_BASE64_CHARS,
+  MAX_NATIVE_ARTWORK_BYTES,
+  PACKAGE_VERSION,
+} from "./config.ts"
 
 export { PACKAGE_VERSION }
 
@@ -12,6 +16,8 @@ export const baselineCapabilities = [
   "state-replay",
   "transport",
   "native-artwork",
+  // Peers without this capability retain their 64 KiB response budget.
+  "native-artwork-512k",
 ] as const
 
 const SafeInt = Schema.Finite.check(
@@ -156,6 +162,9 @@ const CanonicalBase64 = Schema.String.check(
       return [{ path: [], issue: "must be bounded canonical base64" }]
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value))
       return [{ path: [], issue: "must be canonical base64" }]
+    const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
+    if ((value.length / 4) * 3 - padding > MAX_NATIVE_ARTWORK_BYTES)
+      return [{ path: [], issue: "artwork exceeds decoded byte limit" }]
     return Buffer.from(value, "base64").toString("base64") === value
       ? []
       : [{ path: [], issue: "must be canonical base64" }]

@@ -1,4 +1,7 @@
 /** Shared NDJSON framing. It deliberately has no socket knowledge. */
+export const LEGACY_MAX_FRAME_BYTES = 64 * 1024
+export const DEFAULT_MAX_FRAME_BYTES = 768 * 1024
+
 export class FrameError extends Error {
   constructor(message: string) {
     super(message)
@@ -12,7 +15,7 @@ export class NdjsonFramer {
   #decoder = new TextDecoder()
   #pendingFrameBytes = 0
   readonly maxFrameBytes: number
-  constructor(maxFrameBytes = 64 * 1024) {
+  constructor(maxFrameBytes = DEFAULT_MAX_FRAME_BYTES) {
     if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes <= 0)
       throw new Error("invalid frame limit")
     this.maxFrameBytes = maxFrameBytes
