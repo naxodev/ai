@@ -173,7 +173,7 @@ Frames, queues, and pending requests are finite. A slow or abusive connection ca
 
 Native artwork defaults to 512 KiB of decoded image bytes, also its schema ceiling. Session frames default to 768 KiB to fit base64 and the response envelope. Smaller configured frames reduce the effective artwork budget. Playback snapshots and provider metadata-stream lines remain bounded at 64 KiB.
 
-The `native-artwork-512k` capability enables larger artwork responses. Clients with a frame limit below 768 KiB omit this capability. Older peers receive `too-large` for artwork that exceeds their 64 KiB frame budget and remain connected. Both client and daemon must be updated to use the larger budget; a running older daemon retains its original limits.
+The `native-artwork-512k` capability enables larger artwork responses. Clients with a frame limit below 768 KiB omit this capability. Clients below 64 KiB also omit `native-artwork`: artwork requests return `UNSUPPORTED_CAPABILITY` without sending a request, so oversized artwork cannot disconnect playback. Other older peers receive `too-large` for artwork that exceeds their 64 KiB frame budget and remain connected. Both client and daemon must be updated to use the larger budget; a running older daemon retains its original limits.
 
 See the [artwork limit research](../../docs/music-artwork-limits-research.md) for the historical evidence, base64 arithmetic, and memory tradeoffs.
 

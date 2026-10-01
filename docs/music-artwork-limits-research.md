@@ -44,7 +44,7 @@ The configuration derives the effective native limit from the requested image li
 
 ```text
 encodedBytes(n) = 4 × ceil(n / 3)
-frameArtworkMaxBytes = floor((maxFrameBytes - 128) × 0.75)
+frameArtworkMaxBytes = 3 × floor((maxFrameBytes - 128) / 4)
 effectiveNativeMax = min(requestedNativeMax, schemaCeiling, frameArtworkMaxBytes)
 require encodedBytes(effectiveNativeMax) + 128 <= maxFrameBytes
 ```
@@ -60,6 +60,8 @@ require encodedBytes(effectiveNativeMax) + 128 <= maxFrameBytes
 
 Raising only one of the original limits cannot fix this image. A 512 KiB frame fits the reported JPEG, but cannot carry an arbitrary 512 KiB image after base64 expansion.
 
+The original clamp rounded decoded bytes after multiplying by 0.75. The increased default exposed an overflow for frame limits such as 65,535 bytes. The corrected formula above rounds down to complete base64 quartets first, retaining a usable budget for every valid frame size.
+
 The provider first buffers command output, then checks `encodedBytes(maxBytes) + 8192` before parsing JSON. Therefore, the native limit does not prevent subprocess allocation up to the independent 1 MiB cap. At the new 512 KiB image limit, the adapter's complete output allowance is 707,244 bytes. It fits the runner cap without changing command execution. Multi-megabyte artwork would require revisiting that boundary. [S7] [S9]
 
 Node counts `maxBuffer` in bytes on stdout or stderr. Exceeding it terminates the process and truncates output. It is not an image-format restriction. [S13]
@@ -68,7 +70,7 @@ Node counts `maxBuffer` in bytes on stdout or stderr. Exceeding it terminates th
 
 Increase the native default and schema ceiling to **512 KiB**, and the shared frame default to **768 KiB**. These values fit the observed JPEG with headroom and allow the full image budget after base64 expansion. They are an explicit bounded policy, not a measured optimum across all music applications.
 
-The response shape and protocol revision remain compatible. Larger responses require the additive `native-artwork-512k` capability. Clients with a custom frame limit below 768 KiB do not advertise it. Older peers receive `too-large` when artwork cannot fit their original 64 KiB response budget; transport commands remain usable. Shared playback snapshots retain their 64 KiB bound because every peer receives them.
+The response shape and protocol revision remain compatible. Larger responses require the additive `native-artwork-512k` capability. Clients with a custom frame limit below 768 KiB do not advertise it. Below 64 KiB, clients also omit `native-artwork` and reject artwork requests locally with `UNSUPPORTED_CAPABILITY`. This avoids assuming a response budget the client cannot support. Other older peers receive `too-large` when artwork cannot fit their original 64 KiB response budget; transport commands remain usable. Shared playback snapshots retain their 64 KiB bound because every peer receives them.
 
 This compatibility check is necessary because original clients enforce their own frame limits, and the original hello does not negotiate payload sizes. [S20] [S21]
 
@@ -97,6 +99,8 @@ Catalog matching remains a separate constraint. It preserves accents and require
 Historical claims come from read-only source and GitHub queries. The byte budgets were checked with Bun arithmetic. The initial live investigation established the JPEG size and successful host conversion; the background historical research did not repeat that observation.
 
 The regression test uses synthetic bytes with the exact reported size, through the actual socket server and client. It verifies delivery to updated clients, safe fallback for older and smaller-frame clients, shared acquisition, and working playback commands. A separate schema test checks the full 512 KiB boundary and rejects the next decoded byte.
+
+Review regressions cover 16 KiB and 32 KiB clients facing a 30,000-byte cover, with working playback after local artwork rejection. Configuration tests cover all four frame-size residues modulo four, both near 64 KiB and at the minimum valid frame size.
 
 ## Primary sources
 

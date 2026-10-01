@@ -102,6 +102,7 @@ const test: SessionTestFn = createSessionTest(
     "real clients retain global FIFO and recover after command-lane overflow",
     "artwork is capability-negotiated, authoritative, and cached per recording",
     "ordinary album covers cross the default socket without disconnecting older clients",
+    "sub-64-KiB clients retain playback when native artwork exceeds their receive budget",
     "real artwork responses contain exact, oversized, and malformed provider payloads",
     "blocked artwork remains isolated, shared, retryable, and connection-local",
     "two clients share the daemon command lane",
@@ -3704,6 +3705,58 @@ test("ordinary album covers cross the default socket without disconnecting older
     expect(provider.artworkCalls).toBe(1)
   } finally {
     for (const client of clients) client.dispose()
+    await server.close()
+  }
+})
+
+test("sub-64-KiB clients retain playback when native artwork exceeds their receive budget", async () => {
+  const path = socketPath("small-artwork-frame")
+  const identity = {
+    id: "small-frame-cover",
+    name: "Song",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 180_000,
+  }
+  const provider = createFakeProvider({
+    is_playing: false,
+    progress_ms: 0,
+    shuffle: false,
+    repeat: "off",
+    device: null,
+    track: { ...identity, uri: "system:small-frame-cover" },
+    fetched_at: 1,
+  })
+  // This fits the legacy 64 KiB response budget, but not either custom client.
+  provider.setArtworkResult({
+    type: "available",
+    base64: Buffer.alloc(30_000).toString("base64"),
+  })
+  const server = await startMusicSessionServer({ socketPath: path }, provider)
+  try {
+    for (const maxFrameBytes of [16 * 1024, 32 * 1024]) {
+      const client = await createMusicSessionClient({
+        socketPath: path,
+        clientId: `small-frame-${maxFrameBytes}`,
+        hostKind: "test",
+        maxFrameBytes,
+        // Cover both default capabilities and callers explicitly requesting artwork.
+        ...(maxFrameBytes === 32 * 1024
+          ? { capabilities: ["state-replay", "transport", "native-artwork"] }
+          : {}),
+      })
+      try {
+        await expect(client.artwork(identity)).rejects.toMatchObject({
+          code: "UNSUPPORTED_CAPABILITY",
+        })
+        await expect(client.play()).resolves.toEqual({ action: "play" })
+        await expect(client.pause()).resolves.toEqual({ action: "pause" })
+      } finally {
+        client.dispose()
+      }
+    }
+    expect(provider.artworkCalls).toBe(0)
+  } finally {
     await server.close()
   }
 })

@@ -29,6 +29,7 @@ import {
 } from "./config.ts"
 import {
   DEFAULT_MAX_FRAME_BYTES,
+  LEGACY_MAX_FRAME_BYTES,
   NdjsonFramer,
   encodeFrame,
 } from "./framing.ts"
@@ -661,11 +662,13 @@ export async function createMusicSessionClient(
       retryable: false,
     })
   // Never advertise a response size that a custom client framer cannot read.
+  const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES
   const capabilities = offeredCapabilities.filter(
     (capability) =>
-      capability !== "native-artwork-512k" ||
-      (options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES) >=
-        DEFAULT_MAX_FRAME_BYTES,
+      (capability !== "native-artwork" ||
+        maxFrameBytes >= LEGACY_MAX_FRAME_BYTES) &&
+      (capability !== "native-artwork-512k" ||
+        maxFrameBytes >= DEFAULT_MAX_FRAME_BYTES),
   )
   if (
     !Number.isSafeInteger(offered.major) ||
@@ -742,7 +745,7 @@ export async function createMusicSessionClient(
   })
   const client = new Client(
     socket,
-    new NdjsonFramer(options.maxFrameBytes),
+    new NdjsonFramer(maxFrameBytes),
     maxPendingRequests,
   )
   await client.beginHandshake(

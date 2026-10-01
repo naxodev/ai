@@ -294,9 +294,10 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
         message: "is too small for a correlated artwork response",
       }),
     )
-  const frameArtworkMaxBytes = Math.floor(
-    (maxFrameBytes - ARTWORK_RESPONSE_OVERHEAD_BYTES) * 0.75,
-  )
+  // Each four encoded bytes carry three image bytes. Discard a partial quartet
+  // before converting the frame budget, so every valid frame size remains usable.
+  const frameArtworkMaxBytes =
+    Math.floor((maxFrameBytes - ARTWORK_RESPONSE_OVERHEAD_BYTES) / 4) * 3
   const effectiveArtworkMaxBytes = Math.min(
     nativeArtworkMaxBytes,
     MAX_NATIVE_ARTWORK_BYTES,

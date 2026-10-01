@@ -17,9 +17,11 @@ import {
 import { TestClock } from "effect/testing"
 import { emptyPlayer, type PlayerState } from "../types.ts"
 import {
+  ARTWORK_RESPONSE_OVERHEAD_BYTES,
   MusicSessionConfig,
   layer as configLayer,
   layerFromConfig,
+  resolveConfig,
 } from "../session/config.ts"
 import {
   MusicSessionCoordinator,
@@ -100,6 +102,29 @@ const subscribeStates = (coordinator: MusicSessionCoordinator["Service"]) =>
     yield* Queue.take(updates)
     return updates
   })
+
+test("frame-derived artwork budgets fit every base64 remainder", async () => {
+  // Exercise all four residues at the minimum frame size and the reported
+  // custom limit. Rounding decoded bytes must never overflow their wire frame.
+  for (const maxFrameBytes of [
+    65_535, 65_532, 65_533, 65_534, 132, 133, 134, 135,
+  ]) {
+    const config = await resolveConfig({
+      socketPath: "/tmp/config.sock",
+      maxFrameBytes,
+    })
+    const encoded = Buffer.alloc(config.nativeArtworkMaxBytes).toString(
+      "base64",
+    )
+    const remaining =
+      maxFrameBytes - ARTWORK_RESPONSE_OVERHEAD_BYTES - encoded.length
+    expect(config.nativeArtworkMaxBytes).toBeGreaterThan(0)
+    expect(remaining).toBeGreaterThanOrEqual(0)
+    // A full extra quartet would fit three more bytes, so reserve only the
+    // unavoidable remainder rather than rejecting an otherwise valid setting.
+    expect(remaining).toBeLessThan(4)
+  }
+})
 
 test("config defaults, overrides, ConfigProvider parity, and typed failures", async () => {
   const resolve = (layer: Layer.Layer<MusicSessionConfig, unknown>) =>
