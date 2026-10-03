@@ -1,10 +1,19 @@
 /** @jsxImportSource @opentui/solid */
 import type { BoxRenderable, CliRenderer } from "@opentui/core"
-import { For, onCleanup, onMount } from "solid-js"
+import {
+  For,
+  Show,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { Artwork } from "./types.ts"
+import { pngDimensions } from "./artwork.ts"
 import {
   planNativeArtworkPlacement,
+  fitNativeArtworkGeometry,
   type NativeArtworkPlacementAction,
   type NativeArtworkPlacementPlan,
   type NativeArtworkState,
@@ -104,6 +113,10 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   let container: BoxRenderable | undefined
   let paintPending = false
   let disposed = false
+  const [nativeVisible, setNativeVisible] = createSignal(false)
+  const imageDimensions = createMemo(() =>
+    pngDimensions(props.artwork.png_base64),
+  )
 
   const applyAction = (action: NativeArtworkPlacementAction): boolean => {
     const renderer = props.context.renderer
@@ -179,23 +192,39 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
     const imageId = imageIdForArtwork(props.artwork.id)
     const x = slot ? slot.screenX + offset.x : 0
     const y = slot ? slot.screenY + offset.y : 0
-    const width = slot?.width ?? 0
-    const height = slot?.height ?? 0
+    const image = imageDimensions()
+    const resolution = renderer.resolution
+    const geometry =
+      slot && image && resolution
+        ? fitNativeArtworkGeometry(
+            { x, y, width: slot.width, height: slot.height },
+            image,
+            {
+              width: Math.floor(resolution.width / renderer.terminalWidth),
+              height: Math.floor(resolution.height / renderer.terminalHeight),
+            },
+          )
+        : null
 
     const plan = planNativeArtworkPlacement({
       state: runtime.state,
       imageId,
-      x,
-      y,
-      width,
-      height,
+      ...(geometry ?? { x, y, width: 0, height: 0 }),
       kittySupported,
-      slotValid,
+      slotValid: slotValid && geometry !== null,
       disposed,
     })
 
-    if (plan.actions.length === 0) return
-    if (applyPlan(plan)) commitPlan(plan)
+    if (plan.actions.length === 0) {
+      setNativeVisible(runtime.state.placement !== null)
+      return
+    }
+    if (applyPlan(plan)) {
+      commitPlan(plan)
+      // Text cells assume a 1:2 font ratio. Do not leave them showing around a
+      // native placement fitted to a different measured terminal-cell ratio.
+      setNativeVisible(plan.nextState.placement !== null)
+    } else setNativeVisible(false)
   }
 
   const scheduleNativeImage = () => {
@@ -240,17 +269,19 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
       justifyContent="center"
       overflow="hidden"
     >
-      <For each={props.artwork.cells}>
-        {(row) => (
-          <text>
-            <For each={row}>
-              {(cell) => (
-                <span style={{ fg: cell.upper, bg: cell.lower }}>▀</span>
-              )}
-            </For>
-          </text>
-        )}
-      </For>
+      <Show when={!nativeVisible()}>
+        <For each={props.artwork.cells}>
+          {(row) => (
+            <text>
+              <For each={row}>
+                {(cell) => (
+                  <span style={{ fg: cell.upper, bg: cell.lower }}>▀</span>
+                )}
+              </For>
+            </text>
+          )}
+        </For>
+      </Show>
     </box>
   )
 }

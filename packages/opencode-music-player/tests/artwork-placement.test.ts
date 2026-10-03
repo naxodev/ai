@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   placementKey,
+  fitNativeArtworkGeometry,
   planNativeArtworkPlacement,
   type NativeArtworkPlacement,
   type NativeArtworkPlacementInput,
@@ -18,6 +19,26 @@ const geom = (
 const emptyState = (): NativeArtworkState => ({
   transmitted: 0,
   placement: null,
+})
+
+test("native fit refuses invalid pixel metrics instead of stretching into an unknown slot", () => {
+  const slot = { x: 0, y: 0, width: 24, height: 12 }
+  const image = { width: 300, height: 150 }
+  for (const width of [0, -1, Number.NaN, Infinity])
+    expect(
+      fitNativeArtworkGeometry(slot, image, { width, height: 20 }),
+    ).toBeNull()
+})
+
+test("sub-pixel native fits retain the text fallback rather than place a zero-area image", () => {
+  const slot = { x: 0, y: 0, width: 24, height: 12 }
+  for (const image of [
+    { width: 300, height: 1 },
+    { width: 1, height: 300 },
+  ])
+    expect(
+      fitNativeArtworkGeometry(slot, image, { width: 6, height: 12 }),
+    ).toBeNull()
 })
 
 const applied = (placement: NativeArtworkPlacement): NativeArtworkState => ({

@@ -4,6 +4,12 @@ const APC = "\x1b_G"
 const ST = "\x1b\\"
 const CHUNK_SIZE = 4096
 
+function scalingDimensions(width: number, height: number): string {
+  return [width > 0 ? `c=${width}` : "", height > 0 ? `r=${height}` : ""]
+    .filter(Boolean)
+    .join(",")
+}
+
 export function tmuxPassthrough(data: string): string {
   return `\x1bPtmux;${data.replaceAll("\x1b", "\x1b\x1b")}\x1b\\`
 }
@@ -34,7 +40,7 @@ export function kittyDisplayPng(
     if (index === 0) {
       next = next.replace(
         `${APC}a=t,f=100,i=${imageId},q=2,`,
-        `\x1b7\x1b[${y + 1};${x + 1}H${APC}a=T,f=100,i=${imageId},p=${imageId},q=2,C=1,c=${width},r=${height},z=1,`,
+        `\x1b7\x1b[${y + 1};${x + 1}H${APC}a=T,f=100,i=${imageId},p=${imageId},q=2,C=1,${scalingDimensions(width, height)},z=1,`,
       )
     }
     return index === chunks.length - 1 ? `${next}\x1b8` : next
@@ -49,7 +55,7 @@ export function kittyPlace(
   width: number,
   height: number,
 ): string {
-  return `\x1b7\x1b[${y + 1};${x + 1}H${APC}a=p,i=${imageId},p=${placementId},q=2,c=${width},r=${height},z=1;${ST}\x1b8`
+  return `\x1b7\x1b[${y + 1};${x + 1}H${APC}a=p,i=${imageId},p=${placementId},q=2,${scalingDimensions(width, height)},z=1;${ST}\x1b8`
 }
 
 export function kittyDelete(imageId: number): string {
