@@ -71,7 +71,7 @@ function dimensionsFromSips(
   return imageDimensionsAreSafe(width, height) ? { width, height } : null
 }
 
-async function squarePng(
+async function fitPng(
   bytes: Uint8Array,
   size: number,
 ): Promise<Uint8Array | null> {
@@ -97,8 +97,7 @@ async function squarePng(
     const converted = await runCommandWithTimeout(
       [
         "sips",
-        "-z",
-        String(size),
+        "-Z",
         String(size),
         "-s",
         "format",
@@ -181,8 +180,8 @@ export async function resolveArtworkDetails(
 
   for (const bytes of candidates) {
     try {
-      const nativePng = await squarePng(bytes, 300)
-      const thumbnail = nativePng ? await squarePng(nativePng, 24) : null
+      const nativePng = await fitPng(bytes, 300)
+      const thumbnail = nativePng ? await fitPng(nativePng, 24) : null
       if (nativePng && thumbnail) {
         return {
           artwork: {
@@ -212,8 +211,8 @@ export async function resolveArtworkDetails(
     return { artwork: null, duration_ms: catalog.duration_ms }
   }
   try {
-    const nativePng = await squarePng(catalog.bytes, 300)
-    const thumbnail = nativePng ? await squarePng(nativePng, 24) : null
+    const nativePng = await fitPng(catalog.bytes, 300)
+    const thumbnail = nativePng ? await fitPng(nativePng, 24) : null
     if (!nativePng || !thumbnail) {
       return { artwork: null, duration_ms: catalog.duration_ms }
     }

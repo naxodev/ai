@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { PNG } from "pngjs"
 import {
   downloadCatalogImage,
   imageDimensionsAreSafe,
@@ -326,6 +327,58 @@ describe("artwork download boundaries", () => {
 })
 
 describe("artwork conversion boundaries", () => {
+  test.skipIf(process.platform !== "darwin")(
+    "native covers retain landscape and portrait proportions",
+    async () => {
+      for (const [width, height] of [
+        [80, 40],
+        [40, 80],
+      ] as const) {
+        const image = new PNG({ width, height })
+        for (let offset = 0; offset < image.data.length; offset += 4) {
+          image.data[offset] = 20
+          image.data[offset + 1] = 220
+          image.data[offset + 2] = 40
+          image.data[offset + 3] = 255
+        }
+        let catalogRequests = 0
+        const result = await resolveArtworkDetails(
+          `native-${width}-${height}`,
+          {
+            title: "Rectangular cover",
+            artist: "Artist",
+            album: "",
+            duration_ms: 1_000,
+          },
+          PNG.sync.write(image).toString("base64"),
+          undefined,
+          async () => {
+            catalogRequests++
+            return new Response(null, { status: 404 })
+          },
+        )
+        expect(result.artwork).not.toBeNull()
+        if (!result.artwork) throw new Error("native cover conversion failed")
+        const converted = PNG.sync.read(
+          Buffer.from(result.artwork.png_base64, "base64"),
+        )
+        expect(converted.width / converted.height).toBeCloseTo(
+          width / height,
+          2,
+        )
+        expect(Math.max(converted.width, converted.height)).toBeLessThanOrEqual(
+          300,
+        )
+        const rows = result.artwork.cells.length
+        const columns = result.artwork.cells[0]!.length
+        // Half-block cells represent two pixels vertically. The fallback must
+        // preserve the same shape as the native image, rather than stretch it.
+        expect(columns / (rows * 2)).toBeCloseTo(width / height, 2)
+        expect(catalogRequests).toBe(0)
+      }
+    },
+  )
+
   test("rejects dimensions that could expand into excessive decoded memory", () => {
     expect(imageDimensionsAreSafe(3_000, 3_000)).toBe(true)
     expect(imageDimensionsAreSafe(4_097, 1)).toBe(false)
