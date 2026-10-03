@@ -1,6 +1,6 @@
 # Development dependency audit assessment
 
-The original CI audit findings are addressed by workspace dependency updates. One additional advisory remains unpatched upstream and still fails `bun run security:check`.
+The original CI audit findings are addressed by workspace dependency updates. One additional advisory remains unpatched upstream and has a narrowly scoped development-audit exception.
 
 ## Updated dependencies
 
@@ -30,4 +30,12 @@ The workspace dependency path is:
 
 `bun why http-cache-semantics` identifies `make-fetch-happen` as its only direct consumer. The installed [make-fetch-happen policy](https://unpkg.com/make-fetch-happen@15.0.6/lib/cache/policy.js) constructs cache policies with `shared: false`. No shared-cache path to the reported cross-user attack was found in this workspace graph. This assessment does not certify the separately bundled OpenCode executable or future dependency graphs.
 
-No audit exclusion is configured. The root audit continues to report this high-severity advisory. A patched upstream release or an explicitly approved, scoped exception is needed to clear that gate. Packed-consumer audits remain separate and unchanged.
+## Approved exception
+
+Approved on 3 October 2026: exclude only `GHSA-ch52-4w7c-c8xp` from the root development audit. `bun run security:check` runs the security-policy tests before invoking `bun audit --ignore GHSA-ch52-4w7c-c8xp`. Every other advisory still fails that audit. Bare `bun audit` continues to report the excluded warning.
+
+The mandatory guard requires exactly `http-cache-semantics@4.2.0`, with `make-fetch-happen@15.0.6` as its only declared direct consumer. It rejects direct workspace use and checks the SHA-256 of the reviewed `lib/cache/policy.js` implementation. Changes to these cache dependencies, their callers, or the policy source fail the guard before the audit exception runs.
+
+Packed-consumer audits have no exception. This approval covers the reviewed development graph, not the prebuilt OpenCode executable or a shared-cache deployment.
+
+Review this exception by 3 November 2026, or when upstream publishes a fix, whichever comes first. Remove it after updating to a fixed version. If the guarded graph or policy changes, reassess reachability before changing the guard.

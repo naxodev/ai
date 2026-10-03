@@ -25,7 +25,7 @@
     "format:check": "prettier --check .",
     "release:dry-run": "bunx nx release --skip-publish --dry-run",
     "policy:check": "bun test scripts",
-    "security:check": "bun audit",
+    "security:check": "bun test scripts/security-policy.test.ts && bun audit --ignore GHSA-ch52-4w7c-c8xp",
     "security:consumers": "bun run scripts/opencode-consumer-audit.ts"
   },
   "devDependencies": {
