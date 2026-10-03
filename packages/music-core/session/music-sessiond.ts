@@ -1,23 +1,39 @@
 #!/usr/bin/env node
 import { Deferred, Effect, Fiber, Layer } from "effect"
+import { realpathSync } from "node:fs"
+import { basename, dirname, join, resolve } from "node:path"
 import {
   layer as configLayer,
   resolveMusicSessionRuntimePaths,
   type MusicSessionOptions,
   type MusicSessionRuntimePaths,
 } from "./config.ts"
-import { layer as serverLayer, MusicSessionServerService } from "./server.ts"
+import {
+  layer as serverLayer,
+  layerWithAudio,
+  MusicSessionServerService,
+} from "./server.ts"
+import { localKasetLayer } from "../audio/local-kaset.ts"
 
 function usage() {
   console.log(
-    "Usage: naxodev-music-sessiond [--socket <absolute-path>] [--idle-grace-ms <positive-safe-integer>]",
+    "Usage: naxodev-music-sessiond [--socket <absolute-path>] [--idle-grace-ms <positive-safe-integer>] [--local-kaset-audio]",
   )
 }
 type DaemonArguments = {
   readonly socketPath: string | undefined
   readonly idleGraceMs: number | undefined
+  readonly localKasetAudio: boolean
 }
-function daemonArguments(argv: readonly string[]): DaemonArguments {
+const canonicalSocket = (path: string) => {
+  try {
+    return join(realpathSync(dirname(path)), basename(path))
+  } catch {
+    // The managed directory may not exist yet. Normalize the macOS /tmp alias.
+    return resolve(path).replace(/^\/private\/tmp\//, "/tmp/")
+  }
+}
+export function daemonArguments(argv: readonly string[]): DaemonArguments {
   if (argv.includes("--help") || argv.includes("-h")) {
     usage()
     process.exit(0)
@@ -32,9 +48,22 @@ function daemonArguments(argv: readonly string[]): DaemonArguments {
   const socketPath = value("--socket")
   if (socketPath !== undefined && !socketPath.startsWith("/"))
     throw new Error("--socket requires an absolute Unix socket path")
+  const localKasetAudio = argv.includes("--local-kaset-audio")
+  if (
+    localKasetAudio &&
+    (socketPath === undefined ||
+      canonicalSocket(socketPath) ===
+        canonicalSocket(resolveMusicSessionRuntimePaths().socketPath))
+  )
+    throw new Error(
+      "--local-kaset-audio requires a separate explicit --socket; the installed daemon stays unchanged",
+    )
   const idleGrace = value("--idle-grace-ms")
-  if (idleGrace === undefined) return { socketPath, idleGraceMs: undefined }
-  return { socketPath, idleGraceMs: Number(idleGrace) }
+  return {
+    socketPath,
+    localKasetAudio,
+    idleGraceMs: idleGrace === undefined ? undefined : Number(idleGrace),
+  }
 }
 
 const formatDaemonError = (error: unknown) => {
@@ -82,8 +111,14 @@ export const waitForSignal = (
     return Effect.sync(remove)
   })
 
-const productionGraph = (options: MusicSessionOptions) =>
-  Layer.provide(serverLayer, configLayer(options))
+const productionGraph = (
+  options: MusicSessionOptions,
+  localKasetAudio = false,
+) =>
+  Layer.provide(
+    localKasetAudio ? layerWithAudio(localKasetLayer) : serverLayer,
+    configLayer(options),
+  )
 
 /** Narrow executable seam; production continues to use the defaults below. */
 export type MusicSessionDaemonOptions = {
@@ -123,7 +158,7 @@ export const runMusicSessionDaemon = async (
       : { runtime: runtime!, ...idleGrace }
     const graph = options.graph
       ? options.graph(graphOptions)
-      : productionGraph(graphOptions)
+      : productionGraph(graphOptions, arguments_.localKasetAudio)
     let cleanupFailure: (() => unknown) | undefined
     let cleanupFailures: (() => ReadonlyArray<unknown>) | undefined
     const daemon = Effect.scoped(

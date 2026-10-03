@@ -12,6 +12,12 @@ OpenCode keeps plugin/controller lifecycle, the Solid compact and sidebar UI, tr
 
 Read the [music session architecture field guide](../../docs/music-session-architecture.html) for the daemon protocol, replay, reconnect, and cleanup model.
 
+## Waveform
+
+The standard sidebar waveform is generated and labeled **Animation**. It follows playback state and time, not measured sound. It does not require song files, fetch audio, or start capture.
+
+The [local audio prototype](prototypes/audio-reactive/README.md#try-kaset-in-the-sidebar) provides an explicitly started live Kaset preview. That preview is not part of the published package. Sustained shared-daemon capture and Linux player integration remain unfinished.
+
 ## Artwork
 
 The player retains a completed cover when the same recording loses duration metadata or reports a duration within one second of the resolved value. Conflicting recording metadata starts a new acquisition. A catalog duration keeps the seek bar usable when the provider has no duration; this host-only fallback does not change daemon playback state. A valid provider duration takes priority.

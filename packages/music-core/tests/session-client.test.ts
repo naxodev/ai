@@ -54,11 +54,12 @@ import {
   Scope,
 } from "effect"
 import { TestClock } from "effect/testing"
-import type {
-  ArtworkResult,
-  ProviderStatus,
-  RevisionedState,
-  TransportResult,
+import {
+  PROTOCOL,
+  type ArtworkResult,
+  type ProviderStatus,
+  type RevisionedState,
+  type TransportResult,
 } from "../session/protocol.ts"
 import {
   createFakeProvider,
@@ -565,6 +566,25 @@ const scriptedGeneration = (daemonInstanceId: string) => {
       new Promise<ArtworkResult>((resolve, reject) =>
         artworkResolvers.push({ resolve, reject }),
       ),
+    listAudioSources: async () => ({
+      availability: "unavailable",
+      reason: "not-negotiated",
+      sources: [],
+    }),
+    startAudioCapture: () =>
+      Promise.reject(
+        new MusicSessionClientError({
+          code: "UNSUPPORTED_CAPABILITY",
+          message: "audio-visualization-v1 was not negotiated",
+          retryable: false,
+        }),
+      ),
+    stopAudioCapture: async () => ({
+      type: "rejected",
+      reason: "not-joined",
+    }),
+    subscribeAudioStatus: () => () => {},
+    subscribeAudioFeatures: () => () => {},
     dispose: () => {
       disposed = true
       statusListeners.clear()
@@ -2947,7 +2967,7 @@ test("incompatible managed startup is terminal after marker acquisition", async 
       code: "INCOMPATIBLE_PROTOCOL",
       details: {
         client: { minRevision: 9, maxRevision: 10 },
-        daemon: { minRevision: 0, maxRevision: 1 },
+        daemon: { minRevision: 0, maxRevision: 2 },
       },
     })
     expect(launches).toBe(1)
@@ -3038,7 +3058,7 @@ test("TestClock waiting startup stops at an incompatible healthy generation", as
                     code: "INCOMPATIBLE_PROTOCOL",
                     details: {
                       client: { minRevision: 9, maxRevision: 10 },
-                      daemon: { minRevision: 0, maxRevision: 1 },
+                      daemon: { minRevision: 0, maxRevision: 2 },
                     },
                   }),
                 ),
@@ -3117,7 +3137,7 @@ test("incompatible managed startup is terminal before marker acquisition", async
       code: "INCOMPATIBLE_PROTOCOL",
       details: {
         client: { minRevision: 9, maxRevision: 10 },
-        daemon: { minRevision: 0, maxRevision: 1 },
+        daemon: { minRevision: 0, maxRevision: 2 },
       },
     })
     expect(attempts).toBe(1)
@@ -3907,7 +3927,7 @@ test("managed discovery preserves a live incompatible daemon generation", async 
     if (incompatible.type === "incompatible") {
       expect(incompatible.error.details).toMatchObject({
         client: { minRevision: 9, maxRevision: 10 },
-        daemon: { minRevision: 0, maxRevision: 1 },
+        daemon: { minRevision: 0, maxRevision: 2 },
       })
       expect("cleanup" in incompatible).toBe(false)
     }
@@ -4957,7 +4977,7 @@ test("explicit client exposes current negotiated revision and capabilities", asy
       clientId: "current",
       hostKind: "test",
     })
-    expect(client.selectedRevision).toBe(1)
+    expect(client.selectedRevision).toBe(PROTOCOL.maxRevision)
     expect(client.negotiatedCapabilities).toEqual([
       "state-replay",
       "transport",

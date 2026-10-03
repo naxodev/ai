@@ -127,6 +127,8 @@ import {
   type TransportAction,
   PROTOCOL,
   baselineCapabilities,
+  audioVisualizationCapability,
+  audioFeatureFreshness,
 } from "@naxodev/music-core"
 ```
 
@@ -160,6 +162,34 @@ await client.dispose()
 ```
 
 Use a unique client ID and a valid host kind. Subscribe before rendering so replayed state and status can establish presentation, use the transport methods for commands, and await `dispose()` when the host lifecycle ends.
+
+## Optional audio visualization
+
+Audio capture is a separate daemon authority from playback. It is off unless a client opts in, and the production adapter does not open a tap.
+
+Pass `audioVisualizationCapability` in addition to `baselineCapabilities`. Do not add it to `baselineCapabilities`: current hosts would silently opt in. Negotiation requires protocol major 1 revision 2. Revision 0 and 1 clients stay on playback, artwork, and state only. A new client can keep using an older daemon; audio reports unavailable and the client does not replace that daemon.
+
+`listAudioSources`, `startAudioCapture`, and `stopAudioCapture` are the control methods. `subscribeAudioStatus` and `subscribeAudioFeatures` observe capture. Listing or subscribing does not start it. Start requires a daemon-issued token for the current connection. Reconnect does not replay Start. Metadata-only clients do not keep capture alive.
+
+Bun and Node have distinct monotonic origins. Hello supplies an audio clock snapshot only for revision 2 clients that opt in. The client maps its local monotonic time into the daemon domain and adds handshake uncertainty so old bytes expire early. `publishedAtMs` and `timestampMs` use that daemon domain, labeled `clockDomain: "capture-monotonic"`. `sampleAgeMs` carries sample age at publication. Local receipt time does not make a queued frame fresh. Native-helper clock conversion remains an unverified Phase 2 gate.
+
+Each frame includes `daemonInstanceId`, `generation`, `sequence`, canonical `source`, and `capabilities`. `spectrum` is always an array: absent spectrum requires `[]`, while measured silence contains zero-valued bands. Absent `envelope` and `channels` keys are omitted. A measured envelope contains paired `{ min, max }` buckets. Measured channels contain `{ layout, rms, peaks }`, with one value per array for mono and two for stereo. Bounds are provisional: 20 Hz, 64 spectrum bands, 128 envelope buckets, and 16 KiB per frame.
+
+Feature callbacks receive frames or `{ type: "clear", reason, generation, sequence }`. Clear reasons include `stale`, `stopped`, `source-loss`, `disconnected`, `failed`, `unavailable`, and `inactive`. Clears cancel feature expiry immediately. Expiry preserves sequence and timestamp watermarks. Features-only listeners also subscribe to authoritative audio status; Stop and source loss do not disconnect playback.
+
+Offline verification passed 360 core tests, seven workspace typechecks, lint, and the 27-file core package-content check. Pi passed 79 tests. Configured OpenCode tests passed 159 tests. Deterministic tests cover shared shutdown completion and failure, a 10,000-frame latest-value burst at 50 ms cadence, and Stop/restart cancellation. Production adapters and resolvers remain unavailable. These checks do not verify native capture, production streaming, signing, permissions, host presentation, or sustained performance.
+
+### Local-only native helper adapter
+
+`makeNativeHelperAdapter(dependencies?)` returns an Effect that builds an `AudioCaptureAdapter`. Its trusted `artifactPresent`, `verify`, and synchronous `spawn` seams support offline tests. Importing the factory does not launch anything or run a command. The daemon still uses `unavailableLayer`; production capture remains unavailable.
+
+Resolution uses only `audio/native/music-audio-helper` inside this package. No helper ships yet. Before every spawn, the live verifier runs `/usr/bin/codesign --verify --strict` with an explicit identifier requirement for `dev.naxo.music.audio-helper`. A missing, unsigned, modified, or differently identified helper cannot start capture. Availability stays a cheap artifact check, so one failed verification cannot make a corrected helper unreachable without a daemon restart. This identifier and artifact layout are local contract candidates, not a verified distribution design.
+
+Protocol 1 passes `--process-id`, `--launch-identity`, `--executable-identity`, and `--core-audio-object` as separate arguments with `shell: false`. Stdout contains newline-delimited `AudioFeatureDraft` objects. Readiness requires the first valid draft. Lines are limited to 16 KiB; schema bounds limit bands, envelope buckets, and channels. Malformed frames fail the session. The adapter retains one replaceable pending draft. Stderr never supplies control messages; it is drained with a saturating byte counter and no retained text or logs.
+
+The parent writes `{"type":"heartbeat"}` plus a newline to stdin immediately, then every two seconds. A separate five-second monotonic deadline covers readiness and output stalls. Only a valid frame renews that deadline. Normal shutdown stops I/O, sends SIGTERM, and awaits exit. A one-second grace precedes SIGKILL, followed by a one-second exit deadline. Hard kill reports abnormal cleanup, even after exit. Concurrent shutdown callers join one cached result. Scope closure also joins cleanup, including blocked startup.
+
+The Swift helper, its independent watchdog, native clock conversion, signing, notarization, and permission attribution remain unimplemented or unverified. Verification and spawn also retain a same-user file-replacement race; signed distribution must settle artifact ownership before release. These offline tests do not prove native resource teardown or live capture.
 
 ## Lifecycle and compatibility
 

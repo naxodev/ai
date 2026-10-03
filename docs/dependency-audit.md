@@ -9,8 +9,26 @@ The original CI audit findings are addressed by workspace dependency updates. On
 | Axios           | 1.18.1           | 1.20.0          |
 | brace-expansion | 5.0.9            | 5.0.12          |
 | ip-address      | 10.7.0           | 10.7.3          |
+| seroval         | 1.5.6            | 1.6.8           |
+| smol-toml       | 1.8.0            | 1.9.0           |
 
-Root overrides apply these updates to the existing development dependency graph. They remove 17 audit findings. Both isolated packed OpenCode consumers install without overrides and report zero vulnerabilities through `bun run security:consumers`.
+Root overrides apply these updates to the existing development dependency graph. The first three updates removed 17 audit findings. The serializer and TOML updates address three further findings. Packed-consumer audits remain independent and use no overrides or exceptions.
+
+## Serializer and TOML advisories
+
+Solid's development dependency resolves `seroval`. The pinned Solid version requests `~1.5.4`, so an ordinary range-compatible update cannot select the patched serializer. The root override keeps the exact supported host and renderer versions unchanged.
+
+- [GHSA-p6vx-979v-rg4c](https://github.com/advisories/GHSA-p6vx-979v-rg4c) reports unintended invocation of plugin-produced callables through Promise thenable assimilation. Its first patched version is `1.6.2`.
+- [GHSA-jp82-f5mq-hwhp](https://github.com/advisories/GHSA-jp82-f5mq-hwhp) reports typed-array memory exhaustion. The advisory lists `1.6.3` as patched. Version `1.6.4` adds backing-buffer type validation. The current override retains the repository's newer `1.6.8` resolution, including that validation.
+- [GHSA-r4xh-jqrq-34v2](https://github.com/advisories/GHSA-r4xh-jqrq-34v2) reports quadratic TOML key parsing. Nx resolves this development dependency. The `1.9.0` parser replaces that path with a linear implementation and returns null-prototype tables.
+
+The security-policy tests reject affected nested resolutions and exercise the serializer resolved through Solid itself. A small malformed backing object reproduces the unsafe allocation path without requesting excessive memory. Valid typed views still round-trip. A parser check verifies Nx's installed TOML version and covers dotted keys, tables, arrays, and dates. Compatibility alone cannot detect a stale link to an affected parser.
+
+The initial local follow-up used Seroval `1.6.4` and smol-toml `1.9.0`, with lifecycle scripts disabled. A forced frozen reinstall corrected a Solid-to-seroval link that still pointed at `1.5.6`; the behavior regression detected it. PR integration retains `main`'s Seroval `1.6.8`, smol-toml `1.9.0`, and package versions. It adds stronger installed-dependency checks rather than downgrading those updates.
+
+`bun run security:check` passes with the existing cache exception below unchanged. These overrides do not patch the prebuilt OpenCode executable. The [host-provided dependency boundary](opencode-compatibility.md#host-provided-dependencies) separates development resolution, packed consumers, and embedded host libraries.
+
+The full `bun run check` gate also passed, including all six package smokes, packed-consumer audits, and minimum-Bun checks.
 
 ## Unpatched cache advisory
 

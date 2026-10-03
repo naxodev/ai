@@ -49,6 +49,8 @@
   ],
   "scripts": {
     "build": "bun run scripts/build.ts",
+    "build:local-audio": "bun run scripts/build-local-audio.ts",
+    "local-audio:check": "bun run scripts/check-local-audio-sidebar.ts",
     "prepack": "bun run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

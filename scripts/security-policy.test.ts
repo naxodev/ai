@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 type DependencyGroups = {
   dependencies?: Record<string, string>
@@ -14,19 +14,25 @@ type AuditLock = {
   packages: Record<string, [string, string, DependencyGroups?, ...unknown[]]>
 }
 
-test("security overrides exclude vulnerable serializers and TOML parsers without changing the host Solid pin", async () => {
+test("security overrides remove all affected serializer and TOML resolutions", async () => {
+  const manifest = (await Bun.file("package.json").json()) as {
+    overrides: Record<string, string>
+  }
   const lock = Bun.JSONC.parse(await Bun.file("bun.lock").text()) as AuditLock
   const resolutions = Object.values(lock.packages).map(([name]) => name)
-
+  // A nested affected copy defeats the override even when the root copy is fixed.
   for (const [name, version] of [
     ["seroval", "1.6.8"],
     ["smol-toml", "1.9.0"],
-    ["solid-js", "1.9.15"],
-  ]) {
-    expect(
-      resolutions.filter((resolution) => resolution.startsWith(`${name}@`)),
-    ).toEqual([`${name}@${version}`])
+  ] as const) {
+    expect(manifest.overrides[name]).toBe(version)
+    expect(resolutions.filter((value) => value.startsWith(`${name}@`))).toEqual(
+      [`${name}@${version}`],
+    )
   }
+  expect(resolutions.filter((value) => value.startsWith("solid-js@"))).toEqual([
+    "solid-js@1.9.15",
+  ])
 })
 
 test("Solid's serializer still round-trips typed arrays and collections with the security override", () => {
@@ -45,6 +51,57 @@ test("Solid's serializer still round-trips typed arrays and collections with the
   }
 
   expect(seroval.fromJSON(seroval.toJSON(value))).toEqual(value)
+})
+
+test("Solid's serializer rejects array-like backing buffers while preserving valid views", () => {
+  const require = createRequire(
+    join(process.cwd(), "packages/opencode-music-player/package.json"),
+  )
+  const solidRequire = createRequire(require.resolve("solid-js"))
+  const seroval = solidRequire("seroval") as {
+    toJSON(value: unknown): { t: Record<string, unknown> }
+    fromJSON(value: unknown): unknown
+  }
+  const valid = seroval.toJSON(new Uint8Array([1, 2, 3]))
+  expect(seroval.fromJSON(valid)).toEqual(new Uint8Array([1, 2, 3]))
+  const backing = valid.t.f as { i: number }
+  valid.t.f = {
+    ...seroval.toJSON({ length: 3 }).t,
+    i: backing.i,
+  }
+  // A small array-like object reproduces the allocation path without an OOM payload.
+  expect(() => seroval.fromJSON(valid)).toThrow()
+})
+
+test("Nx's installed TOML parser is patched and preserves dotted keys, tables, and dates", async () => {
+  const require = createRequire(import.meta.url)
+  const nxRequire = createRequire(require.resolve("nx/package.json"))
+  const installed = (await Bun.file(
+    join(dirname(nxRequire.resolve("smol-toml")), "../package.json"),
+  ).json()) as { version: string }
+  // Compatibility alone cannot detect a stale link to the affected parser.
+  expect(installed.version).toBe("1.9.0")
+  const toml = nxRequire("smol-toml") as {
+    parse(input: string): Record<string, unknown>
+    stringify(value: Record<string, unknown>): string
+  }
+  const manifest = toml.parse(`
+package.name = "fixture"
+package.version = "0.1.0"
+date = 2026-10-09
+[[bin]]
+name = "fixture"
+path = "src/main.rs"
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+`)
+  expect(manifest).toMatchObject({
+    package: { name: "fixture", version: "0.1.0" },
+    bin: [{ name: "fixture", path: "src/main.rs" }],
+    dependencies: { serde: { version: "1.0", features: ["derive"] } },
+  })
+  // 1.9 returns null-prototype tables. Consumers must retain data through a round trip.
+  expect(toml.parse(toml.stringify(manifest))).toEqual(manifest)
 })
 
 test("the cache advisory exception requires the reviewed private-cache consumer", async () => {

@@ -610,7 +610,7 @@ test("incompatible and state-only peers do not disturb a healthy session", async
       `${JSON.stringify({
         type: "hello",
         requestId: 0,
-        protocol: { major: PROTOCOL.major, minRevision: 2, maxRevision: 3 },
+        protocol: { major: PROTOCOL.major, minRevision: 3, maxRevision: 4 },
         packageVersion: "future",
         clientId: "future",
         hostKind: "test",
@@ -625,7 +625,7 @@ test("incompatible and state-only peers do not disturb a healthy session", async
       error: {
         code: "INCOMPATIBLE_PROTOCOL",
         details: {
-          client: { major: PROTOCOL.major, minRevision: 2, maxRevision: 3 },
+          client: { major: PROTOCOL.major, minRevision: 3, maxRevision: 4 },
           daemon: PROTOCOL,
         },
       },
@@ -3208,7 +3208,7 @@ test("24 alternating clients share one selected provider and fan out updates", a
     expect(instanceIds.size).toBe(1)
     expect([...instanceIds][0]).not.toBe("")
     expect(new Set(clients.map((client) => client.selectedRevision))).toEqual(
-      new Set([1]),
+      new Set([PROTOCOL.maxRevision]),
     )
     expect(
       new Set(

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>dev.naxo.music-audio-prototype</string>
+  <key>CFBundleName</key>
+  <string>Local Music Audio Prototype</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Analyze the output of explicitly selected music-player processes for a local visualizer. No microphone, recording files, or uploads.</string>
+</dict>
+</plist>

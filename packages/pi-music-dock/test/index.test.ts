@@ -93,6 +93,31 @@ class FakeClient implements ReconnectingMusicSessionClient {
 	};
 	artworkGate: Promise<void> | undefined;
 
+	listAudioSources() {
+		return Promise.resolve({
+			availability: "unavailable" as const,
+			reason: "not-negotiated" as const,
+			sources: [],
+		});
+	}
+	startAudioCapture() {
+		return Promise.resolve({
+			type: "unavailable" as const,
+			reason: "capture-adapter-unavailable" as const,
+		});
+	}
+	stopAudioCapture() {
+		return Promise.resolve({
+			type: "rejected" as const,
+			reason: "not-joined" as const,
+		});
+	}
+	subscribeAudioStatus() {
+		return () => {};
+	}
+	subscribeAudioFeatures() {
+		return () => {};
+	}
 	subscribeState(listener: (state: RevisionedState) => void) {
 		this.stateListeners.add(listener);
 		if (this.state) listener(this.state);

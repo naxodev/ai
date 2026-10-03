@@ -6,3 +6,4 @@ node_modules/
 *.tgz
 **/dist/
 /pr-description.md
+/packages/music-core/audio/native/music-audio-helper*

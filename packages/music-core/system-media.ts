@@ -9,6 +9,12 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import {
+  makeProviderSourceObservationBus,
+  readProviderSourceHint,
+  type ProviderSourceObservation,
+  type SourceObservationListener,
+} from "./audio/source.ts"
 import { createPlaybackClock, trackKey, type PlaybackClock } from "./clock.ts"
 import {
   run as defaultRun,
@@ -42,6 +48,7 @@ type MediaGet = {
   playing?: boolean | null
   bundleIdentifier?: string | null
   parentApplicationBundleIdentifier?: string | null
+  processIdentifier?: number | null
   contentItemIdentifier?: string | null
   timestamp?: string | null
   artworkData?: string | null
@@ -262,12 +269,15 @@ async function playerViaMediaControl(
   clock: PlaybackClock,
   now: () => number,
   currentStreamState: () => PlayerState | null,
-): Promise<PlayerState | null> {
+): Promise<{
+  readonly state: PlayerState
+  readonly hint: ReturnType<typeof readProviderSourceHint>
+} | null> {
   const r = await runCommand(["media-control", "get", "--no-artwork", "--now"])
   // A startup read may finish after the stream has supplied newer state.
   // Do not decode that stale result into the shared playback clock.
   const streamed = currentStreamState()
-  if (streamed) return streamed
+  if (streamed) return { state: streamed, hint: undefined }
   if (!r.ok) return null
 
   let data: MediaGet | null
@@ -278,7 +288,10 @@ async function playerViaMediaControl(
   }
   if (data !== null && (typeof data !== "object" || Array.isArray(data)))
     return null
-  return decodeMediaControlSample(data, clock, now())
+  return {
+    state: decodeMediaControlSample(data, clock, now()),
+    hint: data === null ? undefined : readProviderSourceHint(data),
+  }
 }
 
 /** Fallback when media-control is missing — weaker play-state. */
@@ -517,12 +530,24 @@ export type SystemMediaAttemptAdapter = MusicBackend & {
     identity: ArtworkIdentity,
     maxBytes: number,
   ) => Promise<ArtworkResult>
+  /**
+   * Authoritative source-hint observations. A newer snapshot does not retain
+   * an older process id. Absent means unresolved, not "reuse the previous hint".
+   */
+  subscribeSourceObservations?: (
+    listener: SourceObservationListener,
+  ) => MusicChangeDisposer
+  readonly latestSourceObservation?: () => ProviderSourceObservation
 }
 
 function subscribeMediaControlAttempt(
   listener: MusicChangeListener,
   deps: ResolvedSystemMediaDependencies,
   clock: PlaybackClock,
+  publishSource: (
+    kind: ProviderSourceObservation["kind"],
+    hint: ReturnType<typeof readProviderSourceHint>,
+  ) => void,
 ): MusicChangeDisposer {
   let disposed = false
   let terminal = false
@@ -565,6 +590,7 @@ function subscribeMediaControlAttempt(
           !isAuthoritativeMediaPayload(parsed.payload)
         )
           return
+        publishSource("snapshot", readProviderSourceHint(parsed.payload))
         listener({
           type: "snapshot",
           state: decodeMediaControlSample(parsed.payload, clock, deps.now()),
@@ -584,6 +610,7 @@ function subscribeMediaControlAttempt(
         // Notify before surfacing a disposal failure through the returned
         // disposer: provider supervision must never be stranded waiting for
         // this terminal transition.
+        publishSource("invalidation", undefined)
         listener({ type: "invalidation", reason: "stream-terminated" })
       },
     },
@@ -602,6 +629,10 @@ function subscribeToMediaControl(
   listener: MusicChangeListener,
   deps: ResolvedSystemMediaDependencies,
   clock: PlaybackClock,
+  publishSource: (
+    kind: ProviderSourceObservation["kind"],
+    hint: ReturnType<typeof readProviderSourceHint>,
+  ) => void,
 ): MusicChangeDisposer {
   let disposed = false
   let streamDisposer: MusicChangeDisposer | null = null
@@ -628,6 +659,7 @@ function subscribeToMediaControl(
       const terminalGeneration = ++generation
       sourceDisposer?.()
       if (streamDisposer === sourceDisposer) streamDisposer = null
+      publishSource("invalidation", undefined)
       listener({ type: "invalidation", reason: "stream-terminated" })
       if (disposed || generation !== terminalGeneration) return
       const delayMs = retryDelayMs
@@ -652,6 +684,7 @@ function subscribeToMediaControl(
           if (!isDataEnvelope(parsed)) return
           if (!isAuthoritativeMediaPayload(parsed.payload)) return
           const now = deps.now()
+          publishSource("snapshot", readProviderSourceHint(parsed.payload))
           const state = decodeMediaControlSample(parsed.payload, clock, now)
           retryDelayMs = retryInitialDelayMs
           listener({ type: "snapshot", state })
@@ -735,6 +768,14 @@ export function createSystemMedia(
         shrinkArtworkWithSips(bytes, maxBytes, overrides.run ?? defaultRun)),
   }
   const clock = createPlaybackClock()
+  const sourceObservations = makeProviderSourceObservationBus()
+  const publishSource = (
+    kind: ProviderSourceObservation["kind"],
+    hint: ReturnType<typeof readProviderSourceHint>,
+  ) => {
+    const ticket = sourceObservations.reserve()
+    sourceObservations.complete(ticket, kind, hint)
+  }
 
   const kind = deps.detectBackend()
   let observationStatus: ProviderStatus = {
@@ -799,6 +840,7 @@ export function createSystemMedia(
         },
         deps,
         clock,
+        publishSource,
       )
     } catch (error) {
       invalidate()
@@ -811,26 +853,40 @@ export function createSystemMedia(
   }
   const backend: SystemMediaAttemptAdapter = {
     status: () => observationStatus,
+    subscribeSourceObservations: (listener) =>
+      sourceObservations.subscribe(listener),
+    latestSourceObservation: () => sourceObservations.latest(),
     id: "system",
     label: "System media",
     remoteControl: true,
     authenticated: () => true,
 
     async player(): Promise<PlayerState | null> {
+      const ticket = sourceObservations.reserve()
+      const finish = (
+        kind: ProviderSourceObservation["kind"],
+        hint: ReturnType<typeof readProviderSourceHint>,
+      ) => {
+        sourceObservations.complete(ticket, kind, hint)
+      }
       try {
         const kind = deps.detectBackend()
         if (kind === "media-control") {
-          const player =
-            currentStreamState() ??
-            (await playerViaMediaControl(
-              deps.run,
-              clock,
-              deps.now,
-              currentStreamState,
-            ))
+          const cached = currentStreamState()
+          if (cached) {
+            observed("media-control")
+            return cached
+          }
+          const player = await playerViaMediaControl(
+            deps.run,
+            clock,
+            deps.now,
+            currentStreamState,
+          )
           if (player) {
             observed("media-control")
-            return player
+            finish("snapshot", player.hint)
+            return player.state
           }
           if (deps.hasNowPlayingCli()) {
             const fallback = await playerViaNowPlayingCli(
@@ -844,17 +900,20 @@ export function createSystemMedia(
               observed("media-control")
               return streamed
             }
+            finish("unavailable", undefined)
             if (fallback) observed("nowplaying-cli")
             else failedObservation()
             return (
               fallback ?? idleState("nowplaying-cli error", clock, deps.now())
             )
           }
+          finish("unavailable", undefined)
           failedObservation()
           return idleState("media-control error", clock, deps.now())
         }
         if (kind === "nowplaying-cli") {
           const player = await playerViaNowPlayingCli(deps.run, clock, deps.now)
+          finish("unavailable", undefined)
           if (player) observed("nowplaying-cli")
           else failedObservation()
           return player ?? idleState("nowplaying-cli error", clock, deps.now())
@@ -864,8 +923,10 @@ export function createSystemMedia(
           provider: null,
           message: "install media-control or nowplaying-cli",
         }
+        finish("unavailable", undefined)
         return idleState("install media-control", clock, deps.now())
       } catch (error) {
+        finish("unavailable", undefined)
         failedObservation()
         throw error
       }
