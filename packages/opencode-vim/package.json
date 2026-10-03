@@ -55,7 +55,6 @@
     "validate": "bun run format:check && bun run check && bun run test && bun run test:parity && bun run pack:check && bun run smoke:package"
   },
   "peerDependencies": {
-    "@opencode/plugin": "2.0.18",
     "@opentui/core": "0.5.12",
     "@opentui/solid": "0.5.12"
   },
@@ -70,9 +69,6 @@
     "typescript": "7.0.2"
   },
   "peerDependenciesMeta": {
-    "@opencode/plugin": {
-      "optional": true
-    },
     "@opentui/core": {
       "optional": true
     },

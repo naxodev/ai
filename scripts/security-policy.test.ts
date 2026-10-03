@@ -9,7 +9,7 @@ test("patched brace expansion remains compatible with older Minimatch consumers"
     >
   }
 
-  expect(lock.packages["brace-expansion"]?.[0]).toBe("brace-expansion@5.0.9")
+  expect(lock.packages["brace-expansion"]?.[0]).toBe("brace-expansion@5.0.12")
   expect(
     Object.values(lock.packages).some(([resolution]) =>
       resolution.startsWith("brace-expansion@5.0.8"),

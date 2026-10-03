@@ -9,7 +9,10 @@ import {
 const manifest = () => ({
   name: "fixture",
   dependencies: {} as Record<string, string>,
-  peerDependencies: { ...compatibility.peerDependencies },
+  peerDependencies: { ...compatibility.peerDependencies } as Record<
+    string,
+    string
+  >,
   peerDependenciesMeta: Object.fromEntries(
     Object.keys(compatibility.peerDependencies).map((name) => [
       name,
@@ -20,6 +23,20 @@ const manifest = () => ({
     ...compatibility.peerDependencies,
     ...compatibility.devDependencies,
   },
+})
+
+test("the host-supplied plugin API must not trigger npm's prospective renderer graph", () => {
+  const hostOnly = manifest()
+  delete hostOnly.peerDependencies["@opencode/plugin"]
+  delete hostOnly.peerDependenciesMeta["@opencode/plugin"]
+  expect(() => assertOpenCodeCompatibility([hostOnly])).not.toThrow()
+
+  const peer = manifest()
+  peer.peerDependencies["@opencode/plugin"] = compatibility.host.version
+  peer.peerDependenciesMeta["@opencode/plugin"] = { optional: true }
+  expect(() => assertOpenCodeCompatibility([peer])).toThrow(
+    "without npm peer metadata",
+  )
 })
 
 test("editing the contract cannot bless mismatched host or renderer releases", () => {
@@ -45,7 +62,7 @@ test("a core-only upgrade fails before incompatible branded renderables reach th
 
 test("a plugin or host upgrade needs a newly tested compatibility set", () => {
   const upgraded = manifest()
-  upgraded.peerDependencies["@opencode/plugin"] = "2.0.4"
+  upgraded.devDependencies["@opencode/plugin"] = "2.0.4"
   expect(() => assertOpenCodeCompatibility([upgraded])).toThrow(
     "@opencode/plugin must be exactly",
   )

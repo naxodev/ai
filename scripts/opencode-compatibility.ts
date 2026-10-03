@@ -4,12 +4,13 @@ export { compatibility }
 
 export const hostDependencies = {
   ...compatibility.peerDependencies,
+  "@opencode/plugin": compatibility.devDependencies["@opencode/plugin"],
   "solid-js": compatibility.devDependencies["solid-js"],
 }
 
 export function assertCompatibilitySet(set: typeof compatibility) {
   if (
-    set.host.version !== set.peerDependencies["@opencode/plugin"] ||
+    set.host.version !== set.devDependencies["@opencode/plugin"] ||
     set.host.version !== set.devDependencies["@opencode/theme"]
   )
     throw new Error("OpenCode CLI, plugin, and theme must use the same release")
@@ -48,13 +49,17 @@ export function assertOpenCodeCompatibility(
       `Unsupported OpenCode host ${hostVersion}; expected ${compatibility.host.version}`,
     )
   for (const manifest of manifests) {
-    if (
-      manifest.peerDependencies?.["solid-js"] !== undefined ||
-      manifest.peerDependenciesMeta?.["solid-js"] !== undefined
-    )
-      throw new Error(
-        `${manifest.name}: Solid must use the exact host/development pin without npm peer metadata`,
+    // npm resolves prospective optional-peer graphs even when the executable
+    // supplies the modules. The plugin API's broad renderer ranges conflict
+    // with the exact embedded OpenTUI version, just as Solid's peer version does.
+    for (const name of ["solid-js", "@opencode/plugin"])
+      if (
+        manifest.peerDependencies?.[name] !== undefined ||
+        manifest.peerDependenciesMeta?.[name] !== undefined
       )
+        throw new Error(
+          `${manifest.name}: ${name} must use the exact host/development pin without npm peer metadata`,
+        )
     for (const name of Object.keys(hostDependencies)) {
       if (
         name in (manifest.dependencies ?? {}) ||

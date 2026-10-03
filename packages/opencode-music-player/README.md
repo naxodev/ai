@@ -72,7 +72,7 @@ Add the package to `plugins` in your global `~/.config/opencode/cli.json` (or `$
 
 OpenCode installs npm plugin packages and their production dependencies in its isolated cache. Restart OpenCode after changing the package entry.
 
-This package requires the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. The plugin API and OpenTUI are optional peers. Solid is required from the host but omitted from npm peer metadata because of an upstream peer-version conflict. Music-core and pngjs remain production dependencies. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
+This package requires the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. OpenTUI packages are optional peers. The plugin API and Solid are required from the host but omitted from npm peer metadata because their prospective peer graphs conflict with the embedded versions. Music-core and pngjs remain production dependencies. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
 
 ### Local checkout
 
