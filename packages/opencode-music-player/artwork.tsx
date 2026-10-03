@@ -236,6 +236,8 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
       width={24}
       height={12}
       flexDirection="column"
+      alignItems="center"
+      justifyContent="center"
       overflow="hidden"
     >
       <For each={props.artwork.cells}>
