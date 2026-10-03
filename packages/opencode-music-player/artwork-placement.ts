@@ -19,6 +19,51 @@ export type NativeArtworkPlacement = {
   height: number
 }
 
+/** Specify only the limiting Kitty axis; terminals derive the other in pixels. */
+export function fitNativeArtworkGeometry(
+  slot: { x: number; y: number; width: number; height: number },
+  image: { width: number; height: number },
+  cell: { width: number; height: number },
+): { x: number; y: number; width: number; height: number } | null {
+  if (
+    [
+      slot.width,
+      slot.height,
+      image.width,
+      image.height,
+      cell.width,
+      cell.height,
+    ].some((value) => !Number.isFinite(value) || value <= 0)
+  )
+    return null
+  const width = Math.floor(slot.width)
+  const height = Math.floor(slot.height)
+  if (width < 1 || height < 1) return null
+  const pixelWidth = width * cell.width
+  const pixelHeight = height * cell.height
+  const aspect = image.width / image.height
+  if (pixelWidth / aspect <= pixelHeight) {
+    const displayedHeight = Math.round(pixelWidth / aspect)
+    if (displayedHeight < 1) return null
+    const occupiedRows = Math.ceil(displayedHeight / cell.height)
+    return {
+      x: slot.x,
+      y: slot.y + Math.floor((height - occupiedRows) / 2),
+      width,
+      height: 0,
+    }
+  }
+  const displayedWidth = Math.round(pixelHeight * aspect)
+  if (displayedWidth < 1) return null
+  const occupiedColumns = Math.ceil(displayedWidth / cell.width)
+  return {
+    x: slot.x + Math.floor((width - occupiedColumns) / 2),
+    y: slot.y,
+    width: 0,
+    height,
+  }
+}
+
 export type NativeArtworkState = {
   /** Kitty image id currently believed transmitted (`0` = none). */
   transmitted: number

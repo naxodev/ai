@@ -42,6 +42,23 @@ export function imageDimensionsAreSafe(width: number, height: number): boolean {
   )
 }
 
+/** Read bounded PNG dimensions without decoding pixel data in the render loop. */
+export function pngDimensions(
+  base64: string,
+): { width: number; height: number } | null {
+  const header = Buffer.from(base64.slice(0, 44), "base64")
+  if (
+    header.length < 24 ||
+    header.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" ||
+    header.readUInt32BE(8) !== 13 ||
+    header.toString("ascii", 12, 16) !== "IHDR"
+  )
+    return null
+  const width = header.readUInt32BE(16)
+  const height = header.readUInt32BE(20)
+  return imageDimensionsAreSafe(width, height) ? { width, height } : null
+}
+
 export async function runCommandWithTimeout(
   command: string[],
   timeoutMs: number,
@@ -71,7 +88,7 @@ function dimensionsFromSips(
   return imageDimensionsAreSafe(width, height) ? { width, height } : null
 }
 
-async function squarePng(
+async function fitPng(
   bytes: Uint8Array,
   size: number,
 ): Promise<Uint8Array | null> {
@@ -86,20 +103,21 @@ async function squarePng(
       ["sips", "-g", "pixelWidth", "-g", "pixelHeight", input],
       CONVERSION_TIMEOUT_MS,
     )
-    if (
-      inspected.timed_out ||
-      inspected.code !== 0 ||
-      !dimensionsFromSips(inspected.out)
-    ) {
+    const dimensions = dimensionsFromSips(inspected.out)
+    if (inspected.timed_out || inspected.code !== 0 || !dimensions) {
       return null
     }
+
+    const scale = size / Math.max(dimensions.width, dimensions.height)
+    const width = Math.max(1, Math.round(dimensions.width * scale))
+    const height = Math.max(1, Math.round(dimensions.height * scale))
 
     const converted = await runCommandWithTimeout(
       [
         "sips",
         "-z",
-        String(size),
-        String(size),
+        String(height),
+        String(width),
         "-s",
         "format",
         "png",
@@ -181,8 +199,8 @@ export async function resolveArtworkDetails(
 
   for (const bytes of candidates) {
     try {
-      const nativePng = await squarePng(bytes, 300)
-      const thumbnail = nativePng ? await squarePng(nativePng, 24) : null
+      const nativePng = await fitPng(bytes, 300)
+      const thumbnail = nativePng ? await fitPng(nativePng, 24) : null
       if (nativePng && thumbnail) {
         return {
           artwork: {
@@ -212,8 +230,8 @@ export async function resolveArtworkDetails(
     return { artwork: null, duration_ms: catalog.duration_ms }
   }
   try {
-    const nativePng = await squarePng(catalog.bytes, 300)
-    const thumbnail = nativePng ? await squarePng(nativePng, 24) : null
+    const nativePng = await fitPng(catalog.bytes, 300)
+    const thumbnail = nativePng ? await fitPng(nativePng, 24) : null
     if (!nativePng || !thumbnail) {
       return { artwork: null, duration_ms: catalog.duration_ms }
     }

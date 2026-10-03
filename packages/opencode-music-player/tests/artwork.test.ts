@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { PNG } from "pngjs"
 import {
   downloadCatalogImage,
   imageDimensionsAreSafe,
+  pngDimensions,
   readLimitedResponse,
   resolveArtworkDetails,
   runCommandWithTimeout,
@@ -326,6 +328,130 @@ describe("artwork download boundaries", () => {
 })
 
 describe("artwork conversion boundaries", () => {
+  test("native geometry reads only safe PNG headers", () => {
+    const image = new PNG({ width: 80, height: 40 })
+    const png = PNG.sync.write(image)
+    expect(pngDimensions(png.toString("base64"))).toEqual({
+      width: 80,
+      height: 40,
+    })
+    expect(pngDimensions("not a PNG")).toBeNull()
+    expect(pngDimensions(png.subarray(0, 20).toString("base64"))).toBeNull()
+    const oversized = Buffer.from(png)
+    oversized.writeUInt32BE(4_097, 16)
+    expect(pngDimensions(oversized.toString("base64"))).toBeNull()
+  })
+
+  test.skipIf(process.platform !== "darwin")(
+    "thin native and catalog covers keep at least one pixel on each axis",
+    async () => {
+      for (const [width, height] of [
+        [80, 1],
+        [1, 80],
+      ] as const) {
+        const image = new PNG({ width, height })
+        image.data.fill(255)
+        const bytes = PNG.sync.write(image)
+        for (const source of ["native", "catalog"] as const) {
+          let requests = 0
+          const result = await resolveArtworkDetails(
+            `thin-${source}-${width}-${height}`,
+            {
+              title: "Thin cover",
+              artist: "Artist",
+              album: "",
+              duration_ms: 1_000,
+            },
+            source === "native" ? bytes.toString("base64") : null,
+            undefined,
+            async () => {
+              requests++
+              return requests === 1
+                ? Response.json({
+                    results: [
+                      {
+                        trackName: "Thin cover",
+                        artistName: "Artist",
+                        trackTimeMillis: 1_000,
+                        artworkUrl100:
+                          "https://is1-ssl.mzstatic.com/100x100bb.png",
+                      },
+                    ],
+                  })
+                : new Response(new Uint8Array(bytes))
+            },
+          )
+          expect(result.artwork).not.toBeNull()
+          if (!result.artwork) throw new Error("valid thin cover was rejected")
+          const converted = PNG.sync.read(
+            Buffer.from(result.artwork.png_base64, "base64"),
+          )
+          expect(
+            Math.min(converted.width, converted.height),
+          ).toBeGreaterThanOrEqual(1)
+          expect(
+            Math.max(converted.width, converted.height),
+          ).toBeLessThanOrEqual(300)
+          expect(result.artwork.cells.length).toBeGreaterThanOrEqual(1)
+          expect(result.artwork.cells[0]!.length).toBeGreaterThanOrEqual(1)
+          expect(requests).toBe(source === "native" ? 0 : 2)
+        }
+      }
+    },
+  )
+
+  test.skipIf(process.platform !== "darwin")(
+    "native covers retain landscape and portrait proportions",
+    async () => {
+      for (const [width, height] of [
+        [80, 40],
+        [40, 80],
+      ] as const) {
+        const image = new PNG({ width, height })
+        for (let offset = 0; offset < image.data.length; offset += 4) {
+          image.data[offset] = 20
+          image.data[offset + 1] = 220
+          image.data[offset + 2] = 40
+          image.data[offset + 3] = 255
+        }
+        let catalogRequests = 0
+        const result = await resolveArtworkDetails(
+          `native-${width}-${height}`,
+          {
+            title: "Rectangular cover",
+            artist: "Artist",
+            album: "",
+            duration_ms: 1_000,
+          },
+          PNG.sync.write(image).toString("base64"),
+          undefined,
+          async () => {
+            catalogRequests++
+            return new Response(null, { status: 404 })
+          },
+        )
+        expect(result.artwork).not.toBeNull()
+        if (!result.artwork) throw new Error("native cover conversion failed")
+        const converted = PNG.sync.read(
+          Buffer.from(result.artwork.png_base64, "base64"),
+        )
+        expect(converted.width / converted.height).toBeCloseTo(
+          width / height,
+          2,
+        )
+        expect(Math.max(converted.width, converted.height)).toBeLessThanOrEqual(
+          300,
+        )
+        const rows = result.artwork.cells.length
+        const columns = result.artwork.cells[0]!.length
+        // Half-block cells represent two pixels vertically. The fallback must
+        // preserve the same shape as the native image, rather than stretch it.
+        expect(columns / (rows * 2)).toBeCloseTo(width / height, 2)
+        expect(catalogRequests).toBe(0)
+      }
+    },
+  )
+
   test("rejects dimensions that could expand into excessive decoded memory", () => {
     expect(imageDimensionsAreSafe(3_000, 3_000)).toBe(true)
     expect(imageDimensionsAreSafe(4_097, 1)).toBe(false)

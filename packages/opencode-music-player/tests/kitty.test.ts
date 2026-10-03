@@ -71,6 +71,21 @@ describe("Kitty graphics commands", () => {
     ])
   })
 
+  test("transmission and replacement placements omit the unconstrained scaling axis", () => {
+    for (const [width, height, axis, omitted] of [
+      [24, 0, "c=24", "r="],
+      [0, 12, "r=12", "c="],
+    ] as const) {
+      for (const command of [
+        kittyDisplayPng("AAAA", 42, 0, 3, width, height)[0]!,
+        kittyPlace(42, 42, 0, 3, width, height),
+      ]) {
+        expect(command).toContain(axis)
+        expect(command).not.toContain(omitted)
+      }
+    }
+  })
+
   // Resize cleanup uses placement delete (d=i); full teardown uses image delete (d=I).
   test("deletes image data during cleanup", () => {
     expect(kittyDelete(42)).toBe("\x1b_Ga=d,d=I,i=42,q=2;\x1b\\")
