@@ -33,7 +33,7 @@
     },
     "packages/music-core": {
       "name": "@naxodev/music-core",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "bin": {
         "naxodev-music-sessiond": "./dist/music-sessiond.js",
       },
@@ -48,9 +48,9 @@
     },
     "packages/opencode-music-player": {
       "name": "@naxodev/opencode-music-player",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "dependencies": {
-        "@naxodev/music-core": "^0.1.5",
+        "@naxodev/music-core": "^0.2.0",
         "pngjs": "^7.0.0",
       },
       "devDependencies": {
@@ -75,7 +75,7 @@
     },
     "packages/opencode-vim": {
       "name": "@naxodev/opencode-vim",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "devDependencies": {
         "@opencode/plugin": "2.0.18",
         "@opencode/theme": "2.0.18",
@@ -115,9 +115,9 @@
     },
     "packages/pi-music-dock": {
       "name": "@naxodev/pi-music-dock",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "dependencies": {
-        "@naxodev/music-core": "^0.1.4",
+        "@naxodev/music-core": "^0.2.0",
       },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "0.87.1",

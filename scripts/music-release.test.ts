@@ -32,6 +32,8 @@ test("each real package gate rejects an incompatible staged manifest before pack
       const manifest = await Bun.file(
         join(import.meta.dir, "../packages", host, "package.json"),
       ).json()
+      // Keep the fixture incompatible when the real host dependency advances.
+      manifest.dependencies["@naxodev/music-core"] = "^0.1.0"
       const cwd = join(root, "packages", host)
       await Bun.write(join(cwd, "package.json"), JSON.stringify(manifest))
       const result = await runBoundedCommand(
