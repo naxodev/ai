@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { link, lstat, mkdir, open, readFile, unlink } from "node:fs/promises"
 import type { Stats } from "node:fs"
+import { DEFAULT_MAX_FRAME_BYTES } from "./framing.ts"
 
 const manifest = createRequire(import.meta.url)("../package.json") as {
   version: string
@@ -17,8 +18,10 @@ const MACOS_UNIX_PATH_BYTES = 104
  * Wire-level artwork bounds shared with protocol.ts. The overhead reserves the
  * complete correlated response envelope (including a maximum safe request ID),
  * rather than relying on a best-effort writer fallback.
+ * The image budget fits the reported cover and keeps base64 plus metadata below
+ * the CLI runner's 1 MiB output bound. See docs/music-artwork-limits-research.md.
  */
-export const MAX_NATIVE_ARTWORK_BYTES = 192 * 1024
+export const MAX_NATIVE_ARTWORK_BYTES = 512 * 1024
 export const MAX_ARTWORK_BASE64_CHARS =
   Math.ceil(MAX_NATIVE_ARTWORK_BYTES / 3) * 4
 export const ARTWORK_RESPONSE_OVERHEAD_BYTES = 128
@@ -124,12 +127,12 @@ export type MusicSessionOptions = {
 }
 
 export const defaults = {
-  maxFrameBytes: 64 * 1024,
+  maxFrameBytes: DEFAULT_MAX_FRAME_BYTES,
   commandQueueCapacity: 128,
   inboundChunkQueueCapacity: 64,
   maxFramesPerChunk: 128,
   mandatoryOutboundQueueCapacity: 64,
-  nativeArtworkMaxBytes: 1024,
+  nativeArtworkMaxBytes: MAX_NATIVE_ARTWORK_BYTES,
   artworkCacheCapacity: 32,
   reconciliationMs: { transport: 120, navigation: 150 },
   pollMs: { playing: 3_000, paused: 5_000, idle: 8_000 },
@@ -291,9 +294,10 @@ const resolve = Effect.fn("MusicSession.Config.resolve")(function* (
         message: "is too small for a correlated artwork response",
       }),
     )
-  const frameArtworkMaxBytes = Math.floor(
-    (maxFrameBytes - ARTWORK_RESPONSE_OVERHEAD_BYTES) * 0.75,
-  )
+  // Each four encoded bytes carry three image bytes. Discard a partial quartet
+  // before converting the frame budget, so every valid frame size remains usable.
+  const frameArtworkMaxBytes =
+    Math.floor((maxFrameBytes - ARTWORK_RESPONSE_OVERHEAD_BYTES) / 4) * 3
   const effectiveArtworkMaxBytes = Math.min(
     nativeArtworkMaxBytes,
     MAX_NATIVE_ARTWORK_BYTES,

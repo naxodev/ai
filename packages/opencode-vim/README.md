@@ -74,7 +74,7 @@ Windows CI verifies the native host executable, packed installation, real-render
 
 The supported host and renderer versions are exact pins, not a wider range. See the [compatibility contract](../../docs/opencode-compatibility.md) for migration and release requirements.
 
-The package ships precompiled JavaScript for the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. The plugin API and OpenTUI are optional peers. Solid is required from the host but omitted from npm peer metadata because of an upstream peer-version conflict. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
+The package ships precompiled JavaScript for the supported OpenCode Bun host. The host supplies the exact plugin API, OpenTUI, and Solid versions through its runtime resolver. OpenTUI packages are optional peers. The plugin API and Solid are required from the host but omitted from npm peer metadata because their prospective peer graphs conflict with the embedded versions. Standalone loading outside OpenCode is unsupported. Workspace development uses all four exact pins from the lockfile.
 
 ## Key Reference
 

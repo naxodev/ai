@@ -27,7 +27,12 @@ import {
   type StartupMarkerLease,
   type StartupMarkerLeaseResult,
 } from "./config.ts"
-import { NdjsonFramer, encodeFrame } from "./framing.ts"
+import {
+  DEFAULT_MAX_FRAME_BYTES,
+  LEGACY_MAX_FRAME_BYTES,
+  NdjsonFramer,
+  encodeFrame,
+} from "./framing.ts"
 import {
   baselineCapabilities,
   decodeHelloResult,
@@ -646,16 +651,25 @@ export async function createMusicSessionClient(
       retryable: false,
     })
   const offered = options.protocolRange ?? PROTOCOL
-  const capabilities = options.capabilities ?? [...baselineCapabilities]
+  const offeredCapabilities = options.capabilities ?? [...baselineCapabilities]
   if (
-    !Array.isArray(capabilities) ||
-    !capabilities.every((capability) => typeof capability === "string")
+    !Array.isArray(offeredCapabilities) ||
+    !offeredCapabilities.every((capability) => typeof capability === "string")
   )
     throw new MusicSessionClientError({
       code: "INVALID_REQUEST",
       message: "capabilities must be strings",
       retryable: false,
     })
+  // Never advertise a response size that a custom client framer cannot read.
+  const maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES
+  const capabilities = offeredCapabilities.filter(
+    (capability) =>
+      (capability !== "native-artwork" ||
+        maxFrameBytes >= LEGACY_MAX_FRAME_BYTES) &&
+      (capability !== "native-artwork-512k" ||
+        maxFrameBytes >= DEFAULT_MAX_FRAME_BYTES),
+  )
   if (
     !Number.isSafeInteger(offered.major) ||
     !Number.isSafeInteger(offered.minRevision) ||
@@ -731,7 +745,7 @@ export async function createMusicSessionClient(
   })
   const client = new Client(
     socket,
-    new NdjsonFramer(options.maxFrameBytes),
+    new NdjsonFramer(maxFrameBytes),
     maxPendingRequests,
   )
   await client.beginHandshake(

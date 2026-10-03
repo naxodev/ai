@@ -4962,6 +4962,7 @@ test("explicit client exposes current negotiated revision and capabilities", asy
       "state-replay",
       "transport",
       "native-artwork",
+      "native-artwork-512k",
     ])
   } finally {
     client?.dispose()

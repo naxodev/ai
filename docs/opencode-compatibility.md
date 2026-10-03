@@ -32,7 +32,7 @@ OpenTUI `0.5.10` clears selection when assigning `EditBufferRenderable.cursorOff
 
 Music-core and Apnea pin Effect `4.0.0-rc.117`. OpenCode's plugin and theme packages pin `4.0.0-rc.112`; other upstream packages retain their own pins. The music adapter crosses the host boundary through ordinary values, callbacks, and Promises, not host Effect services or fibers. The workspace does not override Effect across those dependency graphs.
 
-The workspace overrides `@opentelemetry/core` to `2.8.0` and Babel to `7.29.7` for development dependencies. Packed consumers do not need these overrides. The prebuilt host has a separate dependency boundary, described below.
+The workspace overrides `@opentelemetry/core` to `2.8.0` and Babel to `7.29.7` for development dependencies. It also pins Axios `1.20.0`, brace-expansion `5.0.12`, and ip-address `10.7.3` to address published advisories. Packed consumers do not need these overrides. The prebuilt host has a separate dependency boundary, described below. See the [dependency audit assessment](dependency-audit.md) for the remaining unpatched development advisory.
 
 This migration breaks compatibility with the prior beta host. The next release of each OpenCode plugin must disclose that requirement and use a pre-1.0 breaking minor release. Package versions are not changed by this migration. Users who need the beta host must retain their previous plugin release.
 
@@ -66,7 +66,7 @@ After [the 2.0.18 release](https://github.com/naxodev/ai/pull/211), an isolated 
 
 This build step is required by the exact host: packed TSX failed with `Cannot find package '@opentui/solid'` at its JSX import-source pragma when OpenTUI was absent. The host successfully resolves the precompiled artifact's ordinary imports to its embedded modules. Source edits require rebuilding before local host reload.
 
-Both packages require the exact supported OpenCode Bun host. They declare `@opencode/plugin`, `@opentui/core`, and `@opentui/solid` as exact optional peers and exact development dependencies. Solid remains a required host-supplied module with an exact `1.9.15` development pin, but no npm peer metadata. The executable supplies all four modules; npm does not install copies for ordinary plugin consumers. Music-core and pngjs remain production dependencies.
+Both packages require the exact supported OpenCode Bun host. They declare `@opentui/core` and `@opentui/solid` as exact optional peers and exact development dependencies. The plugin API and Solid remain required host-supplied modules with exact development pins, but no npm peer metadata. The executable supplies all four modules; npm does not install copies for ordinary plugin consumers. Music-core and pngjs remain production dependencies.
 
 The [official CLI plugin guide](https://opencode.ai/v2/docs/build/plugins/cli) documents runtime resolution of `@opencode/plugin/tui`. The [stable host setup](https://github.com/anomalyco/opencode/blob/v2.0.18/packages/tui/src/plugin/runtime-plugin-support.bun.ts) registers that module with OpenTUI's runtime resolver. The [OpenTUI Solid configurator](https://unpkg.com/@opentui/solid@0.5.12/scripts/runtime-plugin-support-configure.js) supplies OpenTUI, JSX runtimes, Solid, and Solid store. The [core resolver](https://unpkg.com/@opentui/core@0.5.12/runtime-plugin.js) rewrites external ESM imports, including packages under `node_modules`, to the host's module instances. This preserves renderer and reactive-context identity.
 
@@ -81,6 +81,8 @@ Standalone loading outside OpenCode is unsupported. Workspace export tests use t
 The former production dependencies installed two unnecessary advisory chains: OpenTUI Solid's Babel `7.28.0` ([GHSA-4x5r-pxfx-6jf8](https://github.com/advisories/GHSA-4x5r-pxfx-6jf8)) and the plugin package's util/tracing dependencies with OpenTelemetry core `2.6.1` ([GHSA-8988-4f7v-96qf](https://github.com/advisories/GHSA-8988-4f7v-96qf)). Host-provided dependencies remove those chains from plugin installs. No audit suppression or consumer override is used.
 
 npm `11.12.1` and `10.9.4` reject even absent optional peers when their prospective graph conflicts. A reduced tarball containing only optional peers `@opentui/solid: 0.5.10` and `solid-js: 1.9.15` reproduces `ERESOLVE`. Removing development dependencies does not help. Therefore Solid has no npm peer declaration. The compatibility guard still requires its exact development pin and rejects production dependencies, peer metadata, or mixed lockfile resolutions. This metadata choice does not widen supported host versions.
+
+The same prospective-graph behavior affects the optional `@opencode/plugin@2.0.18` peer after OpenTUI 0.5.14 is published. Its `>=0.5.12` renderer peers select 0.5.14, conflicting with these plugins' exact 0.5.12 peers, even when no host libraries should be installed. Removing the plugin API's npm peer metadata fixes fresh packed-consumer installs. The compatibility guard retains its exact development pin and rejects restoring peer metadata or production dependencies. The supported executable and embedded renderer versions remain unchanged.
 
 ## Bundled host security boundary (2.0.3 assessment)
 

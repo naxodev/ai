@@ -21,7 +21,7 @@ import {
 } from "../types.ts"
 import { mergePlayer } from "../reconcile.ts"
 import { MusicSessionConfig } from "./config.ts"
-import { encodeFrame } from "./framing.ts"
+import { encodeFrame, LEGACY_MAX_FRAME_BYTES } from "./framing.ts"
 import { decodeArtworkResult, decodeServerFrame } from "./protocol.ts"
 import type {
   ArtworkIdentity,
@@ -319,7 +319,12 @@ export const layer = Layer.effect(
         } catch {
           return ["invalid" as const, previous]
         }
-        if (Buffer.byteLength(encoded) > config.maxFrameBytes)
+        // State is broadcast to every peer, including 64 KiB legacy clients.
+        // Only capability-negotiated artwork may use the larger frame budget.
+        if (
+          Buffer.byteLength(encoded) >
+          Math.min(config.maxFrameBytes, LEGACY_MAX_FRAME_BYTES)
+        )
           return ["too-large" as const, previous]
         return ["accepted" as const, snapshot]
       })

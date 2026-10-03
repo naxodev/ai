@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { NdjsonFramer, FrameError } from "../session/framing.ts"
+import { MAX_ARTWORK_BASE64_CHARS } from "../session/config.ts"
 import * as Schema from "effect/Schema"
 import {
   decodeArtworkResult,
@@ -263,11 +264,23 @@ describe("session protocol", () => {
       "AAAA=",
       "AR==",
       "!@#$",
-      "A".repeat(256 * 1024 + 4),
+      "A".repeat(MAX_ARTWORK_BASE64_CHARS + 4),
     ])
       expect(() => decodeArtworkResult({ type: "available", base64 })).toThrow(
         "invalid artwork result",
       )
+  })
+  test("album artwork accepts 512 KiB but rejects the next byte even with equal base64 length", () => {
+    const base64 = Buffer.alloc(512 * 1024).toString("base64")
+    const oversized = Buffer.alloc(512 * 1024 + 1).toString("base64")
+    // Base64 rounds up in groups of three. A character limit alone can admit
+    // an extra decoded byte and break the advertised binary budget.
+    expect(oversized.length).toBe(base64.length)
+    const result = decodeArtworkResult({ type: "available", base64 })
+    expect(result.type).toBe("available")
+    expect(() =>
+      decodeArtworkResult({ type: "available", base64: oversized }),
+    ).toThrow("invalid artwork result")
   })
   test("rejects an oversized line before accepting its chunk", () => {
     const frames = new NdjsonFramer(8)

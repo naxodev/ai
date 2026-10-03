@@ -23,7 +23,12 @@ import {
   prepareManagedRuntimeDirectory,
   type MusicSessionOptions,
 } from "./config.ts"
-import { FrameCountError, NdjsonFramer, encodeFrame } from "./framing.ts"
+import {
+  FrameCountError,
+  LEGACY_MAX_FRAME_BYTES,
+  NdjsonFramer,
+  encodeFrame,
+} from "./framing.ts"
 import {
   baselineCapabilities,
   decodeRequestEffect,
@@ -633,11 +638,9 @@ const connection = (
     // Reuse the mandatory-response capacity as the per-connection waiter budget.
     // Completed fibers leave the set; disconnect interrupts every remaining waiter.
     const artworkTasks = yield* FiberSet.make<void, never>()
-    const encode = (value: unknown) => {
+    const encode = (value: unknown, limit = maxFrameBytes) => {
       const frame = encodeFrame(value)
-      return Buffer.byteLength(frame) <= maxFrameBytes
-        ? Buffer.from(frame)
-        : undefined
+      return Buffer.byteLength(frame) <= limit ? Buffer.from(frame) : undefined
     }
     const sendRequired = (value: unknown, end = false) =>
       Effect.sync(() => {
@@ -870,12 +873,17 @@ const connection = (
             "SERVER_BUSY",
             "too many pending artwork requests",
           )
+        const artworkFrameLimit = session.capabilities.includes(
+          "native-artwork-512k",
+        )
+          ? maxFrameBytes
+          : Math.min(maxFrameBytes, LEGACY_MAX_FRAME_BYTES)
         yield* FiberSet.run(
           artworkTasks,
           coordinator.artwork(request.identity).pipe(
             Effect.matchEffect({
               onSuccess: (result) =>
-                encode(response(request.requestId, result))
+                encode(response(request.requestId, result), artworkFrameLimit)
                   ? send(response(request.requestId, result))
                   : send(response(request.requestId, { type: "too-large" })),
               onFailure: () =>

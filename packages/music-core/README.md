@@ -171,6 +171,12 @@ A reconnecting client retains its last accepted state for presentation. It adopt
 
 Frames, queues, and pending requests are finite. A slow or abusive connection can be disconnected locally without blocking other clients; state fan-out coalesces while required responses and status remain preserved. Provider observation is O(1), client fan-out is O(N), and the native-artwork path is bounded and deduplicated. The verified 24-client alternating scenario is capacity evidence, not a configured maximum.
 
+Native artwork defaults to 512 KiB of decoded image bytes, also its schema ceiling. Session frames default to 768 KiB to fit base64 and the response envelope. Smaller configured frames reduce the effective artwork budget. Playback snapshots and provider metadata-stream lines remain bounded at 64 KiB.
+
+The `native-artwork-512k` capability enables larger artwork responses. Clients with a frame limit below 768 KiB omit this capability. Clients below 64 KiB also omit `native-artwork`: artwork requests return `UNSUPPORTED_CAPABILITY` without sending a request, so oversized artwork cannot disconnect playback. Other older peers receive `too-large` for artwork that exceeds their 64 KiB frame budget and remain connected. Both client and daemon must be updated to use the larger budget; a running older daemon retains its original limits.
+
+See the [artwork limit research](../../docs/music-artwork-limits-research.md) for the historical evidence, base64 arithmetic, and memory tradeoffs.
+
 ## Low-level provider compatibility
 
 `createSystemMedia()` exposes normalized media discovery and transport for low-level consumers. It supports provider event subscriptions when available and polling-only fallback behavior, but it does not describe the production host topology. Use the session client for shared daemon ownership.

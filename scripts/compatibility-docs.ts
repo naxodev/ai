@@ -74,7 +74,7 @@ async function run() {
     "",
     `Workspace checks use \`${workspace.packageManager}\`. This is not a claim that all declared minimum runtimes were exercised.`,
     "",
-    `The tested OpenCode host is \`${compatibility.host.package}@${compatibility.host.version}\`. It supplies \`@opencode/plugin@${compatibility.peerDependencies["@opencode/plugin"]}\`, \`@opencode/theme@${compatibility.devDependencies["@opencode/theme"]}\`, \`@opentui/core@${compatibility.peerDependencies["@opentui/core"]}\`, \`@opentui/solid@${compatibility.peerDependencies["@opentui/solid"]}\`, and \`solid-js@${compatibility.devDependencies["solid-js"]}\`. These are exact tested pins, not a broader host range. See the [OpenCode compatibility contract](opencode-compatibility.md) for runtime ownership and package-name verification.`,
+    `The tested OpenCode host is \`${compatibility.host.package}@${compatibility.host.version}\`. It supplies \`@opencode/plugin@${compatibility.devDependencies["@opencode/plugin"]}\`, \`@opencode/theme@${compatibility.devDependencies["@opencode/theme"]}\`, \`@opentui/core@${compatibility.peerDependencies["@opentui/core"]}\`, \`@opentui/solid@${compatibility.peerDependencies["@opentui/solid"]}\`, and \`solid-js@${compatibility.devDependencies["solid-js"]}\`. These are exact tested pins, not a broader host range. See the [OpenCode compatibility contract](opencode-compatibility.md) for runtime ownership and package-name verification.`,
     "",
     sections.join("\n\n"),
     "",

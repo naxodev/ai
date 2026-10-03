@@ -101,6 +101,8 @@ const test: SessionTestFn = createSessionTest(
     "a paused reader backpressures locally while 23 clients keep receiving state",
     "real clients retain global FIFO and recover after command-lane overflow",
     "artwork is capability-negotiated, authoritative, and cached per recording",
+    "ordinary album covers cross the default socket without disconnecting older clients",
+    "sub-64-KiB clients retain playback when native artwork exceeds their receive budget",
     "real artwork responses contain exact, oversized, and malformed provider payloads",
     "blocked artwork remains isolated, shared, retryable, and connection-local",
     "two clients share the daemon command lane",
@@ -3638,6 +3640,124 @@ test("artwork is capability-negotiated, authoritative, and cached per recording"
     client?.dispose()
     oldPeer?.dispose()
     await server?.close().catch(() => {})
+  }
+})
+
+test("ordinary album covers cross the default socket without disconnecting older clients", async () => {
+  const path = socketPath("album-cover-size")
+  const identity = {
+    id: "14456033",
+    name: "Preciosa",
+    artists: "Yamandú Costa & Antoine Boyer",
+    album: "",
+    duration_ms: 214_460,
+  }
+  const provider = createFakeProvider({
+    is_playing: false,
+    progress_ms: 0,
+    shuffle: false,
+    repeat: "off",
+    device: null,
+    track: { ...identity, uri: "system:now:Preciosa" },
+    fetched_at: 1,
+  })
+  // The reported cover is 363,390 bytes. Exercise transport with the same size
+  // without retaining a copyrighted image or depending on the current player.
+  const base64 = Buffer.alloc(363_390, 0x42).toString("base64")
+  provider.setArtworkResult({ type: "available", base64 })
+  const server = await startMusicSessionServer({ socketPath: path }, provider)
+  const clients: Awaited<ReturnType<typeof createMusicSessionClient>>[] = []
+  try {
+    const client = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "album-cover",
+      hostKind: "test",
+    })
+    clients.push(client)
+    const legacy = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "legacy-album-cover",
+      hostKind: "test",
+      capabilities: ["state-replay", "transport", "native-artwork"],
+      maxFrameBytes: 64 * 1024,
+    })
+    clients.push(legacy)
+    const smallFrame = await createMusicSessionClient({
+      socketPath: path,
+      clientId: "small-frame-album-cover",
+      hostKind: "test",
+      maxFrameBytes: 64 * 1024,
+    })
+    clients.push(smallFrame)
+    const result = await client.artwork(identity)
+    expect(result.type).toBe("available")
+    if (result.type !== "available") throw new Error("album cover rejected")
+    expect(result.base64 === base64).toBe(true)
+    await expect(legacy.artwork(identity)).resolves.toEqual({
+      type: "too-large",
+    })
+    await expect(smallFrame.artwork(identity)).resolves.toEqual({
+      type: "too-large",
+    })
+    await expect(legacy.play()).resolves.toEqual({ action: "play" })
+    await expect(smallFrame.pause()).resolves.toEqual({ action: "pause" })
+    await expect(client.pause()).resolves.toEqual({ action: "pause" })
+    expect(provider.artworkCalls).toBe(1)
+  } finally {
+    for (const client of clients) client.dispose()
+    await server.close()
+  }
+})
+
+test("sub-64-KiB clients retain playback when native artwork exceeds their receive budget", async () => {
+  const path = socketPath("small-artwork-frame")
+  const identity = {
+    id: "small-frame-cover",
+    name: "Song",
+    artists: "Artist",
+    album: "Album",
+    duration_ms: 180_000,
+  }
+  const provider = createFakeProvider({
+    is_playing: false,
+    progress_ms: 0,
+    shuffle: false,
+    repeat: "off",
+    device: null,
+    track: { ...identity, uri: "system:small-frame-cover" },
+    fetched_at: 1,
+  })
+  // This fits the legacy 64 KiB response budget, but not either custom client.
+  provider.setArtworkResult({
+    type: "available",
+    base64: Buffer.alloc(30_000).toString("base64"),
+  })
+  const server = await startMusicSessionServer({ socketPath: path }, provider)
+  try {
+    for (const maxFrameBytes of [16 * 1024, 32 * 1024]) {
+      const client = await createMusicSessionClient({
+        socketPath: path,
+        clientId: `small-frame-${maxFrameBytes}`,
+        hostKind: "test",
+        maxFrameBytes,
+        // Cover both default capabilities and callers explicitly requesting artwork.
+        ...(maxFrameBytes === 32 * 1024
+          ? { capabilities: ["state-replay", "transport", "native-artwork"] }
+          : {}),
+      })
+      try {
+        await expect(client.artwork(identity)).rejects.toMatchObject({
+          code: "UNSUPPORTED_CAPABILITY",
+        })
+        await expect(client.play()).resolves.toEqual({ action: "play" })
+        await expect(client.pause()).resolves.toEqual({ action: "pause" })
+      } finally {
+        client.dispose()
+      }
+    }
+    expect(provider.artworkCalls).toBe(0)
+  } finally {
+    await server.close()
   }
 })
 
