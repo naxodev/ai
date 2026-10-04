@@ -53,6 +53,11 @@ const player = (
 });
 
 const pngBase64 = PNG_1X1_BASE64;
+const fallbackStatus: ProviderStatus = {
+	kind: "degraded",
+	provider: "nowplaying-cli",
+	message: "using nowplaying-cli; limited playback state",
+};
 
 class FakeClient implements ReconnectingMusicSessionClient {
 	daemonInstanceId = "daemon-a";
@@ -200,6 +205,7 @@ function setup(
 			init?: RequestInit,
 		) => Promise<Response>;
 		collapseOnStreaming?: boolean;
+		now?: () => number;
 	} = {},
 ) {
 	let start: ((event: unknown, ctx: any) => Promise<void>) | undefined;
@@ -210,6 +216,7 @@ function setup(
 	const statuses: Array<string | undefined> = [];
 	const themedText: string[] = [];
 	const notifications: string[] = [];
+	const notificationTypes: Array<"info" | "warning" | "error" | undefined> = [];
 	const commands: Record<
 		string,
 		{ handler: (args: string, ctx: any) => Promise<void> }
@@ -294,7 +301,10 @@ function setup(
 				return value;
 			},
 		},
-		notify: (message: string) => notifications.push(message),
+		notify: (message: string, type?: "info" | "warning" | "error") => {
+			notifications.push(message);
+			notificationTypes.push(type);
+		},
 		setWidget: (
 			key: string,
 			content:
@@ -337,7 +347,7 @@ function setup(
 		} as never,
 		{
 			createClient,
-			now: () => 1,
+			now: extras.now ?? (() => 1),
 			collapseOnStreaming: extras.collapseOnStreaming,
 			// Default fetch never hits the network — catalog tests inject their own.
 			fetch:
@@ -382,6 +392,7 @@ function setup(
 		statuses,
 		themedText,
 		notifications,
+		notificationTypes,
 		intervals,
 		hosts,
 		overlays,
@@ -628,11 +639,7 @@ test("provider recovery rearms warnings while fallback and command failure remai
 	});
 	expect(dock.notifications).toEqual([failure.message]);
 	client.emitStatus(failure);
-	client.emitStatus({
-		kind: "degraded",
-		provider: "nowplaying-cli",
-		message: "using nowplaying-cli",
-	});
+	client.emitStatus(fallbackStatus);
 	client.emitStatus({
 		kind: "degraded",
 		provider: "nowplaying-cli",
@@ -641,11 +648,146 @@ test("provider recovery rearms warnings while fallback and command failure remai
 	expect(dock.notifications).toEqual([
 		failure.message,
 		failure.message,
-		"using nowplaying-cli",
+		fallbackStatus.message,
 		"command worker failed",
 	]);
+	expect(dock.notificationTypes).toEqual(["error", "error", "info", "error"]);
 	expect(client.calls).toEqual([]);
 	await dock.shutdown();
+});
+
+test("fallback recovery cycles do not flood the transcript or create notification timers", async () => {
+	// A stream recovery can follow each failed poll, so ready must not rearm this notice.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	const timerCount = dock.intervals.length;
+	for (let cycle = 0; cycle < 12; cycle++) {
+		client.emitStatus(fallbackStatus);
+		client.emitStatus({
+			kind: "ready",
+			provider: "media-control",
+			message: "ready",
+		});
+	}
+	expect(dock.notifications).toEqual([fallbackStatus.message]);
+	expect(dock.notificationTypes).toEqual(["info"]);
+	expect(dock.intervals).toHaveLength(timerCount);
+	await dock.shutdown();
+});
+
+test("fallback cooldown expires one minute after the last displayed notice", async () => {
+	// Suppressed updates must not extend the cooldown and hide persistent fallback forever.
+	let now = 0;
+	const client = new FakeClient();
+	const dock = setup(async () => client, { now: () => now });
+	await dock.start();
+	await flush();
+	client.emitStatus(fallbackStatus);
+	now = 59_999;
+	client.emitStatus(fallbackStatus);
+	expect(dock.notifications).toEqual([fallbackStatus.message]);
+	now = 60_000;
+	client.emitStatus(fallbackStatus);
+	client.emitStatus(fallbackStatus);
+	expect(dock.notifications).toEqual([
+		fallbackStatus.message,
+		fallbackStatus.message,
+	]);
+	now = 119_999;
+	client.emitStatus({
+		kind: "ready",
+		provider: "media-control",
+		message: "ready",
+	});
+	client.emitStatus(fallbackStatus);
+	expect(dock.notifications).toHaveLength(2);
+	now = 120_000;
+	client.emitStatus(fallbackStatus);
+	expect(dock.notifications).toHaveLength(3);
+	expect(dock.notificationTypes).toEqual(["info", "info", "info"]);
+	await dock.shutdown();
+});
+
+test("fallback cooldown does not delay provider, connection, or playback errors", async () => {
+	// Health classification, not shared text or provider identity, decides which notices are safe to throttle.
+	const client = new FakeClient();
+	const dock = setup(async () => client);
+	await dock.start();
+	await flush();
+	client.emitStatus(fallbackStatus);
+	client.emitStatus({ ...fallbackStatus, kind: "unavailable" });
+	client.emitStatus({ ...fallbackStatus, message: "command worker failed" });
+	client.emitStatus({
+		...fallbackStatus,
+		provider: "media-control",
+		message: "primary failed",
+	});
+	client.emitConnection({
+		type: "reconnecting",
+		error: { message: fallbackStatus.message } as never,
+	});
+	client.emitConnection({
+		type: "terminal",
+		error: { message: fallbackStatus.message } as never,
+	});
+	client.commandFailure = new Error(fallbackStatus.message);
+	await dock.command("music");
+	await dock.command("music");
+	client.emitStatus(fallbackStatus);
+	expect(dock.notifications).toEqual([
+		fallbackStatus.message,
+		fallbackStatus.message,
+		"command worker failed",
+		"primary failed",
+		fallbackStatus.message,
+		fallbackStatus.message,
+		fallbackStatus.message,
+		fallbackStatus.message,
+	]);
+	expect(dock.notificationTypes).toEqual([
+		"info",
+		"error",
+		"error",
+		"error",
+		"error",
+		"error",
+		"error",
+		"error",
+	]);
+	await dock.shutdown();
+});
+
+test("fallback cooldown belongs to one live session and ignores disposed callbacks", async () => {
+	// A new session needs its own notice; callbacks retained by an old client must remain silent.
+	let now = 0;
+	let client = new FakeClient();
+	const dock = setup(async () => client, { now: () => now });
+	await dock.start();
+	await flush();
+	client.emitStatus(fallbackStatus);
+	const oldListener = [...client.statusListeners][0]!;
+	client = new FakeClient();
+	client.status = fallbackStatus;
+	await dock.start();
+	await flush();
+	now = 60_000;
+	oldListener(fallbackStatus);
+	expect(dock.notifications).toEqual([
+		fallbackStatus.message,
+		fallbackStatus.message,
+	]);
+	const currentListener = [...client.statusListeners][0]!;
+	await dock.shutdown();
+	now = 120_000;
+	oldListener(fallbackStatus);
+	currentListener(fallbackStatus);
+	oldListener({ ...fallbackStatus, message: "stale provider error" });
+	currentListener({ ...fallbackStatus, message: "late provider error" });
+	expect(dock.notifications).toHaveLength(2);
+	expect(client.statusListeners.size).toBe(0);
+	expect(dock.activeIntervals()).toHaveLength(0);
 });
 
 test("commands and shortcuts delegate immediately once through the client", async () => {
