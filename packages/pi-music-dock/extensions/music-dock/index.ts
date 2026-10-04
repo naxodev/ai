@@ -44,6 +44,8 @@ const KEY_NEXT = Key.ctrlAlt("n");
 const KEY_PREV = Key.ctrlAlt("b");
 const KEY_VIEW = Key.ctrlAlt("m");
 const STATUS_KEY = "music-dock";
+const FALLBACK_NOTICE_MESSAGE = "using nowplaying-cli; limited playback state";
+const FALLBACK_NOTICE_INTERVAL_MS = 60_000;
 /** Empty host widget key — factory only exists to receive TUI/theme and own the overlay. */
 const OVERLAY_HOST_WIDGET_KEY = "music-dock-sidebar-host";
 const SIDEBAR_MIN_COLS = 80;
@@ -71,6 +73,7 @@ type LiveSession = {
 	unsubscribers: Array<() => void>;
 	waveform: Waveform;
 	providerNotification: string | undefined;
+	fallbackNotificationAt: number | undefined;
 	reconnectingNotification: string | undefined;
 	terminalNotification: string | undefined;
 	acquisitionNotification: string | undefined;
@@ -321,6 +324,24 @@ export function createMusicDock(
 	};
 
 	const reportStatus = (session: LiveSession, status: ProviderStatus) => {
+		if (!isLive(session)) return;
+		// Degraded statuses can also report command failures. Only this known
+		// working fallback is informational, with a cooldown that survives ready.
+		if (
+			status.kind === "degraded" &&
+			status.provider === "nowplaying-cli" &&
+			status.message === FALLBACK_NOTICE_MESSAGE
+		) {
+			const now = deps.now();
+			if (
+				session.fallbackNotificationAt !== undefined &&
+				now - session.fallbackNotificationAt < FALLBACK_NOTICE_INTERVAL_MS
+			)
+				return;
+			session.fallbackNotificationAt = now;
+			session.ui.notify(FALLBACK_NOTICE_MESSAGE, "info");
+			return;
+		}
 		if (status.kind === "ready") session.providerNotification = undefined;
 		else notify(session, "provider", status.message);
 	};
@@ -593,6 +614,7 @@ export function createMusicDock(
 		if (clearUi) clearUi.setStatus(STATUS_KEY, undefined);
 		else clearStatus(session);
 		session.player = null;
+		session.fallbackNotificationAt = undefined;
 		// Acquisition cancellation is cooperative. Never block shutdown on a
 		// factory that ignores it; install() disposes any client that arrives late.
 		await disposeClient(session);
@@ -720,6 +742,7 @@ export function createMusicDock(
 			unsubscribers: [],
 			waveform: undefined as never,
 			providerNotification: undefined,
+			fallbackNotificationAt: undefined,
 			reconnectingNotification: undefined,
 			terminalNotification: undefined,
 			acquisitionNotification: undefined,
