@@ -75,37 +75,34 @@ export function kittyImageId(key: string): number {
   return hash >>> 0 || 1
 }
 
-type RendererWriter = {
-  stdout?: NodeJS.WriteStream
-  realStdoutWrite?: NodeJS.WriteStream["write"]
+type SerializedRendererWriter = {
+  writeOut?: (chunk: string) => unknown
 }
 
-/** OpenTUI detects Kitty graphics but does not yet expose a raw output API. */
+/**
+ * OpenTUI 0.5.12 keeps writeOut private, but OpenCode 2.0.18 uses it to queue
+ * one complete output transaction with its native renderer thread. Do not use
+ * raw stdout here: it can interleave cursor frames with a Kitty transfer.
+ */
 export function writeGraphics(
   renderer: CliRenderer,
   data: string | readonly string[],
 ): boolean {
-  const target = renderer as unknown as RendererWriter
-  if (!target.stdout || typeof target.realStdoutWrite !== "function")
-    return false
+  // SAFETY: OpenCode 2.0.18's pinned renderer has private writeOut; the runtime guard verifies it is callable.
+  const target = renderer as unknown as SerializedRendererWriter
+  if (typeof target.writeOut !== "function") return false
+  const commands = typeof data === "string" ? [data] : data
   const output = (value: string) =>
     process.env.TMUX && !process.env.HERDR_ENV ? tmuxPassthrough(value) : value
-  let cursorSaved = false
+
   try {
-    for (const command of typeof data === "string" ? [data] : data) {
-      if (command.includes("\x1b7")) cursorSaved = true
-      target.realStdoutWrite.call(target.stdout, output(command))
-      if (command.includes("\x1b8")) cursorSaved = false
-    }
+    // Preserve per-command tmux wrappers, but queue the full Kitty transaction.
+    // This includes its saved/restored cursor and cannot race a native frame.
+    target.writeOut.call(renderer, commands.map(output).join(""))
+    // OpenTUI's direct-stream fallback can return false for backpressure after
+    // accepting data. A non-throwing host hook has accepted this transaction.
     return true
   } catch {
-    if (cursorSaved) {
-      try {
-        target.realStdoutWrite.call(target.stdout, output("\x1b8"))
-      } catch {
-        // The original transaction still failed; restoration is best effort.
-      }
-    }
     return false
   }
 }

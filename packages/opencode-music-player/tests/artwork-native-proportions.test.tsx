@@ -33,8 +33,7 @@ for (const [
           get(target, property) {
             if (property === "capabilities") return { kitty_graphics: true }
             if (property === "resolution") return resolution
-            if (property === "stdout") return {}
-            if (property === "realStdoutWrite")
+            if (property === "writeOut")
               return (value: string) => {
                 writes.push(value)
                 return true

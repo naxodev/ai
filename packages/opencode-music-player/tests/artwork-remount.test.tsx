@@ -22,8 +22,7 @@ test("remounting the same native artwork preserves its image and placement", asy
         get(target, property) {
           if (property === "capabilities") return { kitty_graphics: true }
           if (property === "resolution") return { width: 400, height: 400 }
-          if (property === "stdout") return {}
-          if (property === "realStdoutWrite")
+          if (property === "writeOut")
             return (data: string) => {
               writes.push(data)
               return true
