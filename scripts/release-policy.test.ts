@@ -100,6 +100,7 @@ describe("release policy", () => {
     )
   })
 
+  // Two isolated Nx runs can exceed Bun's five-second default on cold CI workers.
   test("a coordinated incompatible release preserves the installable staged state", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "nx-release-policy-"))
     temporaryWorkspaces.push(workspace)
@@ -224,5 +225,5 @@ describe("release policy", () => {
     )
     const staleRangeRelease = await runReleaseFixture()
     expect(staleRangeRelease.exitCode).not.toBe(0)
-  })
+  }, 30_000)
 })
