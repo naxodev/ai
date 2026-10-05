@@ -349,15 +349,17 @@ export default {
   ...plugin,
   async setup(context) {
     const graphicsTrace = process.env.OPENCODE_MUSIC_GRAPHICS_TRACE
+    const realWriteOut = context.renderer.writeOut
+    if (typeof realWriteOut !== "function")
+      throw new Error("OpenCode renderer does not expose serialized writeOut")
     const fixtureRenderer = new Proxy(context.renderer, {
       get(target, property) {
         if (property === "capabilities")
           return { ...target.capabilities, kitty_graphics: true }
-        if (property === "stdout") return {}
-        if (property === "realStdoutWrite")
+        if (property === "writeOut")
           return (data) => {
             appendFileSync(graphicsTrace, data)
-            return true
+            return realWriteOut.call(target, data)
           }
         const value = Reflect.get(target, property)
         return typeof value === "function" ? value.bind(target) : value

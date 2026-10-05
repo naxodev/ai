@@ -31,12 +31,12 @@ function withEnv(
   }
 }
 
-function fakeRenderer() {
+function fakeRenderer(result: unknown = true) {
   const writes: string[] = []
   const renderer = {
-    stdout: {},
-    realStdoutWrite(data: string) {
+    writeOut(data: string) {
       writes.push(data)
+      return result
     },
   }
   return { writes, renderer }
@@ -95,31 +95,35 @@ describe("Kitty graphics commands", () => {
     expect(kittyDeletePlacement(42)).toBe("\x1b_Ga=d,d=i,i=42,q=2;\x1b\\")
   })
 
-  test("uses OpenTUI's captured raw writer instead of its span feed", () => {
+  test("queues a complete graphics transaction through OpenTUI", () => {
     withEnv({ TMUX: undefined, HERDR_ENV: undefined }, () => {
       const { writes, renderer } = fakeRenderer()
-      expect(writeGraphics(renderer as never, "graphics")).toBe(true)
-      expect(writes).toEqual(["graphics"])
+      const commands = kittyDisplayPng("A".repeat(5_000), 42, 3, 5, 24, 12)
+
+      expect(writeGraphics(renderer as never, commands)).toBe(true)
+      expect(writes).toEqual([commands.join("")])
     })
   })
 
-  test("restores the cursor when a multi-chunk display write fails", () => {
-    withEnv({ TMUX: undefined, HERDR_ENV: undefined }, () => {
-      const writes: string[] = []
-      let attempts = 0
-      const renderer = {
-        stdout: {},
-        realStdoutWrite(data: string) {
-          attempts++
-          if (attempts === 2) throw new Error("write failed")
-          writes.push(data)
-        },
-      }
-      const commands = kittyDisplayPng("A".repeat(5_000), 42, 3, 5, 24, 12)
+  test("accepts a queued transaction when the host reports stream backpressure", () => {
+    const { writes, renderer } = fakeRenderer(false)
 
-      expect(writeGraphics(renderer as never, commands)).toBe(false)
-      expect(writes).toEqual([commands[0]!, "\x1b8"])
-    })
+    expect(writeGraphics(renderer as never, "graphics")).toBe(true)
+    expect(writes).toEqual(["graphics"])
+  })
+
+  test("fails closed when the serialized host hook is unavailable or throws", () => {
+    expect(writeGraphics({} as never, "graphics")).toBe(false)
+    expect(
+      writeGraphics(
+        {
+          writeOut() {
+            throw new Error("output failed")
+          },
+        } as never,
+        "graphics",
+      ),
+    ).toBe(false)
   })
 
   test("wraps graphics for tmux without Herdr", () => {
