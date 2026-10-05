@@ -258,8 +258,13 @@ async function playerViaMediaControl(
   runCommand: (cmd: string[], timeoutMs?: number) => Promise<CommandResult>,
   clock: PlaybackClock,
   now: () => number,
+  currentStreamState: () => PlayerState | null,
 ): Promise<PlayerState | null> {
   const r = await runCommand(["media-control", "get", "--no-artwork", "--now"])
+  // A startup read may finish after the stream has supplied newer state.
+  // Do not decode that stale result into the shared playback clock.
+  const streamed = currentStreamState()
+  if (streamed) return streamed
   if (!r.ok) return null
 
   let data: MediaGet | null
@@ -278,6 +283,7 @@ async function playerViaNowPlayingCli(
   runCommand: (cmd: string[], timeoutMs?: number) => Promise<CommandResult>,
   clock: PlaybackClock,
   now: () => number,
+  currentStreamState: () => PlayerState | null = () => null,
 ): Promise<PlayerState | null> {
   const r = await runCommand([
     "nowplaying-cli",
@@ -291,6 +297,8 @@ async function playerViaNowPlayingCli(
     "playbackRate",
     "isPlaying",
   ])
+  const streamed = currentStreamState()
+  if (streamed) return streamed
   const arrival = now()
   if (!r.ok) return null
 
@@ -644,6 +652,56 @@ export function createSystemMedia(
       message: "provider sample failed",
     }
   }
+  let streamSample: { owner: symbol; state: PlayerState } | null = null
+  const currentStreamState = (): PlayerState | null => {
+    if (!streamSample) return null
+    const { state } = streamSample
+    const now = deps.now()
+    if (!state.track) return { ...state, fetched_at: now }
+    // Reconcile no new provider sample here. The shared clock already owns
+    // elapsed time and successful pause, play and seek mutations.
+    const { progress_ms, is_playing } = clock.syncFromSample({
+      key: trackKey(state.track.name, state.track.artists, state.track.id),
+      reported_ms: 0,
+      reported: false,
+      duration_ms: state.track.duration_ms,
+      playing: null,
+      rate: NaN,
+      now,
+    })
+    return { ...state, progress_ms, is_playing, fetched_at: now }
+  }
+  const subscribeWithState = (
+    subscribe: typeof subscribeMediaControlAttempt,
+    listener: MusicChangeListener,
+  ): MusicChangeDisposer => {
+    // Only the subscription that supplied the cached sample may clear it.
+    const owner = Symbol("media-control stream")
+    const invalidate = () => {
+      if (streamSample?.owner === owner) streamSample = null
+    }
+    let dispose: MusicChangeDisposer
+    try {
+      dispose = subscribe(
+        (event) => {
+          if (event?.type === "snapshot") {
+            streamSample = { owner, state: event.state }
+            observed("media-control")
+          } else invalidate()
+          listener(event)
+        },
+        deps,
+        clock,
+      )
+    } catch (error) {
+      invalidate()
+      throw error
+    }
+    return () => {
+      invalidate()
+      dispose()
+    }
+  }
   const backend: SystemMediaAttemptAdapter = {
     status: () => observationStatus,
     id: "system",
@@ -655,7 +713,14 @@ export function createSystemMedia(
       try {
         const kind = deps.detectBackend()
         if (kind === "media-control") {
-          const player = await playerViaMediaControl(deps.run, clock, deps.now)
+          const player =
+            currentStreamState() ??
+            (await playerViaMediaControl(
+              deps.run,
+              clock,
+              deps.now,
+              currentStreamState,
+            ))
           if (player) {
             observed("media-control")
             return player
@@ -665,7 +730,13 @@ export function createSystemMedia(
               deps.run,
               clock,
               deps.now,
+              currentStreamState,
             )
+            const streamed = currentStreamState()
+            if (streamed) {
+              observed("media-control")
+              return streamed
+            }
             if (fallback) observed("nowplaying-cli")
             else failedObservation()
             return (
@@ -704,13 +775,21 @@ export function createSystemMedia(
     },
 
     async next() {
+      const before = streamSample
       await cmd("next", deps)
-      clock.reset()
+      if (streamSample === before) {
+        streamSample = null
+        clock.reset()
+      }
     },
 
     async previous() {
+      const before = streamSample
       await cmd("previous", deps)
-      clock.reset()
+      if (streamSample === before) {
+        streamSample = null
+        clock.reset()
+      }
     },
 
     async seek(positionMs: number) {
@@ -802,18 +881,11 @@ export function createSystemMedia(
       return { type: "available", base64 }
     }
     backend.subscribe = (listener) =>
-      subscribeToMediaControl(listener, deps, clock)
+      subscribeWithState(subscribeToMediaControl, listener)
     // The daemon uses this unsupervised seam. It shares this exact backend's
-    // playback clock with polling and transport; legacy hosts keep `subscribe`.
-    ;(backend as SystemMediaAttemptAdapter).subscribeAttempt = (listener) =>
-      subscribeMediaControlAttempt(
-        (event) => {
-          if (event?.type === "snapshot") observed("media-control")
-          listener(event)
-        },
-        deps,
-        clock,
-      )
+    // playback clock and stream state with sampling and transport.
+    backend.subscribeAttempt = (listener) =>
+      subscribeWithState(subscribeMediaControlAttempt, listener)
   }
   return backend
 }

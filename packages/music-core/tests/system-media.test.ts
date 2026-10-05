@@ -99,6 +99,7 @@ type FakeSource = {
 function createStreamFakes(options?: {
   now?: () => number
   onAttemptStart?: () => void
+  runResult?: Awaited<ReturnType<typeof run>>
 }) {
   const sources: FakeSource[] = []
   const timers: Array<{
@@ -120,7 +121,7 @@ function createStreamFakes(options?: {
     hasNowPlayingCli: () => false,
     run: async (cmd) => {
       getCalls.push(cmd)
-      return { ok: true, out: "" }
+      return options?.runResult ?? { ok: true, out: "" }
     },
     startLineStream: (_cmd, callbacks) => {
       const source = { callbacks, disposed: 0 }
@@ -165,6 +166,349 @@ function dataEnvelope(payload: Record<string, unknown>): string {
 
 beforeEach(() => {
   resetMediaBackend()
+})
+
+describe("stream-backed provider sampling", () => {
+  test("daemon samples stay ready without spawning reads that time out under contention", async () => {
+    let now = 1_000_000
+    const started = Latch.makeUnsafe()
+    const fake = createStreamFakes({
+      now: () => now,
+      onAttemptStart: () => Latch.openUnsafe(started),
+      runResult: {
+        ok: false,
+        timed_out: true,
+        err: "command timed out after 2000ms",
+      },
+    })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const provider = yield* SessionProvider
+          const snapshots = yield* Queue.unbounded<void>()
+          yield* provider.events.pipe(
+            Stream.runForEach(() => Queue.offer(snapshots, undefined)),
+            Effect.forkScoped,
+          )
+          yield* Latch.await(started)
+          expect(fake.sources).toHaveLength(1)
+          fake.sources[0]!.callbacks.onLine(
+            dataEnvelope({ ...completePausedPayload, playing: true }),
+          )
+          yield* Queue.take(snapshots)
+          now += 3_000
+          const state = yield* provider.sample()
+          expect(state).toMatchObject({
+            progress_ms: 15_500,
+            is_playing: true,
+            fetched_at: now,
+            track: { name: "Song" },
+          })
+          expect(yield* provider.status()).toMatchObject({
+            kind: "ready",
+            provider: "media-control",
+          })
+          now += 3_000
+          expect((yield* provider.sample())?.progress_ms).toBe(18_500)
+          expect(fake.getCalls).toEqual([])
+        }).pipe(Effect.provide(layerFromAttemptAdapter(fake.backend))),
+      ),
+    )
+    expect(fake.sources[0]!.disposed).toBe(1)
+  })
+
+  for (const subscribe of ["subscribe", "subscribeAttempt"] as const) {
+    test(`${subscribe} preserves paused and idle snapshots without reads`, async () => {
+      let now = 1_000_000
+      const fake = createStreamFakes({ now: () => now })
+      const dispose = fake.backend[subscribe]!(() => {})
+      try {
+        fake.sources[0]!.callbacks.onLine(dataEnvelope(completePausedPayload))
+        now += 60_000
+        expect(await fake.backend.player()).toMatchObject({
+          progress_ms: 12_500,
+          is_playing: false,
+          fetched_at: now,
+        })
+        fake.sources[0]!.callbacks.onLine(
+          dataEnvelope({
+            ...completePausedPayload,
+            title: "",
+            artist: "",
+            album: "",
+            contentItemIdentifier: null,
+            duration: 0,
+            elapsedTimeNow: 0,
+          }),
+        )
+        now += 60_000
+        expect(await fake.backend.player()).toMatchObject({
+          progress_ms: 0,
+          is_playing: false,
+          track: null,
+          fetched_at: now,
+        })
+        expect(fake.getCalls).toEqual([])
+      } finally {
+        dispose()
+      }
+    })
+
+    test(`${subscribe} polls until a complete snapshot and again after terminal or disposal`, async () => {
+      const fake = createStreamFakes()
+      const dispose = fake.backend[subscribe]!(() => {})
+      fake.sources[0]!.callbacks.onLine(dataEnvelope({ playing: false }))
+      await fake.backend.player()
+      expect(fake.getCalls).toHaveLength(1)
+      fake.sources[0]!.callbacks.onLine(dataEnvelope(completePausedPayload))
+      await fake.backend.player()
+      expect(fake.getCalls).toHaveLength(1)
+      fake.sources[0]!.callbacks.onTerminal()
+      fake.sources[0]!.callbacks.onLine(dataEnvelope(completePausedPayload))
+      await fake.backend.player()
+      expect(fake.getCalls).toHaveLength(2)
+      dispose()
+
+      const disposeNext = fake.backend[subscribe]!(() => {})
+      fake.sources.at(-1)!.callbacks.onLine(dataEnvelope(completePausedPayload))
+      await fake.backend.player()
+      expect(fake.getCalls).toHaveLength(2)
+      disposeNext()
+      await fake.backend.player()
+      expect(fake.getCalls).toHaveLength(3)
+    })
+  }
+
+  test("transport clock changes survive cached samples and navigation restores polling", async () => {
+    let now = 1_000_000
+    let callbacks: LineStreamCallbacks | undefined
+    const commands: string[][] = []
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      now: () => now,
+      run: async (command) => {
+        commands.push(command)
+        return { ok: true, out: JSON.stringify(completePausedPayload) }
+      },
+      startLineStream: (_command, next) => {
+        callbacks = next
+        return () => {}
+      },
+    })
+    const dispose = backend.subscribeAttempt!(() => {})
+    try {
+      callbacks!.onLine(
+        dataEnvelope({ ...completePausedPayload, playing: true }),
+      )
+      now += 3_000
+      await backend.pause!()
+      now += 5_000
+      expect(await backend.player()).toMatchObject({
+        is_playing: false,
+        progress_ms: 15_500,
+      })
+      await backend.seek!(50_000)
+      expect((await backend.player())?.progress_ms).toBe(50_000)
+      await backend.play()
+      now += 2_000
+      expect(await backend.player()).toMatchObject({
+        is_playing: true,
+        progress_ms: 52_000,
+      })
+      expect(commands.filter((command) => command[1] === "get")).toEqual([])
+      await backend.next!()
+      await backend.player()
+      expect(commands.filter((command) => command[1] === "get")).toHaveLength(1)
+      callbacks!.onLine(dataEnvelope(completePausedPayload))
+      await backend.previous!()
+      await backend.player()
+      expect(commands.filter((command) => command[1] === "get")).toHaveLength(2)
+    } finally {
+      dispose()
+    }
+  })
+
+  for (const action of ["next", "previous"] as const) {
+    test(`${action} retains a newer stream snapshot received before command completion`, async () => {
+      let callbacks: LineStreamCallbacks | undefined
+      let finishCommand:
+        ((result: Awaited<ReturnType<typeof run>>) => void) | undefined
+      let reads = 0
+      const backend = createSystemMediaAdapter({
+        detectBackend: () => "media-control",
+        hasNowPlayingCli: () => false,
+        now: () => 1_000_000,
+        run: (command) => {
+          if (command[1] === "get") {
+            reads++
+            return Promise.resolve({
+              ok: false,
+              timed_out: true,
+              err: "read timed out",
+            })
+          }
+          return new Promise((resolve) => {
+            finishCommand = resolve
+          })
+        },
+        startLineStream: (_command, next) => {
+          callbacks = next
+          return () => {}
+        },
+      })
+      const dispose = backend.subscribeAttempt!(() => {})
+      try {
+        callbacks!.onLine(dataEnvelope(completePausedPayload))
+        const command = backend[action]!()
+        callbacks!.onLine(
+          dataEnvelope({ ...completePausedPayload, title: "New Song" }),
+        )
+        finishCommand!({ ok: true, out: "" })
+        await command
+        expect(await backend.player()).toMatchObject({
+          track: { name: "New Song" },
+          progress_ms: 12_500,
+        })
+        expect(reads).toBe(0)
+      } finally {
+        dispose()
+      }
+    })
+  }
+
+  test("disposing an older subscription cannot clear the newer stream sample", async () => {
+    const fake = createStreamFakes()
+    const disposeOld = fake.backend.subscribeAttempt!(() => {})
+    fake.sources[0]!.callbacks.onLine(dataEnvelope(completePausedPayload))
+    const disposeNew = fake.backend.subscribeAttempt!(() => {})
+    fake.sources[1]!.callbacks.onLine(
+      dataEnvelope({ ...completePausedPayload, title: "New Song" }),
+    )
+    try {
+      disposeOld()
+      fake.sources[0]!.callbacks.onTerminal()
+      expect((await fake.backend.player())?.track?.name).toBe("New Song")
+      expect(fake.getCalls).toEqual([])
+    } finally {
+      disposeNew()
+    }
+  })
+
+  test("a stream snapshot wins while the fallback read is already in flight", async () => {
+    let callbacks: LineStreamCallbacks | undefined
+    let finishFallback:
+      ((result: Awaited<ReturnType<typeof run>>) => void) | undefined
+    const startedFallback = Promise.withResolvers<void>()
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => true,
+      now: () => 1_000_000,
+      run: (command) => {
+        if (command[0] === "media-control")
+          return Promise.resolve({
+            ok: false,
+            timed_out: true,
+            err: "primary timed out",
+          })
+        startedFallback.resolve()
+        return new Promise((resolve) => {
+          finishFallback = resolve
+        })
+      },
+      startLineStream: (_command, next) => {
+        callbacks = next
+        return () => {}
+      },
+    })
+    const dispose = backend.subscribeAttempt!(() => {})
+    try {
+      const pending = backend.player()
+      await startedFallback.promise
+      callbacks!.onLine(dataEnvelope(completePausedPayload))
+      finishFallback!({
+        ok: true,
+        out: JSON.stringify({
+          title: "Old Song",
+          elapsedTime: 1,
+          isPlaying: true,
+        }),
+      })
+      expect(await pending).toMatchObject({
+        track: { name: "Song" },
+        is_playing: false,
+        progress_ms: 12_500,
+      })
+      expect(backend.status!().kind).toBe("ready")
+      expect((await backend.player())?.progress_ms).toBe(12_500)
+    } finally {
+      dispose()
+    }
+  })
+
+  for (const primaryFails of [false, true]) {
+    test(`a stream snapshot wins over an in-flight ${primaryFails ? "failed" : "stale"} primary read`, async () => {
+      let now = 1_000_000
+      let callbacks: LineStreamCallbacks | undefined
+      let finishRead:
+        ((result: Awaited<ReturnType<typeof run>>) => void) | undefined
+      let reads = 0
+      const backend = createSystemMediaAdapter({
+        detectBackend: () => "media-control",
+        hasNowPlayingCli: () => true,
+        now: () => now,
+        run: () => {
+          reads++
+          if (reads > 1)
+            return Promise.resolve({
+              ok: false,
+              timed_out: true,
+              err: "fallback timed out",
+            })
+          return new Promise((resolve) => {
+            finishRead = resolve
+          })
+        },
+        startLineStream: (_command, next) => {
+          callbacks = next
+          return () => {}
+        },
+      })
+      const dispose = backend.subscribeAttempt!(() => {})
+      try {
+        const pending = backend.player()
+        callbacks!.onLine(
+          dataEnvelope({ ...completePausedPayload, playing: true }),
+        )
+        now += 3_000
+        finishRead!(
+          primaryFails
+            ? {
+                ok: false,
+                timed_out: true,
+                err: "command timed out after 2000ms",
+              }
+            : {
+                ok: true,
+                out: JSON.stringify({
+                  ...completePausedPayload,
+                  title: "Old Song",
+                }),
+              },
+        )
+        expect(await pending).toMatchObject({
+          track: { name: "Song" },
+          is_playing: true,
+          progress_ms: 15_500,
+        })
+        expect(backend.status!().kind).toBe("ready")
+        expect((await backend.player())?.progress_ms).toBe(15_500)
+        expect(reads).toBe(1)
+      } finally {
+        dispose()
+      }
+    })
+  }
 })
 
 describe("one-attempt media-control seam", () => {
@@ -902,15 +1246,26 @@ describe("native artwork adapter boundary", () => {
           }),
         }
       },
-      startLineStream: (command) => {
+      startLineStream: (command, callbacks) => {
         commands.push(command)
+        callbacks.onLine(dataEnvelope(completePausedPayload))
         return () => {}
       },
     })
     await backend.player()
-    backend.subscribeAttempt?.(() => {})()
-    if (!backend.nativeArtwork) throw new Error("expected native artwork seam")
-    await backend.nativeArtwork(identity, 3)
+    const dispose = backend.subscribeAttempt!(() => {})
+    try {
+      expect((await backend.player())?.progress_ms).toBe(12_500)
+      if (!backend.nativeArtwork)
+        throw new Error("expected native artwork seam")
+      expect(await backend.nativeArtwork(identity, 3)).toEqual({
+        type: "available",
+        base64: "AQID",
+      })
+      expect((await backend.player())?.progress_ms).toBe(12_500)
+    } finally {
+      dispose()
+    }
     expect(commands).toEqual([
       ["media-control", "get", "--no-artwork", "--now"],
       ["media-control", "stream", "--no-diff", "--no-artwork"],
