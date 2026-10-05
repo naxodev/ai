@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/pi-music-dock",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Pi status-line dock and responsive side panel for macOS system Now Playing (media-control)",
   "license": "MIT",
   "author": "Nacho Vazquez",
@@ -57,7 +57,7 @@
     "smoke:package": "bun scripts/package-smoke.ts"
   },
   "dependencies": {
-    "@naxodev/music-core": "^0.2.0"
+    "@naxodev/music-core": "^0.2.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0 || 0.87.1",
