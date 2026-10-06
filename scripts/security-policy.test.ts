@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
+import { createRequire } from "node:module"
 import { join } from "node:path"
 
 type DependencyGroups = {
@@ -12,6 +13,39 @@ type AuditLock = {
   workspaces: Record<string, DependencyGroups>
   packages: Record<string, [string, string, DependencyGroups?, ...unknown[]]>
 }
+
+test("security overrides exclude vulnerable serializers and TOML parsers without changing the host Solid pin", async () => {
+  const lock = Bun.JSONC.parse(await Bun.file("bun.lock").text()) as AuditLock
+  const resolutions = Object.values(lock.packages).map(([name]) => name)
+
+  for (const [name, version] of [
+    ["seroval", "1.6.8"],
+    ["smol-toml", "1.9.0"],
+    ["solid-js", "1.9.15"],
+  ]) {
+    expect(
+      resolutions.filter((resolution) => resolution.startsWith(`${name}@`)),
+    ).toEqual([`${name}@${version}`])
+  }
+})
+
+test("Solid's serializer still round-trips typed arrays and collections with the security override", () => {
+  const require = createRequire(
+    join(process.cwd(), "packages/opencode-music-player/package.json"),
+  )
+  const solidRequire = createRequire(require.resolve("solid-js"))
+  const seroval = solidRequire("seroval") as {
+    toJSON(value: unknown): unknown
+    fromJSON(value: unknown): unknown
+  }
+  const value = {
+    bytes: new Uint8Array([0, 127, 255]),
+    labels: new Set(["artwork", "track"]),
+    metadata: new Map([["title", "Track"]]),
+  }
+
+  expect(seroval.fromJSON(seroval.toJSON(value))).toEqual(value)
+})
 
 test("the cache advisory exception requires the reviewed private-cache consumer", async () => {
   const lock = Bun.JSONC.parse(await Bun.file("bun.lock").text()) as AuditLock
