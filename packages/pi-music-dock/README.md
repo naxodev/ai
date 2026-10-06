@@ -137,7 +137,9 @@ bun run check
 bun packages/pi-music-dock/scripts/waveform-demo.ts
 ```
 
-The package smoke packs Pi and music-core, installs the exact development pins listed in the compatibility metadata, loads the packed extension through RPC, checks the registered commands, and proves prompt process exit. Declared peer ranges are broader than this exact tested pair. Run it on macOS because the package is macOS-only.
+The package smoke packs the dock and music-core, then installs them with Pi's exact development pins and with the minimum supported v1 pair (`1.0.0`). Each run loads the packed extension through RPC, checks the registered commands, and verifies a status-zero exit without leftover processes. Run `bun run --cwd packages/pi-music-dock smoke:package` on macOS because the package is macOS-only.
+
+The v1 peer range accepts stable Pi 1.x releases and excludes Pi 2.x. The existing pre-v1 ranges remain supported. The compatibility metadata lists the exact development pins; the smoke checks do not prove compatibility with every version in the declared ranges or verify interactive terminal rendering.
 
 See the workspace [contribution guide](../../CONTRIBUTING.md) for contribution and release instructions.
 
