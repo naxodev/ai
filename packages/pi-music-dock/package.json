@@ -54,18 +54,18 @@
     "format:check": "prettier --check .",
     "pack:check": "bun ../../scripts/music-release.ts pi-music-dock --staged-only && bun scripts/verify-pack.ts",
     "prepublish:core": "bun ../../scripts/music-release.ts pi-music-dock",
-    "smoke:package": "bun scripts/package-smoke.ts"
+    "smoke:package": "bun scripts/package-smoke.ts && bun scripts/package-smoke.ts --pi-version=1.0.0"
   },
   "dependencies": {
     "@naxodev/music-core": "^0.2.1"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0 || 0.87.1",
-    "@earendil-works/pi-tui": ">=0.83.0 <0.85.0 || 0.87.1"
+    "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0 || 0.87.1 || ^1.0.0",
+    "@earendil-works/pi-tui": ">=0.83.0 <0.85.0 || 0.87.1 || ^1.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@earendil-works/pi-tui": "0.87.1",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@earendil-works/pi-tui": "1.0.4",
     "@types/bun": "^1.4.2",
     "@types/node": "^26.6.2",
     "prettier": "^3.9.9",

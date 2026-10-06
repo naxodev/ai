@@ -9,6 +9,7 @@ const expectedCommands = [
 	"music-prev",
 	"music-view",
 	"music-focus",
+	"music-artwork",
 ];
 const packageDirectory = fileURLToPath(new URL("..", import.meta.url));
 const coreDirectory = fileURLToPath(
@@ -38,9 +39,15 @@ const requirePeerCompatible = (pin: string, range: string, label: string) => {
 			`${label} tested pin ${pin} is outside peer range ${range}`,
 		);
 };
+const smokeArgs = process.argv.slice(2);
+const piVersionOverride = smokeArgs
+	.find((arg) => arg.startsWith("--pi-version="))
+	?.slice("--pi-version=".length);
+if (piVersionOverride !== undefined)
+	parseVersion(piVersionOverride, "Pi smoke version override");
 const piVersions = Object.fromEntries(
 	piPackages.map((name) => {
-		const pin = sourceManifest.devDependencies?.[name];
+		const pin = piVersionOverride ?? sourceManifest.devDependencies?.[name];
 		const range = sourceManifest.peerDependencies?.[name];
 		parseVersion(pin, `${name} development dependency`);
 		if (!range) throw new Error(`${name} peer range is missing`);
@@ -50,7 +57,9 @@ const piVersions = Object.fromEntries(
 ) as Record<(typeof piPackages)[number], { pin: string; range: string }>;
 
 const root = await mkdtemp(join(tmpdir(), "pi-music-dock-smoke-"));
-const requestedArchive = process.argv[2];
+const requestedArchive = smokeArgs.find(
+	(arg) => !arg.startsWith("--pi-version="),
+);
 const output = (result: ReturnType<typeof Bun.spawnSync>) =>
 	`stdout:\n${result.stdout?.toString() ?? ""}\nstderr:\n${result.stderr?.toString() ?? ""}`;
 const inside = (path: string, parent: string) => {
