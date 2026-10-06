@@ -59,7 +59,10 @@ export type {
 export { run, startLineStream, whichOk } from "./run.ts"
 
 // system media
-export type { SystemMediaDependencies } from "./system-media.ts"
+export type {
+  ArtworkShrinker,
+  SystemMediaDependencies,
+} from "./system-media.ts"
 export {
   createSystemMedia,
   bundleLabel,

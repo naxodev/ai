@@ -128,10 +128,13 @@ export function whichOk(bin: string): boolean {
 /**
  * Portable CLI runner (node:child_process) shared by Pi and OpenCode hosts.
  * On timeout kills the child and returns timed_out: true with a stable err string.
+ * `maxBufferBytes` bounds buffered stdout/stderr; raise it only for bounded reads
+ * such as native artwork that legitimately exceed Node's 1 MiB default.
  */
 export async function run(
   cmd: string[],
   timeoutMs = 2_000,
+  maxBufferBytes = 1024 * 1024,
 ): Promise<CommandResult> {
   const [bin, ...args] = cmd
   if (!bin) return { ok: false, err: "empty command", timed_out: false }
@@ -140,7 +143,7 @@ export async function run(
     const { stdout } = await execFileAsync(bin, args, {
       timeout: timeoutMs,
       encoding: "utf8",
-      maxBuffer: 1024 * 1024,
+      maxBuffer: maxBufferBytes,
       killSignal: "SIGKILL",
     })
     return { ok: true, out: String(stdout).trim() }

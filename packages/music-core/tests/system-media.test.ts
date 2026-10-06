@@ -1168,6 +1168,8 @@ describe("native artwork adapter boundary", () => {
         calls.push(command)
         return { ok: true, out: JSON.stringify(payload) }
       },
+      // Oversized payloads stay deterministic; real shrinking needs macOS sips.
+      shrinkArtwork: async () => null,
     })
     if (!backend.nativeArtwork) throw new Error("expected native artwork seam")
     return { read: backend.nativeArtwork, calls }
@@ -1293,6 +1295,74 @@ describe("native artwork adapter boundary", () => {
         result.err,
       )
     }
+  })
+
+  test("reads the artwork command with a bound above Node's 1 MiB default", async () => {
+    const bounds: Array<number | undefined> = []
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async (_command, _timeoutMs, maxBufferBytes) => {
+        bounds.push(maxBufferBytes)
+        return { ok: true, out: JSON.stringify(nativePayload()) }
+      },
+    })
+    await backend.nativeArtwork?.(identity, 64)
+    expect(bounds).toEqual([8 * 1024 * 1024])
+  })
+
+  test("treats a truncated provider read as an oversized cover", async () => {
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async () => ({
+        ok: false,
+        err: '{"title":"Song","artworkData":"AAAA',
+        timed_out: false,
+      }),
+    })
+    await expect(backend.nativeArtwork?.(identity, 64)).resolves.toEqual({
+      type: "too-large",
+    })
+  })
+
+  test("downscales oversized native artwork into the wire budget", async () => {
+    const oversized = Buffer.alloc(1_024, 7).toString("base64")
+    const shrunk = new Uint8Array([1, 2, 3])
+    const shrinkCalls: Array<{ bytes: number; maxBytes: number }> = []
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async () => ({
+        ok: true,
+        out: JSON.stringify(nativePayload({ artworkData: oversized })),
+      }),
+      shrinkArtwork: async (bytes, maxBytes) => {
+        shrinkCalls.push({ bytes: bytes.byteLength, maxBytes })
+        return shrunk
+      },
+    })
+    await expect(backend.nativeArtwork?.(identity, 64)).resolves.toEqual({
+      type: "available",
+      base64: Buffer.from(shrunk).toString("base64"),
+    })
+    expect(shrinkCalls).toEqual([{ bytes: 1_024, maxBytes: 64 }])
+  })
+
+  test("reports too-large when oversized artwork cannot be downscaled", async () => {
+    const oversized = Buffer.alloc(64, 1).toString("base64")
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async () => ({
+        ok: true,
+        out: JSON.stringify(nativePayload({ artworkData: oversized })),
+      }),
+      shrinkArtwork: async () => null,
+    })
+    await expect(backend.nativeArtwork?.(identity, 16)).resolves.toEqual({
+      type: "too-large",
+    })
   })
 })
 

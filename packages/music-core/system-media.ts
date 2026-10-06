@@ -4,8 +4,11 @@
  * media-control exposes a real `playing` boolean — nowplaying-cli often freezes
  * playbackRate/elapsed for apps like Kaset, so the waveform never stopped.
  *
- * Host-neutral: no artwork, no Bun-only APIs. Inject `run` for tests.
+ * Host-neutral: no Bun-only APIs. Inject `run` for tests.
  */
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createPlaybackClock, trackKey, type PlaybackClock } from "./clock.ts"
 import {
   run as defaultRun,
@@ -368,7 +371,11 @@ async function playerViaNowPlayingCli(
 }
 
 export type SystemMediaDependencies = {
-  run: (cmd: string[], timeoutMs?: number) => Promise<CommandResult>
+  run: (
+    cmd: string[],
+    timeoutMs?: number,
+    maxBufferBytes?: number,
+  ) => Promise<CommandResult>
   detectBackend: () => "media-control" | "nowplaying-cli" | null
   hasNowPlayingCli: () => boolean
   startLineStream?: LineStreamStarter
@@ -379,6 +386,8 @@ export type SystemMediaDependencies = {
   clearRetryTimer?: (timer: ReturnType<typeof setTimeout>) => void
   /** Test seam: fixed arrival time for deterministic stream/player samples. */
   now?: () => number
+  /** Test seam: fits oversized native artwork into the wire budget. */
+  shrinkArtwork?: ArtworkShrinker
 }
 
 type ResolvedSystemMediaDependencies = SystemMediaDependencies & {
@@ -390,6 +399,72 @@ type ResolvedSystemMediaDependencies = SystemMediaDependencies & {
 
 const retryInitialDelayMs = 1_000
 const retryMaximumDelayMs = 8_000
+
+/**
+ * Native covers are embedded in `media-control get --now` output, so the read
+ * must be bounded well above Node's 1 MiB default. Beyond this the read is
+ * truncated and reported as `too-large` rather than surfaced as a failure.
+ */
+const MAX_NATIVE_ARTWORK_READ_BYTES = 8 * 1024 * 1024
+const ARTWORK_SHRINK_MAX_DIMENSION = 640
+const ARTWORK_SHRINK_MIN_DIMENSION = 64
+const ARTWORK_SHRINK_ATTEMPTS = 4
+const ARTWORK_SHRINK_TIMEOUT_MS = 5_000
+
+/** Fits oversized native artwork into the wire budget; `null` means give up. */
+export type ArtworkShrinker = (
+  bytes: Uint8Array,
+  maxBytes: number,
+) => Promise<Uint8Array | null>
+
+/**
+ * Downscale with the same macOS `sips` tool the hosts use. Covers are rendered
+ * at 300px, so resizing before transport keeps the wire budget small without
+ * changing what the user sees.
+ */
+async function shrinkArtworkWithSips(
+  bytes: Uint8Array,
+  maxBytes: number,
+): Promise<Uint8Array | null> {
+  const directory = await mkdtemp(join(tmpdir(), "naxodev-artwork-"))
+  try {
+    const input = join(directory, "input")
+    await writeFile(input, bytes)
+    let dimension = ARTWORK_SHRINK_MAX_DIMENSION
+    for (let attempt = 0; attempt < ARTWORK_SHRINK_ATTEMPTS; attempt++) {
+      const output = join(directory, `output-${attempt}.jpg`)
+      const converted = await defaultRun(
+        [
+          "sips",
+          "-Z",
+          String(dimension),
+          "-s",
+          "format",
+          "jpeg",
+          input,
+          "--out",
+          output,
+        ],
+        ARTWORK_SHRINK_TIMEOUT_MS,
+      )
+      if (!converted.ok) return null
+      let shrunk: Uint8Array
+      try {
+        shrunk = new Uint8Array(await readFile(output))
+      } catch {
+        return null
+      }
+      if (shrunk.byteLength > 0 && shrunk.byteLength <= maxBytes) return shrunk
+      dimension = Math.floor(dimension / 2)
+      if (dimension < ARTWORK_SHRINK_MIN_DIMENSION) return null
+    }
+    return null
+  } catch {
+    return null
+  } finally {
+    await rm(directory, { recursive: true, force: true }).catch(() => {})
+  }
+}
 
 function isDataEnvelope(
   value: unknown,
@@ -823,15 +898,18 @@ export function createSystemMedia(
       identity,
       maxBytes,
     ) => {
-      const result = await deps.run(["media-control", "get", "--now"])
-      if (!result.ok)
-        throw new Error(result.err || "media-control artwork failed")
-      // Reject encoded output before JSON/base64 retention.
-      if (
-        Buffer.byteLength(result.out, "utf8") >
-        Math.ceil(maxBytes / 3) * 4 + 8 * 1024
+      const result = await deps.run(
+        ["media-control", "get", "--now"],
+        2_000,
+        MAX_NATIVE_ARTWORK_READ_BYTES,
       )
-        return { type: "too-large" }
+      if (!result.ok) {
+        // A truncated read still begins with the provider JSON object. Treat it
+        // as an oversized cover so callers fall back instead of reporting a
+        // provider failure for a merely large image.
+        if (result.err.startsWith("{")) return { type: "too-large" }
+        throw new Error(result.err || "media-control artwork failed")
+      }
       let data: MediaGet
       try {
         const parsed: unknown = JSON.parse(result.out)
@@ -873,12 +951,22 @@ export function createSystemMedia(
       )
         return { type: "unavailable" }
       const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0
-      if ((base64.length / 4) * 3 - padding > maxBytes)
-        return { type: "too-large" }
-      // The bounded decode is only for canonicality; it cannot allocate above maxBytes.
-      if (Buffer.from(base64, "base64").toString("base64") !== base64)
-        return { type: "unavailable" }
-      return { type: "available", base64 }
+      const decodedBytes = (base64.length / 4) * 3 - padding
+      if (decodedBytes <= maxBytes) {
+        // The bounded decode is only for canonicality; it cannot allocate above maxBytes.
+        if (Buffer.from(base64, "base64").toString("base64") !== base64)
+          return { type: "unavailable" }
+        return { type: "available", base64 }
+      }
+      // Oversized covers are downscaled before transport so the wire budget
+      // stays small; only an unshrinkable image is rejected.
+      const shrunk = await (deps.shrinkArtwork ?? shrinkArtworkWithSips)(
+        new Uint8Array(Buffer.from(base64, "base64")),
+        maxBytes,
+      )
+      return shrunk && shrunk.byteLength > 0 && shrunk.byteLength <= maxBytes
+        ? { type: "available", base64: Buffer.from(shrunk).toString("base64") }
+        : { type: "too-large" }
     }
     backend.subscribe = (listener) =>
       subscribeWithState(subscribeToMediaControl, listener)
