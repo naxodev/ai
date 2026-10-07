@@ -395,6 +395,7 @@ type ResolvedSystemMediaDependencies = SystemMediaDependencies & {
   setRetryTimer: NonNullable<SystemMediaDependencies["setRetryTimer"]>
   clearRetryTimer: NonNullable<SystemMediaDependencies["clearRetryTimer"]>
   now: () => number
+  shrinkArtwork: ArtworkShrinker
 }
 
 const retryInitialDelayMs = 1_000
@@ -406,6 +407,8 @@ const retryMaximumDelayMs = 8_000
  * truncated and reported as `too-large` rather than surfaced as a failure.
  */
 const MAX_NATIVE_ARTWORK_READ_BYTES = 8 * 1024 * 1024
+const MAX_NATIVE_ARTWORK_DIMENSION = 4_096
+const MAX_NATIVE_ARTWORK_PIXELS = 12_000_000
 const ARTWORK_SHRINK_MAX_DIMENSION = 640
 const ARTWORK_SHRINK_MIN_DIMENSION = 64
 const ARTWORK_SHRINK_ATTEMPTS = 4
@@ -425,15 +428,34 @@ export type ArtworkShrinker = (
 async function shrinkArtworkWithSips(
   bytes: Uint8Array,
   maxBytes: number,
+  runCommand: SystemMediaDependencies["run"],
 ): Promise<Uint8Array | null> {
   const directory = await mkdtemp(join(tmpdir(), "naxodev-artwork-"))
   try {
     const input = join(directory, "input")
     await writeFile(input, bytes)
+    // Inspect metadata before pixel decoding, using the same limits as both hosts.
+    const inspected = await runCommand(
+      ["sips", "-g", "pixelWidth", "-g", "pixelHeight", input],
+      ARTWORK_SHRINK_TIMEOUT_MS,
+    )
+    if (!inspected.ok) return null
+    const width = Number(inspected.out.match(/pixelWidth:\s*(\S+)/)?.[1])
+    const height = Number(inspected.out.match(/pixelHeight:\s*(\S+)/)?.[1])
+    if (
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      width <= 0 ||
+      height <= 0 ||
+      width > MAX_NATIVE_ARTWORK_DIMENSION ||
+      height > MAX_NATIVE_ARTWORK_DIMENSION ||
+      width * height > MAX_NATIVE_ARTWORK_PIXELS
+    )
+      return null
     let dimension = ARTWORK_SHRINK_MAX_DIMENSION
     for (let attempt = 0; attempt < ARTWORK_SHRINK_ATTEMPTS; attempt++) {
       const output = join(directory, `output-${attempt}.jpg`)
-      const converted = await defaultRun(
+      const converted = await runCommand(
         [
           "sips",
           "-Z",
@@ -707,6 +729,10 @@ export function createSystemMedia(
     setRetryTimer: overrides.setRetryTimer ?? setTimeout,
     clearRetryTimer: overrides.clearRetryTimer ?? clearTimeout,
     now: overrides.now ?? Date.now,
+    shrinkArtwork:
+      overrides.shrinkArtwork ??
+      ((bytes, maxBytes) =>
+        shrinkArtworkWithSips(bytes, maxBytes, overrides.run ?? defaultRun)),
   }
   const clock = createPlaybackClock()
 
@@ -966,7 +992,7 @@ export function createSystemMedia(
       }
       // Oversized covers are downscaled before transport so the wire budget
       // stays small; only an unshrinkable image is rejected.
-      const shrunk = await (deps.shrinkArtwork ?? shrinkArtworkWithSips)(
+      const shrunk = await deps.shrinkArtwork(
         new Uint8Array(Buffer.from(base64, "base64")),
         maxBytes,
       )
