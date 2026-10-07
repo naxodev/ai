@@ -113,6 +113,10 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   let container: BoxRenderable | undefined
   let paintPending = false
   let disposed = false
+  let renderedFrameId = -1
+  let renderedSlot: SlotGeometry | null = null
+  let placementInvalidated = false
+  let awaitingResizeGeometry = false
   const [nativeVisible, setNativeVisible] = createSignal(false)
   const imageDimensions = createMemo(() =>
     pngDimensions(props.artwork.png_base64),
@@ -163,31 +167,96 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
     runtime.state = copyState(plan.nextState)
   }
 
+  const clearInvalidatedPlacement = (): boolean => {
+    if (!placementInvalidated) return true
+    if (
+      runtime.state.transmitted !== 0 &&
+      !writeGraphics(renderer, kittyDeletePlacement(runtime.state.transmitted))
+    )
+      return false
+    runtime.state = { ...runtime.state, placement: null }
+    placementInvalidated = false
+    return true
+  }
+
+  /**
+   * Drop the placement but keep the transmitted PNG, so the image can return
+   * cheaply when the sidebar has room again. Used when the slot stops rendering
+   * or no longer fits, where a lingering absolute placement would escape layout.
+   */
+  const clearPlacement = (): boolean => {
+    if (
+      runtime.state.transmitted !== 0 &&
+      runtime.state.placement !== null &&
+      !writeGraphics(renderer, kittyDeletePlacement(runtime.state.transmitted))
+    )
+      return false
+    runtime.state = { ...runtime.state, placement: null }
+    renderedSlot = null
+    setNativeVisible(false)
+    return true
+  }
+
+  /**
+   * The fixed-size artwork box must fit inside every ancestor, and fully inside
+   * each clipping ancestor's visible rect. Sidebar content that overflows its
+   * viewport otherwise leaves the absolute image drawn over the transcript.
+   */
+  const fitsAvailableSpace = (node: BoxRenderable): boolean => {
+    for (let parent = node.parent; parent; parent = parent.parent) {
+      if (parent.width < node.width || parent.height < node.height) return false
+      if (parent.overflow === "visible") continue
+      if (
+        node.screenX < parent.screenX ||
+        node.screenY < parent.screenY ||
+        node.screenX + node.width > parent.screenX + parent.width ||
+        node.screenY + node.height > parent.screenY + parent.height
+      )
+        return false
+    }
+    return true
+  }
+
+  /** The slot must also fit inside the renderer's visible terminal viewport. */
+  const fitsViewport = (slot: SlotGeometry): boolean =>
+    slot.screenX >= 0 &&
+    slot.screenY >= 0 &&
+    slot.screenX + slot.width <= renderer.terminalWidth &&
+    slot.screenY + slot.height <= renderer.terminalHeight
+
+  const invalidateForResize = () => {
+    if (disposed || !ownership.isCurrent()) return
+    // Terminal reflow can move an image even when its Yoga geometry is unchanged.
+    // Remove it before waiting for fresh layout and terminal pixel metrics.
+    renderedFrameId = -1
+    renderedSlot = null
+    placementInvalidated = true
+    awaitingResizeGeometry = true
+    clearInvalidatedPlacement()
+    setNativeVisible(false)
+  }
+
   const paintNativeImage = () => {
     if (!ownership.isCurrent()) return
-    if (runtime.identity !== props.artwork.id) {
-      runtime.identity = props.artwork.id
-      writeGraphics(
-        props.context.renderer,
-        kittyDelete(legacyImageIdForResolvedArtwork(props.artwork)),
-      )
-      runtime.state = { transmitted: 0, placement: null }
-    }
+    if (!clearInvalidatedPlacement()) return
     const kittySupported = supportsKittyGraphics(props.context)
+    // The artwork box is fixed-size. When an ancestor is smaller, the image has
+    // no room and must not be drawn outside the layout.
+    if (container && !fitsAvailableSpace(container)) {
+      clearPlacement()
+      return
+    }
     const slotValid =
       !!container &&
       !container.isDestroyed &&
       container.width >= 1 &&
       container.height >= 1
 
-    const slot: SlotGeometry | null = container
-      ? {
-          screenX: container.screenX,
-          screenY: container.screenY,
-          width: container.width,
-          height: container.height,
-        }
-      : null
+    const slot = renderedSlot
+    if (slot && !fitsViewport(slot)) {
+      clearPlacement()
+      return
+    }
     const offset = terminalOffset(slot)
     const imageId = imageIdForArtwork(props.artwork.id)
     const x = slot ? slot.screenX + offset.x : 0
@@ -205,6 +274,25 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
             },
           )
         : null
+
+    // Resize clears pixel metrics until the terminal answers its new query.
+    // Keep the transmitted PNG, but show text until it can be placed safely.
+    if (awaitingResizeGeometry && geometry === null && kittySupported) return
+    awaitingResizeGeometry = false
+
+    if (runtime.identity !== props.artwork.id) {
+      // Delete the previous placement before committing a new cover identity.
+      if (!clearPlacement()) return
+      if (
+        !writeGraphics(
+          renderer,
+          kittyDelete(legacyImageIdForResolvedArtwork(props.artwork)),
+        )
+      )
+        return
+      runtime.identity = props.artwork.id
+      runtime.state = { transmitted: 0, placement: null }
+    }
 
     const plan = planNativeArtworkPlacement({
       state: runtime.state,
@@ -230,24 +318,30 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   const scheduleNativeImage = () => {
     if (paintPending || disposed) return
     paintPending = true
-    // The mount owns this deferred paint. Cleanup fences late renderer work.
-    props.context.renderer
-      .idle()
-      .then(() => {
-        paintPending = false
-        if (!disposed && ownership.isCurrent()) paintNativeImage()
-      })
-      .catch((error) => {
-        paintPending = false
-        if (!disposed && ownership.isCurrent())
-          console.error("Failed to paint music artwork", error)
-      })
+    // A live waveform never becomes idle. Paint after the completed frame,
+    // but only if this mount's slot actually rendered in that frame.
+    queueMicrotask(() => {
+      paintPending = false
+      if (disposed || !ownership.isCurrent()) return
+      try {
+        // A slot that did not render this frame has no room (hidden sidebar or
+        // clipped layout). Remove the placement instead of leaving it on screen.
+        if (renderedFrameId !== renderer.frameId) clearPlacement()
+        else paintNativeImage()
+      } catch (error) {
+        console.error("Failed to paint music artwork", error)
+      }
+    })
   }
 
-  onMount(() => props.context.renderer.on("frame", scheduleNativeImage))
+  onMount(() => {
+    renderer.on("frame", scheduleNativeImage)
+    renderer.on("resize", invalidateForResize)
+  })
   onCleanup(() => {
     disposed = true
-    props.context.renderer.off("frame", scheduleNativeImage)
+    renderer.off("frame", scheduleNativeImage)
+    renderer.off("resize", invalidateForResize)
     // A replacement mount claims ownership before the next task runs.
     setTimeout(() => {
       cleanupNativeArtwork(ownership, () => {
@@ -262,6 +356,16 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   return (
     <box
       ref={(value) => (container = value)}
+      renderAfter={() => {
+        if (!container) return
+        renderedFrameId = renderer.frameId
+        renderedSlot = {
+          screenX: container.screenX,
+          screenY: container.screenY,
+          width: container.width,
+          height: container.height,
+        }
+      }}
       width={24}
       height={12}
       flexDirection="column"
