@@ -184,12 +184,17 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
    * cheaply when the sidebar has room again. Used when the slot stops rendering
    * or no longer fits, where a lingering absolute placement would escape layout.
    */
-  const clearPlacement = () => {
-    if (runtime.state.transmitted !== 0 && runtime.state.placement !== null)
-      writeGraphics(renderer, kittyDeletePlacement(runtime.state.transmitted))
+  const clearPlacement = (): boolean => {
+    if (
+      runtime.state.transmitted !== 0 &&
+      runtime.state.placement !== null &&
+      !writeGraphics(renderer, kittyDeletePlacement(runtime.state.transmitted))
+    )
+      return false
     runtime.state = { ...runtime.state, placement: null }
     renderedSlot = null
     setNativeVisible(false)
+    return true
   }
 
   /**
@@ -234,14 +239,6 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
   const paintNativeImage = () => {
     if (!ownership.isCurrent()) return
     if (!clearInvalidatedPlacement()) return
-    if (runtime.identity !== props.artwork.id) {
-      runtime.identity = props.artwork.id
-      writeGraphics(
-        props.context.renderer,
-        kittyDelete(legacyImageIdForResolvedArtwork(props.artwork)),
-      )
-      runtime.state = { transmitted: 0, placement: null }
-    }
     const kittySupported = supportsKittyGraphics(props.context)
     // The artwork box is fixed-size. When an ancestor is smaller, the image has
     // no room and must not be drawn outside the layout.
@@ -282,6 +279,20 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
     // Keep the transmitted PNG, but show text until it can be placed safely.
     if (awaitingResizeGeometry && geometry === null && kittySupported) return
     awaitingResizeGeometry = false
+
+    if (runtime.identity !== props.artwork.id) {
+      // Delete the previous placement before committing a new cover identity.
+      if (!clearPlacement()) return
+      if (
+        !writeGraphics(
+          renderer,
+          kittyDelete(legacyImageIdForResolvedArtwork(props.artwork)),
+        )
+      )
+        return
+      runtime.identity = props.artwork.id
+      runtime.state = { transmitted: 0, placement: null }
+    }
 
     const plan = planNativeArtworkPlacement({
       state: runtime.state,

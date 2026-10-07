@@ -462,7 +462,13 @@ async function shrinkArtworkWithSips(
   } catch {
     return null
   } finally {
-    await rm(directory, { recursive: true, force: true }).catch(() => {})
+    await rm(directory, { recursive: true, force: true }).catch((error) => {
+      console.error(
+        "Failed to remove temporary artwork directory",
+        directory,
+        error,
+      )
+    })
   }
 }
 

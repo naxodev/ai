@@ -22,6 +22,9 @@ function recordingContext(
       width: renderer.terminalWidth * 10,
       height: renderer.terminalHeight * 20,
     }) as { width: number; height: number } | null,
+  write = (value: string) => {
+    writes.push(value)
+  },
 ): Plugin.Context {
   return {
     renderer: new Proxy(renderer, {
@@ -30,7 +33,7 @@ function recordingContext(
         if (property === "resolution") return resolution()
         if (property === "writeOut")
           return (value: string) => {
-            writes.push(value)
+            write(value)
             return true
           }
         const value: unknown = Reflect.get(target, property)
@@ -221,6 +224,99 @@ test("hides the native image when its slot stops rendering", async () => {
     await app.renderOnce()
     await app.waitFor(() => writes.some((value) => value.includes("a=d,d=i")))
     expect(writes.some((value) => /a=[Tp],/.test(value))).toBeFalse()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("hidden artwork retries a failed delete instead of leaving the image visible", async () => {
+  const writes: string[] = []
+  let hide = () => {}
+  let failDelete = false
+  let failedDeletes = 0
+  const app = await testRender(
+    () => {
+      const renderer = useRenderer()
+      const [visible, setVisible] = createSignal(true)
+      hide = () => {
+        failDelete = true
+        setVisible(false)
+      }
+      const context = recordingContext(renderer, writes, undefined, (value) => {
+        if (failDelete && value.includes("a=d,d=i")) {
+          failDelete = false
+          failedDeletes++
+          throw new Error("controlled delete failure")
+        }
+        writes.push(value)
+      })
+      return (
+        <box
+          position="absolute"
+          left={40}
+          top={5}
+          width={24}
+          height={12}
+          visible={visible()}
+        >
+          <AlbumArtwork context={context} artwork={artwork} />
+        </box>
+      )
+    },
+    { width: 80, height: 30 },
+  )
+  try {
+    await app.waitFor(() => writes.some((value) => value.includes("a=T")))
+    writes.length = 0
+    hide()
+    await app.renderOnce()
+    await app.renderOnce()
+    await app.renderOnce()
+    expect(failedDeletes).toBe(1)
+    expect(writes.some((value) => value.includes("a=d,d=i"))).toBeTrue()
+    expect(writes.some((value) => /a=[Tp],/.test(value))).toBeFalse()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("changing covers while the sidebar shrinks removes the previous image", async () => {
+  const writes: string[] = []
+  let change = () => {}
+  let restore = () => {}
+  const app = await testRender(
+    () => {
+      const renderer = useRenderer()
+      const context = recordingContext(renderer, writes)
+      const [width, setWidth] = createSignal(24)
+      const [cover, setCover] = createSignal(artwork)
+      restore = () => setWidth(24)
+      change = () => {
+        setWidth(16)
+        setCover({ ...artwork, id: "next-cover" })
+      }
+      return (
+        <box position="absolute" left={40} top={5} width={width()} height={12}>
+          <AlbumArtwork context={context} artwork={cover()} />
+        </box>
+      )
+    },
+    { width: 80, height: 30 },
+  )
+  try {
+    await app.waitFor(() => writes.some((value) => value.includes("a=T")))
+    writes.length = 0
+    change()
+    await app.renderOnce()
+    await app.renderOnce()
+    expect(writes.some((value) => value.includes("a=d,d=i"))).toBeTrue()
+    expect(writes.some((value) => /a=[Tp],/.test(value))).toBeFalse()
+    writes.length = 0
+    restore()
+    await app.waitFor(() => writes.some((value) => value.includes("a=T")))
+    expect(writes.find((value) => value.includes("a=T"))).toContain(
+      "\x1b[6;41H",
+    )
   } finally {
     app.renderer.destroy()
   }

@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { EventEmitter } from "node:events"
+import * as fileSystem from "node:fs/promises"
 import {
   Clock,
   Duration,
@@ -1363,6 +1364,46 @@ describe("native artwork adapter boundary", () => {
     await expect(backend.nativeArtwork?.(identity, 16)).resolves.toEqual({
       type: "too-large",
     })
+  })
+
+  test("reports artwork cleanup failures without replacing the acquisition result", async () => {
+    const failure = new Error("controlled directory cleanup failure")
+    const removeDirectory = fileSystem.rm
+    const cleanup = spyOn(fileSystem, "rm").mockImplementation(
+      async (path, options) => {
+        // Remove the real test directory before simulating the filesystem failure.
+        await removeDirectory(path, options)
+        throw failure
+      },
+    )
+    const diagnostic = spyOn(console, "error").mockImplementation(() => {})
+    const backend = createSystemMediaAdapter({
+      detectBackend: () => "media-control",
+      hasNowPlayingCli: () => false,
+      run: async () => ({
+        ok: true,
+        out: JSON.stringify(
+          nativePayload({
+            artworkData: Buffer.alloc(64, 1).toString("base64"),
+          }),
+        ),
+      }),
+    })
+    try {
+      // These invalid image bytes cannot be shrunk, whether sips is installed or not.
+      await expect(backend.nativeArtwork?.(identity, 16)).resolves.toEqual({
+        type: "too-large",
+      })
+      expect(cleanup).toHaveBeenCalledTimes(1)
+      expect(diagnostic).toHaveBeenCalledWith(
+        "Failed to remove temporary artwork directory",
+        expect.stringContaining("naxodev-artwork-"),
+        failure,
+      )
+    } finally {
+      cleanup.mockRestore()
+      diagnostic.mockRestore()
+    }
   })
 })
 
