@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { Show, createSignal } from "solid-js"
 import { testRender, useRenderer } from "@opentui/solid"
 import type { CliRenderer } from "@opentui/core"
@@ -188,6 +188,61 @@ test("resize waits for new pixel metrics and restores even an unchanged slot", a
     await app.waitForFrame((frame) => !frame.includes("▀"))
   } finally {
     app.renderer.destroy()
+  }
+})
+
+test("a moved tmux pane repaints at its new origin even when the artwork slot is unchanged", async () => {
+  const previous = {
+    TMUX: process.env.TMUX,
+    HERDR_ENV: process.env.HERDR_ENV,
+  }
+  process.env.TMUX = "artwork-resize-test"
+  delete process.env.HERDR_ENV
+  const writes: string[] = []
+  let top = 2
+  let queries = 0
+  const query = spyOn(Bun, "spawnSync").mockImplementation(() => {
+    queries++
+    // Only the tmux offset command is spawned by this component.
+    return {
+      exitCode: 0,
+      stdout: Buffer.from(`0\t${top}\tbottom\ton`),
+    } as ReturnType<typeof Bun.spawnSync>
+  })
+  let app: Awaited<ReturnType<typeof testRender>> | undefined
+  try {
+    app = await testRender(
+      () => {
+        const context = recordingContext(useRenderer(), writes)
+        return (
+          <box position="absolute" left={40} top={5} width={24} height={12}>
+            <AlbumArtwork context={context} artwork={artwork} />
+          </box>
+        )
+      },
+      { width: 80, height: 30 },
+    )
+    await app.waitFor(() => writes.some((value) => value.includes("a=T")))
+    expect(writes.find((value) => value.includes("a=T"))).toContain(
+      "\x1b[8;41H",
+    )
+    const before = queries
+    writes.length = 0
+    top = 4
+    app.resize(80, 35)
+    await app.waitFor(() => writes.some((value) => value.includes("a=p")))
+    expect(writes.find((value) => value.includes("a=p"))).toContain(
+      "\x1b[10;41H",
+    )
+    expect(queries).toBe(before + 1)
+    expect(writes.some((value) => value.includes("a=T"))).toBeFalse()
+  } finally {
+    app?.renderer.destroy()
+    query.mockRestore()
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
   }
 })
 
