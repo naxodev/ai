@@ -23,7 +23,7 @@ The tested OpenCode host is `@opencode/cli@2.0.18`. It supplies `@opencode/plugi
 
 - Declared bun range: `>=1.3.0`.
 - Manifest OS restriction: `darwin`.
-- Required core: `@naxodev/music-core@^0.2.1`.
+- Required core: `@naxodev/music-core@^0.2.2`.
 - Declared peer: `@opentui/core@0.5.12`.
 - Declared peer: `@opentui/solid@0.5.12`.
 

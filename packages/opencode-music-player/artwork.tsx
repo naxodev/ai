@@ -226,6 +226,9 @@ export function AlbumArtwork(props: { context: Context; artwork: Artwork }) {
 
   const invalidateForResize = () => {
     if (disposed || !ownership.isCurrent()) return
+    // A pane can move in tmux without changing the artwork's local geometry.
+    tmuxOffsetCache.offset = null
+    tmuxOffsetCache.slot = null
     // Terminal reflow can move an image even when its Yoga geometry is unchanged.
     // Remove it before waiting for fresh layout and terminal pixel metrics.
     renderedFrameId = -1
