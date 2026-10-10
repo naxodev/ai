@@ -1192,7 +1192,10 @@ class Client implements MusicSessionClient {
           !desired[value],
       ) ??
       (["status", "features"] as const).find(
-        (value) => desired[value] && !this.#audioInterestAcknowledged[value],
+        (value) =>
+          desired[value] &&
+          (!this.#audioInterestAcknowledged[value] ||
+            this.#audioInterestUncertain[value]),
       )
     if (!channel) return
     // Serialize controls and reserve one ordinary command slot when possible.
@@ -1212,10 +1215,9 @@ class Client implements MusicSessionClient {
       },
       reject: () => {
         if (this.#disposed || this.#terminal) return
-        // A malformed acknowledgement can hide an applied Subscribe. Preserve
-        // that possibility until a matching control succeeds. Never claim success.
-        if (kind === "audio-subscribe")
-          this.#audioInterestUncertain[channel] = true
+        // A failed acknowledgement can hide either applied control. Reconcile
+        // the latest desired state until a matching control confirms it.
+        this.#audioInterestUncertain[channel] = true
         this.armAudioControlRetry()
       },
     }

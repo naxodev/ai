@@ -1806,6 +1806,239 @@ for (const budget of [1, 2]) {
   })
 }
 
+test("a mismatched unsubscribe ACK cannot leave reattached feature listeners disconnected", async () => {
+  const peer = await scriptedAudioPeer(false, true, 2)
+  const controls = () =>
+    peer.requests.filter((request) => request.channel !== undefined)
+  let remove = () => {}
+  try {
+    remove = peer.client.subscribeAudioFeatures(() => {})
+    await peer.waitRequest(
+      (request) =>
+        request.type === "audio-subscribe" && request.channel === "features",
+    )
+    await peer.send()
+    expect(peer.subscriptions).toEqual({ status: true, features: true })
+    peer.holdSubscriptions(true)
+    remove()
+    const unsubscribed = await peer.waitRequest(
+      (request) =>
+        request.type === "audio-unsubscribe" && request.channel === "features",
+    )
+    await peer.send({
+      type: "response",
+      requestId: unsubscribed.requestId,
+      ok: true,
+      data: { type: "unsubscribed", channel: "status" },
+    })
+    expect(peer.subscriptions).toEqual({ status: true, features: false })
+    expect(peer.leaseTimers).toHaveLength(1)
+    const count = controls().length
+    remove = peer.client.subscribeAudioFeatures(() => {})
+    expect(await peer.client.play()).toEqual({ action: "play" })
+    expect(controls()).toHaveLength(count)
+    peer.holdSubscriptions(false)
+    peer.leaseTimers[0]?.callback()
+    expect(await peer.client.play()).toEqual({ action: "play" })
+    expect(controls()).toHaveLength(count + 1)
+    expect(controls().at(-1)).toMatchObject({
+      type: "audio-subscribe",
+      channel: "features",
+    })
+    expect(peer.subscriptions).toEqual({ status: true, features: true })
+  } finally {
+    remove()
+    await peer.close()
+  }
+})
+
+for (const budget of [1, 2]) {
+  for (const fault of ["kind", "channel", "schema"] as const) {
+    const malformedAck = (subscribed: boolean) => ({
+      type:
+        fault === "schema"
+          ? "unknown"
+          : (fault === "kind" ? !subscribed : subscribed)
+            ? "subscribed"
+            : "unsubscribed",
+      channel: fault === "channel" ? "status" : "features",
+    })
+
+    test(`malformed ${fault} ACKs in both directions cannot suppress reattachment retries with budget ${budget}`, async () => {
+      const peer = await scriptedAudioPeer(false, true, budget)
+      const controls = () =>
+        peer.requests.filter((request) => request.channel !== undefined)
+      const waitCount = (count: number) =>
+        Effect.runPromise(
+          Effect.promise(() =>
+            peer.waitRequest(() => controls().length >= count),
+          ).pipe(Effect.timeout("2 seconds")),
+        )
+      let remove = () => {}
+      try {
+        remove = peer.client.subscribeAudioFeatures(() => {})
+        await waitCount(2)
+        await peer.send()
+        expect(peer.subscriptions).toEqual({ status: true, features: true })
+        peer.holdSubscriptions(true)
+        remove()
+        await waitCount(3)
+        const unsubscribe = controls().at(-1)
+        await peer.send({
+          type: "response",
+          requestId: unsubscribe?.requestId,
+          ok: true,
+          data: malformedAck(false),
+        })
+        expect(peer.subscriptions).toEqual({ status: true, features: false })
+        expect(peer.leaseTimers).toHaveLength(1)
+        expect(peer.leaseTimers[0]?.delayMs).toBeGreaterThanOrEqual(250)
+        remove = peer.client.subscribeAudioFeatures(() => {})
+        for (let cycle = 0; cycle < 200; cycle++)
+          peer.client.subscribeAudioFeatures(() => {})()
+        expect(await peer.client.listAudioSources()).toMatchObject({
+          availability: "available",
+        })
+        expect(controls()).toHaveLength(3)
+
+        // The last confirmed binding is still true. Even a failed Subscribe
+        // must leave it uncertain rather than suppressing the next retry.
+        peer.leaseTimers[0]?.callback()
+        await waitCount(4)
+        const subscribe = controls().at(-1)
+        expect(subscribe).toMatchObject({
+          type: "audio-subscribe",
+          channel: "features",
+        })
+        expect(peer.subscriptions).toEqual({ status: true, features: true })
+        if (budget === 1)
+          await expect(peer.client.listAudioSources()).rejects.toMatchObject({
+            code: "SERVER_BUSY",
+          })
+        else
+          expect(await peer.client.listAudioSources()).toMatchObject({
+            availability: "available",
+          })
+        await peer.send({
+          type: "response",
+          requestId: subscribe?.requestId,
+          ok: true,
+          data: malformedAck(true),
+        })
+        expect(peer.leaseTimers).toHaveLength(2)
+        remove()
+        remove = peer.client.subscribeAudioFeatures(() => {})
+        expect(await peer.client.listAudioSources()).toMatchObject({
+          availability: "available",
+        })
+        expect(controls()).toHaveLength(4)
+        peer.holdSubscriptions(false)
+        peer.leaseTimers[1]?.callback()
+        await waitCount(5)
+        await peer.send()
+        expect(controls().at(-1)).toMatchObject({
+          type: "audio-subscribe",
+          channel: "features",
+        })
+        expect(peer.subscriptions).toEqual({ status: true, features: true })
+        await peer.send(
+          {
+            type: "response",
+            requestId: unsubscribe?.requestId,
+            ok: true,
+            data: { type: "unsubscribed", channel: "features" },
+          },
+          {
+            type: "response",
+            requestId: subscribe?.requestId,
+            ok: true,
+            data: { type: "subscribed", channel: "features" },
+          },
+        )
+        peer.leaseTimers[0]?.callback()
+        peer.leaseTimers[1]?.callback()
+        expect(await peer.client.listAudioSources()).toMatchObject({
+          availability: "available",
+        })
+        expect(controls()).toHaveLength(5)
+        remove()
+        await waitCount(7)
+        await peer.send()
+        expect(peer.subscriptions).toEqual({ status: false, features: false })
+        expect(peer.leaseTimers).toHaveLength(2)
+      } finally {
+        remove()
+        await peer.close()
+      }
+    })
+
+    test(`a malformed Subscribe ${fault} ACK reconciles to detached listeners with budget ${budget}`, async () => {
+      const peer = await scriptedAudioPeer(false, true, budget)
+      const controls = () =>
+        peer.requests.filter((request) => request.channel !== undefined)
+      const waitCount = (count: number) =>
+        Effect.runPromise(
+          Effect.promise(() =>
+            peer.waitRequest(() => controls().length >= count),
+          ).pipe(Effect.timeout("2 seconds")),
+        )
+      let remove = () => {}
+      const removeStatus = peer.client.subscribeAudioStatus(() => {})
+      try {
+        await waitCount(1)
+        await peer.send()
+        peer.holdSubscriptions(true)
+        remove = peer.client.subscribeAudioFeatures(() => {})
+        await waitCount(2)
+        const subscribe = controls().at(-1)
+        await peer.send({
+          type: "response",
+          requestId: subscribe?.requestId,
+          ok: true,
+          data: malformedAck(true),
+        })
+        expect(peer.subscriptions).toEqual({ status: true, features: true })
+        remove()
+        for (let cycle = 0; cycle < 200; cycle++)
+          peer.client.subscribeAudioFeatures(() => {})()
+        expect(await peer.client.listAudioSources()).toMatchObject({
+          availability: "available",
+        })
+        expect(controls()).toHaveLength(2)
+        expect(peer.leaseTimers).toHaveLength(1)
+        peer.holdSubscriptions(false)
+        peer.leaseTimers[0]?.callback()
+        await waitCount(3)
+        await peer.send()
+        expect(controls().at(-1)).toMatchObject({
+          type: "audio-unsubscribe",
+          channel: "features",
+        })
+        expect(peer.subscriptions).toEqual({ status: true, features: false })
+        removeStatus()
+        await waitCount(4)
+        await peer.send({
+          type: "response",
+          requestId: subscribe?.requestId,
+          ok: true,
+          data: { type: "subscribed", channel: "features" },
+        })
+        peer.leaseTimers[0]?.callback()
+        expect(await peer.client.listAudioSources()).toMatchObject({
+          availability: "available",
+        })
+        expect(controls()).toHaveLength(4)
+        expect(peer.subscriptions).toEqual({ status: false, features: false })
+        expect(peer.leaseTimers).toHaveLength(1)
+      } finally {
+        remove()
+        removeStatus()
+        await peer.close()
+      }
+    })
+  }
+}
+
 test("an unsubscribe retry coalesces to reattached listeners and ignores its old ACK", async () => {
   const peer = await scriptedAudioPeer(false, true, 2)
   const controls = () =>
@@ -1829,13 +2062,18 @@ test("an unsubscribe retry coalesces to reattached listeners and ignores its old
     const count = controls().length
     remove = peer.client.subscribeAudioFeatures(() => {})
     peer.leaseTimers[0]?.callback()
+    await peer.waitRequest(() => controls().length === count + 1)
     await peer.send({
       type: "response",
       requestId: rejected.requestId,
       ok: true,
       data: { type: "unsubscribed", channel: "features" },
     })
-    expect(controls()).toHaveLength(count)
+    expect(controls()).toHaveLength(count + 1)
+    expect(controls().at(-1)).toMatchObject({
+      type: "audio-subscribe",
+      channel: "features",
+    })
     expect(peer.subscriptions).toEqual({ status: true, features: true })
     remove()
     await peer.waitRequest(
@@ -1844,7 +2082,7 @@ test("an unsubscribe retry coalesces to reattached listeners and ignores its old
     )
     await peer.send()
     expect(peer.subscriptions).toEqual({ status: false, features: false })
-    expect(controls()).toHaveLength(count + 2)
+    expect(controls()).toHaveLength(count + 3)
     expect(await peer.client.play()).toEqual({ action: "play" })
   } finally {
     remove()
