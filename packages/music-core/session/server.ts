@@ -14,6 +14,7 @@ import {
   Option,
   Queue,
   Ref,
+  Result,
   Schema,
   Scope,
   Stream,
@@ -577,6 +578,7 @@ const connection = (
   mandatoryOutboundQueueCapacity: number,
   hooks: ServerLifecycleHooks,
   reportFailure: (cause: unknown) => void,
+  noteRetirementFailure: (cause: Cause.Cause<unknown>) => void,
   onJoin: Effect.Effect<void>,
   onLeave: Effect.Effect<void>,
 ) =>
@@ -657,7 +659,8 @@ const connection = (
           Effect.andThen(Queue.shutdown(outboundWake)),
           Effect.ensuring(
             releaseAudio.pipe(
-              Effect.andThen(joined ? onLeave : Effect.void),
+              // Leave is committed with the connection, not with cleanup success.
+              Effect.ensuring(joined ? onLeave : Effect.void),
               Effect.ensuring(
                 Effect.sync(() => {
                   invokeHook(hooks.onInputFinalized)
@@ -861,6 +864,7 @@ const connection = (
           ),
           Effect.tapCause((cause) =>
             Effect.sync(() => {
+              noteRetirementFailure(cause)
               reportFailure(cause)
               close()
             }),
@@ -1438,6 +1442,23 @@ const makeLayer = (
         const onClose = () => sockets.delete(socket)
         socket.once("close", onClose)
         invokeHook(() => hooks.onEnrolled?.(socket))
+        const reportedRetirementDefects = new Set<unknown>()
+        const noteRetirementFailure = (cause: Cause.Cause<unknown>) => {
+          const defect = Cause.findDefect(cause)
+          if (Result.isSuccess(defect))
+            reportedRetirementDefects.add(defect.success)
+        }
+        const retirementFailureAlreadyReported = (
+          cause: Cause.Cause<unknown>,
+        ) => {
+          // A typed failure is a new report. A replayed cleanup defect is not.
+          if (Result.isSuccess(Cause.findError(cause))) return false
+          const defect = Cause.findDefect(cause)
+          return (
+            Result.isSuccess(defect) &&
+            reportedRetirementDefects.has(defect.success)
+          )
+        }
         runConnection(
           Effect.scoped(
             connection(
@@ -1450,14 +1471,18 @@ const makeLayer = (
               config.mandatoryOutboundQueueCapacity,
               hooks,
               reportFailure,
+              noteRetirementFailure,
               onJoin,
               onLeave,
             ),
           ).pipe(
             // Preserve ordinary shutdown interruption. Genuine local failures
             // are counted and coalesced for diagnostics before containment.
+            // Teardown replays the cached retirement defect; that report already
+            // happened, so do not count it again.
             Effect.tapCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
+              Cause.hasInterruptsOnly(cause) ||
+              retirementFailureAlreadyReported(cause)
                 ? Effect.void
                 : Effect.sync(() => {
                     reportFailure(cause)

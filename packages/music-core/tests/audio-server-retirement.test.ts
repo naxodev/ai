@@ -109,7 +109,10 @@ const peer = async (path: string) => {
   }
 }
 
-const fixture = async (holdInitialStart = false) => {
+const fixture = async (
+  holdInitialStart = false,
+  options: { readonly failRelease?: boolean } = {},
+) => {
   const path = `/tmp/music-retirement-${process.pid}-${randomUUID()}.sock`
   const closing = Latch.makeUnsafe()
   const release = Latch.makeUnsafe()
@@ -121,12 +124,17 @@ const fixture = async (holdInitialStart = false) => {
   let featureBindings = 0
   let activeFeatureBindings = 0
   let maxFeatureBindings = 0
+  const failures: unknown[] = []
   const serverClosing = Promise.withResolvers<void>()
   const connectionFinalized = Promise.withResolvers<void>()
+  const rebound = Promise.withResolvers<void>()
   const server = await startMusicSessionServer(
     { socketPath: path },
     createFakeProvider(),
     {
+      onConnectionFailure: (cause) => {
+        failures.push(cause)
+      },
       onConnectionFinalized: () => {
         finalizedConnections += 1
         connectionFinalized.resolve()
@@ -175,6 +183,8 @@ const fixture = async (holdInitialStart = false) => {
                   if (first) {
                     yield* Latch.open(closing)
                     yield* Latch.await(release)
+                    if (options.failRelease)
+                      yield* Effect.die(new Error("adapter finalizer failed"))
                   }
                   releases += 1
                 }),
@@ -198,6 +208,7 @@ const fixture = async (holdInitialStart = false) => {
               Stream.unwrap(
                 Effect.sync(() => {
                   featureBindings += 1
+                  if (featureBindings > 1) rebound.resolve()
                   activeFeatureBindings += 1
                   maxFeatureBindings = Math.max(
                     maxFeatureBindings,
@@ -248,6 +259,8 @@ const fixture = async (holdInitialStart = false) => {
     initialStart,
     serverClosing: serverClosing.promise,
     connectionFinalized: connectionFinalized.promise,
+    rebound: rebound.promise,
+    failureCount: () => failures.length,
     counts: () => ({
       starts,
       releases,
@@ -888,5 +901,45 @@ test("a failed feature finalizer reports once and cannot release the barrier for
     ).toMatchObject({ ok: true })
   } finally {
     await probe.cleanup()
+  }
+})
+
+test("a failed adapter finalizer is reported once when teardown replays the cached cleanup", async () => {
+  const probe = await fixture(false, { failRelease: true })
+  try {
+    await bounded(
+      probe.first.request({ type: "audio-unsubscribe", channel: "features" }),
+    )
+    await bounded(Effect.runPromise(Latch.await(probe.closing)))
+    // A resubscribe during retirement must not bind another sink if cleanup fails.
+    await bounded(
+      probe.first.request({ type: "audio-subscribe", channel: "features" }),
+    )
+    await Effect.runPromise(Latch.open(probe.release))
+    const outcome = await bounded(
+      Promise.race([
+        probe.connectionFinalized.then(() => "closed" as const),
+        probe.rebound.then(() => "rebound" as const),
+      ]),
+    )
+    expect(outcome).toBe("closed")
+    // Teardown reports on the server runtime after the connection hook.
+    for (let turn = 0; turn < 8; turn++)
+      await new Promise((resolve) => setImmediate(resolve))
+    expect(probe.failureCount()).toBe(1)
+    expect(probe.counts()).toMatchObject({
+      featureBindings: 1,
+      releases: 0,
+    })
+    expect(
+      await bounded(
+        probe.healthy.request({ type: "transport", action: "play" }),
+      ),
+    ).toMatchObject({ ok: true })
+  } finally {
+    // Server close still observes the propagated cleanup defect.
+    await probe.cleanup().catch((error: unknown) => {
+      expect(String(error)).toContain("adapter finalizer failed")
+    })
   }
 })

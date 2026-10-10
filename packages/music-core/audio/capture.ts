@@ -457,17 +457,27 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
             requireLease === undefined
               ? []
               : yield* cancelConnection(requireLease)
-          if (action.type === "absent") {
-            yield* joinAttempts(canceled)
-            return false
+          // Native cleanup can fail. Capture that exit, join every canceled
+          // attempt anyway, then propagate the collected failure.
+          const retired =
+            action.type === "absent"
+              ? false
+              : action.type === "wait"
+                ? action.authorized
+                : true
+          const retirementExit =
+            action.type === "absent"
+              ? Exit.void
+              : action.type === "wait"
+                ? yield* Deferred.await(action.done).pipe(Effect.exit)
+                : yield* finishRetirement(action, reason).pipe(Effect.exit)
+          const attemptExits = yield* Effect.forEach(canceled, (attempt) =>
+            Deferred.await(attempt.done).pipe(Effect.exit),
+          )
+          for (const exit of [retirementExit, ...attemptExits]) {
+            if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
           }
-          if (action.type === "wait") {
-            yield* Deferred.await(action.done)
-            yield* joinAttempts(canceled)
-            return action.authorized
-          } else yield* finishRetirement(action, reason)
-          yield* joinAttempts(canceled)
-          return true
+          return retired
         }),
       )
 

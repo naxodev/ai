@@ -1,5 +1,15 @@
 import { expect, test } from "bun:test"
-import { Clock, Effect, Exit, Fiber, Latch, Ref, Scope, Stream } from "effect"
+import {
+  Cause,
+  Clock,
+  Effect,
+  Exit,
+  Fiber,
+  Latch,
+  Ref,
+  Scope,
+  Stream,
+} from "effect"
 import { TestClock } from "effect/testing"
 import { AudioAdapterError, makeAudioCapture } from "../audio/capture.ts"
 import type { ResolvedCaptureSource } from "../audio/schema.ts"
@@ -677,3 +687,104 @@ for (const reason of ["timeout", "setup", "permission"] as const) {
     )
   })
 }
+
+test("Stop joins a canceled revalidation after native cleanup fails", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const owner = yield* Scope.make()
+      yield* Effect.gen(function* () {
+        const secondEntered = yield* Latch.make(false)
+        const secondCleanupEntered = yield* Latch.make(false)
+        const releaseSecondCleanup = yield* Latch.make(false)
+        const nativeCleanupEntered = yield* Latch.make(false)
+        const releaseNative = yield* Latch.make(false)
+        const peerEntered = yield* Latch.make(false)
+        const releasePeer = yield* Latch.make(false)
+        let validations = 0
+        const capture = yield* makeAudioCapture({
+          daemonInstanceId: "fixture",
+          nowMs: () => 0,
+          observations: Stream.never,
+          resolver: {
+            ...resolver,
+            revalidate: (selected) =>
+              Effect.gen(function* () {
+                validations += 1
+                if (validations === 1) return selected
+                if (validations === 2) {
+                  // Cancellation must finish this cleanup before Stop can return.
+                  return yield* Latch.open(secondEntered).pipe(
+                    Effect.andThen(Effect.never),
+                    Effect.ensuring(
+                      Latch.open(secondCleanupEntered).pipe(
+                        Effect.andThen(Latch.await(releaseSecondCleanup)),
+                      ),
+                    ),
+                  )
+                }
+                yield* Latch.open(peerEntered)
+                return yield* Latch.await(releasePeer).pipe(Effect.as(selected))
+              }),
+          },
+          adapter: {
+            availability: "available",
+            start: () =>
+              Effect.gen(function* () {
+                yield* Effect.addFinalizer(() =>
+                  Latch.open(nativeCleanupEntered).pipe(
+                    Effect.andThen(Latch.await(releaseNative)),
+                    Effect.andThen(
+                      Effect.die(new Error("native cleanup failed")),
+                    ),
+                  ),
+                )
+                return { frames: Stream.never }
+              }),
+          },
+        })
+        yield* Effect.gen(function* () {
+          expect(
+            (yield* capture.start("a", yield* select(capture, "a"))).type,
+          ).toBe("started")
+          const second = yield* capture
+            .start("a", yield* select(capture, "a"))
+            .pipe(Effect.forkChild)
+          yield* Latch.await(secondEntered)
+          const peer = yield* capture
+            .start("b", yield* select(capture, "b"))
+            .pipe(Effect.forkChild)
+          yield* Latch.await(peerEntered)
+          const stopping = yield* capture.stop("a").pipe(Effect.forkChild)
+          yield* Latch.await(secondCleanupEntered)
+          yield* Latch.await(nativeCleanupEntered)
+          yield* Latch.open(releaseNative)
+          for (let turn = 0; turn < 8; turn++) yield* Effect.yieldNow
+          // Native cleanup has already failed. Stop must still be joining the
+          // canceled Start, not returning while that cleanup is pending.
+          expect(stopping.pollUnsafe()).toBeUndefined()
+          expect(peer.pollUnsafe()).toBeUndefined()
+          yield* Latch.open(releaseSecondCleanup)
+          const stopped = yield* Fiber.join(stopping).pipe(Effect.exit)
+          expect(Exit.isFailure(stopped)).toBe(true)
+          if (Exit.isFailure(stopped))
+            expect(Cause.pretty(stopped.cause)).toContain(
+              "native cleanup failed",
+            )
+          expect(yield* Fiber.join(second)).toEqual({
+            type: "rejected",
+            reason: "canceled",
+          })
+          // A's failed Stop fences only A's attempt. The peer stays blocked.
+          expect(peer.pollUnsafe()).toBeUndefined()
+        }).pipe(
+          Effect.ensuring(Latch.open(releaseNative)),
+          Effect.ensuring(Latch.open(releaseSecondCleanup)),
+          Effect.ensuring(Latch.open(releasePeer)),
+        )
+      }).pipe(Scope.provide(owner))
+      // Owner close also reports the shared cleanup defect; it cannot claim release.
+      const ownerClosed = yield* Scope.close(owner, Exit.void).pipe(Effect.exit)
+      expect(Exit.isFailure(ownerClosed)).toBe(true)
+    }),
+  )
+})
