@@ -1,14 +1,38 @@
 /** Child output is untrusted. Keep bounds in bytes and never retain stderr. */
 export const outputLimit = 64 * 1024
 
+export class ReaderCleanupError extends Error {
+  constructor() {
+    super("Source reader cleanup failed")
+  }
+}
+
 async function withReader<T>(
   stream: ReadableStream<Uint8Array>,
   signal: AbortSignal | undefined,
   consume: (reader: ReadableStreamDefaultReader<Uint8Array>) => Promise<T>,
 ): Promise<T> {
   const reader = stream.getReader()
+  let cancellation: Promise<void> | undefined
+  let cancellationStarted = false
   const cancel = () => {
-    void reader.cancel().catch(() => {})
+    if (cancellationStarted) return
+    // Reserve before invoking the source, which can synchronously reenter abort.
+    cancellationStarted = true
+    try {
+      cancellation = reader.cancel()
+    } catch {
+      cancellation = Promise.reject(new ReaderCleanupError())
+      // No cancellation started. Fail pending read requests instead of hanging.
+      // Cleanup still rejects; releasing the lock does not claim source shutdown.
+      try {
+        reader.releaseLock()
+      } catch {
+        /* The recorded cleanup failure remains fatal. */
+      }
+    }
+    // Observe now, but retain the exact first promise for the cleanup join.
+    void cancellation.catch(() => {})
   }
   signal?.addEventListener("abort", cancel, { once: true })
   if (signal?.aborted) cancel()
@@ -18,8 +42,18 @@ async function withReader<T>(
     throw new Error("Source output was invalid or could not be read")
   } finally {
     signal?.removeEventListener("abort", cancel)
-    await reader.cancel().catch(() => {})
-    reader.releaseLock()
+    cancel()
+    try {
+      await cancellation
+    } catch {
+      throw new ReaderCleanupError()
+    } finally {
+      try {
+        reader.releaseLock()
+      } catch {
+        throw new ReaderCleanupError()
+      }
+    }
   }
 }
 
@@ -72,10 +106,11 @@ export async function consumeFeatureLines(
   await withReader(stream, signal, async (reader) => {
     while (true) {
       const next = await reader.read()
-      if (next.done) return
+      if (next.done || signal?.aborted) return
       const bytes = next.value
       let offset = 0
       while (offset < bytes.byteLength) {
+        if (signal?.aborted) return
         const newline = bytes.indexOf(10, offset)
         const end = newline < 0 ? bytes.byteLength : newline
         const size = end - offset
@@ -128,8 +163,9 @@ export async function readProcessOutput(
     cancel()
     throw error
   })
-  const guardedDiagnostics = diagnostics.catch(() => {
+  const guardedDiagnostics = diagnostics.catch((error: unknown) => {
     cancel()
+    if (error instanceof ReaderCleanupError) throw error
     throw new Error("Source diagnostics could not be drained")
   })
   try {
@@ -138,6 +174,11 @@ export async function readProcessOutput(
       guardedDiagnostics,
       child.exited,
     ])
+    if (
+      (out.status === "rejected" && out.reason instanceof ReaderCleanupError) ||
+      (err.status === "rejected" && err.reason instanceof ReaderCleanupError)
+    )
+      throw new ReaderCleanupError()
     if (options.signal?.aborted) throw new Error("Metadata read cancelled")
     if (timedOut) throw new Error("Source command timed out")
     if (out.status === "rejected")

@@ -9,6 +9,7 @@ import {
   consumeFeatureLines,
   drainDiagnostics,
   readProcessOutput,
+  ReaderCleanupError,
 } from "./streams.ts"
 
 declare const AUDIO_PROTOTYPE_ROOT: string
@@ -19,6 +20,43 @@ type CaptureChild = {
   stderr: ReadableStream<Uint8Array>
   exited: Promise<number>
   kill: (signal: "SIGTERM" | "SIGKILL") => unknown
+}
+
+/** Retire an unpublished child without waiting on its own action or shutdown. */
+async function retireCapture(input: CaptureChild): Promise<void> {
+  const exited = input.exited.then(
+    () => true,
+    () => false,
+  )
+  let killFailed = false
+  const kill = (signal: "SIGTERM" | "SIGKILL") => {
+    try {
+      input.kill(signal)
+    } catch {
+      killFailed = true
+    }
+  }
+  kill("SIGTERM")
+  const deadline = setTimeout(() => kill("SIGKILL"), 1_000)
+  const readers = new AbortController()
+  readers.abort()
+  try {
+    const [exit, stdout, stderr] = await Promise.allSettled([
+      exited,
+      drainDiagnostics(input.stdout, readers.signal),
+      drainDiagnostics(input.stderr, readers.signal),
+    ])
+    if (
+      killFailed ||
+      exit.status === "rejected" ||
+      !exit.value ||
+      stdout.status === "rejected" ||
+      stderr.status === "rejected"
+    )
+      throw new Error("Capture retirement failed")
+  } finally {
+    clearTimeout(deadline)
+  }
 }
 type ProcessSource = {
   pid: number
@@ -205,6 +243,9 @@ export function createAudioPrototype(
       const dialogs = createAudioDialogWaits()
       const actions = new Set<Promise<void>>()
       const reads = new Set<Promise<unknown>>()
+      const launches = new Set<Promise<void>>()
+      let retirementFailed = false
+      let cleanupFailed = false
       const readFor =
         (token: number): Reader =>
         async (command) => {
@@ -221,7 +262,8 @@ export function createAudioPrototype(
           try {
             // A reader must settle after abort. We join even an uncooperative override.
             result = await owned
-          } catch {
+          } catch (error) {
+            if (error instanceof ReaderCleanupError) cleanupFailed = true
             throw new Error("Metadata read failed")
           } finally {
             reads.delete(owned)
@@ -256,20 +298,23 @@ export function createAudioPrototype(
         const previous = child
         const previousTask = task
         const previousReaders = cancelReaders
+        const pendingLaunches = [...launches]
         child = null
         task = null
         cancelReaders = null
         previous?.kill("SIGTERM")
         previousReaders?.()
-        setRunning(false)
-        setSignal(null)
-        setStatus(reason)
+        if (!disposed) {
+          setRunning(false)
+          setSignal(null)
+          setStatus(reason)
+        }
         const deadline = previous
           ? setTimeout(() => previous.kill("SIGKILL"), 1_000)
           : undefined
         const wait = async () => {
           try {
-            if (previousTask) await previousTask
+            await Promise.all([previousTask, ...pendingLaunches])
           } finally {
             if (deadline) clearTimeout(deadline)
           }
@@ -278,6 +323,8 @@ export function createAudioPrototype(
         // Every later Start/Stop must join the same retiring helper.
         shutdown = Promise.all([shutdown, wait()]).then(() => {})
         await shutdown
+        if (retirementFailed) throw new Error("Capture retirement failed")
+        if (cleanupFailed) throw new Error("Capture reader cleanup failed")
         return token
       }
 
@@ -436,155 +483,191 @@ export function createAudioPrototype(
             await requireKasetAttribution(stillCurrent, read)
         }
         if (disposed || token !== generation) return
-        let input: CaptureChild
+        // Stop/disposal can reenter spawn before the returned child is published.
+        let finishLaunch!: () => void
+        const launch = new Promise<void>((resolve) => {
+          finishLaunch = resolve
+        })
+        launches.add(launch)
         try {
-          input = spawn(
-            source
-              ? [
-                  helper,
-                  "--pid",
-                  String(source.pid),
-                  "--seconds",
-                  "30",
-                  "--object",
-                  String(source.object),
-                ]
-              : ["cliamp", "visstream", "--fps", "20"],
-          )
-        } catch {
-          throw new Error("Capture process could not start")
-        }
-        child = input
-        setRunning(true)
-        const name = source
-          ? selected.kind === "kaset"
-            ? "Kaset (WebKit)"
-            : source.name
-          : "CLIAMP"
-        setStatus(
-          source
-            ? `Capturing ${clean(name)} · 30s limit`
-            : "Receiving CLIAMP spectrum · 30s limit",
-        )
-        let received = 0
-        let expired = false
-        const completion = input.exited.then(
-          (code) => ({ code, failed: false }),
-          () => ({ code: 1, failed: true }),
-        )
-        const deadline = setTimeout(() => {
-          expired = true
-          input.kill("SIGTERM")
-        }, 31_000)
-        const readers = new AbortController()
-        cancelReaders = () => readers.abort()
-        const hardDeadline = setTimeout(() => {
-          input.kill("SIGKILL")
-          readers.abort()
-        }, 33_000)
-        let diagnosticsFailed = false
-        const diagnostics = drainDiagnostics(
-          input.stderr,
-          readers.signal,
-        ).catch(() => {
-          diagnosticsFailed = true
-          input.kill("SIGTERM")
-        })
-        let metadataPending = false
-        const metadataWatch =
-          selected.kind === "auto" && source
-            ? setInterval(() => {
-                if (metadataPending || disposed || token !== generation) return
-                metadataPending = true
-                action(async () => {
-                  try {
-                    const metadata = await read([
-                      "media-control",
-                      "get",
-                      "--no-artwork",
-                      "--now",
-                    ])
-                    if (disposed || token !== generation) return
-                    if (
-                      !object(metadata) ||
-                      metadata.processIdentifier !== source!.pid ||
-                      (metadata.parentApplicationBundleIdentifier ||
-                        metadata.bundleIdentifier) !== source!.bundle
-                    )
-                      await stop("Now Playing source changed; capture stopped")
-                  } catch {
-                    if (!disposed && token === generation)
-                      await stop(
-                        "Now Playing ownership unavailable; capture stopped",
-                      )
-                  } finally {
-                    metadataPending = false
-                  }
-                })
-              }, 1_000)
-            : undefined
-        const consume = (async () => {
+          let input: CaptureChild
           try {
-            await consumeFeatureLines(
-              input.stdout,
-              (line) => {
-                const event: unknown = JSON.parse(line)
-                if (disposed || token !== generation) return
-                const next = frame(event)
-                if (next) {
-                  received++
-                  setSignal(next)
-                  setLastFrame(Date.now())
-                  if (received === 1)
-                    setStatus(
-                      source
-                        ? `Capturing ${clean(name)} · 30s limit`
-                        : `CLIAMP spectrum (${clean(next.visualizer ?? "unknown")}) · 30s limit`,
-                    )
-                } else if (object(event)) {
-                  setSignal(null)
-                  if (event.type === "error" || event.ok === false)
-                    throw new Error("Source reported a capture failure")
-                  if (event.state) setStatus("Source has no feature frame")
-                  else if (event.visualizer)
-                    setStatus("Unsupported CLIAMP mode")
-                }
-              },
-              readers.signal,
+            input = spawn(
+              source
+                ? [
+                    helper,
+                    "--pid",
+                    String(source.pid),
+                    "--seconds",
+                    "30",
+                    "--object",
+                    String(source.object),
+                  ]
+                : ["cliamp", "visstream", "--fps", "20"],
             )
-            const exit = await completion
-            await diagnostics
-            if (diagnosticsFailed)
-              throw new Error("Source diagnostics could not be drained")
-            if (exit.failed)
-              throw new Error("Capture process exit could not be read")
-            if (exit.code !== 0 && !expired && token === generation)
-              throw new Error(`Capture process exited with code ${exit.code}`)
-            if (!disposed && token === generation)
-              setStatus(`Ended · ${received} feature frames · Start to repeat`)
-          } finally {
-            input.kill("SIGTERM")
-            readers.abort()
-            const cleanup = setTimeout(() => input.kill("SIGKILL"), 1_000)
-            try {
-              await Promise.allSettled([completion, diagnostics])
-            } finally {
-              clearTimeout(cleanup)
-              clearTimeout(deadline)
-              clearTimeout(hardDeadline)
-              if (metadataWatch) clearInterval(metadataWatch)
-            }
-            if (token === generation) {
-              child = null
-              cancelReaders = null
-              setRunning(false)
-              setSignal(null)
-            }
+          } catch {
+            throw new Error("Capture process could not start")
           }
-        })()
-        task = consume.catch((error: unknown) => {
-          if (!disposed && token === generation) failure(error)
-        })
+          // Let queued Stop/source actions invalidate the epoch before publication.
+          await Promise.resolve()
+          if (disposed || token !== generation) {
+            try {
+              await retireCapture(input)
+            } catch {
+              retirementFailed = true
+              throw new Error("Capture retirement failed")
+            }
+            return
+          }
+          child = input
+          setRunning(true)
+          const name = source
+            ? selected.kind === "kaset"
+              ? "Kaset (WebKit)"
+              : source.name
+            : "CLIAMP"
+          setStatus(
+            source
+              ? `Capturing ${clean(name)} · 30s limit`
+              : "Receiving CLIAMP spectrum · 30s limit",
+          )
+          let received = 0
+          let expired = false
+          const completion = input.exited.then(
+            (code) => ({ code, failed: false }),
+            () => ({ code: 1, failed: true }),
+          )
+          const deadline = setTimeout(() => {
+            expired = true
+            input.kill("SIGTERM")
+          }, 31_000)
+          const readers = new AbortController()
+          cancelReaders = () => readers.abort()
+          const hardDeadline = setTimeout(() => {
+            input.kill("SIGKILL")
+            readers.abort()
+          }, 33_000)
+          let diagnosticsFailed = false
+          const diagnostics = drainDiagnostics(
+            input.stderr,
+            readers.signal,
+          ).catch((error: unknown) => {
+            if (error instanceof ReaderCleanupError) cleanupFailed = true
+            diagnosticsFailed = true
+            input.kill("SIGTERM")
+          })
+          let metadataPending = false
+          const metadataWatch =
+            selected.kind === "auto" && source
+              ? setInterval(() => {
+                  if (metadataPending || disposed || token !== generation)
+                    return
+                  metadataPending = true
+                  action(async () => {
+                    try {
+                      const metadata = await read([
+                        "media-control",
+                        "get",
+                        "--no-artwork",
+                        "--now",
+                      ])
+                      if (disposed || token !== generation) return
+                      if (
+                        !object(metadata) ||
+                        metadata.processIdentifier !== source!.pid ||
+                        (metadata.parentApplicationBundleIdentifier ||
+                          metadata.bundleIdentifier) !== source!.bundle
+                      )
+                        await stop(
+                          "Now Playing source changed; capture stopped",
+                        )
+                    } catch {
+                      if (!disposed && token === generation)
+                        await stop(
+                          "Now Playing ownership unavailable; capture stopped",
+                        )
+                    } finally {
+                      metadataPending = false
+                    }
+                  })
+                }, 1_000)
+              : undefined
+          const consume = (async () => {
+            try {
+              await consumeFeatureLines(
+                input.stdout,
+                (line) => {
+                  const event: unknown = JSON.parse(line)
+                  if (disposed || token !== generation) return
+                  const next = frame(event)
+                  if (next) {
+                    received++
+                    setSignal(next)
+                    setLastFrame(Date.now())
+                    if (received === 1)
+                      setStatus(
+                        source
+                          ? `Capturing ${clean(name)} · 30s limit`
+                          : `CLIAMP spectrum (${clean(next.visualizer ?? "unknown")}) · 30s limit`,
+                      )
+                  } else if (object(event)) {
+                    setSignal(null)
+                    if (event.type === "error" || event.ok === false)
+                      throw new Error("Source reported a capture failure")
+                    if (event.state) setStatus("Source has no feature frame")
+                    else if (event.visualizer)
+                      setStatus("Unsupported CLIAMP mode")
+                  }
+                },
+                readers.signal,
+              )
+              const exit = await completion
+              await diagnostics
+              if (diagnosticsFailed)
+                throw new Error("Source diagnostics could not be drained")
+              if (exit.failed)
+                throw new Error("Capture process exit could not be read")
+              if (exit.code !== 0 && !expired && token === generation)
+                throw new Error(`Capture process exited with code ${exit.code}`)
+              if (!disposed && token === generation)
+                setStatus(
+                  `Ended · ${received} feature frames · Start to repeat`,
+                )
+            } finally {
+              input.kill("SIGTERM")
+              readers.abort()
+              const cleanup = setTimeout(() => input.kill("SIGKILL"), 1_000)
+              try {
+                await Promise.allSettled([completion, diagnostics])
+              } finally {
+                clearTimeout(cleanup)
+                clearTimeout(deadline)
+                clearTimeout(hardDeadline)
+                if (metadataWatch) clearInterval(metadataWatch)
+              }
+              if (!disposed && token === generation) {
+                child = null
+                cancelReaders = null
+                setRunning(false)
+                setSignal(null)
+              }
+            }
+          })()
+          const ownedTask = consume.catch((error: unknown) => {
+            if (error instanceof ReaderCleanupError) cleanupFailed = true
+            if (!disposed && token === generation) failure(error)
+          })
+          task = ownedTask
+          // Reader acquisition can reenter Stop before this task pointer exists.
+          // Keep the launch reservation until that retiring work actually joins.
+          if (disposed || token !== generation) {
+            await ownedTask
+            if (task === ownedTask) task = null
+          }
+        } finally {
+          launches.delete(launch)
+          finishLaunch()
+        }
       }
 
       // The plugin owns pending UI actions and capture work; errors stay visible.
@@ -742,8 +825,14 @@ export function createAudioPrototype(
         clearInterval(ticker)
         unregister()
         unregisterCommands()
-        await stop()
-        await Promise.allSettled([...actions, ...reads])
+        const stopped = stop()
+        const [outcome] = await Promise.allSettled([
+          stopped,
+          ...actions,
+          ...reads,
+        ])
+        if (outcome?.status === "rejected" || retirementFailed || cleanupFailed)
+          throw new Error("Audio prototype cleanup failed")
       }
     },
   })
