@@ -154,7 +154,7 @@ Tests must fail if concurrent Starts create two helpers, a confirmation becomes 
 
 Deliverable: a tested daemon/client contract with no change to the live plugin installation.
 
-Offline evidence after local integration onto the updated repository base; no live tap was used:
+Historical offline evidence before the PR review fixes; no live tap was used. These counts describe that checkpoint, not the current head:
 
 - `bun run --cwd packages/music-core test` passed 360 tests. Ownership tests cover shared blocked shutdown, concurrent owner closure and Start, cleanup failure, EOF, typed stream failure, interrupted final detach, acquisition-leader departure, revalidation cancellation, token reuse, PID reuse, and expiry.
 - The single generation-tagged pending slot passed a deterministic 10,000-frame burst test. One TestClock drives both injected monotonic timestamps and Effect sleeps. The test checks the 50 ms cadence, latest value, and Stop/restart cancellation. Mixing a live monotonic origin with TestClock reproduced the earlier timeout; it was a test-clock mismatch, not evidence of verified production streaming.
@@ -234,6 +234,6 @@ Maintain an evidence-based player/device matrix. CLIAMP is the initial verified 
 
 Run the gates in [CONTRIBUTING.md](../CONTRIBUTING.md), including workspace lint, type-checks, package tests, native compilation, package contents, packed-host smokes, and consumer audits. The full release gate remains `bun run check`. Do not broaden the [approved audit exception](dependency-audit.md).
 
-The 2026-10-09 offline review run failed that full gate at `security:check`. The audit reported critical and high `seroval` advisories and a moderate `smol-toml` advisory. The audio race fixes left the existing audit exception, dependency pins, and lockfile unchanged. A [separate dependency follow-up](dependency-audit.md#serializer-and-toml-advisories) addresses those findings. Passing focused audio checks alone does not satisfy the full release gate.
+An earlier 2026-10-09 offline run failed that full gate at `security:check`. The audit reported critical and high `seroval` advisories and a moderate `smol-toml` advisory. The [separate dependency follow-up](dependency-audit.md#serializer-and-toml-advisories) addressed those findings on main. The local-only PR retains main's dependency pins and lockfile. Its `da0debd9` checkpoint passed the full uncached gate and Windows, Linux, and macOS CI. Later review fixes require a new full gate and current-head CI; earlier green checks do not establish their correctness.
 
-Only after the integrated local test and release gates pass should production changes be proposed for merging. Exclude prototype files from that change. Publish a compatible music-core before dependent hosts, following the repository's release policy. This plan authorizes no merge, push, publication, or unattended capture.
+Production capture and distribution remain blocked until the integrated local test and release gates pass. A reviewed, default-off local implementation can merge separately without enabling or distributing capture. Prototype code and native executables stay excluded from production package contents. Publish a compatible music-core before dependent hosts, following the repository's release policy. This plan authorizes no merge, push, publication, or unattended capture; each requires a separate decision.
