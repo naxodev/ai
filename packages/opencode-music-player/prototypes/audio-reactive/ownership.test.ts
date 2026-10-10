@@ -517,3 +517,125 @@ test("disposal joins an owned metadata cleanup failure and rejects with a fixed 
   expect(app.selections()).toBe(0)
   expect(app.errors).toEqual([])
 })
+
+test("a throwing termination cannot release disposal before exit and reader cleanup join", async () => {
+  const capture = gatedChild()
+  const kill = spyOn(capture.child, "kill").mockImplementation(() => {
+    throw new Error("/private/SECRET_TERMINATION")
+  })
+  const app = await fixture(() => capture.child)
+  await app.run("source")
+  await app.run("start")
+  let settled = false
+  const disposing = app.dispose().then(
+    () => {
+      settled = true
+      return undefined
+    },
+    (error: unknown) => {
+      settled = true
+      return error
+    },
+  )
+  try {
+    await turn()
+    expect(settled).toBe(false)
+    expect(capture.child.stdout.locked).toBe(true)
+    expect(capture.child.stderr.locked).toBe(true)
+    capture.exit.resolve(0)
+    await turn()
+    expect(settled).toBe(false)
+    capture.cleanup.resolve()
+    const error = await disposing
+    expect(error instanceof Error ? error.message : undefined).toBe(
+      "Audio prototype cleanup failed",
+    )
+    expect(capture.child.stdout.locked).toBe(false)
+    expect(capture.child.stderr.locked).toBe(false)
+    expect(app.errors).toEqual([])
+  } finally {
+    capture.release()
+    await disposing
+    kill.mockRestore()
+  }
+})
+
+test("termination failure after EOF clears capture timers and never exposes a private error", async () => {
+  const capture = gatedChild()
+  const kill = spyOn(capture.child, "kill").mockImplementation(() => {
+    throw new Error("/private/SECRET_FINALLY_KILL")
+  })
+  const timers = spyOn(globalThis, "setTimeout")
+  const cleared = spyOn(globalThis, "clearTimeout")
+  const app = await fixture(() => capture.child)
+  let disposing: Promise<unknown> | undefined
+  try {
+    await app.run("source")
+    await app.run("start")
+    const captureTimers = timers.mock.calls.flatMap((args, index) =>
+      args[1] === 31_000 || args[1] === 33_000
+        ? [timers.mock.results[index]!.value]
+        : [],
+    )
+    expect(captureTimers).toHaveLength(2)
+    capture.release()
+    await turn()
+    disposing = app.dispose().then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    const error = await disposing
+    expect(error instanceof Error ? error.message : undefined).toBe(
+      "Audio prototype cleanup failed",
+    )
+    for (const timer of captureTimers)
+      expect(cleared.mock.calls.some((args) => args[0] === timer)).toBe(true)
+    expect(app.errors.some((message) => message.includes("SECRET"))).toBe(false)
+    expect(capture.child.stdout.locked).toBe(false)
+    expect(capture.child.stderr.locked).toBe(false)
+  } finally {
+    // Clear test-observed handles even on RED; a failing cleanup must not stall the test runner.
+    for (const result of timers.mock.results)
+      if (result.type === "return") clearTimeout(result.value)
+    capture.release()
+    if (disposing) await disposing
+    else await app.dispose().catch(() => {})
+    kill.mockRestore()
+    timers.mockRestore()
+    cleared.mockRestore()
+  }
+})
+
+test("active child-exit rejection stays visible after disposal joins both readers", async () => {
+  const capture = gatedChild()
+  const app = await fixture(() => capture.child)
+  await app.run("source")
+  await app.run("start")
+  let settled = false
+  const disposing = app.dispose().then(
+    () => {
+      settled = true
+      return undefined
+    },
+    (error: unknown) => {
+      settled = true
+      return error
+    },
+  )
+  try {
+    capture.exit.reject(new Error("/private/SECRET_EXIT"))
+    await turn()
+    expect(settled).toBe(false)
+    capture.cleanup.resolve()
+    const error = await disposing
+    expect(error instanceof Error ? error.message : undefined).toBe(
+      "Audio prototype cleanup failed",
+    )
+    expect(capture.child.stdout.locked).toBe(false)
+    expect(capture.child.stderr.locked).toBe(false)
+    expect(app.errors).toEqual([])
+  } finally {
+    capture.release()
+    await disposing
+  }
+})

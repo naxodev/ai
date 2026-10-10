@@ -246,6 +246,17 @@ export function createAudioPrototype(
       const launches = new Set<Promise<void>>()
       let retirementFailed = false
       let cleanupFailed = false
+      const terminate = (
+        input: CaptureChild,
+        signal: "SIGTERM" | "SIGKILL",
+      ) => {
+        try {
+          input.kill(signal)
+        } catch {
+          // A failed signal must not bypass reader joins or expose private diagnostics.
+          retirementFailed = true
+        }
+      }
       const readFor =
         (token: number): Reader =>
         async (command) => {
@@ -302,7 +313,7 @@ export function createAudioPrototype(
         child = null
         task = null
         cancelReaders = null
-        previous?.kill("SIGTERM")
+        if (previous) terminate(previous, "SIGTERM")
         previousReaders?.()
         if (!disposed) {
           setRunning(false)
@@ -310,7 +321,7 @@ export function createAudioPrototype(
           setStatus(reason)
         }
         const deadline = previous
-          ? setTimeout(() => previous.kill("SIGKILL"), 1_000)
+          ? setTimeout(() => terminate(previous, "SIGKILL"), 1_000)
           : undefined
         const wait = async () => {
           try {
@@ -535,16 +546,19 @@ export function createAudioPrototype(
           let expired = false
           const completion = input.exited.then(
             (code) => ({ code, failed: false }),
-            () => ({ code: 1, failed: true }),
+            () => {
+              retirementFailed = true
+              return { code: 1, failed: true }
+            },
           )
           const deadline = setTimeout(() => {
             expired = true
-            input.kill("SIGTERM")
+            terminate(input, "SIGTERM")
           }, 31_000)
           const readers = new AbortController()
           cancelReaders = () => readers.abort()
           const hardDeadline = setTimeout(() => {
-            input.kill("SIGKILL")
+            terminate(input, "SIGKILL")
             readers.abort()
           }, 33_000)
           let diagnosticsFailed = false
@@ -554,7 +568,7 @@ export function createAudioPrototype(
           ).catch((error: unknown) => {
             if (error instanceof ReaderCleanupError) cleanupFailed = true
             diagnosticsFailed = true
-            input.kill("SIGTERM")
+            terminate(input, "SIGTERM")
           })
           let metadataPending = false
           const metadataWatch =
@@ -634,9 +648,12 @@ export function createAudioPrototype(
                   `Ended · ${received} feature frames · Start to repeat`,
                 )
             } finally {
-              input.kill("SIGTERM")
+              terminate(input, "SIGTERM")
               readers.abort()
-              const cleanup = setTimeout(() => input.kill("SIGKILL"), 1_000)
+              const cleanup = setTimeout(
+                () => terminate(input, "SIGKILL"),
+                1_000,
+              )
               try {
                 await Promise.allSettled([completion, diagnostics])
               } finally {
@@ -645,6 +662,7 @@ export function createAudioPrototype(
                 clearTimeout(hardDeadline)
                 if (metadataWatch) clearInterval(metadataWatch)
               }
+              if (retirementFailed) throw new Error("Capture cleanup failed")
               if (!disposed && token === generation) {
                 child = null
                 cancelReaders = null
