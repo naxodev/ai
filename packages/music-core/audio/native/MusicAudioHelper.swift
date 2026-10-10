@@ -275,29 +275,40 @@ private typealias RegionRead = (Int32, Int32, UInt64, UnsafeMutableRawPointer, I
 private let liveRegionRead: RegionRead = { pid, flavor, address, buffer, size in
     proc_pidinfo(pid, flavor, address, buffer, size)
 }
-// XNU's PROC_PIDREGIONPATHINFO2 enumerates mapped vnodes, not all VM regions.
-// This private selector is local-only. It is an additional distribution gate.
-// An unsupported call cannot establish ownership and therefore fails closed.
-private let mappedFileRegionFlavor: Int32 = 22
+// Public libproc walk only. PROC_PIDREGIONPATHINFO is in the SDK; flavor 22 is not.
+// A zero-sized record is not ownership. Skip it and continue. If the cursor cannot
+// advance, the scan is incomplete and fails closed.
 private func kasetCacheOwned(_ pid: Int32, read: RegionRead = liveRegionRead) throws -> Bool {
     var address: UInt64 = 0
     var owners = Set<String>()
     let until = nativeNow() + 200
+    let page = max(UInt64(vm_page_size), 4096)
     for _ in 0..<4096 {
         guard nativeNow() < until else { throw HelperError(reason: "source-bound") }
         var region = proc_regionwithpathinfo()
         let size = Int32(MemoryLayout<proc_regionwithpathinfo>.size)
         errno = 0
         let count = withUnsafeMutablePointer(to: &region) {
-            read(pid, mappedFileRegionFlavor, address, UnsafeMutableRawPointer($0), size)
+            read(pid, PROC_PIDREGIONPATHINFO, address, UnsafeMutableRawPointer($0), size)
         }
         if count == 0 {
             guard errno == EINVAL || errno == 0 else { throw HelperError(reason: "source-loss") }
             return owners == ["com.sertacozercan.Kaset"]
         }
-        guard count == size, region.prp_prinfo.pri_address >= address,
-              region.prp_prinfo.pri_size > 0,
-              region.prp_prinfo.pri_address <= UInt64.max - region.prp_prinfo.pri_size else { throw HelperError(reason: "source-loss") }
+        guard count == size, region.prp_prinfo.pri_address >= address else {
+            throw HelperError(reason: "source-loss")
+        }
+        if region.prp_prinfo.pri_size == 0 {
+            let base = max(address, region.prp_prinfo.pri_address)
+            guard base <= UInt64.max - page else { throw HelperError(reason: "source-loss") }
+            let next = base + page
+            guard next > address else { throw HelperError(reason: "source-loss") }
+            address = next
+            continue
+        }
+        guard region.prp_prinfo.pri_address <= UInt64.max - region.prp_prinfo.pri_size else {
+            throw HelperError(reason: "source-loss")
+        }
         let path = withUnsafeBytes(of: &region.prp_vip.vip_path) { bytes in
             String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
         }
@@ -305,7 +316,9 @@ private func kasetCacheOwned(_ pid: Int32, read: RegionRead = liveRegionRead) th
             owners.insert(owner)
             if owner != "com.sertacozercan.Kaset" { return false }
         }
-        address = region.prp_prinfo.pri_address + region.prp_prinfo.pri_size
+        let next = region.prp_prinfo.pri_address + region.prp_prinfo.pri_size
+        guard next > address else { throw HelperError(reason: "source-loss") }
+        address = next
     }
     throw HelperError(reason: "source-bound")
 }
@@ -523,41 +536,89 @@ private func selfTest(_ scenario: String, duration: Double) throws {
               cacheOwner("/tmp" + path) == nil,
               cacheOwner(path.replacingOccurrences(of: "/cache", with: "-other/cache")) == nil,
               try !kasetCacheOwned(getpid()) else { throw HelperError(reason: "attribution-fixture") }
-        // The public VM walk reports zero-sized WebKit regions before later
-        // cache files. The file-only walk must reach those files, not skip bounds.
+        // The public walk can report a zero-sized region before a later cache file.
+        // Only a positive-size public record can prove ownership. Flavor 22 is not consulted.
+        final class Served { var cache = false }
+        let served = Served()
         let readFixture: RegionRead = { _, flavor, address, buffer, size in
+            guard flavor == PROC_PIDREGIONPATHINFO else {
+                errno = EINVAL
+                return 0
+            }
             let region = buffer.assumingMemoryBound(to: proc_regionwithpathinfo.self)
+            region.pointee = proc_regionwithpathinfo()
             if address == 0 {
-                region.pointee = proc_regionwithpathinfo()
                 region.pointee.prp_prinfo.pri_address = 4096
-                if flavor == PROC_PIDREGIONPATHINFO {
-                    // Reproduce the observed public-walk failure on this Mac.
-                    region.pointee.prp_prinfo.pri_size = 0
-                } else if flavor == 22 {
-                    region.pointee.prp_prinfo.pri_size = 4096
-                    let bytes = Array(path.utf8)
-                    withUnsafeMutableBytes(of: &region.pointee.prp_vip.vip_path) { target in
-                        target.copyBytes(from: bytes)
-                    }
-                } else { return 0 }
+                region.pointee.prp_prinfo.pri_size = 0
+                return size
+            }
+            if address > 4096, !served.cache {
+                served.cache = true
+                region.pointee.prp_prinfo.pri_address = address
+                region.pointee.prp_prinfo.pri_size = 4096
+                let bytes = Array(path.utf8)
+                withUnsafeMutableBytes(of: &region.pointee.prp_vip.vip_path) { target in
+                    target.copyBytes(from: bytes)
+                }
                 return size
             }
             errno = EINVAL
             return 0
         }
         guard try kasetCacheOwned(0, read: readFixture) else { throw HelperError(reason: "attribution-fixture") }
-        let deniedAfterMatch: RegionRead = { pid, flavor, address, buffer, size in
-            if address == 0 { return readFixture(pid, flavor, address, buffer, size) }
+        let deniedAfterMatch: RegionRead = { _, flavor, address, buffer, size in
+            guard flavor == PROC_PIDREGIONPATHINFO else {
+                errno = EINVAL
+                return 0
+            }
+            if address == 0 {
+                let region = buffer.assumingMemoryBound(to: proc_regionwithpathinfo.self)
+                region.pointee = proc_regionwithpathinfo()
+                region.pointee.prp_prinfo.pri_address = 4096
+                region.pointee.prp_prinfo.pri_size = 4096
+                let bytes = Array(path.utf8)
+                withUnsafeMutableBytes(of: &region.pointee.prp_vip.vip_path) { target in
+                    target.copyBytes(from: bytes)
+                }
+                return size
+            }
             errno = EACCES
             return 0
         }
-        let zeroSized: RegionRead = { pid, flavor, address, buffer, size in
-            let count = readFixture(pid, flavor, address, buffer, size)
-            if count == size { buffer.assumingMemoryBound(to: proc_regionwithpathinfo.self).pointee.prp_prinfo.pri_size = 0 }
-            return count
+        let zeroSized: RegionRead = { _, flavor, address, buffer, size in
+            guard flavor == PROC_PIDREGIONPATHINFO else {
+                errno = EINVAL
+                return 0
+            }
+            let region = buffer.assumingMemoryBound(to: proc_regionwithpathinfo.self)
+            region.pointee = proc_regionwithpathinfo()
+            region.pointee.prp_prinfo.pri_address = address
+            region.pointee.prp_prinfo.pri_size = 0
+            let bytes = Array(path.utf8)
+            withUnsafeMutableBytes(of: &region.pointee.prp_vip.vip_path) { target in
+                target.copyBytes(from: bytes)
+            }
+            return size
+        }
+        let foreign: RegionRead = { _, flavor, address, buffer, size in
+            guard flavor == PROC_PIDREGIONPATHINFO else {
+                errno = EINVAL
+                return 0
+            }
+            let region = buffer.assumingMemoryBound(to: proc_regionwithpathinfo.self)
+            region.pointee = proc_regionwithpathinfo()
+            region.pointee.prp_prinfo.pri_address = address == 0 ? 4096 : address
+            region.pointee.prp_prinfo.pri_size = 4096
+            let foreignPath = path.replacingOccurrences(of: "com.sertacozercan.Kaset", with: "other.app")
+            let bytes = Array(foreignPath.utf8)
+            withUnsafeMutableBytes(of: &region.pointee.prp_vip.vip_path) { target in
+                target.copyBytes(from: bytes)
+            }
+            return size
         }
         guard (try? kasetCacheOwned(0, read: deniedAfterMatch)) == nil,
-              (try? kasetCacheOwned(0, read: zeroSized)) == nil else { throw HelperError(reason: "attribution-fixture") }
+              (try? kasetCacheOwned(0, read: zeroSized)) == nil,
+              (try? kasetCacheOwned(0, read: foreign)) == false else { throw HelperError(reason: "attribution-fixture") }
         FileHandle.standardOutput.write(try jsonLine(["test": "attribution", "passed": true]))
         return
     }

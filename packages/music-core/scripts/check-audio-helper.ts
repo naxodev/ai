@@ -405,7 +405,7 @@ async function main() {
           identity:
             "Passed: native launch and signed executable identity stay stable",
           attribution:
-            "Passed: mapped-file attribution rejects foreign paths, incomplete scans, and zero-sized records",
+            "Passed: public region attribution skips zero-sized records, rejects foreign paths, and fails closed on an incomplete scan",
         }[scenario],
       )
     } finally {

@@ -56,10 +56,10 @@ Apple's [notarization guidance](https://developer.apple.com/documentation/securi
 
 ## Release gate still unmet
 
-The local Kaset helper now uses XNU's private `PROC_PIDREGIONPATHINFO2` selector to enumerate mapped files. The public VM-region walk returned zero-sized WebKit regions before reaching the cache files on this Mac. The file-only walk resolved one Kaset helper without changing the bounds or attribution checks. Metadata-only daemon discovery and one approved sustained live run passed. Private API compatibility and a supported ownership contract add a release blocker beyond signing.
+The helper proves mapped-file ownership with public `PROC_PIDREGIONPATHINFO` only. It does not call the private region flavor. A zero-sized record is not ownership; the walk continues and fails closed if the cursor cannot advance. Synthetic checks cover a zero-sized prefix, a foreign owner, and an incomplete scan. Live Kaset mappings have not been rechecked with this public walk. The historical live run used the private selector and does not clear this contract.
 
 These remain unverified and must pass before any release: signed distribution, notarization, ticket handling, quarantined and offline launch, shipped-helper prompt attribution, permission persistence across updates and package paths, the deny/grant/revoke matrix, supported helper-process attribution, additional players, device changes, and sustained performance.
 
 ## Recommended next step
 
-Continue local-only work behind the daemon capture adapter, and keep production capture unavailable. Ad-hoc signing is sufficient for that work, because the spike proves integrity verification and universal builds function. Release also needs a supported attribution contract. A Developer ID certificate alone does not clear these gates.
+Continue local-only work behind the daemon capture adapter, and keep production capture unavailable. Ad-hoc signing is sufficient for that work. The ownership walk is now the public region API, but a live Kaset mapping check is still required before release. A Developer ID certificate alone does not clear the remaining gates.
