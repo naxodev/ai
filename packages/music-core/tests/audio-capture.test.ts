@@ -321,7 +321,7 @@ describe("offline audio capture ownership", () => {
   })
 
   for (const failure of [false, true]) {
-    test(`${failure ? "typed stream failure" : "EOF"} joins release before reporting stopped`, async () => {
+    test(`${failure ? "typed stream failure" : "EOF"} joins release before reporting its truthful terminal status`, async () => {
       const finish = Latch.makeUnsafe()
       const closing = Latch.makeUnsafe()
       const release = Latch.makeUnsafe()
@@ -348,9 +348,10 @@ describe("offline audio capture ownership", () => {
             expect((yield* capture.status()).type).toBe("active")
             yield* Latch.open(release)
             let status = yield* Queue.take(statuses)
-            while (status.type !== "stopped")
+            while (status.type !== "stopped" && status.type !== "failed")
               status = yield* Queue.take(statuses)
-            expect(status.reason).toBe("source-loss")
+            expect(status.type).toBe(failure ? "failed" : "stopped")
+            expect(status.reason).toBe(failure ? "setup" : "source-loss")
             expect(yield* Ref.get(releases)).toBe(1)
           }),
           {

@@ -384,6 +384,43 @@ test("startup has its own bound; the active lease starts only when acquisition c
   )
 })
 
+test("expired departing ownership joins cleanup but cannot regain Stop authority", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture
+        yield* Effect.gen(function* () {
+          yield* Latch.open(f.ready)
+          yield* f.capture.start("a", yield* f.select("a"))
+          yield* Latch.close(f.releaseCleanup)
+          yield* f.setNow(5_000)
+          const sweep = yield* f.capture
+            .listSources("metadata")
+            .pipe(Effect.forkChild)
+          yield* Latch.await(f.closing)
+          const stopping = yield* f.capture.stop("a").pipe(Effect.forkChild)
+          const departing = yield* f.capture.detach("a").pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          expect(stopping.pollUnsafe()).toBeUndefined()
+          expect(departing.pollUnsafe()).toBeUndefined()
+          yield* Latch.open(f.releaseCleanup)
+          yield* Fiber.join(sweep)
+          expect(yield* Fiber.join(stopping)).toEqual({
+            type: "rejected",
+            reason: "not-joined",
+          })
+          yield* Fiber.join(departing)
+          expect(yield* Ref.get(f.releases)).toBe(1)
+          expect(yield* f.capture.status()).toMatchObject({
+            type: "stopped",
+            reason: "lease-expired",
+          })
+        }).pipe(Effect.ensuring(Latch.open(f.releaseCleanup)))
+      }),
+    ),
+  )
+})
+
 test("expired acquisition cancels its waiter even if a later joined window becomes ready", async () => {
   await Effect.runPromise(
     Effect.scoped(
@@ -407,6 +444,64 @@ test("expired acquisition cancels its waiter even if a later joined window becom
         expect((yield* Fiber.join(second)).type).toBe("started")
         expect((yield* f.capture.renew("a", 1)).type).toBe("rejected")
         expect((yield* f.capture.renew("b", 1)).type).toBe("renewed")
+      }),
+    ),
+  )
+})
+
+test("canceling the last live acquisition interest does not preserve another expired admission", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture
+        const first = yield* f.capture
+          .start("a", yield* f.select("a"))
+          .pipe(Effect.forkChild)
+        yield* Latch.await(f.entered)
+        yield* f.setNow(25_000)
+        const admitted = yield* Latch.make(false)
+        yield* f.setRevalidate(() => {
+          Latch.openUnsafe(admitted)
+        })
+        const second = yield* f.capture
+          .start("b", yield* f.select("b"))
+          .pipe(Effect.forkChild)
+        yield* Latch.await(admitted)
+        yield* Effect.yieldNow
+        yield* f.setNow(30_000)
+        yield* Fiber.interrupt(second)
+        expect(yield* Ref.get(f.releases)).toBe(1)
+        expect(yield* Fiber.join(first)).toEqual({
+          type: "rejected",
+          reason: "canceled",
+        })
+        expect((yield* f.capture.status()).type).toBe("stopped")
+      }),
+    ),
+  )
+})
+
+test("late acquisition success cannot activate after its startup interest expires before the sweep", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture
+        const starting = yield* f.capture
+          .start("a", yield* f.select("a"))
+          .pipe(Effect.forkChild)
+        yield* Latch.await(f.entered)
+        yield* f.setNow(30_000)
+        yield* Latch.open(f.ready)
+        expect(yield* Fiber.join(starting)).toEqual({
+          type: "rejected",
+          reason: "canceled",
+        })
+        expect(yield* Ref.get(f.releases)).toBe(1)
+        expect(yield* f.capture.status()).toEqual({
+          type: "stopped",
+          generation: 1,
+          reason: "lease-expired",
+        })
       }),
     ),
   )

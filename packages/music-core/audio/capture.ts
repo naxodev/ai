@@ -100,6 +100,9 @@ type Slot =
       readonly generation: number
       readonly source: ResolvedCaptureSource
       readonly leases: ReadonlyMap<string, number>
+      // Retain departing ownership while leases are revoked during retirement.
+      readonly interestOwners: ReadonlyMap<string, ReadonlySet<number>>
+      readonly departingLeases?: ReadonlyMap<string, number>
       readonly outcome: Deferred.Deferred<AudioStartResult>
       readonly done: Deferred.Deferred<void>
       readonly close: Effect.Effect<void> | undefined
@@ -108,6 +111,7 @@ type Slot =
 
 type CaptureState = {
   readonly closed: boolean
+  readonly observationsClosed: boolean
   readonly slot: Slot
   readonly tokens: ReadonlyMap<string, IssuedToken>
   readonly attempts: ReadonlyMap<number, Attempt>
@@ -116,6 +120,16 @@ type CaptureState = {
 
 type StopReason =
   "stop" | "last-connection" | "source-loss" | "canceled" | "lease-expired"
+
+type RetirementReason =
+  StopReason | { readonly failed: "setup" | "timeout" | "permission" }
+
+const adapterFailureReason = (cause: Cause.Cause<AudioAdapterError>) => {
+  const error = Cause.findError(cause)
+  return Result.isSuccess(error) && error.success.reason !== "unavailable"
+    ? error.success.reason
+    : "setup"
+}
 
 type ExpireAction = {
   readonly generation: number
@@ -127,6 +141,11 @@ type ExpireAction = {
 
 type RetireAction =
   | { readonly type: "absent" }
+  | {
+      readonly type: "wait"
+      readonly done: Deferred.Deferred<void>
+      readonly authorized: boolean
+    }
   | {
       readonly type: "retire"
       readonly generation: number
@@ -146,6 +165,7 @@ type Claim =
     }
   | {
       readonly type: "waiter"
+      readonly generation: number
       readonly outcome: Deferred.Deferred<AudioStartResult>
     }
   | {
@@ -156,6 +176,8 @@ type Claim =
   | { readonly type: "busy" }
   | { readonly type: "retry" }
   | { readonly type: "unknown-token" }
+  | { readonly type: "expired-token" }
+  | { readonly type: "unresolved-source" }
   | { readonly type: "expired-interest" }
 
 const idleSlot = (generation: number): Slot => ({
@@ -221,6 +243,7 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
       options.startupInterestMs ?? AUDIO_STARTUP_INTEREST_MS
     const state = yield* Ref.make<CaptureState>({
       closed: false,
+      observationsClosed: false,
       slot: idleSlot(0),
       tokens: new Map(),
       attempts: new Map(),
@@ -309,34 +332,56 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
       Effect.andThen(Ref.update(featureEpoch, (epoch) => epoch + 1)),
     )
 
-    const releaseRetiring = (generation: number, reason: StopReason) =>
+    const releaseRetiring = (generation: number, reason: RetirementReason) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
-          const done = yield* Ref.modify(state, (current) => {
-            if (
-              current.slot.phase !== "retiring" ||
-              current.slot.generation !== generation
-            )
-              return [undefined, current] as const
-            return [
-              current.slot.done,
-              { ...current, slot: idleSlot(generation) },
-            ] as const
-          })
+          const done = yield* Ref.get(state).pipe(
+            Effect.map((current) => {
+              if (
+                current.slot.phase !== "retiring" ||
+                current.slot.generation !== generation
+              )
+                return undefined
+              return current.slot.done
+            }),
+          )
           if (done === undefined) return
           yield* Ref.set(sequences, 0)
           yield* Ref.set(lastTimestamp, -1)
           yield* Ref.set(pendingDraft, undefined)
           yield* Ref.set(pendingSlot, undefined)
           yield* clearFrames
-          yield* publishStatus({ type: "stopped", generation, reason })
+          yield* publishStatus(
+            typeof reason === "string"
+              ? { type: "stopped", generation, reason }
+              : { type: "failed", generation, reason: reason.failed },
+          )
+          yield* Ref.update(state, (current) =>
+            current.slot.phase === "retiring" &&
+            current.slot.generation === generation
+              ? { ...current, slot: idleSlot(generation) }
+              : current,
+          )
           yield* Deferred.succeed(done, undefined)
+        }),
+      )
+
+    const finishRetirement = (
+      action: Extract<RetireAction, { type: "retire" }>,
+      reason: RetirementReason,
+    ) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          if (action.close) yield* action.close
+          if (action.leader) yield* Fiber.interrupt(action.leader)
+          yield* releaseRetiring(action.generation, reason)
+          yield* Deferred.await(action.done)
         }),
       )
 
     const retire = (
       generation: number,
-      reason: StopReason,
+      reason: RetirementReason,
       requireLease?: string,
     ) =>
       Effect.uninterruptible(
@@ -345,6 +390,23 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
             state,
             (current): readonly [RetireAction, CaptureState] => {
               const slot = current.slot
+              if (
+                slot.phase === "retiring" &&
+                (generation === 0 || slot.generation === generation) &&
+                (requireLease === undefined ||
+                  slot.interestOwners.has(requireLease))
+              )
+                return [
+                  {
+                    type: "wait",
+                    done: slot.done,
+                    authorized:
+                      requireLease === undefined ||
+                      (slot.departingLeases?.get(requireLease) ?? -Infinity) >
+                        nowMs(),
+                  },
+                  current,
+                ]
               if (slot.phase !== "acquiring" && slot.phase !== "active")
                 return [{ type: "absent" }, current]
               if (generation !== 0 && slot.generation !== generation)
@@ -367,6 +429,7 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
                   slot: {
                     ...slot,
                     phase: "retiring",
+                    departingLeases: slot.leases,
                     leases: new Map<string, number>(),
                     close: undefined,
                   },
@@ -374,11 +437,12 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
               ]
             },
           )
+          if (requireLease !== undefined) yield* cancelConnection(requireLease)
           if (action.type === "absent") return false
-          if (action.close) yield* action.close
-          if (action.leader) yield* Fiber.interrupt(action.leader)
-          yield* releaseRetiring(action.generation, reason)
-          yield* Deferred.await(action.done)
+          if (action.type === "wait") {
+            yield* Deferred.await(action.done)
+            return action.authorized
+          } else yield* finishRetirement(action, reason)
           return true
         }),
       )
@@ -534,6 +598,9 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
                             slot: {
                               ...current.slot,
                               phase: "retiring",
+                              departingLeases:
+                                current.slot.departingLeases ??
+                                current.slot.leases,
                               leases: new Map<string, number>(),
                             },
                           }
@@ -571,43 +638,45 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
         })
         if (!stillAdmitted) {
           yield* closeAdapter
-          yield* releaseRetiring(generation, "canceled")
           yield* Deferred.succeed(outcome, canceledResult)
           return
         }
         yield* publishStatus({ type: "acquiring", generation })
-        const started = yield* Scope.provide(adapterScope)(
-          options.adapter.start(source),
-        ).pipe(
-          Effect.match({
-            onFailure: (error) => ({ ok: false as const, error }),
-            onSuccess: (handle) => ({ ok: true as const, handle }),
-          }),
-        )
-        if (!started.ok) {
-          yield* closeAdapter
-          const reason =
-            started.error.reason === "permission" ||
-            started.error.reason === "timeout" ||
-            started.error.reason === "setup"
-              ? started.error.reason
-              : "setup"
-          const done = yield* Ref.modify(state, (current) => {
-            if (
-              current.slot.generation !== generation ||
-              current.slot.phase === "idle" ||
-              current.slot.phase === "active"
-            )
-              return [undefined, current] as const
-            return [
-              current.slot.done,
-              { ...current, slot: idleSlot(generation) },
-            ] as const
-          })
-          yield* clearFrames
-          yield* publishStatus({ type: "failed", generation, reason })
-          yield* Deferred.succeed(outcome, { type: "failed", reason })
-          if (done) yield* Deferred.succeed(done, undefined)
+        const started = yield* Effect.suspend(() =>
+          Scope.provide(adapterScope)(options.adapter.start(source)),
+        ).pipe(Effect.exit)
+        if (Exit.isFailure(started)) {
+          if (Cause.hasInterruptsOnly(started.cause))
+            return yield* Effect.interrupt
+          yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              const ownsRetirement = yield* Ref.modify(state, (current) => {
+                if (
+                  current.slot.phase !== "acquiring" ||
+                  current.slot.generation !== generation
+                )
+                  return [false, current] as const
+                return [
+                  true,
+                  {
+                    ...current,
+                    slot: {
+                      ...current.slot,
+                      phase: "retiring" as const,
+                      departingLeases: current.slot.leases,
+                      leases: new Map<string, number>(),
+                      close: undefined,
+                    },
+                  },
+                ] as const
+              })
+              yield* closeAdapter
+              if (!ownsRetirement) return
+              const reason = adapterFailureReason(started.cause)
+              yield* releaseRetiring(generation, { failed: reason })
+              yield* Deferred.succeed(outcome, { type: "failed", reason })
+            }),
+          )
           return
         }
         const decision = yield* Effect.uninterruptible(
@@ -615,7 +684,10 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
             state,
             (
               current,
-            ): readonly [{ readonly publish: boolean }, CaptureState] => {
+            ): readonly [
+              { readonly publish: boolean; readonly ownsRetirement?: boolean },
+              CaptureState,
+            ] => {
               if (
                 current.closed ||
                 current.slot.phase !== "acquiring" ||
@@ -630,12 +702,13 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
                 )
               )
                 return [
-                  { publish: false },
+                  { publish: false, ownsRetirement: true },
                   {
                     ...current,
                     slot: {
                       ...current.slot,
                       phase: "retiring",
+                      departingLeases: current.slot.leases,
                       leases: new Map(),
                       close: undefined,
                     },
@@ -662,7 +735,8 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
         )
         if (!decision.publish) {
           yield* closeAdapter
-          yield* releaseRetiring(generation, "canceled")
+          if (decision.ownsRetirement)
+            yield* releaseRetiring(generation, "lease-expired")
           yield* Deferred.succeed(outcome, canceledResult)
           return
         }
@@ -678,7 +752,7 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
           source: source.identity,
         })
         yield* Effect.forkIn(adapterScope, { startImmediately: true })(
-          started.handle.frames.pipe(
+          started.value.frames.pipe(
             Stream.runForEach((draft) =>
               considerFrame(generation, source, draft),
             ),
@@ -686,7 +760,12 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
             Effect.flatMap((exit) =>
               Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
                 ? Effect.failCause(exit.cause)
-                : retire(generation, "source-loss").pipe(
+                : retire(
+                    generation,
+                    Exit.isFailure(exit)
+                      ? { failed: adapterFailureReason(exit.cause) }
+                      : "source-loss",
+                  ).pipe(
                     // Retirement must not close and join its own stream fiber.
                     Effect.forkIn(ownerScope),
                     Effect.asVoid,
@@ -705,7 +784,7 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
               )
                 return
               yield* closeAdapter
-              yield* releaseRetiring(generation, "canceled")
+              // The retirement owner completes done after joining this leader.
               yield* Deferred.succeed(outcome, canceledResult)
             }),
           ),
@@ -763,11 +842,16 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
     yield* Effect.forkIn(ownerScope, { startImmediately: true })(
       options.observations.pipe(
         Stream.runForEach(observe),
-        Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.failCause(cause)
+        Effect.exit,
+        Effect.flatMap((exit) =>
+          Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
+            ? Effect.failCause(exit.cause)
             : Effect.gen(function* () {
-                const slot = (yield* Ref.get(state)).slot
+                // A terminated watcher cannot prove ownership for a fresh Start.
+                const { slot } = yield* Ref.updateAndGet(state, (current) => ({
+                  ...current,
+                  observationsClosed: true,
+                }))
                 if (slot.phase === "active" || slot.phase === "acquiring")
                   yield* retire(slot.generation, "source-loss")
               }),
@@ -1015,214 +1099,329 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
       source: ResolvedCaptureSource,
       token: string,
       cancel: Deferred.Deferred<void>,
+      attemptId: number,
     ) =>
-      Ref.modify(state, (current): readonly [Claim, CaptureState] => {
-        if (current.closed || Deferred.isDoneUnsafe(cancel))
-          return [{ type: "canceled" }, current]
-        if (
-          current.latestObservation &&
-          current.latestObservation.sequence > source.observationSequence
-        )
-          return [{ type: "retry" }, current]
-        if (!current.tokens.has(token))
-          return [{ type: "unknown-token" }, current]
-        const consume = () => {
-          const tokens = new Map(current.tokens)
-          tokens.delete(token)
-          return tokens
-        }
-        const slot = current.slot
-        if (slot.phase === "retiring")
-          return [{ type: "wait", done: slot.done }, current]
-        if (
-          (slot.phase === "active" || slot.phase === "acquiring") &&
-          ![...slot.leases.values()].some((deadline) => deadline > nowMs())
-        )
-          return [{ type: "expired-interest" }, current]
-        if (slot.phase === "idle") {
-          const generation = slot.generation + 1
-          const outcome = Deferred.makeUnsafe<AudioStartResult>()
-          const done = Deferred.makeUnsafe<void>()
-          return [
-            { type: "leader", generation, outcome, source },
-            {
-              ...current,
-              tokens: consume(),
-              slot: {
-                phase: "acquiring",
-                generation,
-                source,
-                leases: new Map([[connectionId, nowMs() + startupInterestMs]]),
-                outcome,
-                done,
-                close: undefined,
-                leader: undefined,
-              },
-            },
-          ]
-        }
-        if (sameSelection(slot.source, source)) {
-          const leases = new Map(slot.leases)
-          leases.set(
-            connectionId,
-            nowMs() +
-              (slot.phase === "acquiring"
-                ? startupInterestMs
-                : interestLeaseMs),
+      Clock.clockWith((clock) =>
+        Ref.modify(state, (current): readonly [Claim, CaptureState] => {
+          if (current.closed || Deferred.isDoneUnsafe(cancel))
+            return [{ type: "canceled" }, current]
+          if (current.observationsClosed)
+            return [{ type: "unresolved-source" }, current]
+          if (
+            current.latestObservation &&
+            current.latestObservation.sequence > source.observationSequence
           )
-          if (slot.phase === "acquiring")
+            return [{ type: "retry" }, current]
+          const issued = current.tokens.get(token)
+          if (!issued) return [{ type: "unknown-token" }, current]
+          if (clock.currentTimeMillisUnsafe() > issued.expiresAtMs)
+            return [{ type: "expired-token" }, current]
+          const consume = () => {
+            const tokens = new Map(current.tokens)
+            tokens.delete(token)
+            return tokens
+          }
+          const slot = current.slot
+          if (slot.phase === "retiring")
+            return [{ type: "wait", done: slot.done }, current]
+          if (
+            (slot.phase === "active" || slot.phase === "acquiring") &&
+            ![...slot.leases.values()].some((deadline) => deadline > nowMs())
+          )
+            return [{ type: "expired-interest" }, current]
+          if (slot.phase === "idle") {
+            const generation = slot.generation + 1
+            const outcome = Deferred.makeUnsafe<AudioStartResult>()
+            const done = Deferred.makeUnsafe<void>()
             return [
-              { type: "waiter", outcome: slot.outcome },
-              { ...current, tokens: consume(), slot: { ...slot, leases } },
-            ]
-          if (slot.phase === "active")
-            return [
+              { type: "leader", generation, outcome, source },
               {
-                type: "joined",
-                generation: slot.generation,
-                source: slot.source.identity,
+                ...current,
+                tokens: consume(),
+                slot: {
+                  phase: "acquiring",
+                  generation,
+                  source,
+                  leases: new Map([
+                    [connectionId, nowMs() + startupInterestMs],
+                  ]),
+                  interestOwners: new Map([
+                    [connectionId, new Set([attemptId])],
+                  ]),
+                  outcome,
+                  done,
+                  close: undefined,
+                  leader: undefined,
+                },
               },
-              { ...current, tokens: consume(), slot: { ...slot, leases } },
             ]
-        }
-        return [{ type: "busy" }, current]
-      })
+          }
+          if (sameSelection(slot.source, source)) {
+            const leases = new Map(slot.leases)
+            const interestOwners = new Map(slot.interestOwners)
+            interestOwners.set(
+              connectionId,
+              new Set([...(interestOwners.get(connectionId) ?? []), attemptId]),
+            )
+            leases.set(
+              connectionId,
+              nowMs() +
+                (slot.phase === "acquiring"
+                  ? startupInterestMs
+                  : interestLeaseMs),
+            )
+            if (slot.phase === "acquiring")
+              return [
+                {
+                  type: "waiter",
+                  generation: slot.generation,
+                  outcome: slot.outcome,
+                },
+                {
+                  ...current,
+                  tokens: consume(),
+                  slot: { ...slot, leases, interestOwners },
+                },
+              ]
+            if (slot.phase === "active")
+              return [
+                {
+                  type: "joined",
+                  generation: slot.generation,
+                  source: slot.source.identity,
+                },
+                {
+                  ...current,
+                  tokens: consume(),
+                  slot: { ...slot, leases, interestOwners },
+                },
+              ]
+          }
+          return [{ type: "busy" }, current]
+        }),
+      )
 
     const start = Effect.fn("AudioCapture.start")(function* (
       connectionId: string,
       token: string,
     ) {
-      if ((yield* Ref.get(state)).closed) return canceledResult
-      const attemptId = ++nextAttempt
-      const cancel = Deferred.makeUnsafe<void>()
-      yield* Ref.update(state, (current) => {
-        const attempts = new Map(current.attempts)
-        attempts.set(attemptId, { id: attemptId, connectionId, cancel })
-        return { ...current, attempts }
-      })
-      return yield* Effect.gen(function* () {
-        // Cancellation owns the attempt before any blocked retirement wait.
-        // New admission still cannot revive a generation whose interest expired.
-        yield* expireInterests()
-        for (;;) {
-          if ((yield* Ref.get(state)).closed || Deferred.isDoneUnsafe(cancel))
-            return canceledResult
-          const prepared = yield* Effect.raceFirst(
-            prepare(connectionId, token, cancel),
-            Deferred.await(cancel).pipe(
-              Effect.as({ type: "result" as const, result: canceledResult }),
-            ),
-          )
-          if (prepared.type === "result") return prepared.result
-          const admitted = yield* claim(
-            connectionId,
-            prepared.source,
-            token,
-            cancel,
-          )
-          if (admitted.type === "canceled") return canceledResult
-          if (admitted.type === "retry") continue
-          if (admitted.type === "expired-interest") {
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if ((yield* Ref.get(state)).closed) return canceledResult
+          const attemptId = ++nextAttempt
+          const cancel = Deferred.makeUnsafe<void>()
+          let admittedGeneration: number | undefined
+          let waitingRetirement: Deferred.Deferred<void> | undefined
+          yield* Ref.update(state, (current) => {
+            const attempts = new Map(current.attempts)
+            attempts.set(attemptId, { id: attemptId, connectionId, cancel })
+            return { ...current, attempts }
+          })
+          return yield* Effect.gen(function* () {
+            // Cancellation owns the attempt before any blocked retirement wait.
+            // New admission still cannot revive a generation whose interest expired.
             yield* expireInterests()
-            continue
-          }
-          if (admitted.type === "unknown-token")
-            return {
-              type: "rejected" as const,
-              reason: "unknown-token" as const,
-            }
-          if (admitted.type === "busy") return { type: "busy" as const }
-          if (admitted.type === "joined")
-            return {
-              type: "joined" as const,
-              generation: admitted.generation,
-              source: admitted.source,
-            }
-          if (admitted.type === "wait") {
-            const winner = yield* Effect.raceFirst(
-              Deferred.await(admitted.done).pipe(Effect.as("retired" as const)),
-              Deferred.await(cancel).pipe(Effect.as("detached" as const)),
-            )
-            if (winner === "detached") return canceledResult
-            continue
-          }
-          if (admitted.type === "waiter")
-            return yield* Effect.raceFirst(
-              Deferred.await(admitted.outcome),
-              Deferred.await(cancel).pipe(Effect.as(canceledResult)),
-            )
-          const ready = Deferred.makeUnsafe<void>()
-          const fiber = yield* Effect.forkIn(ownerScope, {
-            startImmediately: true,
-          })(
-            runLeader(
-              admitted.generation,
-              admitted.source,
-              admitted.outcome,
-              ready,
-            ),
-          )
-          yield* Ref.update(state, (current) =>
-            current.slot.phase !== "idle" &&
-            current.slot.generation === admitted.generation
-              ? { ...current, slot: { ...current.slot, leader: fiber } }
-              : current,
-          )
-          yield* Deferred.succeed(ready, undefined)
-          return yield* Effect.raceFirst(
-            Deferred.await(admitted.outcome),
-            Deferred.await(cancel).pipe(Effect.as(canceledResult)),
-          )
-        }
-      }).pipe(
-        Effect.flatMap((result): Effect.Effect<AudioStartResult> =>
-          result.type === "started" || result.type === "joined"
-            ? Ref.get(state).pipe(
-                Effect.map((current) =>
-                  joined(current, connectionId, result.generation)
-                    ? result
-                    : canceledResult,
+            for (;;) {
+              if (
+                (yield* Ref.get(state)).closed ||
+                Deferred.isDoneUnsafe(cancel)
+              )
+                return canceledResult
+              const prepared = yield* restore(
+                Effect.raceFirst(
+                  prepare(connectionId, token, cancel),
+                  Deferred.await(cancel).pipe(
+                    Effect.as({
+                      type: "result" as const,
+                      result: canceledResult,
+                    }),
+                  ),
                 ),
               )
-            : Effect.succeed(result),
-        ),
-        Effect.ensuring(
-          Ref.update(state, (current) => {
-            const attempts = new Map(current.attempts)
-            attempts.delete(attemptId)
-            return { ...current, attempts }
-          }),
-        ),
+              if (prepared.type === "result") return prepared.result
+              const admitted = yield* claim(
+                connectionId,
+                prepared.source,
+                token,
+                cancel,
+                attemptId,
+              )
+              if (admitted.type === "canceled") return canceledResult
+              if (admitted.type === "retry") continue
+              if (admitted.type === "expired-interest") {
+                yield* expireInterests()
+                continue
+              }
+              if (
+                admitted.type === "unknown-token" ||
+                admitted.type === "expired-token" ||
+                admitted.type === "unresolved-source"
+              )
+                return {
+                  type: "rejected" as const,
+                  reason: admitted.type,
+                }
+              if (admitted.type === "busy") return { type: "busy" as const }
+              if (
+                admitted.type === "joined" ||
+                admitted.type === "waiter" ||
+                admitted.type === "leader"
+              )
+                admittedGeneration = admitted.generation
+              if (admitted.type === "joined")
+                return {
+                  type: "joined" as const,
+                  generation: admitted.generation,
+                  source: admitted.source,
+                }
+              if (admitted.type === "wait") {
+                waitingRetirement = admitted.done
+                const winner = yield* restore(
+                  Effect.raceFirst(
+                    Deferred.await(admitted.done).pipe(
+                      Effect.as("retired" as const),
+                    ),
+                    Deferred.await(cancel).pipe(Effect.as("detached" as const)),
+                  ),
+                )
+                if (winner === "detached") {
+                  yield* Deferred.await(admitted.done)
+                  return canceledResult
+                }
+                waitingRetirement = undefined
+                continue
+              }
+              if (admitted.type === "waiter")
+                return yield* restore(
+                  Effect.raceFirst(
+                    Deferred.await(admitted.outcome),
+                    Deferred.await(cancel).pipe(Effect.as(canceledResult)),
+                  ),
+                )
+              const ready = Deferred.makeUnsafe<void>()
+              const fiber = yield* Effect.forkIn(ownerScope, {
+                startImmediately: true,
+              })(
+                Effect.interruptible(
+                  runLeader(
+                    admitted.generation,
+                    admitted.source,
+                    admitted.outcome,
+                    ready,
+                  ),
+                ),
+              )
+              yield* Ref.update(state, (current) =>
+                current.slot.phase !== "idle" &&
+                current.slot.generation === admitted.generation
+                  ? { ...current, slot: { ...current.slot, leader: fiber } }
+                  : current,
+              )
+              yield* Deferred.succeed(ready, undefined)
+              return yield* restore(
+                Effect.raceFirst(
+                  Deferred.await(admitted.outcome),
+                  Deferred.await(cancel).pipe(Effect.as(canceledResult)),
+                ),
+              )
+            }
+          }).pipe(
+            Effect.flatMap((result): Effect.Effect<AudioStartResult> =>
+              result.type === "started" || result.type === "joined"
+                ? Ref.modify(
+                    state,
+                    (current): readonly [AudioStartResult, CaptureState] => {
+                      if (
+                        !joined(current, connectionId, result.generation) ||
+                        current.slot.phase === "idle"
+                      )
+                        return [canceledResult, current] as const
+                      const interestOwners = new Map(
+                        current.slot.interestOwners,
+                      )
+                      const owners = new Set(interestOwners.get(connectionId))
+                      owners.delete(attemptId)
+                      // One durable owner represents all completed Starts for a connection.
+                      owners.add(0)
+                      interestOwners.set(connectionId, owners)
+                      return [
+                        result,
+                        {
+                          ...current,
+                          slot: { ...current.slot, interestOwners },
+                        },
+                      ] as const
+                    },
+                  )
+                : Effect.succeed(result),
+            ),
+            Effect.onExit((exit) =>
+              Effect.gen(function* () {
+                if (waitingRetirement !== undefined)
+                  yield* Deferred.await(waitingRetirement)
+                if (admittedGeneration !== undefined) {
+                  if (Exit.isFailure(exit))
+                    yield* leaveInterest(
+                      connectionId,
+                      "canceled",
+                      admittedGeneration,
+                      attemptId,
+                    )
+                  else if (
+                    exit.value.type !== "started" &&
+                    exit.value.type !== "joined"
+                  ) {
+                    const slot = (yield* Ref.get(state)).slot
+                    if (
+                      slot.phase === "retiring" &&
+                      slot.generation === admittedGeneration
+                    )
+                      yield* Deferred.await(slot.done)
+                  }
+                }
+              }).pipe(
+                Effect.ensuring(
+                  Ref.update(state, (current) => {
+                    const attempts = new Map(current.attempts)
+                    attempts.delete(attemptId)
+                    return { ...current, attempts }
+                  }),
+                ),
+              ),
+            ),
+          )
+        }),
       )
     })
 
     const stop = Effect.fn("AudioCapture.stop")(function* (
       connectionId: string,
     ) {
-      yield* cancelConnection(connectionId)
       const current = yield* Ref.get(state)
       if (
         current.slot.phase === "idle" ||
-        !joined(current, connectionId, current.slot.generation)
-      )
+        !(
+          joined(current, connectionId, current.slot.generation) ||
+          (current.slot.phase === "retiring" &&
+            current.slot.interestOwners.has(connectionId))
+        )
+      ) {
+        yield* cancelConnection(connectionId)
         return { type: "rejected" as const, reason: "not-joined" as const }
+      }
       const generation = current.slot.generation
       const retired = yield* retire(generation, "stop", connectionId)
       if (!retired)
         return { type: "rejected" as const, reason: "not-joined" as const }
       return { type: "stopped" as const, generation, reason: "stop" as const }
-    })
+    }, Effect.uninterruptible)
 
-    const detach = Effect.fn("AudioCapture.detach")(function* (
+    const leaveInterest = Effect.fn("AudioCapture.leaveInterest")(function* (
       connectionId: string,
+      reason: StopReason,
+      generation?: number,
+      attemptId?: number,
     ) {
-      yield* cancelConnection(connectionId)
-      yield* Ref.update(state, (current) => {
-        const tokens = new Map(current.tokens)
-        for (const [key, token] of tokens)
-          if (token.connectionId === connectionId) tokens.delete(key)
-        return { ...current, tokens }
-      })
       const action = yield* Ref.modify(
         state,
         (
@@ -1231,6 +1430,7 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
           (
             | { readonly type: "none" }
             | { readonly type: "remain" }
+            | { readonly type: "wait"; readonly done: Deferred.Deferred<void> }
             | {
                 readonly type: "last"
                 readonly generation: number
@@ -1242,14 +1442,35 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
           CaptureState,
         ] => {
           const slot = current.slot
-          if (slot.phase === "idle" || !slot.leases.has(connectionId))
+          if (
+            slot.phase === "idle" ||
+            (generation !== undefined && slot.generation !== generation) ||
+            !slot.interestOwners.has(connectionId) ||
+            (attemptId !== undefined &&
+              !slot.interestOwners.get(connectionId)?.has(attemptId))
+          )
             return [{ type: "none" }, current]
+          if (slot.phase === "retiring")
+            return [{ type: "wait", done: slot.done }, current]
+          const interestOwners = new Map(slot.interestOwners)
+          if (attemptId !== undefined) {
+            const owners = new Set(interestOwners.get(connectionId))
+            owners.delete(attemptId)
+            if (owners.size > 0) {
+              interestOwners.set(connectionId, owners)
+              return [
+                { type: "remain" },
+                { ...current, slot: { ...slot, interestOwners } },
+              ]
+            }
+          }
           const leases = new Map(slot.leases)
           leases.delete(connectionId)
-          if (leases.size > 0)
+          interestOwners.delete(connectionId)
+          if ([...leases.values()].some((deadline) => deadline > nowMs()))
             return [
               { type: "remain" },
-              { ...current, slot: { ...slot, leases } },
+              { ...current, slot: { ...slot, leases, interestOwners } },
             ]
           return [
             {
@@ -1264,6 +1485,7 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
               slot: {
                 ...slot,
                 phase: "retiring",
+                departingLeases: slot.leases,
                 leases: new Map<string, number>(),
                 close: undefined,
               },
@@ -1271,12 +1493,23 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
           ]
         },
       )
+      if (attemptId === undefined) yield* cancelConnection(connectionId)
+      if (action.type === "wait") yield* Deferred.await(action.done)
       if (action.type === "last") {
-        if (action.close) yield* action.close
-        if (action.leader) yield* Fiber.interrupt(action.leader)
-        yield* releaseRetiring(action.generation, "last-connection")
-        yield* Deferred.await(action.done)
+        yield* finishRetirement({ ...action, type: "retire" }, reason)
       }
+    }, Effect.uninterruptible)
+
+    const detach = Effect.fn("AudioCapture.detach")(function* (
+      connectionId: string,
+    ) {
+      yield* Ref.update(state, (current) => {
+        const tokens = new Map(current.tokens)
+        for (const [key, token] of tokens)
+          if (token.connectionId === connectionId) tokens.delete(key)
+        return { ...current, tokens }
+      })
+      yield* leaveInterest(connectionId, "last-connection")
     }, Effect.uninterruptible)
 
     const expireInterests = Effect.fn("AudioCapture.expireInterests")(
@@ -1295,6 +1528,8 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
             if (expired.size === 0) return [undefined, current]
             const leases = new Map(slot.leases)
             for (const id of expired) leases.delete(id)
+            const interestOwners = new Map(slot.interestOwners)
+            for (const id of expired) interestOwners.delete(id)
             const attempts = new Map(current.attempts)
             const canceled: Attempt[] = []
             for (const attempt of attempts.values()) {
@@ -1320,7 +1555,14 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
                 slot: {
                   ...slot,
                   leases,
-                  ...(last ? { phase: "retiring", close: undefined } : {}),
+                  interestOwners: last ? slot.interestOwners : interestOwners,
+                  ...(last
+                    ? {
+                        phase: "retiring",
+                        departingLeases: slot.leases,
+                        close: undefined,
+                      }
+                    : {}),
                 },
               },
             ]
@@ -1333,11 +1575,10 @@ export const makeAudioCapture = (options: AudioCaptureOptions) =>
           { discard: true },
         )
         if (action.retiring) {
-          if (action.retiring.close) yield* action.retiring.close
-          if (action.retiring.leader)
-            yield* Fiber.interrupt(action.retiring.leader)
-          yield* releaseRetiring(action.generation, "lease-expired")
-          yield* Deferred.await(action.retiring.done)
+          yield* finishRetirement(
+            { ...action.retiring, type: "retire" },
+            "lease-expired",
+          )
         } else {
           const sinks = yield* Ref.get(statusSinks)
           yield* Effect.forEach(

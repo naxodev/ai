@@ -1,4 +1,5 @@
 import {
+  Cause,
   Context,
   Duration,
   Effect,
@@ -73,7 +74,13 @@ const sourceObservationsFromAdapter = (
       Effect.acquireRelease(
         Effect.sync(() =>
           subscribe((observation) => {
-            Queue.offerUnsafe(queue, observation)
+            // Source observations carry authority. Never slide invalidation
+            // out of a snapshot burst; overflow fails the stream closed.
+            if (!Queue.offerUnsafe(queue, observation))
+              Queue.failCauseUnsafe(
+                queue,
+                Cause.die(new Error("source observation overflow")),
+              )
           }),
         ),
         (dispose) =>
@@ -83,7 +90,7 @@ const sourceObservationsFromAdapter = (
               providerError("source-observation-dispose", cause),
           }).pipe(Effect.ignore),
       ),
-    { bufferSize: 1, strategy: "sliding" },
+    { bufferSize: 16, strategy: "dropping" },
   )
 }
 
