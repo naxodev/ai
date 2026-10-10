@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test"
+import { expect } from "bun:test"
+import { testUnixSession as test } from "../../music-core/tests/unix-session.ts"
 import {
   audioVisualizationCapability,
   baselineCapabilities,

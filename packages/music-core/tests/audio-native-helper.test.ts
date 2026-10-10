@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { lstatSync } from "node:fs"
+import { join } from "node:path"
+import { testUnixSession } from "./unix-session.ts"
 import {
   Cause,
   Clock,
@@ -162,23 +164,25 @@ const fakeHelper = (autoExit = true) =>
   })
 
 describe("offline native helper process boundary", () => {
-  test("real pipe readers retain later bursts, carry the parent's clock, and join explicit closure", async () => {
-    const Ack = Schema.Struct({
-      seq: Schema.Number,
-      clockDomain: Schema.optionalKey(Schema.String),
-      timestampMs: Schema.optionalKey(Schema.Finite),
-    })
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const { process, terminate } = yield* Effect.uninterruptible(
-            Effect.gen(function* () {
-              const process = liveNativeHelperDependencies.spawn({
-                executable: globalThis.process.execPath,
-                shell: false,
-                args: [
-                  "-e",
-                  `let buffer = "", seq = 0
+  testUnixSession(
+    "real pipe readers retain later bursts, carry the parent's clock, and join explicit closure",
+    async () => {
+      const Ack = Schema.Struct({
+        seq: Schema.Number,
+        clockDomain: Schema.optionalKey(Schema.String),
+        timestampMs: Schema.optionalKey(Schema.Finite),
+      })
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { process, terminate } = yield* Effect.uninterruptible(
+              Effect.gen(function* () {
+                const process = liveNativeHelperDependencies.spawn({
+                  executable: globalThis.process.execPath,
+                  shell: false,
+                  args: [
+                    "-e",
+                    `let buffer = "", seq = 0
 process.stdin.on("data", chunk => {
   buffer += chunk.toString()
   let split
@@ -190,51 +194,52 @@ process.stdin.on("data", chunk => {
 })
 process.stdin.on("end", () => process.exit(0))
 process.on("SIGTERM", () => process.exit(0))`,
-                ],
-              })
-              const terminate = yield* makeHelperTermination(process)
-              yield* Effect.addFinalizer(() => terminate.pipe(Effect.orDie))
-              return { process, terminate }
-            }),
-          )
-          yield* process.ready
-          const received =
-            yield* Queue.bounded<Schema.Schema.Type<typeof Ack>>(1)
-          let buffer = ""
-          const decoder = new TextDecoder()
-          const reader = yield* process.stdout.pipe(
-            Stream.runForEach((chunk) =>
-              Effect.gen(function* () {
-                buffer += decoder.decode(chunk, { stream: true })
-                let split: number
-                while ((split = buffer.indexOf("\n")) >= 0) {
-                  const line = buffer.slice(0, split)
-                  buffer = buffer.slice(split + 1)
-                  const ack = Schema.decodeUnknownSync(Ack)(JSON.parse(line))
-                  yield* Queue.offer(received, ack)
-                }
+                  ],
+                })
+                const terminate = yield* makeHelperTermination(process)
+                yield* Effect.addFinalizer(() => terminate.pipe(Effect.orDie))
+                return { process, terminate }
               }),
-            ),
-            Effect.forkScoped,
-          )
-          const before = localMonotonicMs()
-          yield* process.heartbeat
-          const first = yield* Queue.take(received)
-          expect(first.seq).toBe(1)
-          yield* process.heartbeat
-          const second = yield* Queue.take(received)
-          expect(second.seq).toBe(2)
-          expect(second.clockDomain).toBe("capture-monotonic")
-          if (second.timestampMs === undefined)
-            throw new Error("heartbeat did not include the parent clock")
-          expect(second.timestampMs).toBeGreaterThanOrEqual(before)
-          expect(second.timestampMs).toBeLessThanOrEqual(localMonotonicMs())
-          yield* terminate
-          yield* Fiber.join(reader)
-        }),
-      ).pipe(Effect.timeout("2 seconds")),
-    )
-  })
+            )
+            yield* process.ready
+            const received =
+              yield* Queue.bounded<Schema.Schema.Type<typeof Ack>>(1)
+            let buffer = ""
+            const decoder = new TextDecoder()
+            const reader = yield* process.stdout.pipe(
+              Stream.runForEach((chunk) =>
+                Effect.gen(function* () {
+                  buffer += decoder.decode(chunk, { stream: true })
+                  let split: number
+                  while ((split = buffer.indexOf("\n")) >= 0) {
+                    const line = buffer.slice(0, split)
+                    buffer = buffer.slice(split + 1)
+                    const ack = Schema.decodeUnknownSync(Ack)(JSON.parse(line))
+                    yield* Queue.offer(received, ack)
+                  }
+                }),
+              ),
+              Effect.forkScoped,
+            )
+            const before = localMonotonicMs()
+            yield* process.heartbeat
+            const first = yield* Queue.take(received)
+            expect(first.seq).toBe(1)
+            yield* process.heartbeat
+            const second = yield* Queue.take(received)
+            expect(second.seq).toBe(2)
+            expect(second.clockDomain).toBe("capture-monotonic")
+            if (second.timestampMs === undefined)
+              throw new Error("heartbeat did not include the parent clock")
+            expect(second.timestampMs).toBeGreaterThanOrEqual(before)
+            expect(second.timestampMs).toBeLessThanOrEqual(localMonotonicMs())
+            yield* terminate
+            yield* Fiber.join(reader)
+          }),
+        ).pipe(Effect.timeout("2 seconds")),
+      )
+    },
+  )
 
   // System signing verification needs macOS, but never starts audio capture.
   test.skipIf(process.platform !== "darwin")(
@@ -329,7 +334,9 @@ process.on("SIGTERM", () => process.exit(0))`,
             const path = files[0]
             if (path === undefined)
               throw new Error("verification did not resolve a helper")
-            expect(path).toEndWith("/audio/native/music-audio-helper")
+            expect(path).toEndWith(
+              join("audio", "native", "music-audio-helper"),
+            )
             expect(commands).toHaveLength(state === "missing" ? 0 : 1)
             expect(adapter.availability).toBe(expected)
             for (const args of commands)

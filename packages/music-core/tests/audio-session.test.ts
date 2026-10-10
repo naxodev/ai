@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test"
+import { expect, test as baseTest } from "bun:test"
+import { testUnixSession as test } from "./unix-session.ts"
 import { randomUUID } from "node:crypto"
 import net from "node:net"
 import { Effect, Exit, Latch, Queue, Ref, Schema, Scope, Stream } from "effect"
@@ -145,10 +146,13 @@ const readFrames = (socket: net.Socket) => {
   }
 }
 
-test("audio capability is absent from baseline so current hosts do not opt in", () => {
-  expect(baselineCapabilities).not.toContain(audioVisualizationCapability)
-  expect(PROTOCOL.maxRevision).toBe(2)
-})
+baseTest(
+  "audio capability is absent from baseline so current hosts do not opt in",
+  () => {
+    expect(baselineCapabilities).not.toContain(audioVisualizationCapability)
+    expect(PROTOCOL.maxRevision).toBe(2)
+  },
+)
 
 test("opted-in client receives truthful unavailable capture and playback still works", async () => {
   const path = socketPath("unavailable")

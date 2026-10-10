@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { testUnixSession } from "./unix-session.ts"
 import { Effect } from "effect"
 import { daemonArguments } from "../session/music-sessiond.ts"
 import { resolveMusicSessionRuntimePaths } from "../session/config.ts"
@@ -28,36 +29,45 @@ const list = async (value: unknown) =>
   Effect.runPromise(makeLocalKasetResolver(() => Effect.succeed(value)).list())
 
 describe("local-only Kaset source ownership", () => {
-  test("the daemon flag requires a separate socket and never alters installed daemon defaults", () => {
+  test("capture stays off unless explicitly requested and requires an absolute socket", () => {
     expect(daemonArguments([]).localKasetAudio).toBe(false)
     expect(() => daemonArguments(["--local-kaset-audio"])).toThrow(
       "separate explicit",
     )
     expect(() =>
-      daemonArguments([
-        "--local-kaset-audio",
-        "--socket",
-        resolveMusicSessionRuntimePaths().socketPath,
-      ]),
-    ).toThrow("separate explicit")
-    expect(() =>
-      daemonArguments([
-        "--local-kaset-audio",
-        "--socket",
-        resolveMusicSessionRuntimePaths().socketPath.replace(
-          "/tmp/",
-          "/private/tmp/",
-        ),
-      ]),
-    ).toThrow("separate explicit")
-    expect(
-      daemonArguments([
-        "--local-kaset-audio",
-        "--socket",
-        "/tmp/local-kaset-fixture.sock",
-      ]).localKasetAudio,
-    ).toBe(true)
+      daemonArguments(["--local-kaset-audio", "--socket", "relative.sock"]),
+    ).toThrow("absolute Unix socket")
   })
+
+  testUnixSession(
+    "the daemon flag requires a separate socket and never alters installed daemon defaults",
+    () => {
+      expect(() =>
+        daemonArguments([
+          "--local-kaset-audio",
+          "--socket",
+          resolveMusicSessionRuntimePaths().socketPath,
+        ]),
+      ).toThrow("separate explicit")
+      expect(() =>
+        daemonArguments([
+          "--local-kaset-audio",
+          "--socket",
+          resolveMusicSessionRuntimePaths().socketPath.replace(
+            "/tmp/",
+            "/private/tmp/",
+          ),
+        ]),
+      ).toThrow("separate explicit")
+      expect(
+        daemonArguments([
+          "--local-kaset-audio",
+          "--socket",
+          "/tmp/local-kaset-fixture.sock",
+        ]).localKasetAudio,
+      ).toBe(true)
+    },
+  )
 
   test("only one active attributed helper becomes a selection, with measured stereo capabilities", async () => {
     const sources = await list(catalog())
