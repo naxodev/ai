@@ -75,6 +75,7 @@ export function createAudioVisualization(options: {
   let disposed = false
   let choosing = false
   let mayOwn = false
+  let startRequested = false
   let uncertainStop = false
   const actions = new Set<Promise<void>>()
   const track = (action: Promise<void>) => {
@@ -140,6 +141,26 @@ export function createAudioVisualization(options: {
               status.type === "failed" ||
               status.type === "unavailable"
             ) {
+              // A replayed stop must not erase a source chosen while capture is off.
+              // Start and an active lease still retire that selection. Expiry of a
+              // known join still closes this connection.
+              if (!mayOwn && !startRequested) {
+                if (
+                  status.type === "stopped" &&
+                  status.reason === "lease-expired" &&
+                  admission?.client === connected &&
+                  admission.generation === status.generation
+                ) {
+                  releaseClient()
+                  publish({
+                    active: false,
+                    frame: null,
+                    selected: null,
+                    message: "Capture off (lease-expired)",
+                  })
+                }
+                return
+              }
               const ownedInterest = mayOwn
               // Retire only an existing selection's lifetime, including consent
               // still pending. A cached status on a fresh socket has no authority.
@@ -270,84 +291,109 @@ export function createAudioVisualization(options: {
     return stopping
   }
 
+  const discover = async (
+    choose: (list: AudioSourceList) => Promise<SourceEntry | undefined>,
+    onCatalogFailure: () => void,
+  ) => {
+    await stop()
+    // A late admission may have queued cleanup behind the normal Stop.
+    // Join the latest barrier before discovery, not just before accepting it.
+    let barrier: Promise<void>
+    do {
+      barrier = retiring
+      await barrier
+    } while (retiring !== barrier)
+    const ticket = epoch
+    const connected = await connect()
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    const list = await connected.listAudioSources()
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    if (list.availability !== "available" || list.sources.length === 0) {
+      if (list.availability !== "available") onCatalogFailure()
+      publish({
+        selected: null,
+        message:
+          list.availability === "available"
+            ? "No unambiguous active Kaset source; capture is off"
+            : unavailableSourceMessage(list.reason),
+      })
+      return
+    }
+    const ready = await waitForInitialStatus(connected)
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    if (!ready) {
+      ++epoch
+      releaseClient()
+      publish({
+        selected: null,
+        message: "Status timeout: retry",
+      })
+      return
+    }
+    const selected = await choose(list)
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    // Only the daemon-issued entries shown in this exact dialog are usable.
+    const canonical =
+      selected && list.sources.find((source) => source.token === selected.token)
+    if (canonical) {
+      uncertainStop = false
+      selection = { client: connected, source: canonical, epoch: ticket }
+      publish({
+        selected: canonical,
+        frame: null,
+        message: "Source selected; capture is off",
+      })
+    }
+  }
+
   const chooseSource = async (
     choose: (list: AudioSourceList) => Promise<SourceEntry | undefined>,
   ) => {
     if (disposed || choosing) return
     choosing = true
     try {
-      await stop()
-      // A late admission may have queued cleanup behind the normal Stop.
-      // Join the latest barrier before discovery, not just before accepting it.
-      let barrier: Promise<void>
-      do {
-        barrier = retiring
-        await barrier
-      } while (retiring !== barrier)
-      const ticket = epoch
-      const connected = await connect()
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      const list = await connected.listAudioSources()
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      if (list.availability !== "available" || list.sources.length === 0) {
-        publish({
-          selected: null,
-          message:
-            list.availability === "available"
-              ? "No unambiguous active Kaset source; capture is off"
-              : unavailableSourceMessage(list.reason),
-        })
-        return
-      }
-      const ready = await waitForInitialStatus(connected)
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      if (!ready) {
-        ++epoch
-        releaseClient()
-        publish({
-          selected: null,
-          message: "Status timeout: retry",
-        })
-        return
-      }
-      const selected = await choose(list)
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      // Only the daemon-issued entries shown in this exact dialog are usable.
-      const canonical =
-        selected &&
-        list.sources.find((source) => source.token === selected.token)
-      if (canonical) {
-        uncertainStop = false
-        selection = { client: connected, source: canonical, epoch: ticket }
-        publish({
-          selected: canonical,
-          frame: null,
-          message: "Source selected; capture is off",
-        })
+      // A dropped first catalog must not ask the user to choose nothing.
+      for (
+        let attempt = 0;
+        attempt < 2 && !state.selected && !disposed;
+        attempt++
+      ) {
+        let prompted = false
+        let catalogFailed = false
+        await discover(
+          async (list) => {
+            prompted = true
+            return choose(list)
+          },
+          () => {
+            catalogFailed = true
+          },
+        )
+        if (prompted || !catalogFailed) break
       }
     } finally {
       choosing = false
@@ -370,80 +416,85 @@ export function createAudioVisualization(options: {
       lifetime.client === client &&
       lifetime.source === state.selected
     starting = (async () => {
-      await retiring
-      if (disposed || ticket !== epoch || !currentSelection()) return
-      if (!(await options.confirm(selected))) return
-      if (disposed || ticket !== epoch || !currentSelection()) return
-      const connected = await connect()
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        !currentSelection()
-      )
-        return
-      mayOwn = true
-      publish({ frame: null, message: "Starting selected capture" })
-      // Publication can synchronously revoke consent before any capture request.
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        !mayOwn ||
-        !currentSelection()
-      ) {
-        mayOwn = false
-        return
-      }
-      const result = await connected.startAudioCapture(selected.token)
-      if (
-        (result.type === "started" || result.type === "joined") &&
-        latestClient === connected
-      )
-        admission = {
-          client: connected,
-          generation:
-            admission?.client === connected
-              ? Math.max(admission.generation, result.generation)
-              : result.generation,
-        }
-      if (disposed || ticket !== epoch || client !== connected) {
-        // Stop may have arrived before daemon admission. Retire this late result.
+      startRequested = true
+      try {
+        await retiring
+        if (disposed || ticket !== epoch || !currentSelection()) return
+        if (!(await options.confirm(selected))) return
+        if (disposed || ticket !== epoch || !currentSelection()) return
+        const connected = await connect()
         if (
-          !disposed &&
-          client === connected &&
-          (result.type === "started" || result.type === "joined")
+          disposed ||
+          ticket !== epoch ||
+          client !== connected ||
+          !currentSelection()
+        )
+          return
+        mayOwn = true
+        publish({ frame: null, message: "Starting selected capture" })
+        // Publication can synchronously revoke consent before any capture request.
+        if (
+          disposed ||
+          ticket !== epoch ||
+          client !== connected ||
+          !mayOwn ||
+          !currentSelection()
         ) {
-          const cleanup = queueStop(connected, "Capture off")
+          mayOwn = false
+          return
+        }
+        const result = await connected.startAudioCapture(selected.token)
+        if (
+          (result.type === "started" || result.type === "joined") &&
+          latestClient === connected
+        )
+          admission = {
+            client: connected,
+            generation:
+              admission?.client === connected
+                ? Math.max(admission.generation, result.generation)
+                : result.generation,
+          }
+        if (disposed || ticket !== epoch || client !== connected) {
+          // Stop may have arrived before daemon admission. Retire this late result.
+          if (
+            !disposed &&
+            client === connected &&
+            (result.type === "started" || result.type === "joined")
+          ) {
+            const cleanup = queueStop(connected, "Capture off")
+            publish({
+              selected: null,
+              active: false,
+              frame: null,
+              message: "Retiring late capture admission",
+            })
+            await cleanup
+          }
+          return
+        }
+        if (result.type === "started" || result.type === "joined")
           publish({
-            selected: null,
+            active: true,
+            message:
+              result.type === "joined"
+                ? "Joined shared capture"
+                : "Capturing selected process",
+          })
+        else {
+          mayOwn = false
+          publish({
             active: false,
             frame: null,
-            message: "Retiring late capture admission",
+            selected: null,
+            message:
+              result.type === "busy"
+                ? "Another source is active; capture not joined"
+                : `Capture not started (${result.reason}); select again`,
           })
-          await cleanup
         }
-        return
-      }
-      if (result.type === "started" || result.type === "joined")
-        publish({
-          active: true,
-          message:
-            result.type === "joined"
-              ? "Joined shared capture"
-              : "Capturing selected process",
-        })
-      else {
-        mayOwn = false
-        publish({
-          active: false,
-          frame: null,
-          selected: null,
-          message:
-            result.type === "busy"
-              ? "Another source is active; capture not joined"
-              : `Capture not started (${result.reason}); select again`,
-        })
+      } finally {
+        startRequested = false
       }
     })()
       .catch((error: unknown) => {

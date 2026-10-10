@@ -191,7 +191,7 @@ The parent writes a heartbeat plus a newline to stdin immediately, then every tw
 
 A separate five-second monotonic deadline covers readiness and output stalls. Only a valid frame renews that deadline. Normal shutdown stops I/O, sends SIGTERM, and awaits exit. A one-second grace precedes SIGKILL, followed by a one-second exit deadline. Hard kill reports abnormal cleanup, even after exit. Concurrent shutdown callers join one cached result. Scope closure also joins cleanup, including blocked startup.
 
-The local Swift helper, independent watchdog, and clock conversion are implemented and tested with synthetic input. Ad-hoc signing permits local integrity checks; it is not signed distribution. Notarization, shipped-helper permission attribution, and a supported source-attribution contract remain release gates. Verification and spawn retain a same-user file-replacement race; distribution must settle artifact ownership before release. Synthetic checks do not prove live resource teardown, and the historical live test does not verify this PR head.
+The local Swift helper, independent watchdog, and clock conversion are implemented and tested with synthetic input. Ad-hoc signing permits local integrity checks; it is not signed distribution. Mapped-file ownership uses public `PROC_PIDREGIONPATHINFO` and fails closed when that walk cannot prove a single Kaset cache owner. Notarization, shipped-helper permission attribution, and a live check of this public walk remain release gates. Verification and spawn retain a same-user file-replacement race; distribution must settle artifact ownership before release. Synthetic checks do not prove live resource teardown, and the historical live test does not verify this head.
 
 ## Lifecycle and compatibility
 
