@@ -70,7 +70,7 @@
     "smoke:package": "bun run scripts/verify-pack.ts --installed-smoke"
   },
   "dependencies": {
-    "effect": "4.0.0-rc.117"
+    "effect": "4.0.1"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

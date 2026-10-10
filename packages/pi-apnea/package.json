@@ -69,7 +69,7 @@
     "@earendil-works/pi-coding-agent": "0.87.1",
     "@types/bun": "^1.4.2",
     "@types/node": "^26.6.2",
-    "effect": "4.0.0-rc.117",
+    "effect": "4.0.1",
     "prettier": "^3.9.9",
     "typescript": "^7.0.2"
   }
