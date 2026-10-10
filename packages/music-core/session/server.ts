@@ -594,7 +594,9 @@ const connection = (
     const outboundWake = yield* Queue.bounded<void>(1)
     const latestState = yield* Ref.make<Buffer | undefined>(undefined)
     const latestAudioStatus = yield* Ref.make<Buffer | undefined>(undefined)
-    const latestAudioFrame = yield* Ref.make<Buffer | undefined>(undefined)
+    const latestAudioFrame = yield* Ref.make<
+      { readonly frame: Buffer; readonly epoch: number } | undefined
+    >(undefined)
     const connectionId = randomUUID()
     let releaseAudio: Effect.Effect<void> = Effect.void
     let ended = false
@@ -679,6 +681,16 @@ const connection = (
     let pendingStops = 0
     let audioStatusForward: Fiber.Fiber<void> | undefined
     let audioFeatureForward: Fiber.Fiber<void> | undefined
+    let audioFeaturesWanted = false
+    let audioFeatureEpoch = 0
+    let audioFeatureRetirement: Deferred.Deferred<void> | undefined
+    const audioStartAttempts = new Map<
+      number,
+      {
+        readonly cancel: Deferred.Deferred<void>
+        readonly done: Deferred.Deferred<void>
+      }
+    >()
     releaseAudio = Effect.uninterruptible(
       Effect.gen(function* () {
         yield* capture.detach(connectionId)
@@ -747,12 +759,12 @@ const connection = (
         yield* Ref.set(latestAudioStatus, frame)
         Queue.offerUnsafe(outboundWake, undefined)
       })
-    const sendAudioFrame = (value: unknown) =>
+    const sendAudioFrame = (value: unknown, epoch: number) =>
       Effect.gen(function* () {
-        if (closed || socket.destroyed) return
+        if (closed || socket.destroyed || epoch !== audioFeatureEpoch) return
         const frame = encode(value)
         if (!frame) return
-        yield* Ref.set(latestAudioFrame, frame)
+        yield* Ref.set(latestAudioFrame, { frame, epoch })
         Queue.offerUnsafe(outboundWake, undefined)
       })
     const ensureAudioStatus = Effect.gen(function* () {
@@ -775,13 +787,52 @@ const connection = (
     })
     const ensureAudioFeatures = Effect.gen(function* () {
       if (audioFeatureForward) return
+      const epoch = audioFeatureEpoch
       audioFeatureForward = yield* capture.subscribeFeatures(connectionId).pipe(
         Stream.runForEach((frame) =>
-          sendAudioFrame({ type: "audio-features", frame }),
+          sendAudioFrame({ type: "audio-features", frame }, epoch),
         ),
         Effect.forkIn(connectionScope),
       )
     })
+    const retireAudioFeatures = Effect.uninterruptible(
+      Effect.gen(function* () {
+        // Acknowledgement means delivery is fenced, not that native cleanup joined.
+        // Fence before yielding so an old forwarder cannot refill the latest slot.
+        audioFeaturesWanted = false
+        audioFeatureEpoch += 1
+        yield* Ref.set(latestAudioFrame, undefined)
+        const attempts = [...audioStartAttempts.values()]
+        for (const attempt of attempts)
+          yield* Deferred.succeed(attempt.cancel, undefined)
+        // Raw subscribe/unsubscribe bursts share one retirement and one desired bit.
+        // Never bind a new sink while an old finalizer can still detach this owner.
+        if (audioFeatureRetirement) return
+        const previous = audioFeatureForward
+        if (!previous && attempts.length === 0) return
+        audioFeatureForward = undefined
+        const done = Deferred.makeUnsafe<void>()
+        audioFeatureRetirement = done
+        yield* Effect.gen(function* () {
+          if (previous) yield* Fiber.interrupt(previous)
+          for (const attempt of attempts) yield* Deferred.await(attempt.done)
+          // The feature stream finalizer already detaches. Repeating detach after
+          // its join would revoke tokens issued by responsive listSources calls.
+          if (!previous) yield* capture.detach(connectionId)
+          audioFeatureRetirement = undefined
+          if (audioFeaturesWanted && !closed) yield* ensureAudioFeatures
+        }).pipe(
+          Effect.tapCause((cause) =>
+            Effect.sync(() => {
+              reportFailure(cause)
+              close()
+            }),
+          ),
+          Effect.ensuring(Deferred.succeed(done, undefined)),
+          Effect.forkIn(connectionScope, { uninterruptible: true }),
+        )
+      }),
+    )
     const awaitDrain = Effect.callback<void>((resume) => {
       const cleanup = () => {
         socket.off("drain", onDrain)
@@ -808,9 +859,15 @@ const connection = (
     const write = (outbound: {
       readonly frame: Buffer
       readonly end?: boolean
+      readonly featureEpoch?: number
     }) =>
       Effect.sync(() => {
         if (closed || socket.destroyed) return true
+        if (
+          outbound.featureEpoch !== undefined &&
+          outbound.featureEpoch !== audioFeatureEpoch
+        )
+          return true
         invokeHook(() => hooks.onWriteAttempt?.(socket))
         if (outbound.end) {
           socket.end(outbound.frame)
@@ -837,6 +894,7 @@ const connection = (
     const nextOutbound = (): Effect.Effect<{
       readonly frame: Buffer
       readonly end?: boolean
+      readonly featureEpoch?: number
     }> =>
       Effect.gen(function* () {
         const required = yield* Queue.poll(mandatory)
@@ -846,7 +904,8 @@ const connection = (
         const audioStatus = yield* Ref.getAndSet(latestAudioStatus, undefined)
         if (audioStatus) return { frame: audioStatus }
         const audioFrame = yield* Ref.getAndSet(latestAudioFrame, undefined)
-        if (audioFrame) return { frame: audioFrame }
+        if (audioFrame)
+          return { frame: audioFrame.frame, featureEpoch: audioFrame.epoch }
         yield* Queue.take(outboundWake)
         return yield* nextOutbound()
       })
@@ -1076,18 +1135,16 @@ const connection = (
         ) {
           if (audioRequest.type === "audio-subscribe") {
             if (audioRequest.channel === "status") yield* ensureAudioStatus
-            else yield* ensureAudioFeatures
+            else {
+              audioFeaturesWanted = true
+              if (!audioFeatureRetirement) yield* ensureAudioFeatures
+            }
           } else {
             if (audioRequest.channel === "status" && audioStatusForward) {
               yield* Fiber.interrupt(audioStatusForward)
               audioStatusForward = undefined
             }
-            if (audioRequest.channel === "features" && audioFeatureForward) {
-              yield* Fiber.interrupt(audioFeatureForward)
-              audioFeatureForward = undefined
-              yield* Ref.set(latestAudioFrame, undefined)
-              yield* capture.detach(connectionId)
-            }
+            if (audioRequest.channel === "features") yield* retireAudioFeatures
           }
           return yield* send(
             response(audioRequest.requestId, {
@@ -1152,6 +1209,16 @@ const connection = (
           }
           return
         }
+        const epoch = audioFeatureEpoch
+        const retirement = audioFeatureRetirement
+        const attempt =
+          audioRequest.type === "audio-start"
+            ? {
+                cancel: Deferred.makeUnsafe<void>(),
+                done: Deferred.makeUnsafe<void>(),
+              }
+            : undefined
+        if (attempt) audioStartAttempts.set(audioRequest.requestId, attempt)
         yield* FiberSet.run(
           audioTasks,
           Effect.gen(function* () {
@@ -1162,10 +1229,25 @@ const connection = (
                   yield* capture.listSources(connectionId),
                 ),
               )
+            const canceled = {
+              type: "rejected" as const,
+              reason: "canceled" as const,
+            }
+            const start = Effect.gen(function* () {
+              if (retirement) yield* Deferred.await(retirement)
+              if (closed || epoch !== audioFeatureEpoch) return canceled
+              return yield* capture.start(connectionId, audioRequest.token)
+            })
+            const result = attempt
+              ? yield* Effect.raceFirst(
+                  start,
+                  Deferred.await(attempt.cancel).pipe(Effect.as(canceled)),
+                )
+              : yield* start
             return yield* send(
               response(
                 audioRequest.requestId,
-                yield* capture.start(connectionId, audioRequest.token),
+                epoch === audioFeatureEpoch ? result : canceled,
               ),
             )
           }).pipe(
@@ -1182,6 +1264,15 @@ const connection = (
                       ),
                     ),
                   ),
+            ),
+            Effect.ensuring(
+              attempt
+                ? Effect.sync(() => {
+                    audioStartAttempts.delete(audioRequest.requestId)
+                  }).pipe(
+                    Effect.andThen(Deferred.succeed(attempt.done, undefined)),
+                  )
+                : Effect.void,
             ),
             Effect.asVoid,
           ),
