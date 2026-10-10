@@ -3,11 +3,17 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { MouseButton } from "@opentui/core"
 import { createMemo, createSignal } from "solid-js"
+import { createAudioDialogWaits } from "../../audio-dialogs.ts"
 import { frame, render, styles, type Frame, type Style } from "./run.ts"
+import {
+  consumeFeatureLines,
+  drainDiagnostics,
+  readProcessOutput,
+} from "./streams.ts"
 
 declare const AUDIO_PROTOTYPE_ROOT: string
 const helper = `${typeof AUDIO_PROTOTYPE_ROOT === "string" ? AUDIO_PROTOTYPE_ROOT : import.meta.dir}/dist/audio-probe`
-type Reader = (command: string[]) => Promise<unknown>
+type Reader = (command: string[], signal?: AbortSignal) => Promise<unknown>
 type CaptureChild = {
   stdout: ReadableStream<Uint8Array>
   stderr: ReadableStream<Uint8Array>
@@ -32,20 +38,15 @@ const clean = (text: string) =>
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
 
-async function readJSON(command: string[]): Promise<unknown> {
-  const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" })
-  const timer = setTimeout(() => child.kill("SIGKILL"), 3_000)
+async function readJSON(
+  command: string[],
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const text = await readProcessOutput(command, { signal })
   try {
-    const [text, error, exit] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ])
-    if (exit !== 0 || text.length > 64 * 1024)
-      throw new Error(error || "Metadata read failed")
     return command[0] === "lsof" ? text : (JSON.parse(text) as unknown)
-  } finally {
-    clearTimeout(timer)
+  } catch {
+    throw new Error("Metadata response was not valid JSON")
   }
 }
 
@@ -178,7 +179,7 @@ export function createAudioPrototype(
     spawn?: (command: string[]) => CaptureChild
   } = {},
 ) {
-  const read = overrides.read ?? readJSON
+  const rawRead = overrides.read ?? readJSON
   const spawn =
     overrides.spawn ??
     ((command: string[]) =>
@@ -194,11 +195,49 @@ export function createAudioPrototype(
       const [lastFrame, setLastFrame] = createSignal(0)
       const [clock, setClock] = createSignal(Date.now())
       let child: CaptureChild | null = null
+      let cancelReaders: (() => void) | null = null
       let task: Promise<void> | null = null
       let shutdown = Promise.resolve()
       let changingSource = false
       let generation = 0
       let disposed = false
+      const lifetime = new AbortController()
+      const dialogs = createAudioDialogWaits()
+      const actions = new Set<Promise<void>>()
+      const reads = new Set<Promise<unknown>>()
+      const readFor =
+        (token: number): Reader =>
+        async (command) => {
+          if (disposed || token !== generation)
+            throw new Error("Audio operation cancelled")
+          // A sibling Promise.all failure must not release ownership of this read.
+          const owned = Promise.resolve().then(() => {
+            if (disposed || token !== generation)
+              throw new Error("Audio operation cancelled")
+            return rawRead(command, lifetime.signal)
+          })
+          reads.add(owned)
+          let result: unknown
+          try {
+            // A reader must settle after abort. We join even an uncooperative override.
+            result = await owned
+          } catch {
+            throw new Error("Metadata read failed")
+          } finally {
+            reads.delete(owned)
+          }
+          if (disposed || token !== generation)
+            throw new Error("Audio operation cancelled")
+          return result
+        }
+      const waitDialog = async <A,>(show: () => Promise<A | undefined>) => {
+        if (disposed) return undefined
+        try {
+          return await dialogs.run(show)
+        } catch {
+          throw new Error("Audio dialog failed")
+        }
+      }
       const failure = (error: unknown) => {
         if (disposed) return
         const message = clean(
@@ -216,9 +255,12 @@ export function createAudioPrototype(
         const token = ++generation
         const previous = child
         const previousTask = task
+        const previousReaders = cancelReaders
         child = null
         task = null
+        cancelReaders = null
         previous?.kill("SIGTERM")
+        previousReaders?.()
         setRunning(false)
         setSignal(null)
         setStatus(reason)
@@ -256,34 +298,38 @@ export function createAudioPrototype(
         try {
           const token = await stop()
           if (disposed || token !== generation) return
+          const read = readFor(token)
           const list = (await processes(read)).filter(musicCandidate)
-          const selected = await context.ui.dialog.select({
-            title: "Local audio source — no capture until Start",
-            options: [
-              {
-                title: "CLIAMP exported spectrum",
-                value: "cliamp",
-                description: "Spectrum and mirror only; no OS capture",
-              },
-              {
-                title: "Auto: current Now Playing music app",
-                value: "auto",
-                description:
-                  "Directly matched music process only; unverified helpers are refused",
-              },
-              {
-                title: "Kaset: attributed WebKit audio",
-                value: "kaset",
-                description:
-                  "Local-tested cache association; one active helper only, no automatic rebinding",
-              },
-              ...list.map((entry) => ({
-                title: `${clean(entry.name)} · PID ${entry.pid}`,
-                value: String(entry.pid),
-                description: `Native: all output from this process · ${clean(entry.bundle || "unbundled")}`,
-              })),
-            ],
-          })
+          if (disposed || token !== generation) return
+          const selected = await waitDialog(() =>
+            context.ui.dialog.select({
+              title: "Local audio source — no capture until Start",
+              options: [
+                {
+                  title: "CLIAMP exported spectrum",
+                  value: "cliamp",
+                  description: "Spectrum and mirror only; no OS capture",
+                },
+                {
+                  title: "Auto: current Now Playing music app",
+                  value: "auto",
+                  description:
+                    "Directly matched music process only; unverified helpers are refused",
+                },
+                {
+                  title: "Kaset: attributed WebKit audio",
+                  value: "kaset",
+                  description:
+                    "Local-tested cache association; one active helper only, no automatic rebinding",
+                },
+                ...list.map((entry) => ({
+                  title: `${clean(entry.name)} · PID ${entry.pid}`,
+                  value: String(entry.pid),
+                  description: `Native: all output from this process · ${clean(entry.bundle || "unbundled")}`,
+                })),
+              ],
+            }),
+          )
           if (!selected || disposed || token !== generation) return
           if (selected === "cliamp") setChoice({ kind: "cliamp" })
           else if (selected === "auto") setChoice({ kind: "auto" })
@@ -303,23 +349,26 @@ export function createAudioPrototype(
       }
 
       const chooseStyle = async () => {
-        const selected = await context.ui.dialog.select({
-          title: "Local visualization style",
-          current: style(),
-          options: styles.map((value) => ({
-            title: value,
-            value,
-            ...(value === "scope"
-              ? {
-                  description:
-                    "Signed trace; amplitude envelope in one-row layout",
-                }
-              : {}),
-            disabled:
-              choice()?.kind === "cliamp" &&
-              (value === "scope" || value === "meters"),
-          })),
-        })
+        if (disposed) return
+        const selected = await waitDialog(() =>
+          context.ui.dialog.select({
+            title: "Local visualization style",
+            current: style(),
+            options: styles.map((value) => ({
+              title: value,
+              value,
+              ...(value === "scope"
+                ? {
+                    description:
+                      "Signed trace; amplitude envelope in one-row layout",
+                  }
+                : {}),
+              disabled:
+                choice()?.kind === "cliamp" &&
+                (value === "scope" || value === "meters"),
+            })),
+          }),
+        )
         if (selected && !disposed) setStyle(selected)
       }
 
@@ -329,12 +378,14 @@ export function createAudioPrototype(
           throw new Error("Finish source selection before starting capture")
         const token = await stop()
         if (disposed || changingSource || token !== generation) return
+        const read = readFor(token)
         const selected = choice()
         if (!selected) throw new Error("Choose a source first")
         let source: ProcessSource | null = null
         if (selected.kind !== "cliamp") {
           source =
             selected.kind === "auto" ? await automatic(read) : selected.process
+          if (disposed || token !== generation) return
           const current = (await processes(read)).find(
             (entry) =>
               entry.pid === source!.pid &&
@@ -348,15 +399,19 @@ export function createAudioPrototype(
             )
           if (selected.kind === "kaset")
             await requireKasetAttribution(current, read)
+          if (disposed || token !== generation) return
           const name =
             selected.kind === "kaset" ? "Kaset (WebKit)" : source.name
-          const allowed = await context.ui.dialog.confirm({
-            title: "Capture selected process for 30 seconds?",
-            message: `${clean(name)} · PID ${source.pid}\nAll output from this process, not one song/tab. No microphone, saved audio, or uploads. macOS may request system-audio access.`,
-          })
-          if (!allowed) return
+          const allowed = await waitDialog(() =>
+            context.ui.dialog.confirm({
+              title: "Capture selected process for 30 seconds?",
+              message: `${clean(name)} · PID ${current.pid}\nAll output from this process, not one song/tab. No microphone, saved audio, or uploads. macOS may request system-audio access.`,
+            }),
+          )
+          if (!allowed || disposed || token !== generation) return
           if (selected.kind === "auto") {
             const nowPlaying = await automatic(read)
+            if (disposed || token !== generation) return
             if (
               nowPlaying.pid !== source.pid ||
               nowPlaying.object !== source.object ||
@@ -381,19 +436,24 @@ export function createAudioPrototype(
             await requireKasetAttribution(stillCurrent, read)
         }
         if (disposed || token !== generation) return
-        const input = spawn(
-          source
-            ? [
-                helper,
-                "--pid",
-                String(source.pid),
-                "--seconds",
-                "30",
-                "--object",
-                String(source.object),
-              ]
-            : ["cliamp", "visstream", "--fps", "20"],
-        )
+        let input: CaptureChild
+        try {
+          input = spawn(
+            source
+              ? [
+                  helper,
+                  "--pid",
+                  String(source.pid),
+                  "--seconds",
+                  "30",
+                  "--object",
+                  String(source.object),
+                ]
+              : ["cliamp", "visstream", "--fps", "20"],
+          )
+        } catch {
+          throw new Error("Capture process could not start")
+        }
         child = input
         setRunning(true)
         const name = source
@@ -408,60 +468,68 @@ export function createAudioPrototype(
         )
         let received = 0
         let expired = false
+        const completion = input.exited.then(
+          (code) => ({ code, failed: false }),
+          () => ({ code: 1, failed: true }),
+        )
         const deadline = setTimeout(() => {
           expired = true
           input.kill("SIGTERM")
         }, 31_000)
-        const hardDeadline = setTimeout(() => input.kill("SIGKILL"), 33_000)
-        const diagnostics = new Response(input.stderr).text()
+        const readers = new AbortController()
+        cancelReaders = () => readers.abort()
+        const hardDeadline = setTimeout(() => {
+          input.kill("SIGKILL")
+          readers.abort()
+        }, 33_000)
+        let diagnosticsFailed = false
+        const diagnostics = drainDiagnostics(
+          input.stderr,
+          readers.signal,
+        ).catch(() => {
+          diagnosticsFailed = true
+          input.kill("SIGTERM")
+        })
         let metadataPending = false
         const metadataWatch =
           selected.kind === "auto" && source
             ? setInterval(() => {
                 if (metadataPending || disposed || token !== generation) return
                 metadataPending = true
-                read(["media-control", "get", "--no-artwork", "--now"])
-                  .then(
-                    async (metadata) => {
-                      if (disposed || token !== generation) return
-                      if (
-                        !object(metadata) ||
-                        metadata.processIdentifier !== source!.pid ||
-                        (metadata.parentApplicationBundleIdentifier ||
-                          metadata.bundleIdentifier) !== source!.bundle
+                action(async () => {
+                  try {
+                    const metadata = await read([
+                      "media-control",
+                      "get",
+                      "--no-artwork",
+                      "--now",
+                    ])
+                    if (disposed || token !== generation) return
+                    if (
+                      !object(metadata) ||
+                      metadata.processIdentifier !== source!.pid ||
+                      (metadata.parentApplicationBundleIdentifier ||
+                        metadata.bundleIdentifier) !== source!.bundle
+                    )
+                      await stop("Now Playing source changed; capture stopped")
+                  } catch {
+                    if (!disposed && token === generation)
+                      await stop(
+                        "Now Playing ownership unavailable; capture stopped",
                       )
-                        await stop(
-                          "Now Playing source changed; capture stopped",
-                        )
-                    },
-                    async () => {
-                      if (!disposed && token === generation)
-                        await stop(
-                          "Now Playing ownership unavailable; capture stopped",
-                        )
-                    },
-                  )
-                  .finally(() => {
+                  } finally {
                     metadataPending = false
-                  })
-                  .catch(failure)
+                  }
+                })
               }, 1_000)
             : undefined
         const consume = (async () => {
           try {
-            let buffer = ""
-            const decoder = new TextDecoder()
-            for await (const bytes of input.stdout) {
-              buffer += decoder.decode(bytes, { stream: true })
-              if (buffer.length > 64 * 1024)
-                throw new Error("Feature line exceeded its bound")
-              let split: number
-              while ((split = buffer.indexOf("\n")) >= 0) {
-                const line = buffer.slice(0, split)
-                buffer = buffer.slice(split + 1)
-                if (!line) continue
+            await consumeFeatureLines(
+              input.stdout,
+              (line) => {
                 const event: unknown = JSON.parse(line)
-                if (disposed || token !== generation) continue
+                if (disposed || token !== generation) return
                 const next = frame(event)
                 if (next) {
                   received++
@@ -476,30 +544,30 @@ export function createAudioPrototype(
                 } else if (object(event)) {
                   setSignal(null)
                   if (event.type === "error" || event.ok === false)
-                    throw new Error(
-                      String(event.message ?? event.error ?? "Capture failed"),
-                    )
-                  if (event.state) setStatus(clean(String(event.state)))
+                    throw new Error("Source reported a capture failure")
+                  if (event.state) setStatus("Source has no feature frame")
                   else if (event.visualizer)
-                    setStatus(
-                      `Unsupported CLIAMP mode ${clean(String(event.visualizer))}`,
-                    )
+                    setStatus("Unsupported CLIAMP mode")
                 }
-              }
-            }
-            const exit = await input.exited
-            const error = (await diagnostics).trim()
-            if (error) throw new Error(error)
-            if (exit !== 0 && !expired && token === generation)
-              throw new Error(`Capture process exited with code ${exit}`)
+              },
+              readers.signal,
+            )
+            const exit = await completion
+            await diagnostics
+            if (diagnosticsFailed)
+              throw new Error("Source diagnostics could not be drained")
+            if (exit.failed)
+              throw new Error("Capture process exit could not be read")
+            if (exit.code !== 0 && !expired && token === generation)
+              throw new Error(`Capture process exited with code ${exit.code}`)
             if (!disposed && token === generation)
               setStatus(`Ended · ${received} feature frames · Start to repeat`)
           } finally {
             input.kill("SIGTERM")
+            readers.abort()
             const cleanup = setTimeout(() => input.kill("SIGKILL"), 1_000)
             try {
-              await input.exited
-              await diagnostics
+              await Promise.allSettled([completion, diagnostics])
             } finally {
               clearTimeout(cleanup)
               clearTimeout(deadline)
@@ -508,6 +576,7 @@ export function createAudioPrototype(
             }
             if (token === generation) {
               child = null
+              cancelReaders = null
               setRunning(false)
               setSignal(null)
             }
@@ -520,10 +589,20 @@ export function createAudioPrototype(
 
       // The plugin owns pending UI actions and capture work; errors stay visible.
       const action = (fn: () => Promise<unknown>) => {
-        fn().catch(failure)
+        void command(fn)().catch(() => {})
       }
-      const command = (fn: () => Promise<unknown>) => async () => {
-        await fn().catch(failure)
+      const command = (fn: () => Promise<unknown>) => () => {
+        if (disposed) return Promise.resolve()
+        // Register before execution, including reentrant disposal from a host call.
+        const owned = Promise.resolve()
+          .then(() => (disposed ? undefined : fn()))
+          .then(() => {}, failure)
+        actions.add(owned)
+        void owned.then(
+          () => actions.delete(owned),
+          () => actions.delete(owned),
+        )
+        return owned
       }
       const unregister = context.ui.slot({
         append: "sidebar.content",
@@ -658,10 +737,13 @@ export function createAudioPrototype(
       }, 100)
       return async () => {
         disposed = true
+        lifetime.abort()
+        dialogs.cancel()
         clearInterval(ticker)
         unregister()
         unregisterCommands()
         await stop()
+        await Promise.allSettled([...actions, ...reads])
       }
     },
   })

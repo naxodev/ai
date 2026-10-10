@@ -10,9 +10,9 @@ bun packages/opencode-music-player/prototypes/audio-reactive/run.ts --source cli
 
 Start CLIAMP separately and play a track you choose. Select Bars, BarsDot, Mirror, or ClassicPeak in CLIAMP. Other source modes are rejected because their spectrum freshness has not been established here. This prototype sends no playback, volume, queue, or visualizer commands to CLIAMP.
 
-In the prototype terminal, press `v` to cycle styles and `q` to exit. CLIAMP's reviewed feed supports spectrum and mirrored spectrum. Scope and stereo meters display unavailable instead of inventing their data. The preview uses six rows when the terminal is tall enough and one row otherwise. In one row, the scope becomes an explicitly labeled amplitude envelope; the compact meters retain both channels.
+In the prototype terminal, press `v` to cycle styles and `q` to exit. The standalone CLIAMP preview stops after 30 seconds by default. Use `--seconds` for a shorter positive duration; zero does not disable the deadline. CLIAMP's reviewed feed supports spectrum and mirrored spectrum. Scope and stereo meters display unavailable instead of inventing their data. The preview uses six rows when the terminal is tall enough and one row otherwise. In one row, the scope becomes an explicitly labeled amplitude envelope; the compact meters retain both channels.
 
-No socket was available during the initial check. Installation alone does not provide a running analysis feed. The prototype exits with the CLIAMP error rather than silently using generated animation.
+No socket was available during the initial check. Installation alone does not provide a running analysis feed. The prototype reports failure rather than silently using generated animation. The standalone and sidebar readers discard stderr without retaining or logging its contents. They use fixed failure messages and reject metadata or feature lines above 64 KiB before copying oversized chunks.
 
 ## Native source, after the CLIAMP check
 

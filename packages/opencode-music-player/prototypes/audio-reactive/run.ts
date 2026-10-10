@@ -1,6 +1,11 @@
 /** LOCAL PROTOTYPE: real player feeds, no published plugin or config changes. */
 import { mkdir, rename, rm } from "node:fs/promises"
 import { join } from "node:path"
+import {
+  consumeFeatureLines,
+  drainDiagnostics,
+  readProcessOutput,
+} from "./streams.ts"
 
 const directory = import.meta.dir
 const binary = join(directory, "dist/audio-probe")
@@ -25,19 +30,22 @@ function argument(name: string): string | undefined {
 }
 
 async function command(args: string[]) {
-  const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" })
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 60_000)
-  try {
-    const [out, error, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ])
-    if (code !== 0) throw new Error(`${args[0]} failed (${code}): ${error}`)
-    return out
-  } finally {
-    clearTimeout(timeout)
-  }
+  return readProcessOutput(args, { timeoutMs: 60_000 })
+}
+
+export function captureSeconds(
+  source: string,
+  requested?: string,
+  check = false,
+) {
+  const seconds = Number(
+    requested ?? (source === "native" ? "15" : check ? "5" : "30"),
+  )
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 30)
+    throw new Error(
+      "Capture duration must be greater than zero and at most 30 seconds",
+    )
+  return seconds
 }
 
 export async function build() {
@@ -275,21 +283,11 @@ async function main() {
   const source = argument("--source") ?? "cliamp"
   if (!["cliamp", "native"].includes(source))
     throw new Error("Choose --source cliamp or native")
-  const seconds = Number(
-    argument("--seconds") ??
-      (source === "native"
-        ? "15"
-        : process.argv.includes("--check")
-          ? "5"
-          : "0"),
+  const seconds = captureSeconds(
+    source,
+    argument("--seconds"),
+    process.argv.includes("--check"),
   )
-  if (
-    !Number.isFinite(seconds) ||
-    seconds < 0 ||
-    seconds > 30 ||
-    (source === "native" && seconds === 0)
-  )
-    throw new Error("Capture duration must be 1–30 seconds")
   const pid = argument("--pid")
   if (source === "native" && (!pid || !/^\d+(,\d+){0,7}$/.test(pid)))
     throw new Error(
@@ -312,9 +310,8 @@ async function main() {
   let received = 0
   let nonzero = 0
   let closed = false
-  let sourceError: string | undefined
-  let buffer = ""
-  const decoder = new TextDecoder()
+  let sourceError = false
+  const readers = new AbortController()
   const headless = !process.stdout.isTTY || process.argv.includes("--check")
   const previousRaw = process.stdin.isRaw
   const stop = () => {
@@ -327,13 +324,24 @@ async function main() {
     if (input === "v")
       style = styles[(styles.indexOf(style) + 1) % styles.length]!
   }
-  const deadline = seconds
-    ? setTimeout(stop, (seconds + (source === "native" ? 3 : 0)) * 1000)
-    : undefined
-  const killDeadline = seconds
-    ? setTimeout(() => child.kill("SIGKILL"), (seconds + 5) * 1000)
-    : undefined
-  const diagnostics = new Response(child.stderr).text()
+  const deadline = setTimeout(
+    stop,
+    (seconds + (source === "native" ? 3 : 0)) * 1000,
+  )
+  const killDeadline = setTimeout(
+    () => {
+      child.kill("SIGKILL")
+      readers.abort()
+    },
+    (seconds + 5) * 1000,
+  )
+  const diagnostics = drainDiagnostics(child.stderr, readers.signal)
+  // Observe immediately; join this same promise during cleanup.
+  let diagnosticsFailed = false
+  const drained = diagnostics.catch(() => {
+    diagnosticsFailed = true
+    stop()
+  })
   const paint = () => {
     if (headless || closed) return
     const width = Math.max(24, Math.min(72, (process.stdout.columns || 80) - 4))
@@ -363,15 +371,10 @@ async function main() {
     }
     process.once("SIGINT", stop)
     process.once("SIGTERM", stop)
-    for await (const chunk of child.stdout) {
-      buffer += decoder.decode(chunk, { stream: true })
-      if (buffer.length > 64 * 1024)
-        throw new Error("Source line exceeded its bound")
-      let split: number
-      while ((split = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, split)
-        buffer = buffer.slice(split + 1)
-        if (!line) continue
+    await consumeFeatureLines(
+      child.stdout,
+      (line) => {
+        if (closed) return
         const event: unknown = JSON.parse(line)
         const next = frame(event)
         if (next) {
@@ -385,24 +388,19 @@ async function main() {
         } else if (record(event)) {
           latest = null
           lastFrame = 0
-          status =
-            typeof event.message === "string"
-              ? event.message
-              : typeof event.error === "string"
-                ? event.error
-                : typeof event.visualizer === "string"
-                  ? cliampSpectrumModes.includes(event.visualizer)
-                    ? `Invalid spectrum data from CLIAMP mode ${event.visualizer}`
-                    : `Unsupported CLIAMP mode ${event.visualizer}; use ${cliampSpectrumModes.join(", ")}`
-                  : String(event.state ?? "Invalid feature frame")
-          if (event.type === "error" || event.ok === false) sourceError = status
+          const failed = event.type === "error" || event.ok === false
+          if (failed) sourceError = true
+          status = failed
+            ? "Source reported a capture failure"
+            : "Source has no supported feature frame"
         }
-      }
-      if (closed) break
-    }
+      },
+      readers.signal,
+    )
     const exit = await child.exited
-    const error = (await diagnostics).trim()
-    if (error && !closed) throw new Error(error)
+    await drained
+    if (diagnosticsFailed)
+      throw new Error("Source diagnostics could not be drained")
     if (headless)
       console.log(
         JSON.stringify({
@@ -433,10 +431,10 @@ async function main() {
       process.stdin.pause()
     }
     if (!headless) process.stdout.write("\x1b[0m\x1b[?25h\x1b[?1049l")
+    readers.abort()
     const cleanupDeadline = setTimeout(() => child.kill("SIGKILL"), 1_000)
     try {
-      await child.exited
-      await diagnostics
+      await Promise.allSettled([child.exited, drained])
     } finally {
       clearTimeout(cleanupDeadline)
     }
@@ -444,7 +442,7 @@ async function main() {
 }
 
 if (import.meta.main)
-  await main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error))
+  await main().catch(() => {
+    console.error("Audio prototype failed; source details were discarded")
     process.exitCode = 1
   })
