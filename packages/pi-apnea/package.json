@@ -66,9 +66,9 @@
     "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0 || 0.87.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-coding-agent": "1.0.4",
     "@types/bun": "^1.4.2",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.4",
     "effect": "4.0.0-rc.117",
     "prettier": "^3.9.9",
     "typescript": "^7.0.2"
