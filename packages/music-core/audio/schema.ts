@@ -414,12 +414,10 @@ export const audioFeatureFreshness = (input: {
   if (input.nowMs < input.frame.timestampMs) return "stale"
   if (input.nowMs < input.frame.publishedAtMs) return "stale"
   const sampleAge = Math.max(
-    input.frame.sampleAgeMs,
+    input.frame.sampleAgeMs + (input.nowMs - input.frame.publishedAtMs),
     input.nowMs - input.frame.timestampMs,
   )
-  const backlogMs = input.nowMs - input.frame.publishedAtMs
-  if (sampleAge > AUDIO_SAMPLE_AGE_EXPIRY_MS) return "stale"
-  if (backlogMs > AUDIO_SAMPLE_AGE_EXPIRY_MS) return "stale"
+  if (sampleAge >= AUDIO_SAMPLE_AGE_EXPIRY_MS) return "stale"
   return "fresh"
 }
 

@@ -1,4 +1,4 @@
-import { expect, test as baseTest } from "bun:test"
+import { expect, spyOn, test as baseTest } from "bun:test"
 import { testUnixSession as test } from "./unix-session.ts"
 import { randomUUID } from "node:crypto"
 import net from "node:net"
@@ -710,7 +710,10 @@ const scriptedAudioPeer = async (
     type: unknown
     requestId: unknown
     generation?: unknown
+    channel?: unknown
   }> = []
+  const requestWaiters: Array<() => void> = []
+  let holdSubscriptions = false
   let renewal: "renewed" | "rejected" | "held" | "failed" = "renewed"
   let clientNow = 100
   let captureGeneration = 1
@@ -735,7 +738,15 @@ const scriptedAudioPeer = async (
           type: frame.type,
           requestId: frame.requestId,
           ...("generation" in frame ? { generation: frame.generation } : {}),
+          ...("channel" in frame ? { channel: frame.channel } : {}),
         })
+        for (const notify of [...requestWaiters]) notify()
+        if (
+          holdSubscriptions &&
+          (frame.type === "audio-subscribe" ||
+            frame.type === "audio-unsubscribe")
+        )
+          continue
         if (
           (frame.type === "audio-start" && holdStart) ||
           (frame.type === "audio-stop" && holdStop)
@@ -851,6 +862,21 @@ const scriptedAudioPeer = async (
     timers,
     leaseTimers,
     requests,
+    holdSubscriptions: (hold: boolean) => {
+      holdSubscriptions = hold
+    },
+    waitRequest: (predicate: (request: (typeof requests)[number]) => boolean) =>
+      new Promise<(typeof requests)[number]>((resolve) => {
+        const notify = () => {
+          const found = requests.find(predicate)
+          if (!found) return
+          const index = requestWaiters.indexOf(notify)
+          if (index >= 0) requestWaiters.splice(index, 1)
+          resolve(found)
+        }
+        requestWaiters.push(notify)
+        notify()
+      }),
     setRenewal: (mode: typeof renewal) => {
       renewal = mode
     },
@@ -877,6 +903,7 @@ const scriptedAudioPeer = async (
       )
     },
     disconnect: () => accepted?.end(),
+    acceptedSocket: () => accepted,
   }
 }
 
@@ -936,9 +963,10 @@ test("a held renewal stays one request in flight and times out without retrying 
   peer.setRenewal("held")
   try {
     await peer.client.startAudioCapture("scripted-token")
-    const terminal = new Promise<MusicSessionClientError>((resolve) =>
-      peer.client.subscribeTerminal(resolve),
-    )
+    const terminals: MusicSessionClientError[] = []
+    const statuses: unknown[] = []
+    peer.client.subscribeTerminal((error) => terminals.push(error))
+    peer.client.subscribeAudioStatus((status) => statuses.push(status))
     peer.leaseTimers.at(-1)?.callback()
     await peer.client.play()
     peer.leaseTimers.at(-1)?.callback()
@@ -949,7 +977,34 @@ test("a held renewal stays one request in flight and times out without retrying 
     peer.setNow(5_100)
     const scheduled = peer.leaseTimers.length
     peer.leaseTimers.at(-1)?.callback()
-    expect((await terminal).message).toContain("renewal timed out")
+    expect(statuses).toContainEqual({
+      type: "stopped",
+      generation: 1,
+      reason: "lease-expired",
+    })
+    expect(await peer.client.play()).toEqual({ action: "play" })
+    await peer.send({
+      type: "state",
+      snapshot: {
+        daemonInstanceId: "scripted",
+        revision: 1,
+        state: emptyPlayer(),
+      },
+    })
+    expect(peer.client.state?.revision).toBe(1)
+    expect(terminals).toEqual([])
+    const renewal = peer.requests.find(
+      (request) => request.type === "audio-renew",
+    )
+    await peer.send({
+      type: "response",
+      requestId: renewal?.requestId,
+      ok: true,
+      data: { type: "renewed", generation: 1 },
+    })
+    await expect(peer.client.startAudioCapture("later")).rejects.toThrow(
+      "fresh connection",
+    )
     expect(
       peer.requests.filter((request) => request.type === "audio-start"),
     ).toHaveLength(1)
@@ -1033,28 +1088,26 @@ for (const mode of ["rejected", "failed"] as const) {
     const peer = await scriptedAudioPeer(false, true)
     peer.setRenewal(mode)
     const statuses: unknown[] = []
+    const retired = Promise.withResolvers<void>()
     peer.client.subscribeAudioStatus((status) => {
       statuses.push(status)
+      if (status.type === "stopped" && status.reason === "lease-expired")
+        retired.resolve()
     })
     try {
       await peer.client.startAudioCapture("scripted-token")
-      const terminal =
-        mode === "failed"
-          ? new Promise<MusicSessionClientError>((resolve) =>
-              peer.client.subscribeTerminal(resolve),
-            )
-          : undefined
       peer.leaseTimers.at(-1)?.callback()
-      if (terminal) expect((await terminal).message).toContain("renewal failed")
-      else {
-        await peer.client.play()
-        expect(statuses).toContainEqual({
-          type: "stopped",
-          generation: 1,
-          reason: "lease-expired",
-        })
-        expect(await peer.client.play()).toEqual({ action: "play" })
-      }
+      await retired.promise
+      await peer.client.play()
+      expect(statuses).toContainEqual({
+        type: "stopped",
+        generation: 1,
+        reason: "lease-expired",
+      })
+      expect(await peer.client.play()).toEqual({ action: "play" })
+      await expect(peer.client.startAudioCapture("later")).rejects.toThrow(
+        "fresh connection",
+      )
       const before = peer.leaseTimers.length
       peer.leaseTimers.at(-1)?.callback()
       expect(peer.leaseTimers).toHaveLength(before)
@@ -1504,6 +1557,451 @@ const activeAudio = {
     capabilities: source().capabilities,
   },
 }
+
+for (const budget of [1, 2]) {
+  test(`subscription churn respects budget ${budget} and preserves final unsubscribe under withheld acknowledgements`, async () => {
+    const peer = await scriptedAudioPeer(false, true, budget)
+    peer.holdSubscriptions(true)
+    try {
+      const remove = peer.client.subscribeAudioFeatures(() => {})
+      const first = await peer.waitRequest(
+        (request) => request.type === "audio-subscribe",
+      )
+      remove()
+      const last = await peer.waitRequest(
+        (request) => request.type === "audio-unsubscribe",
+      )
+      for (let cycle = 0; cycle < 200; cycle++) {
+        peer.client.subscribeAudioFeatures(() => {})()
+        peer.client.subscribeAudioStatus(() => {})()
+      }
+      await peer.send({
+        type: "response",
+        requestId: first.requestId,
+        ok: true,
+        data: { type: "subscribed", channel: first.channel },
+      })
+      if (budget === 2) {
+        expect(await peer.client.play()).toEqual({ action: "play" })
+        expect(await peer.client.listAudioSources()).toMatchObject({
+          availability: "available",
+        })
+      } else {
+        await expect(peer.client.play()).rejects.toMatchObject({
+          code: "SERVER_BUSY",
+        })
+      }
+      expect(
+        peer.requests.filter((request) => request.channel !== undefined),
+      ).toHaveLength(2)
+      expect(last.channel).toBe(first.channel)
+      const reattach = peer.client.subscribeAudioFeatures(() => {})
+      await peer.send({
+        type: "response",
+        requestId: last.requestId,
+        ok: true,
+        data: { type: "unsubscribed", channel: last.channel },
+      })
+      const newer = await peer.waitRequest(
+        (request) =>
+          request.type === "audio-subscribe" &&
+          request.requestId !== first.requestId,
+      )
+      expect(Number(newer.requestId)).toBeGreaterThan(Number(last.requestId))
+      reattach()
+      await peer.waitRequest(
+        (request) =>
+          request.type === "audio-unsubscribe" &&
+          request.requestId !== last.requestId,
+      )
+    } finally {
+      await peer.close()
+    }
+  })
+}
+
+test("managed audio listeners reattach on the same active client without reconnecting", async () => {
+  const peer = await scriptedAudioPeer()
+  const scope = await Effect.runPromise(Scope.make())
+  let connects = 0
+  const managed = await Effect.runPromise(
+    createReconnectingMusicSessionClientEffect(
+      { clientId: "reattach", hostKind: "test" },
+      {
+        connect: () => {
+          connects++
+          return Effect.succeed(peer.client)
+        },
+      },
+    ).pipe(Effect.provideService(Scope.Scope, scope)),
+  )
+  try {
+    const statuses: unknown[] = []
+    const features: AudioFeatureUpdate[] = []
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const removeStatus = managed.subscribeAudioStatus((status) =>
+        statuses.push(status),
+      )
+      const removeFeatures = managed.subscribeAudioFeatures((frame) =>
+        features.push(frame),
+      )
+      await peer.waitRequest(
+        () =>
+          peer.requests.filter(
+            (request) =>
+              request.type === "audio-subscribe" &&
+              request.channel === "features",
+          ).length ===
+          cycle + 1,
+      )
+      const before = features.length
+      await peer.send(activeAudio, {
+        type: "audio-features",
+        frame: clientFrame(cycle + 1),
+      })
+      expect(statuses.at(-1)).toEqual(activeAudio.status)
+      expect(features.length).toBeGreaterThan(before)
+      removeFeatures()
+      removeStatus()
+      await peer.waitRequest(
+        () =>
+          peer.requests.filter(
+            (request) =>
+              request.type === "audio-unsubscribe" &&
+              request.channel === "status",
+          ).length ===
+          cycle + 1,
+      )
+      await peer.send()
+    }
+    expect(connects).toBe(1)
+    for (const channel of ["status", "features"])
+      expect(
+        peer.requests
+          .filter((request) => request.channel === channel)
+          .map((request) => request.type),
+      ).toEqual([
+        "audio-subscribe",
+        "audio-unsubscribe",
+        "audio-subscribe",
+        "audio-unsubscribe",
+      ])
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await peer.close()
+  }
+})
+
+test("a final unsubscribe uses the control slot while an ordinary command remains pending", async () => {
+  const peer = await scriptedAudioPeer(false, true, 2)
+  peer.holdStart(true)
+  peer.holdSubscriptions(true)
+  const pending = peer.client.startAudioCapture("held")
+  try {
+    const admission = await peer.waitRequest(
+      (request) => request.type === "audio-start",
+    )
+    const remove = peer.client.subscribeAudioStatus(() => {})
+    await peer.waitRequest((request) => request.type === "audio-subscribe")
+    remove()
+    const unsubscribe = await peer.waitRequest(
+      (request) => request.type === "audio-unsubscribe",
+    )
+    await expect(peer.client.play()).rejects.toMatchObject({
+      code: "SERVER_BUSY",
+    })
+    await peer.send({
+      type: "response",
+      requestId: admission.requestId,
+      ok: true,
+      data: { type: "started", generation: 1, source: source().identity },
+    })
+    await pending
+    expect(await peer.client.play()).toEqual({ action: "play" })
+    await peer.send({
+      type: "response",
+      requestId: unsubscribe.requestId,
+      ok: true,
+      data: { type: "unsubscribed", channel: "status" },
+    })
+    expect(
+      peer.requests.filter((request) => request.channel !== undefined),
+    ).toHaveLength(2)
+  } finally {
+    const settled = Promise.allSettled([pending])
+    await peer.close()
+    await settled
+  }
+})
+
+test("a locally rejected renewal retires only audio and fences a late admission", async () => {
+  const peer = await scriptedAudioPeer(false, true, 1)
+  const retired = Promise.withResolvers<void>()
+  let pending: Promise<unknown> | undefined
+  try {
+    await peer.client.startAudioCapture("first")
+    // Observe retirement without consuming the one-slot subscription budget.
+    const remove = peer.client.subscribeAudioStatus((status) => {
+      if (status.type === "stopped" && status.reason === "lease-expired")
+        retired.resolve()
+    })
+    await peer.waitRequest((request) => request.type === "audio-subscribe")
+    await peer.send()
+    peer.holdStart(true)
+    pending = peer.client.startAudioCapture("second")
+    const admission = await peer.waitRequest(
+      (request) => request.type === "audio-start" && request.requestId !== 1,
+    )
+    peer.leaseTimers.at(-1)?.callback()
+    await retired.promise
+    expect(
+      peer.requests.filter((request) => request.type === "audio-renew"),
+    ).toHaveLength(0)
+    await peer.send({
+      type: "response",
+      requestId: admission.requestId,
+      ok: true,
+      data: { type: "started", generation: 1, source: source().identity },
+    })
+    await pending
+    expect(await peer.client.play()).toEqual({ action: "play" })
+    expect(peer.client.status?.kind).toBe("ready")
+    await expect(peer.client.startAudioCapture("later")).rejects.toThrow(
+      "fresh connection",
+    )
+    const timersBeforeLateCallbacks = peer.leaseTimers.length
+    expect(peer.leaseTimers.at(-1)?.canceled).toBe(true)
+    for (const timer of peer.leaseTimers) timer.callback()
+    expect(peer.leaseTimers).toHaveLength(timersBeforeLateCallbacks)
+    remove()
+  } finally {
+    const settled = Promise.allSettled(pending ? [pending] : [])
+    await peer.close()
+    await settled
+  }
+})
+
+test("managed disposers fence old callbacks before reentrant audio reattachment", async () => {
+  const peer = await scriptedAudioPeer()
+  const statusHandlers: Array<
+    Parameters<MusicSessionClient["subscribeAudioStatus"]>[0]
+  > = []
+  const featureHandlers: Array<
+    Parameters<MusicSessionClient["subscribeAudioFeatures"]>[0]
+  > = []
+  const subscribeStatus = peer.client.subscribeAudioStatus.bind(peer.client)
+  const subscribeFeatures = peer.client.subscribeAudioFeatures.bind(peer.client)
+  let reattachStatus: (() => void) | undefined
+  let reattachFeatures: (() => void) | undefined
+  peer.client.subscribeAudioStatus = (listener) => {
+    statusHandlers.push(listener)
+    const remove = subscribeStatus(listener)
+    return () => {
+      remove()
+      const reattach = reattachStatus
+      reattachStatus = undefined
+      reattach?.()
+    }
+  }
+  peer.client.subscribeAudioFeatures = (listener) => {
+    featureHandlers.push(listener)
+    const remove = subscribeFeatures(listener)
+    return () => {
+      remove()
+      const reattach = reattachFeatures
+      reattachFeatures = undefined
+      reattach?.()
+    }
+  }
+  const scope = await Effect.runPromise(Scope.make())
+  const managed = await Effect.runPromise(
+    createReconnectingMusicSessionClientEffect(
+      { clientId: "reentrant", hostKind: "test" },
+      { connect: () => Effect.succeed(peer.client) },
+    ).pipe(Effect.provideService(Scope.Scope, scope)),
+  )
+  let removeStatus = () => {}
+  let removeFeatures = () => {}
+  const statuses: unknown[] = []
+  const updates: AudioFeatureUpdate[] = []
+  try {
+    removeStatus = managed.subscribeAudioStatus((status) =>
+      statuses.push(status),
+    )
+    removeFeatures = managed.subscribeAudioFeatures((update) =>
+      updates.push(update),
+    )
+    reattachStatus = () => {
+      removeStatus = managed.subscribeAudioStatus((status) =>
+        statuses.push(status),
+      )
+    }
+    reattachFeatures = () => {
+      removeFeatures = managed.subscribeAudioFeatures((update) =>
+        updates.push(update),
+      )
+    }
+    removeStatus()
+    removeFeatures()
+    expect(statusHandlers).toHaveLength(2)
+    expect(featureHandlers).toHaveLength(2)
+    statusHandlers[0]?.({ type: "idle" })
+    const clear: AudioFeatureUpdate = {
+      type: "clear",
+      reason: "inactive",
+      generation: 1,
+      sequence: 0,
+    }
+    featureHandlers[0]?.(clear)
+    expect(statuses).toEqual([])
+    expect(updates).toEqual([])
+    statusHandlers[1]?.({ type: "idle" })
+    featureHandlers[1]?.(clear)
+    expect(statuses).toEqual([{ type: "idle" }])
+    expect(updates).toEqual([clear])
+    removeStatus()
+    removeFeatures()
+    statusHandlers[1]?.({ type: "idle" })
+    featureHandlers[1]?.(clear)
+    expect(statuses).toHaveLength(1)
+    expect(updates).toHaveLength(1)
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await peer.close()
+  }
+})
+
+test("stalled subscription writes bound churn and disposal fences their callbacks", async () => {
+  const peer = await scriptedAudioPeer(false, true, 2)
+  const write = net.Socket.prototype.write
+  const callbacks: Array<(error?: Error | null) => void> = []
+  const commands: string[] = []
+  const mocked = spyOn(net.Socket.prototype, "write").mockImplementation(
+    function (
+      this: net.Socket,
+      chunk: string | Uint8Array,
+      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+      callback?: (error?: Error | null) => void,
+    ) {
+      const encoded = chunk.toString()
+      if (
+        this !== peer.acceptedSocket() &&
+        encoded.includes('"audio-subscribe"')
+      ) {
+        commands.push(encoded)
+        const complete =
+          typeof encodingOrCallback === "function"
+            ? encodingOrCallback
+            : callback
+        if (complete) callbacks.push(complete)
+        return false
+      }
+      if (typeof encodingOrCallback === "function")
+        return write.call(this, chunk, undefined, encodingOrCallback)
+      return write.call(this, chunk, encodingOrCallback, callback)
+    },
+  )
+  try {
+    for (let cycle = 0; cycle < 200; cycle++)
+      peer.client.subscribeAudioFeatures(() => {})()
+    expect(commands).toHaveLength(1)
+    expect(await peer.client.play()).toEqual({ action: "play" })
+    peer.client.dispose()
+    for (const callback of callbacks) callback()
+    expect(commands).toHaveLength(1)
+    await expect(peer.client.play()).rejects.toMatchObject({ code: "DISPOSED" })
+  } finally {
+    mocked.mockRestore()
+    await peer.close()
+  }
+})
+
+test("an actual renewal socket-write failure still terminates the client", async () => {
+  const peer = await scriptedAudioPeer(false, true)
+  const terminal = Promise.withResolvers<MusicSessionClientError>()
+  peer.client.subscribeTerminal(terminal.resolve)
+  await peer.client.startAudioCapture("first")
+  const write = net.Socket.prototype.write
+  const mocked = spyOn(net.Socket.prototype, "write").mockImplementation(
+    function (
+      this: net.Socket,
+      chunk: string | Uint8Array,
+      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+      callback?: (error?: Error | null) => void,
+    ) {
+      if (
+        this !== peer.acceptedSocket() &&
+        chunk.toString().includes('"audio-renew"')
+      ) {
+        const complete =
+          typeof encodingOrCallback === "function"
+            ? encodingOrCallback
+            : callback
+        complete?.(new Error("synthetic socket write failure"))
+        return false
+      }
+      if (typeof encodingOrCallback === "function")
+        return write.call(this, chunk, undefined, encodingOrCallback)
+      return write.call(this, chunk, encodingOrCallback, callback)
+    },
+  )
+  try {
+    peer.leaseTimers.at(-1)?.callback()
+    expect(await terminal.promise).toMatchObject({
+      code: "CONNECTION_LOST",
+      message: "synthetic socket write failure",
+    })
+    await expect(peer.client.play()).rejects.toMatchObject({
+      code: "CONNECTION_LOST",
+    })
+    expect(peer.leaseTimers).toHaveLength(1)
+  } finally {
+    mocked.mockRestore()
+    await peer.close()
+  }
+})
+
+test("combined sample age and backlog control expiry delay and fence a replaced callback", async () => {
+  const peer = await scriptedAudioPeer(true)
+  const updates: AudioFeatureUpdate[] = []
+  peer.client.subscribeAudioFeatures((frame) => updates.push(frame))
+  try {
+    peer.setNow(300)
+    await peer.send(activeAudio, {
+      type: "audio-features",
+      frame: { ...clientFrame(1), sampleAgeMs: 250 },
+    })
+    expect(peer.timers[0]?.delayMs).toBe(50)
+    await peer.send({
+      type: "audio-features",
+      frame: { ...clientFrame(2), sampleAgeMs: 200 },
+    })
+    expect(peer.timers[1]?.delayMs).toBe(100)
+    const before = updates.length
+    peer.timers[0]?.callback()
+    expect(updates).toHaveLength(before)
+    peer.timers[1]?.callback()
+    expect(updates.at(-1)).toMatchObject({
+      type: "clear",
+      reason: "stale",
+      sequence: 2,
+    })
+    await peer.send({
+      type: "audio-features",
+      frame: { ...clientFrame(3), sampleAgeMs: 400 },
+    })
+    expect(updates.at(-1)).toMatchObject({ type: "clear", sequence: 3 })
+    expect(peer.timers).toHaveLength(2)
+    await peer.send({
+      type: "audio-features",
+      frame: { ...clientFrame(4), sampleAgeMs: 300 },
+    })
+    expect(updates.at(-1)).toMatchObject({ type: "clear", sequence: 4 })
+    expect(peer.timers).toHaveLength(2)
+  } finally {
+    await peer.close()
+  }
+})
 
 test("client fences canonical source, capabilities, sequence, and timestamp without harming playback", async () => {
   const peer = await scriptedAudioPeer()
