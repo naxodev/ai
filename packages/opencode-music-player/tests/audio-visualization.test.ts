@@ -433,6 +433,37 @@ for (const baseline of [
   })
 }
 
+test("discovery retries one failed catalog before asking for a source", async () => {
+  const fake = connection()
+  let lists = 0
+  fake.client.listAudioSources = async () => {
+    lists++
+    if (lists === 1)
+      return {
+        availability: "unavailable",
+        reason: "capture-adapter-unavailable",
+        sources: [],
+      }
+    return { availability: "available", sources: [selected] }
+  }
+  let prompts = 0
+  const model = createAudioVisualization({
+    connect: async () => fake.client,
+    confirm: async () => true,
+  })
+  try {
+    await model.chooseSource(async (list) => {
+      prompts++
+      return list.sources[0]
+    })
+    expect(lists).toBe(2)
+    expect(prompts).toBe(1)
+    expect(model.current().selected).toEqual(selected)
+  } finally {
+    await model.dispose()
+  }
+})
+
 test("a replayed stop after selection does not force another choice before Start", async () => {
   const fake = connection({ type: "idle" })
   const model = createAudioVisualization({

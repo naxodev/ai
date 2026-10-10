@@ -1490,9 +1490,11 @@ test("process daemon contenders retain one winner and a non-interfering loser", 
     const loserOutput = loser.output()
     expect(loserOutput).toContain("MusicSession.SocketError")
     expect(loserOutput).toContain("[listen]")
+    // Both contenders can pass the empty-path check. The loser then fails at bind.
     expect(
       loserOutput.includes(path) ||
-        loserOutput.includes("socket path is already occupied"),
+        loserOutput.includes("socket path is already occupied") ||
+        loserOutput.includes("EADDRINUSE"),
     ).toBe(true)
     expect(
       loser.observations.some(

@@ -291,84 +291,109 @@ export function createAudioVisualization(options: {
     return stopping
   }
 
+  const discover = async (
+    choose: (list: AudioSourceList) => Promise<SourceEntry | undefined>,
+    onCatalogFailure: () => void,
+  ) => {
+    await stop()
+    // A late admission may have queued cleanup behind the normal Stop.
+    // Join the latest barrier before discovery, not just before accepting it.
+    let barrier: Promise<void>
+    do {
+      barrier = retiring
+      await barrier
+    } while (retiring !== barrier)
+    const ticket = epoch
+    const connected = await connect()
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    const list = await connected.listAudioSources()
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    if (list.availability !== "available" || list.sources.length === 0) {
+      if (list.availability !== "available") onCatalogFailure()
+      publish({
+        selected: null,
+        message:
+          list.availability === "available"
+            ? "No unambiguous active Kaset source; capture is off"
+            : unavailableSourceMessage(list.reason),
+      })
+      return
+    }
+    const ready = await waitForInitialStatus(connected)
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    if (!ready) {
+      ++epoch
+      releaseClient()
+      publish({
+        selected: null,
+        message: "Status timeout: retry",
+      })
+      return
+    }
+    const selected = await choose(list)
+    if (
+      disposed ||
+      ticket !== epoch ||
+      client !== connected ||
+      retiring !== barrier
+    )
+      return
+    // Only the daemon-issued entries shown in this exact dialog are usable.
+    const canonical =
+      selected && list.sources.find((source) => source.token === selected.token)
+    if (canonical) {
+      uncertainStop = false
+      selection = { client: connected, source: canonical, epoch: ticket }
+      publish({
+        selected: canonical,
+        frame: null,
+        message: "Source selected; capture is off",
+      })
+    }
+  }
+
   const chooseSource = async (
     choose: (list: AudioSourceList) => Promise<SourceEntry | undefined>,
   ) => {
     if (disposed || choosing) return
     choosing = true
     try {
-      await stop()
-      // A late admission may have queued cleanup behind the normal Stop.
-      // Join the latest barrier before discovery, not just before accepting it.
-      let barrier: Promise<void>
-      do {
-        barrier = retiring
-        await barrier
-      } while (retiring !== barrier)
-      const ticket = epoch
-      const connected = await connect()
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      const list = await connected.listAudioSources()
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      if (list.availability !== "available" || list.sources.length === 0) {
-        publish({
-          selected: null,
-          message:
-            list.availability === "available"
-              ? "No unambiguous active Kaset source; capture is off"
-              : unavailableSourceMessage(list.reason),
-        })
-        return
-      }
-      const ready = await waitForInitialStatus(connected)
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      if (!ready) {
-        ++epoch
-        releaseClient()
-        publish({
-          selected: null,
-          message: "Status timeout: retry",
-        })
-        return
-      }
-      const selected = await choose(list)
-      if (
-        disposed ||
-        ticket !== epoch ||
-        client !== connected ||
-        retiring !== barrier
-      )
-        return
-      // Only the daemon-issued entries shown in this exact dialog are usable.
-      const canonical =
-        selected &&
-        list.sources.find((source) => source.token === selected.token)
-      if (canonical) {
-        uncertainStop = false
-        selection = { client: connected, source: canonical, epoch: ticket }
-        publish({
-          selected: canonical,
-          frame: null,
-          message: "Source selected; capture is off",
-        })
+      // A dropped first catalog must not ask the user to choose nothing.
+      for (
+        let attempt = 0;
+        attempt < 2 && !state.selected && !disposed;
+        attempt++
+      ) {
+        let prompted = false
+        let catalogFailed = false
+        await discover(
+          async (list) => {
+            prompted = true
+            return choose(list)
+          },
+          () => {
+            catalogFailed = true
+          },
+        )
+        if (prompted || !catalogFailed) break
       }
     } finally {
       choosing = false
