@@ -101,6 +101,7 @@ export type MusicSessionClientOptions = {
 }
 
 const DEFAULT_MAX_PENDING_REQUESTS = 128
+const AUDIO_CONTROL_RETRY_MS = 250
 const scheduleAudioExpiry = (callback: () => void, delayMs: number) => {
   const timer = setTimeout(callback, delayMs)
   return () => clearTimeout(timer)
@@ -230,12 +231,14 @@ class Client implements MusicSessionClient {
   #audioFeatureListeners = new Set<Listener<AudioFeatureUpdate>>()
   #audioStatusSubscribed = false
   #audioFeaturesSubscribed = false
-  #audioInterestSent = { status: false, features: false }
+  #audioInterestAcknowledged = { status: false, features: false }
+  #audioInterestUncertain = { status: false, features: false }
   #audioControl:
     | Extract<Pending, { kind: "audio-subscribe" | "audio-unsubscribe" }>
     | undefined
   #audioControlWritten = false
   #audioControlSuperseded = false
+  #audioControlRetry: { cancel: () => void } | undefined
   #interestEpoch = 0
   #interestGeneration: number | undefined
   #joinedGeneration: number | undefined
@@ -1150,7 +1153,14 @@ class Client implements MusicSessionClient {
     }, AUDIO_INTEREST_RENEW_MS)
   }
   private flushAudioInterest() {
-    if (!this.audioNegotiated() || this.#disposed || this.#failure) return
+    if (
+      !this.audioNegotiated() ||
+      this.#disposed ||
+      this.#terminal ||
+      this.#failure ||
+      this.#audioControlRetry
+    )
+      return
     const desired = {
       status: this.#audioStatusSubscribed,
       features: this.#audioFeaturesSubscribed,
@@ -1169,14 +1179,20 @@ class Client implements MusicSessionClient {
       this.#pending.delete(current.id)
       this.#audioControl = undefined
       this.#audioControlSuperseded = true
+      // The daemon may already have applied this Subscribe. An exact successful
+      // Unsubscribe must revoke it even though its acknowledgement is withheld.
+      this.#audioInterestUncertain[current.channel] = true
     }
     const channels = ["features", "status"] as const
     const channel =
       channels.find(
-        (value) => this.#audioInterestSent[value] && !desired[value],
+        (value) =>
+          (this.#audioInterestAcknowledged[value] ||
+            this.#audioInterestUncertain[value]) &&
+          !desired[value],
       ) ??
       (["status", "features"] as const).find(
-        (value) => desired[value] && !this.#audioInterestSent[value],
+        (value) => desired[value] && !this.#audioInterestAcknowledged[value],
       )
     if (!channel) return
     // Serialize controls and reserve one ordinary command slot when possible.
@@ -1190,13 +1206,19 @@ class Client implements MusicSessionClient {
       kind,
       id: requestId,
       channel,
-      resolve: () => {},
+      resolve: () => {
+        this.#audioInterestAcknowledged[channel] = kind === "audio-subscribe"
+        this.#audioInterestUncertain[channel] = false
+      },
       reject: () => {
-        // Subscription loss is owned by this connection. It must not reject
-        // an unhandled promise or terminate playback.
+        if (this.#disposed || this.#terminal) return
+        // A malformed acknowledgement can hide an applied Subscribe. Preserve
+        // that possibility until a matching control succeeds. Never claim success.
+        if (kind === "audio-subscribe")
+          this.#audioInterestUncertain[channel] = true
+        this.armAudioControlRetry()
       },
     }
-    this.#audioInterestSent[channel] = desired[channel]
     this.#audioControl = pending
     this.#audioControlWritten = false
     this.#pending.set(requestId, pending)
@@ -1223,6 +1245,23 @@ class Client implements MusicSessionClient {
         retryable: true,
       })
     }
+  }
+  private armAudioControlRetry() {
+    if (this.#audioControlRetry || this.#disposed || this.#terminal) return
+    const retry = { cancel: () => {} }
+    this.#audioControlRetry = retry
+    // One connection-wide cooldown prevents errors or listener churn from
+    // causing a retry loop. The callback uses the latest desired subscriptions.
+    retry.cancel = this.scheduleLease(() => {
+      if (this.#audioControlRetry !== retry) return
+      this.#audioControlRetry = undefined
+      this.flushAudioInterest()
+    }, AUDIO_CONTROL_RETRY_MS)
+  }
+  private cancelAudioControlRetry() {
+    const retry = this.#audioControlRetry
+    this.#audioControlRetry = undefined
+    retry?.cancel()
   }
   subscribeAudioStatus(listener: Listener<AudioCaptureStatusValue>) {
     if (this.#terminal || this.#disposed) return () => {}
@@ -1370,6 +1409,7 @@ class Client implements MusicSessionClient {
     if (this.#terminal || this.#disposed) return
     this.#terminal = true
     this.cancelInterest()
+    this.cancelAudioControlRetry()
     this.#phase = "terminal"
     this.#failure = error
     const terminal = new MusicSessionClientError(error)
@@ -1415,6 +1455,7 @@ class Client implements MusicSessionClient {
     if (this.#disposed) return
     this.#disposed = true
     this.cancelInterest()
+    this.cancelAudioControlRetry()
     if (this.#terminal) {
       this.#terminalListeners.clear()
       this.#statusListeners.clear()
