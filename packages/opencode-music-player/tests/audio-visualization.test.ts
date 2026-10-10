@@ -433,6 +433,25 @@ for (const baseline of [
   })
 }
 
+test("a replayed stop after selection does not force another choice before Start", async () => {
+  const fake = connection({ type: "idle" })
+  const model = createAudioVisualization({
+    connect: async () => fake.client,
+    confirm: async () => true,
+  })
+  try {
+    await select(model)
+    for (const listener of fake.status)
+      listener({ type: "stopped", generation: 1, reason: "stop" })
+    expect(model.current().selected).toEqual(selected)
+    await model.start()
+    expect(fake.events).toEqual(["list", "start"])
+    expect(model.current().active).toBe(true)
+  } finally {
+    await model.dispose()
+  }
+})
+
 for (const cancellation of ["stop", "dispose", "disconnect"] as const) {
   test(`${cancellation} settles an owned initial-status wait without requiring a status or dialog cancellation`, async () => {
     const fake = connection(null)
