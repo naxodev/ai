@@ -295,9 +295,8 @@ private func kasetCacheOwned(_ pid: Int32, read: RegionRead = liveRegionRead) th
             guard errno == EINVAL || errno == 0 else { throw HelperError(reason: "source-loss") }
             return owners == ["com.sertacozercan.Kaset"]
         }
-        guard count == size, region.prp_prinfo.pri_address >= address else {
-            throw HelperError(reason: "source-loss")
-        }
+        guard count == size else { throw HelperError(reason: "source-loss") }
+        // A query inside a region returns that region's start, which can be behind the cursor.
         if region.prp_prinfo.pri_size == 0 {
             let base = max(address, region.prp_prinfo.pri_address)
             guard base <= UInt64.max - page else { throw HelperError(reason: "source-loss") }
@@ -309,6 +308,8 @@ private func kasetCacheOwned(_ pid: Int32, read: RegionRead = liveRegionRead) th
         guard region.prp_prinfo.pri_address <= UInt64.max - region.prp_prinfo.pri_size else {
             throw HelperError(reason: "source-loss")
         }
+        let end = region.prp_prinfo.pri_address + region.prp_prinfo.pri_size
+        guard end > address else { throw HelperError(reason: "source-loss") }
         let path = withUnsafeBytes(of: &region.prp_vip.vip_path) { bytes in
             String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
         }
@@ -316,9 +317,7 @@ private func kasetCacheOwned(_ pid: Int32, read: RegionRead = liveRegionRead) th
             owners.insert(owner)
             if owner != "com.sertacozercan.Kaset" { return false }
         }
-        let next = region.prp_prinfo.pri_address + region.prp_prinfo.pri_size
-        guard next > address else { throw HelperError(reason: "source-loss") }
-        address = next
+        address = end
     }
     throw HelperError(reason: "source-bound")
 }
@@ -334,7 +333,9 @@ private func listKasetSources() throws {
         let value = try number(object, kAudioProcessPropertyPID)
         guard value > 0, value <= UInt32(Int32.max) else { continue }
         let pid = Int32(value)
-        guard try kasetCacheOwned(pid) else { continue }
+        // One unreadable GPU process cannot hide a later proven Kaset owner.
+        let owned = (try? kasetCacheOwned(pid)) ?? false
+        guard owned else { continue }
         let launch = try launchIdentity(pid)
         let executable = try executableIdentity(pid)
         let source = Source(pid: pid, object: object, launch: launch, executable: executable, kasetAttribution: true)
@@ -566,6 +567,33 @@ private func selfTest(_ scenario: String, duration: Double) throws {
             return 0
         }
         guard try kasetCacheOwned(0, read: readFixture) else { throw HelperError(reason: "attribution-fixture") }
+        let overlapServed = Served()
+        let overlap: RegionRead = { _, flavor, address, buffer, size in
+            guard flavor == PROC_PIDREGIONPATHINFO else {
+                errno = EINVAL
+                return 0
+            }
+            let region = buffer.assumingMemoryBound(to: proc_regionwithpathinfo.self)
+            region.pointee = proc_regionwithpathinfo()
+            if address == 0 {
+                region.pointee.prp_prinfo.pri_address = 4096
+                region.pointee.prp_prinfo.pri_size = 0
+                return size
+            }
+            if !overlapServed.cache, address > 4096 {
+                overlapServed.cache = true
+                region.pointee.prp_prinfo.pri_address = 4096
+                region.pointee.prp_prinfo.pri_size = address
+                let bytes = Array(path.utf8)
+                withUnsafeMutableBytes(of: &region.pointee.prp_vip.vip_path) { target in
+                    target.copyBytes(from: bytes)
+                }
+                return size
+            }
+            errno = EINVAL
+            return 0
+        }
+        guard try kasetCacheOwned(0, read: overlap) else { throw HelperError(reason: "attribution-fixture") }
         let deniedAfterMatch: RegionRead = { _, flavor, address, buffer, size in
             guard flavor == PROC_PIDREGIONPATHINFO else {
                 errno = EINVAL

@@ -56,10 +56,10 @@ Apple's [notarization guidance](https://developer.apple.com/documentation/securi
 
 ## Release gate still unmet
 
-The helper proves mapped-file ownership with public `PROC_PIDREGIONPATHINFO` only. It does not call the private region flavor. A zero-sized record is not ownership; the walk continues and fails closed if the cursor cannot advance. Synthetic checks cover a zero-sized prefix, a foreign owner, and an incomplete scan. Live Kaset mappings have not been rechecked with this public walk. The historical live run used the private selector and does not clear this contract.
+The helper proves mapped-file ownership with public `PROC_PIDREGIONPATHINFO` only. It does not call the private region flavor. A zero-sized record is not ownership; the walk continues and fails closed if the cursor cannot advance. Synthetic checks cover a zero-sized prefix, a foreign owner, and an incomplete scan. One metadata-only check on this Mac agreed with the private walk for six GPU processes and selected only Kaset. It did not capture audio, and it does not clear signing or the permission matrix.
 
 These remain unverified and must pass before any release: signed distribution, notarization, ticket handling, quarantined and offline launch, shipped-helper prompt attribution, permission persistence across updates and package paths, the deny/grant/revoke matrix, supported helper-process attribution, additional players, device changes, and sustained performance.
 
 ## Recommended next step
 
-Continue local-only work behind the daemon capture adapter, and keep production capture unavailable. Ad-hoc signing is sufficient for that work. The ownership walk is now the public region API, but a live Kaset mapping check is still required before release. A Developer ID certificate alone does not clear the remaining gates.
+Continue local-only work behind the daemon capture adapter, and keep production capture unavailable. Ad-hoc signing is sufficient for that work. The ownership walk is now the public region API. One metadata-only Kaset check passed on this Mac; signing and the permission matrix remain open. A Developer ID certificate alone does not clear the remaining gates.
