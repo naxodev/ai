@@ -31,13 +31,13 @@ export type AudioViewState = {
 const unavailableSourceMessage = (reason: AudioSourceList["reason"]) => {
   switch (reason) {
     case "capture-adapter-unavailable":
-      return "Capture unavailable (capture-adapter-unavailable) — check the local audio helper build; capture is off"
+      return "Helper off: check build"
     case "not-negotiated":
-      return "Audio capture not negotiated — use a compatible audio-enabled daemon; capture is off"
+      return "Update audio daemon"
     case "unsupported":
-      return "Audio capture unsupported by this daemon; capture is off"
+      return "Audio unsupported"
     default:
-      return "Audio capture unavailable; capture is off"
+      return "Audio unavailable"
   }
 }
 
@@ -61,6 +61,9 @@ export function createAudioVisualization(options: {
   let admission: { client: AudioConnection; generation: number } | undefined
   let selection:
     { client: AudioConnection; source: SourceEntry; epoch: number } | undefined
+  let initialStatus: { client: AudioConnection; received: boolean } | undefined
+  let statusWait:
+    { client: AudioConnection; finish: (received: boolean) => void } | undefined
   let connecting: Promise<AudioConnection> | undefined
   let starting: Promise<void> | undefined
   let stopping: Promise<void> | undefined
@@ -85,12 +88,33 @@ export function createAudioVisualization(options: {
     for (const listener of listeners) listener(state)
   }
   const releaseClient = () => {
+    statusWait?.finish(false)
+    initialStatus = undefined
     for (const dispose of disposers) dispose()
     disposers = []
     client?.dispose()
     client = undefined
     selection = undefined
     mayOwn = false
+  }
+  const waitForInitialStatus = (connected: AudioConnection) => {
+    if (initialStatus?.client !== connected) return Promise.resolve(false)
+    if (initialStatus.received) return Promise.resolve(true)
+    const pending = new Promise<boolean>((resolve) => {
+      const waiting = {
+        client: connected,
+        finish: (received: boolean) => {
+          clearTimeout(timer)
+          if (statusWait === waiting) statusWait = undefined
+          resolve(received)
+        },
+      }
+      const timer = setTimeout(() => waiting.finish(false), 3000)
+      statusWait = waiting
+    })
+    // Establish the owned wait before synchronous observers can cancel it.
+    publish({ message: "Waiting for audio status" })
+    return pending
   }
   const connect = async () => {
     if (disposed) throw new Error("Audio view is closed")
@@ -104,9 +128,13 @@ export function createAudioVisualization(options: {
         }
         client = connected
         latestClient = connected
+        initialStatus = { client: connected, received: false }
         disposers = [
           connected.subscribeAudioStatus((status) => {
             if (disposed || client !== connected) return
+            if (initialStatus?.client === connected)
+              initialStatus.received = true
+            if (statusWait?.client === connected) statusWait.finish(true)
             if (
               status.type === "stopped" ||
               status.type === "failed" ||
@@ -139,7 +167,9 @@ export function createAudioVisualization(options: {
                 message:
                   status.type === "stopped"
                     ? `Capture off (${status.reason})`
-                    : `Capture unavailable (${status.reason})`,
+                    : status.type === "unavailable"
+                      ? unavailableSourceMessage(status.reason)
+                      : `Capture unavailable (${status.reason})`,
               })
             }
           }),
@@ -222,6 +252,7 @@ export function createAudioVisualization(options: {
     const owned = mayOwn ? client : undefined
     mayOwn = false
     selection = undefined
+    statusWait?.finish(false)
     // Observers can synchronously call Stop from publication. Establish the
     // exact shared outcome before notifying them or exposing cleared authority.
     stopping = queueStop(owned, message, actions.size > 0)
@@ -277,6 +308,23 @@ export function createAudioVisualization(options: {
             list.availability === "available"
               ? "No unambiguous active Kaset source; capture is off"
               : unavailableSourceMessage(list.reason),
+        })
+        return
+      }
+      const ready = await waitForInitialStatus(connected)
+      if (
+        disposed ||
+        ticket !== epoch ||
+        client !== connected ||
+        retiring !== barrier
+      )
+        return
+      if (!ready) {
+        ++epoch
+        releaseClient()
+        publish({
+          selected: null,
+          message: "Status timeout: retry",
         })
         return
       }
@@ -443,6 +491,7 @@ export function createAudioVisualization(options: {
       if (closing) return closing
       disposed = true
       ++epoch
+      statusWait?.finish(false)
       const pending = [...actions]
       closing = Promise.resolve().then(async () => {
         releaseClient()

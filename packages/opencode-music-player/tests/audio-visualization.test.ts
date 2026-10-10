@@ -51,7 +51,7 @@ const frame: AudioFeatureFrame = {
   envelope: [{ min: -0.5, max: 0.5 }],
   channels: { layout: "stereo", rms: [0.2, 0.1], peaks: [0.4, 0.2] },
 }
-function connection() {
+function connection(baseline: AudioCaptureStatus | null = { type: "idle" }) {
   const status = new Set<(value: AudioCaptureStatus) => void>()
   const features = new Set<
     Parameters<AudioConnection["subscribeAudioFeatures"]>[0]
@@ -73,6 +73,7 @@ function connection() {
     },
     subscribeAudioStatus: (listener) => {
       status.add(listener)
+      if (baseline) listener(baseline)
       return () => {
         status.delete(listener)
       }
@@ -130,8 +131,7 @@ for (const { name, list, message } of [
       reason: "capture-adapter-unavailable",
       sources: [],
     },
-    message:
-      "Capture unavailable (capture-adapter-unavailable) — check the local audio helper build; capture is off",
+    message: "Helper off: check build",
   },
   {
     name: "capture not negotiated",
@@ -140,18 +140,17 @@ for (const { name, list, message } of [
       reason: "not-negotiated",
       sources: [],
     },
-    message:
-      "Audio capture not negotiated — use a compatible audio-enabled daemon; capture is off",
+    message: "Update audio daemon",
   },
   {
     name: "unsupported capture",
     list: { availability: "unavailable", reason: "unsupported", sources: [] },
-    message: "Audio capture unsupported by this daemon; capture is off",
+    message: "Audio unsupported",
   },
   {
     name: "unavailable capture without a reason",
     list: { availability: "unavailable", sources: [] },
-    message: "Audio capture unavailable; capture is off",
+    message: "Audio unavailable",
   },
 ] satisfies readonly {
   name: string
@@ -159,7 +158,8 @@ for (const { name, list, message } of [
   message: string
 }[]) {
   test(`${name} reports its fixed availability message without offering a source or starting capture`, async () => {
-    const fake = connection()
+    // Empty/unavailable discovery must settle even without an initial status.
+    const fake = connection(null)
     fake.client.listAudioSources = async () => list
     let dialogs = 0
     const model = createAudioVisualization({
@@ -195,9 +195,7 @@ test("unavailable discovery never displays raw reasons or private source metadat
   })
   try {
     await select(model)
-    expect(model.current().message).toBe(
-      "Audio capture unavailable; capture is off",
-    )
+    expect(model.current().message).toBe("Audio unavailable")
     expect(model.current().selected).toBeNull()
     expect(fake.events).not.toContain("start")
   } finally {
@@ -353,7 +351,7 @@ for (const status of [
   { type: "failed", generation: 1, reason: "setup" },
   { type: "unavailable", reason: "capture-adapter-unavailable" },
 ] as const satisfies readonly AudioCaptureStatus[]) {
-  test(`${status.type} shared status retires pending confirmation before late approval can start capture`, async () => {
+  test(`${status.type} shared status after the idle baseline retires pending confirmation before late approval can start capture`, async () => {
     const fake = connection()
     const entered = deferred<void>()
     const approval = deferred<boolean>()
@@ -385,6 +383,142 @@ for (const status of [
     }
   })
 }
+
+for (const baseline of [
+  { type: "stopped", generation: 1, reason: "stop" },
+  { type: "unavailable", reason: "capture-adapter-unavailable" },
+] as const satisfies readonly AudioCaptureStatus[]) {
+  test(`delayed initial ${baseline.type} status settles before fresh selection and cannot revoke its later consent`, async () => {
+    const fake = connection(null)
+    const listed = deferred<void>()
+    fake.client.listAudioSources = async () => {
+      fake.events.push("list")
+      listed.resolve()
+      return { availability: "available", sources: [selected] }
+    }
+    let confirmations = 0
+    const model = createAudioVisualization({
+      connect: async () => fake.client,
+      confirm: async () => {
+        confirmations++
+        return true
+      },
+    })
+    const action = select(model)
+    let completed = false
+    const settled = action.then(() => {
+      completed = true
+    })
+    try {
+      await listed.promise
+      // Drain the already-resolved catalog and selection promises, without
+      // supplying the initial status. Discovery must not grant fresh authority.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(completed).toBe(false)
+      expect(model.current().selected).toBeNull()
+      expect(fake.events).toEqual(["list"])
+      for (const listener of fake.status) listener(baseline)
+      await action
+      expect(model.current().selected).toEqual(selected)
+      expect(confirmations).toBe(0)
+      expect(fake.events).toEqual(["list"])
+      await model.start()
+      expect(confirmations).toBe(1)
+      expect(model.current().active).toBe(true)
+      expect(fake.events).toEqual(["list", "start"])
+    } finally {
+      await model.dispose()
+      await settled
+    }
+  })
+}
+
+for (const cancellation of ["stop", "dispose", "disconnect"] as const) {
+  test(`${cancellation} settles an owned initial-status wait without requiring a status or dialog cancellation`, async () => {
+    const fake = connection(null)
+    const waiting = deferred<void>()
+    let dialogs = 0
+    const model = createAudioVisualization({
+      connect: async () => fake.client,
+      confirm: async () => true,
+    })
+    const remove = model.subscribe((state) => {
+      if (state.message === "Waiting for audio status") waiting.resolve()
+    })
+    const action = model.chooseSource(async (list) => {
+      dialogs++
+      return list.sources[0]
+    })
+    let completed = false
+    const settled = action.then(() => {
+      completed = true
+    })
+    try {
+      await waiting.promise
+      let closing: Promise<void> | undefined
+      if (cancellation === "disconnect") {
+        for (const listener of fake.terminal)
+          listener(
+            new MusicSessionClientError({
+              code: "CONNECTION_LOST",
+              message: "fixture closed before initial status",
+              retryable: true,
+            }),
+          )
+      } else closing = model[cancellation]()
+      // Cancellation must settle now, not succeed three seconds later because
+      // the readiness timeout finally released the action.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(completed).toBe(true)
+      await closing
+      await action
+      expect(dialogs).toBe(0)
+      expect(model.current().selected).toBeNull()
+      expect(fake.events).not.toContain("start")
+      if (cancellation === "stop") {
+        // Stop cancels this action's wait, not the socket's future baseline.
+        for (const listener of fake.status) listener({ type: "idle" })
+        await select(model)
+        await model.start()
+        expect(model.current().active).toBe(true)
+      } else {
+        expect(fake.events).toEqual(["list", "dispose"])
+        expect(fake.status.size).toBe(0)
+      }
+    } finally {
+      remove()
+      await model.dispose()
+      await settled
+    }
+  })
+}
+
+test("missing initial status times out, releases the connection, and permits fresh selection on a healthy socket", async () => {
+  const first = connection(null)
+  const second = connection()
+  let connections = 0
+  let dialogs = 0
+  const model = createAudioVisualization({
+    connect: async () => (++connections === 1 ? first.client : second.client),
+    confirm: async () => true,
+  })
+  try {
+    await model.chooseSource(async (list) => {
+      dialogs++
+      return list.sources[0]
+    })
+    expect(model.current().message).toBe("Status timeout: retry")
+    expect(model.current().selected).toBeNull()
+    expect(dialogs).toBe(0)
+    expect(first.events).toEqual(["list", "dispose"])
+    await select(model)
+    expect(model.current().selected).toEqual(selected)
+    await model.start()
+    expect(second.events).toEqual(["list", "start"])
+  } finally {
+    await model.dispose()
+  }
+}, 10_000)
 
 test("initial cached stopped status has no selection lifetime to retire and fresh selection remains usable", async () => {
   const fake = connection()

@@ -3,7 +3,7 @@ import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { RGBA } from "@opentui/core"
 import { Show, createSignal } from "solid-js"
-import type { AudioFeatureFrame } from "@naxodev/music-core"
+import type { AudioFeatureFrame, AudioSourceList } from "@naxodev/music-core"
 import { AudioSidebar } from "../audio-sidebar.tsx"
 import {
   createAudioVisualization,
@@ -63,7 +63,10 @@ test("the mounted sidebar renders measured styles, clears stale data, and releas
       generation: 1,
       reason: "stop",
     }),
-    subscribeAudioStatus: () => () => {},
+    subscribeAudioStatus: (listener) => {
+      listener({ type: "idle" })
+      return () => {}
+    },
     subscribeAudioFeatures: (listener) => {
       features.add(listener)
       return () => {
@@ -146,3 +149,96 @@ test("the mounted sidebar renders measured styles, clears stale data, and releas
     await model.dispose()
   }
 })
+
+for (const { reason, message, narrow } of [
+  {
+    reason: "capture-adapter-unavailable",
+    message: "Helper off: check build",
+    narrow: "Helper off:",
+  },
+  {
+    reason: "not-negotiated",
+    message: "Update audio daemon",
+    narrow: "Update audio",
+  },
+  {
+    reason: "unsupported",
+    message: "Audio unsupported",
+    narrow: "Audio unsupp",
+  },
+  {
+    reason: "private title\u001b[31m" as unknown as NonNullable<
+      AudioSourceList["reason"]
+    >,
+    message: "Audio unavailable",
+    narrow: "Audio unavai",
+  },
+] satisfies readonly {
+  reason: NonNullable<AudioSourceList["reason"]>
+  message: string
+  narrow: string
+}[]) {
+  test(`${message} remains useful in the actual 24-column sidebar and identifies the cause when narrowed`, async () => {
+    let starts = 0
+    const errors: unknown[] = []
+    const client: AudioConnection = {
+      listAudioSources: async () => ({
+        availability: "unavailable",
+        reason,
+        sources: [],
+      }),
+      startAudioCapture: async () => {
+        starts++
+        return { type: "busy" }
+      },
+      stopAudioCapture: async () => ({
+        type: "rejected",
+        reason: "not-joined",
+      }),
+      subscribeAudioStatus: () => () => {},
+      subscribeAudioFeatures: () => () => {},
+      subscribeTerminal: () => () => {},
+      dispose: () => {},
+    }
+    const model = createAudioVisualization({
+      connect: async () => client,
+      confirm: async () => true,
+    })
+    const [width, setWidth] = createSignal(30)
+    const app = await testRender(
+      () => (
+        <AudioSidebar
+          model={model}
+          width={width()}
+          height={65}
+          foreground={RGBA.fromHex("#ffffff")}
+          muted={RGBA.fromHex("#888888")}
+          onError={(error) => {
+            errors.push(error)
+          }}
+        />
+      ),
+      { width: 30, height: 20 },
+    )
+    try {
+      await app.waitForFrame((text) => text.includes("Capture off"))
+      await model.chooseSource(async (list) => list.sources[0])
+      const normal = await app.waitForFrame(
+        (text) =>
+          !text.includes("Capture off") && text.includes("No fresh signal"),
+      )
+      expect(normal).toContain(message)
+      expect(starts).toBe(0)
+      setWidth(18)
+      const compact = await app.waitForFrame(
+        (text) => !text.includes(message) && text.includes("Not selected"),
+      )
+      expect(compact).toContain(narrow)
+      expect(model.current().selected).toBeNull()
+      expect(errors).toEqual([])
+    } finally {
+      app.renderer.destroy()
+      await model.dispose()
+    }
+  })
+}
