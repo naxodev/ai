@@ -37,6 +37,14 @@ TCC diagnostics for that failed helper request attributed `kTCCServiceAudioCaptu
 
 This supports the local permission diagnosis. It does not verify a distributable helper's prompt, permission persistence, or deny/revoke behavior. No microphone capture was started.
 
+## Ghostty launch, 2026-10-10
+
+Two short starts used the ad-hoc helper from the public-region revision, launched by Bun under Ghostty. Each start selected the same Kaset GPU process, PID `39513`, then stopped. Playback state still arrived. No setting was changed and the existing Hex grant was not revoked.
+
+TCC attributed both `kTCCServiceAudioCapture` requests to Ghostty (`com.mitchellh.ghostty`). It refused each request because Ghostty has no `NSAudioCaptureUsageDescription`. No prompt appeared.
+
+The helper still reached `active` and delivered measured frames. The second start's peak spectrum was `0.72` and peak RMS was `0.048`. This does not prove whether those samples came from a prior grant or from a tap that ignores this refusal. Deny, revoke, and a signed helper remain untested.
+
 ## Evidence retained locally
 
 The successful run's temporary artifact directory is `kaset-daemon-live-013TLv` under the approved OpenCode temporary directory. It contains `result.json`, `statistics.json`, `daemon.log`, and sidebar text snapshots before and after 30 seconds and after Stop. The failed run is `kaset-daemon-live-PuqVyy`.
@@ -53,4 +61,4 @@ This page records the measured outcome because temporary artifacts are not durab
 - A 30-minute soak, resource growth, dropped frames, or playback-command latency under load.
 - Other macOS versions, supported WebKit ownership attribution, signed distribution, notarization, or permission behavior across updates.
 
-The private mapped-file selector and ad-hoc signing remain release blockers. Production capture remains unavailable. Further capture needs separate approval; the [local test guide](music-local-daemon-audio.md) does not authorize it.
+Ad-hoc signing and terminal permission attribution remain release blockers. Production capture remains unavailable. Further capture needs separate approval; the [local test guide](music-local-daemon-audio.md) does not authorize it.

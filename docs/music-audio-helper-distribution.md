@@ -41,7 +41,7 @@ Apple's [notarization guidance](https://developer.apple.com/documentation/securi
 ## Design consequences
 
 - The helper signature covers the code hash. Every rebuild produces a different ad-hoc signature. Whether macOS re-prompts for system-audio permission after an ad-hoc helper changes is **unverified**; the plan already lists this as an open question, and it needs a user-approved permission experiment.
-- TCC attributed the failed local helper request to Hex, the responsible application, in the [shared-daemon live test](music-local-daemon-audio-evidence.md#permission-diagnosis). A manual grant to Hex preceded successful capture. Stable attribution for the shipped layout remains unverified and must be tested before choosing a packaging layout.
+- TCC attributed the failed local helper request to Hex, the responsible application, in the [shared-daemon live test](music-local-daemon-audio-evidence.md#permission-diagnosis). A manual grant to Hex preceded successful capture. A later Ghostty launch attributed the request to Ghostty and refused it without a prompt, because Ghostty has no audio-capture usage string. The helper still reported measured frames. Stable attribution for a shipped layout remains unverified.
 - Integrity verification is worth implementing regardless of route. The spike proves it detects modification.
 - A universal helper is feasible, but it costs two compiles and a mandatory re-sign. A thin per-architecture artifact is the cheaper alternative if size and build time matter more than one download for both architectures.
 
