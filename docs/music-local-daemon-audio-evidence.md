@@ -45,9 +45,42 @@ TCC attributed both `kTCCServiceAudioCapture` requests to Ghostty (`com.mitchell
 
 The helper still reached `active` and delivered measured frames. The second start's peak spectrum was `0.72` and peak RMS was `0.048`. This does not prove whether those samples came from a prior grant or from a tap that ignores this refusal. Deny, revoke, and a signed helper remain untested.
 
+## Isolated permission matrix, 2026-10-10
+
+An ad-hoc signed test app with `NSAudioCaptureUsageDescription` launched the helper through Bun. Its bundle ID was `dev.naxo.music.permission-matrix.j8vudl`. Each approved probe selected the existing Kaset GPU process and stopped after 15 seconds. The harness retained feature counts, peak levels, helper hashes, and lifecycle metadata. It saved no audio or feature arrays.
+
+The original temporary bundle received a grant but did not appear in System Settings. TCC could not resolve its application URL. A bundle-specific `tccutil reset AudioCapture` also failed with `kLSApplicationNotFoundErr`. Moving the test app into the project folder and registering that path made the scoped reset succeed. The app then appeared under **System Audio Recording Only**.
+
+The first probe after reset still received a grant. TCC recorded `AUTHREQ_PROMPTING` for the responsible test app, followed by `authValue=2`, `authReason=2`. The helper delivered 208 frames, all nonzero, over 15.038 seconds. Peak RMS was `0.084`; peak spectrum was `0.805`. The stage name `deny` did not describe the permission decision. This run did not verify denial.
+
+Switching the test app off in System Settings established a real denial. TCC returned `authValue=0`, `authReason=4`, without a prompt. The helper still emitted 265 feature frames, all zero. Enabling the same entry and choosing **Quit & Reopen** restored nonzero frames. An unchanged-helper retry retained the grant without another prompt.
+
+| Probe                                            | TCC decision   | Prompt events | Frames | Nonzero frames | Helper runtime |
+| ------------------------------------------------ | -------------- | ------------- | -----: | -------------: | -------------: |
+| After scoped reset (`deny`)                      | Allowed, `2/2` | 1             |    208 |            208 |       15.038 s |
+| Settings off (`denied-retry`)                    | Denied, `0/4`  | 0             |    265 |              0 |       15.043 s |
+| Settings on (`allow`)                            | Allowed, `2/4` | 0             |    263 |            263 |       15.045 s |
+| Unchanged helper (`allowed-retry`)               | Allowed, `2/4` | 0             |    263 |            263 |       15.033 s |
+| Rebuilt helper (`updated-helper`)                | Allowed, `2/4` | 0             |    263 |            263 |       15.040 s |
+| Settings off and app restarted (`revoked-retry`) | Denied, `0/4`  | 0             |    265 |              0 |       15.028 s |
+
+Decision pairs are `authValue/authReason`. Counts describe helper feature frames, not PCM buffers. A denied request producing zero-valued frames fails the intended requirement that denial stop feature delivery. Zero features alone cannot distinguish denied access from silence.
+
+The update experiment keeps the helper outside the app's sealed resources. The rebuilt helper adds only `CFBundleVersion=2` to its embedded property list and retains identifier `dev.naxo.music.audio-helper`. Its ad-hoc CDHash changes from `80dd10714e183291b8fe513fef7c21169835c1c1` to `ab43b503a4d5699124774da1a0fd751b36b7e5a1`. The responsible app's CDHash remains `5f8900aaa8875afa0d6469432eb7adbcd8af74bd`. Strict signature verification passes for both helpers and the unchanged app.
+
+That helper replacement retained the grant without a new TCC prompt event. This verifies one changed helper under a fixed responsible app. It does not verify changes to the app itself, package paths, terminal launch layouts, or Developer ID distribution.
+
+Revocation also blocked nonzero features after **Quit & Reopen**, but feature delivery continued. System Settings warned that the running app could retain access until it quit. This experiment did not test revocation during an active capture or declining the initial permission prompt.
+
+The helper runs directly in this harness. These results do not verify the daemon's `active` status or sidebar behavior under denied permission. The deny/revoke requirement to stop feature delivery failed. The production permission gate remains open.
+
 ## Evidence retained locally
 
 The successful run's temporary artifact directory is `kaset-daemon-live-013TLv` under the approved OpenCode temporary directory. It contains `result.json`, `statistics.json`, `daemon.log`, and sidebar text snapshots before and after 30 seconds and after Stop. The failed run is `kaset-daemon-live-PuqVyy`.
+
+The permission matrix artifacts are in `music-permission-matrix-J8VUDL` under the same temporary directory. `matrix-results/` retains all six probe results. The corresponding `<stage>-tcc.json` files retain AudioCapture requests correlated by helper PID and TCC message ID. Helper PIDs were `98142`, `1754`, `2168`, `2540`, `2797`, and `3492`, in table order.
+
+Cleanup removed the test app's permission entry, both bundle registrations, and both test bundles. A final process check found no test launcher, probe, or native helper. The experiment changed no playback settings, installed preview, or personal plugin configuration. Hex and Ghostty grants remained unchanged.
 
 This page records the measured outcome because temporary artifacts are not durable repository evidence. It omits private track metadata and frame contents.
 
