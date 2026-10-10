@@ -684,6 +684,7 @@ const connection = (
     let audioFeaturesWanted = false
     let audioFeatureEpoch = 0
     let audioFeatureRetirement: Deferred.Deferred<void> | undefined
+    let pendingAudioDetach: Effect.Effect<void> | undefined
     const audioStartAttempts = new Map<
       number,
       {
@@ -788,47 +789,82 @@ const connection = (
     const ensureAudioFeatures = Effect.gen(function* () {
       if (audioFeatureForward) return
       const epoch = audioFeatureEpoch
-      audioFeatureForward = yield* capture.subscribeFeatures(connectionId).pipe(
-        Stream.runForEach((frame) =>
-          sendAudioFrame({ type: "audio-features", frame }, epoch),
-        ),
-        Effect.forkIn(connectionScope),
-      )
+      audioFeatureForward = yield* capture
+        .subscribeFeatures(connectionId, {
+          detachOnClose: false,
+        })
+        .pipe(
+          Stream.runForEach((frame) =>
+            sendAudioFrame({ type: "audio-features", frame }, epoch),
+          ),
+          Effect.forkIn(connectionScope),
+        )
     })
     const retireAudioFeatures = Effect.uninterruptible(
       Effect.gen(function* () {
-        // Acknowledgement means delivery is fenced, not that native cleanup joined.
-        // Fence before yielding so an old forwarder cannot refill the latest slot.
+        // Acknowledgement revokes authority and fences delivery, but does not join
+        // native cleanup. No finalizer may revoke tokens issued after this boundary.
         audioFeaturesWanted = false
         audioFeatureEpoch += 1
         yield* Ref.set(latestAudioFrame, undefined)
+        const cleanup = yield* capture.beginDetach(connectionId)
         const attempts = [...audioStartAttempts.values()]
         for (const attempt of attempts)
           yield* Deferred.succeed(attempt.cancel, undefined)
-        // Raw subscribe/unsubscribe bursts share one retirement and one desired bit.
-        // Never bind a new sink while an old finalizer can still detach this owner.
-        if (audioFeatureRetirement) return
+        // Every unsubscribe revokes current tokens, even during retirement. New
+        // native admission is barred, so repeats share the same cleanup lifetime.
+        if (audioFeatureRetirement) {
+          // The first worker retains the native join. This bounded slot coalesces
+          // repeat snapshots without admitting another capture or feature sink.
+          pendingAudioDetach = cleanup
+          return
+        }
         const previous = audioFeatureForward
-        if (!previous && attempts.length === 0) return
         audioFeatureForward = undefined
         const done = Deferred.makeUnsafe<void>()
         audioFeatureRetirement = done
         yield* Effect.gen(function* () {
-          if (previous) yield* Fiber.interrupt(previous)
-          for (const attempt of attempts) yield* Deferred.await(attempt.done)
-          // The feature stream finalizer already detaches. Repeating detach after
-          // its join would revoke tokens issued by responsive listSources calls.
-          if (!previous) yield* capture.detach(connectionId)
-          audioFeatureRetirement = undefined
-          if (audioFeaturesWanted && !closed) yield* ensureAudioFeatures
+          if (!previous) return
+          yield* Fiber.interrupt(previous)
+          const exit = yield* Fiber.await(previous)
+          if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause))
+            return yield* Effect.failCause(exit.cause)
         }).pipe(
+          // Join the exact revoked lifetime even if the feature finalizer defects.
+          // The first join cannot be replaced by a later no-interest snapshot.
+          Effect.ensuring(
+            cleanup.pipe(
+              Effect.ensuring(
+                Effect.forEach(
+                  attempts,
+                  (attempt) => Deferred.await(attempt.done),
+                  { discard: true },
+                ),
+              ),
+              Effect.ensuring(
+                Effect.gen(function* () {
+                  while (pendingAudioDetach) {
+                    const pending = pendingAudioDetach
+                    pendingAudioDetach = undefined
+                    yield* pending
+                  }
+                }),
+              ),
+            ),
+          ),
+          Effect.andThen(
+            Effect.gen(function* () {
+              audioFeatureRetirement = undefined
+              if (audioFeaturesWanted && !closed) yield* ensureAudioFeatures
+              yield* Deferred.succeed(done, undefined)
+            }),
+          ),
           Effect.tapCause((cause) =>
             Effect.sync(() => {
               reportFailure(cause)
               close()
             }),
           ),
-          Effect.ensuring(Deferred.succeed(done, undefined)),
           Effect.forkIn(connectionScope, { uninterruptible: true }),
         )
       }),
