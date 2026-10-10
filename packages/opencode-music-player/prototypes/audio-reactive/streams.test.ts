@@ -177,7 +177,13 @@ for (const malformed of [false, true]) {
             "--check",
           ],
           {
-            env: { ...process.env, PATH: directory },
+            // Assert diagnostic text, not the test runner's forced-color decoration.
+            env: {
+              ...process.env,
+              PATH: directory,
+              FORCE_COLOR: "0",
+              NO_COLOR: "1",
+            },
             stdin: "ignore",
             stdout: "pipe",
             stderr: "pipe",
