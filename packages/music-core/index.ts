@@ -96,4 +96,36 @@ export type {
   RevisionedState,
   TransportAction,
 } from "./session/protocol.ts"
-export { PROTOCOL, baselineCapabilities } from "./session/protocol.ts"
+export {
+  AUDIO_PROTOCOL_REVISION,
+  PROTOCOL,
+  audioVisualizationCapabilities,
+  audioVisualizationCapability,
+  audioInterestLeaseCapability,
+  baselineCapabilities,
+} from "./session/protocol.ts"
+export type {
+  AudioCaptureStatus,
+  AudioFeatureFrame,
+  AudioSourceList,
+  AudioStartResult,
+  AudioStopResult,
+  AudioRenewResult,
+  CaptureIdentity,
+} from "./audio/schema.ts"
+// Local-only helper contract. The daemon's production capture stays unavailable.
+export { makeNativeHelperAdapter } from "./audio/native-helper.ts"
+export type {
+  NativeHelperDependencies,
+  NativeHelperExit,
+  NativeHelperProcess,
+  NativeHelperSpawnRequest,
+} from "./audio/native-helper.ts"
+export {
+  AUDIO_SAMPLE_AGE_EXPIRY_MS,
+  MAX_AUDIO_FEATURE_FRAME_BYTES,
+  MAX_AUDIO_FEATURE_HZ,
+  MAX_ENVELOPE_BUCKETS,
+  MAX_SPECTRUM_BANDS,
+  audioFeatureFreshness,
+} from "./audio/schema.ts"

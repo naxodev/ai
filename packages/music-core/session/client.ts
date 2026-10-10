@@ -10,6 +10,7 @@ import {
   Exit,
   Fiber,
   Ref,
+  Result,
   Schedule,
   Schema,
   Scope,
@@ -34,6 +35,34 @@ import {
   encodeFrame,
 } from "./framing.ts"
 import {
+  audioFeatureFreshness,
+  sameCaptureIdentity,
+  AudioCaptureStatus,
+  AudioFeatureFrame,
+  AudioSourceList,
+  AudioStartResult,
+  AudioStopResult,
+  AudioRenewResult,
+  audioInterestLeaseCapability,
+  AUDIO_INTEREST_LEASE_MS,
+  AUDIO_INTEREST_RENEW_MS,
+  AUDIO_SAMPLE_AGE_EXPIRY_MS,
+  unavailableAudioSourceList,
+  type AudioCaptureStatus as AudioCaptureStatusValue,
+  type AudioFeatureFrame as AudioFeatureFrameValue,
+  type AudioSourceList as AudioSourceListValue,
+  type AudioStartResult as AudioStartResultValue,
+  type AudioStopResult as AudioStopResultValue,
+  type AudioRenewResult as AudioRenewResultValue,
+} from "../audio/schema.ts"
+import {
+  localMonotonicMs,
+  mapAudioClock,
+  type AudioClockMapping,
+} from "../audio/clock.ts"
+import {
+  AUDIO_PROTOCOL_REVISION,
+  audioVisualizationCapability,
   baselineCapabilities,
   decodeHelloResult,
   decodeServerFrame,
@@ -61,11 +90,22 @@ export type MusicSessionClientOptions = {
   maxFrameBytes?: number
   protocolRange?: ProtocolRange
   capabilities?: string[]
-  /** Local bound for unsettled transport requests on this connection. */
+  /** Local bound for unsettled requests on this connection. */
   maxPendingRequests?: number
+  /** Test-only local monotonic clock. Production uses performance.now. */
+  monotonicNow?: () => number
+  /** Test-only expiry scheduler; returns cancellation for the exact callback. */
+  scheduleAudioExpiry?: (callback: () => void, delayMs: number) => () => void
+  /** Test-only interest scheduler, separate from feature freshness. */
+  scheduleAudioLease?: (callback: () => void, delayMs: number) => () => void
 }
 
 const DEFAULT_MAX_PENDING_REQUESTS = 128
+const AUDIO_CONTROL_RETRY_MS = 250
+const scheduleAudioExpiry = (callback: () => void, delayMs: number) => {
+  const timer = setTimeout(callback, delayMs)
+  return () => clearTimeout(timer)
+}
 export class MusicSessionClientError extends Error {
   readonly code: ProtocolError["code"]
   readonly retryable: boolean
@@ -95,7 +135,46 @@ type Pending =
       readonly resolve: (value: ArtworkResult) => void
       readonly reject: (error: MusicSessionClientError) => void
     }
+  | {
+      readonly kind: "audio-sources"
+      readonly id: number
+      readonly resolve: (value: AudioSourceListValue) => void
+      readonly reject: (error: MusicSessionClientError) => void
+    }
+  | {
+      readonly kind: "audio-start" | "audio-stop" | "audio-renew"
+      readonly id: number
+      readonly resolve: (
+        value:
+          AudioStartResultValue | AudioStopResultValue | AudioRenewResultValue,
+      ) => void
+      readonly reject: (error: MusicSessionClientError) => void
+    }
+  | {
+      readonly kind: "audio-subscribe" | "audio-unsubscribe"
+      readonly id: number
+      readonly channel: "status" | "features"
+      readonly resolve: (value: {
+        readonly channel: "status" | "features"
+      }) => void
+      readonly reject: (error: MusicSessionClientError) => void
+    }
 type Listener<T> = (value: T) => void
+export type AudioFeatureUpdate =
+  | AudioFeatureFrameValue
+  | {
+      readonly type: "clear"
+      readonly reason:
+        | "stale"
+        | "stopped"
+        | "source-loss"
+        | "disconnected"
+        | "failed"
+        | "unavailable"
+        | "inactive"
+      readonly generation: number | undefined
+      readonly sequence: number
+    }
 export type MusicSessionClient = {
   readonly daemonInstanceId: string
   readonly negotiatedCapabilities: string[]
@@ -106,6 +185,15 @@ export type MusicSessionClient = {
   subscribeState(listener: Listener<RevisionedState>): () => void
   /** Exact retained terminal observation; disposal never emits a loss. */
   subscribeTerminal(listener: Listener<MusicSessionClientError>): () => void
+  /**
+   * Opt-in audio controls. Production capture is unavailable. These methods
+   * do not replace a daemon and do not replay Start after reconnect.
+   */
+  listAudioSources(): Promise<AudioSourceListValue>
+  startAudioCapture(token: string): Promise<AudioStartResultValue>
+  stopAudioCapture(): Promise<AudioStopResultValue>
+  subscribeAudioStatus(listener: Listener<AudioCaptureStatusValue>): () => void
+  subscribeAudioFeatures(listener: Listener<AudioFeatureUpdate>): () => void
   toggle(): Promise<TransportResult>
   play(): Promise<TransportResult>
   pause(): Promise<TransportResult>
@@ -130,6 +218,36 @@ class Client implements MusicSessionClient {
   #state: RevisionedState | undefined
   #statusListeners = new Set<Listener<ProviderStatus>>()
   #stateListeners = new Set<Listener<RevisionedState>>()
+  #audioStatus: AudioCaptureStatusValue | undefined
+  #audioGeneration: number | undefined
+  #audioSequence = 0
+  #audioTimestamp = -1
+  #audioFeature: AudioFeatureFrameValue | undefined
+  #audioClock: AudioClockMapping | undefined
+  #monotonicNow: () => number
+  #audioSendMs = 0
+  #featureTimer: (() => void) | undefined
+  #audioStatusListeners = new Set<Listener<AudioCaptureStatusValue>>()
+  #audioFeatureListeners = new Set<Listener<AudioFeatureUpdate>>()
+  #audioStatusSubscribed = false
+  #audioFeaturesSubscribed = false
+  #audioInterestAcknowledged = { status: false, features: false }
+  #audioInterestUncertain = { status: false, features: false }
+  #audioControl:
+    | Extract<Pending, { kind: "audio-subscribe" | "audio-unsubscribe" }>
+    | undefined
+  #audioControlWritten = false
+  #audioControlSuperseded = false
+  #audioControlRetry: { cancel: () => void } | undefined
+  #interestEpoch = 0
+  #interestGeneration: number | undefined
+  #joinedGeneration: number | undefined
+  #expiredGeneration = 0
+  #audioLifetimeRetired = false
+  #interestTimer: (() => void) | undefined
+  #renewPending = false
+  #renewRequest: Pending | undefined
+  #renewedAt = 0
   daemonInstanceId = ""
   negotiatedCapabilities: string[] = []
   selectedRevision = 0
@@ -146,10 +264,14 @@ class Client implements MusicSessionClient {
     socket: net.Socket,
     framer: NdjsonFramer,
     maxPendingRequests: number,
+    monotonicNow: () => number = localMonotonicMs,
+    private readonly scheduleExpiry = scheduleAudioExpiry,
+    private readonly scheduleLease = scheduleAudioExpiry,
   ) {
     this.#socket = socket
     this.#framer = framer
     this.#maxPendingRequests = maxPendingRequests
+    this.#monotonicNow = monotonicNow
   }
   get status() {
     return this.#status
@@ -250,6 +372,13 @@ class Client implements MusicSessionClient {
         this.daemonInstanceId = result.daemonInstanceId
         this.negotiatedCapabilities = [...result.capabilities]
         this.selectedRevision = result.protocol.selectedRevision
+        if (result.audioClock) {
+          this.#audioClock = mapAudioClock({
+            clientSendMs: this.#audioSendMs,
+            clientReceiveMs: this.#monotonicNow(),
+            daemonSampleMs: result.audioClock.daemonMonotonicMs,
+          })
+        }
         this.#phase = "active"
         this.#handshake = undefined
         handshake.resolve()
@@ -272,13 +401,146 @@ class Client implements MusicSessionClient {
       try {
         if (pending.kind === "artwork")
           this.settleSuccess(pending, decodeArtworkResult(frame.data))
-        else {
+        else if (pending.kind === "audio-sources") {
+          const decoded = Schema.decodeUnknownResult(AudioSourceList)(
+            frame.data,
+          )
+          if (Result.isFailure(decoded))
+            return this.settleFailure(pending, {
+              code: "INVALID_REQUEST",
+              message: "invalid audio source list",
+              retryable: false,
+            })
+          if (this.takePending(pending)) pending.resolve(decoded.success)
+        } else if (pending.kind === "audio-start") {
+          const decoded = Schema.decodeUnknownResult(AudioStartResult)(
+            frame.data,
+          )
+          if (Result.isFailure(decoded))
+            return this.settleFailure(pending, {
+              code: "INVALID_REQUEST",
+              message: "invalid audio start result",
+              retryable: false,
+            })
+          if (this.takePending(pending)) {
+            if (
+              decoded.success.type === "started" ||
+              decoded.success.type === "joined"
+            ) {
+              this.advanceAudioGeneration(decoded.success.generation)
+              // Admission evidence survives Stop/unsubscribe cancellation and
+              // is recorded before another status in this same chunk is decoded.
+              this.#joinedGeneration = Math.max(
+                this.#joinedGeneration ?? 0,
+                decoded.success.generation,
+              )
+              if (
+                decoded.success.generation === this.#joinedGeneration &&
+                decoded.success.generation <= this.#expiredGeneration
+              )
+                this.receiveAudio({
+                  type: "audio-status",
+                  status: {
+                    type: "stopped",
+                    generation: decoded.success.generation,
+                    reason: "lease-expired",
+                  },
+                })
+            }
+            pending.resolve(decoded.success)
+          }
+        } else if (pending.kind === "audio-renew") {
+          const decoded = Schema.decodeUnknownResult(AudioRenewResult)(
+            frame.data,
+          )
+          if (Result.isFailure(decoded))
+            return this.settleFailure(pending, {
+              code: "INVALID_REQUEST",
+              message: "invalid audio renewal result",
+              retryable: false,
+            })
+          if (this.takePending(pending)) pending.resolve(decoded.success)
+        } else if (pending.kind === "audio-stop") {
+          const decoded = Schema.decodeUnknownResult(AudioStopResult)(
+            frame.data,
+          )
+          if (Result.isFailure(decoded))
+            return this.settleFailure(pending, {
+              code: "INVALID_REQUEST",
+              message: "invalid audio stop result",
+              retryable: false,
+            })
+          if (this.takePending(pending)) {
+            if (
+              decoded.success.type === "stopped" &&
+              this.advanceAudioGeneration(decoded.success.generation)
+            ) {
+              this.#audioStatus = {
+                type: "stopped",
+                generation: decoded.success.generation,
+                reason: decoded.success.reason,
+              }
+              this.#audioFeature = undefined
+              this.#notifyAudioClear(
+                decoded.success.reason === "source-loss"
+                  ? "source-loss"
+                  : "stopped",
+              )
+            }
+            pending.resolve(decoded.success)
+          }
+        } else if (
+          pending.kind === "audio-subscribe" ||
+          pending.kind === "audio-unsubscribe"
+        ) {
+          const decoded = Schema.decodeUnknownResult(
+            Schema.Struct({
+              type: Schema.Literals(["subscribed", "unsubscribed"]),
+              channel: Schema.Literals(["status", "features"]),
+            }),
+          )(frame.data)
+          if (Result.isFailure(decoded))
+            return this.settleFailure(pending, {
+              code: "INVALID_REQUEST",
+              message: "invalid audio subscription result",
+              retryable: true,
+            })
+          if (
+            decoded.success.channel !== pending.channel ||
+            decoded.success.type !==
+              (pending.kind === "audio-subscribe"
+                ? "subscribed"
+                : "unsubscribed")
+          )
+            return this.settleFailure(pending, {
+              code: "INVALID_REQUEST",
+              message: "audio subscription result does not match request",
+              retryable: false,
+            })
+          if (this.takePending(pending))
+            pending.resolve({ channel: decoded.success.channel })
+        } else if (pending.kind === "transport") {
           const result = decodeTransportResult(frame.data)
           if (result.action !== pending.action)
             throw new Error("transport result action does not match request")
           this.settleSuccess(pending, result)
         }
       } catch {
+        if (
+          pending.kind === "audio-sources" ||
+          pending.kind === "audio-start" ||
+          pending.kind === "audio-stop" ||
+          pending.kind === "audio-renew" ||
+          pending.kind === "audio-subscribe" ||
+          pending.kind === "audio-unsubscribe"
+        ) {
+          this.settleFailure(pending, {
+            code: "INVALID_REQUEST",
+            message: "invalid audio result",
+            retryable: false,
+          })
+          return
+        }
         this.terminate({
           code: "CONNECTION_LOST",
           message: "invalid daemon transport result",
@@ -287,12 +549,18 @@ class Client implements MusicSessionClient {
       }
       return
     }
+    if (frame.type === "audio-status" || frame.type === "audio-features") {
+      this.receiveAudio(frame)
+      return
+    }
     if (frame.type === "status") {
       this.#status = frame.status
       for (const listener of [...this.#statusListeners])
         try {
           listener(frame.status)
-        } catch {}
+        } catch {
+          // A subscriber must not stop playback or other subscribers.
+        }
       return
     }
     if (
@@ -304,22 +572,54 @@ class Client implements MusicSessionClient {
     for (const listener of [...this.#stateListeners])
       try {
         listener(frame.snapshot)
-      } catch {}
+      } catch {
+        // A subscriber must not stop playback or other subscribers.
+      }
+  }
+  private takePending(pending: Pending) {
+    if (this.#pending.get(pending.id) !== pending) return false
+    this.#pending.delete(pending.id)
+    if (this.#audioControl === pending) {
+      this.#audioControl = undefined
+      this.#audioControlSuperseded = false
+    }
+    queueMicrotask(() => this.flushAudioInterest())
+    return true
   }
   private settleSuccess(
     pending: Pending,
     result: TransportResult | ArtworkResult,
   ) {
-    if (this.#pending.get(pending.id) !== pending) return
-    this.#pending.delete(pending.id)
-    ;(pending.resolve as (value: TransportResult | ArtworkResult) => void)(
-      result,
-    )
+    if (!this.takePending(pending)) return
+    if (pending.kind === "transport") pending.resolve(result as TransportResult)
+    else if (pending.kind === "artwork")
+      pending.resolve(result as ArtworkResult)
   }
   private settleFailure(pending: Pending, error: ProtocolError) {
-    if (this.#pending.get(pending.id) !== pending) return
-    this.#pending.delete(pending.id)
+    if (!this.takePending(pending)) return
     pending.reject(new MusicSessionClientError(error))
+  }
+  private admitRequest(): number | MusicSessionClientError {
+    if (this.#disposed)
+      return new MusicSessionClientError({
+        code: "DISPOSED",
+        message: "client is disposed",
+        retryable: false,
+      })
+    if (this.#failure) return new MusicSessionClientError(this.#failure)
+    if (this.#pending.size >= this.#maxPendingRequests)
+      return new MusicSessionClientError({
+        code: "SERVER_BUSY",
+        message: "client pending request limit reached",
+        retryable: true,
+      })
+    if (this.#nextId > Number.MAX_SAFE_INTEGER)
+      return new MusicSessionClientError({
+        code: "INVALID_REQUEST",
+        message: "request ID space exhausted",
+        retryable: false,
+      })
+    return this.#nextId++
   }
   private request(
     action: TransportAction,
@@ -335,23 +635,9 @@ class Client implements MusicSessionClient {
       )
     if (this.#failure)
       return Promise.reject(new MusicSessionClientError(this.#failure))
-    if (this.#pending.size >= this.#maxPendingRequests)
-      return Promise.reject(
-        new MusicSessionClientError({
-          code: "SERVER_BUSY",
-          message: "client pending request limit reached",
-          retryable: true,
-        }),
-      )
-    if (this.#nextId > Number.MAX_SAFE_INTEGER)
-      return Promise.reject(
-        new MusicSessionClientError({
-          code: "INVALID_REQUEST",
-          message: "request ID space exhausted",
-          retryable: false,
-        }),
-      )
-    const requestId = this.#nextId++
+    const requestId = this.admitRequest()
+    if (requestId instanceof MusicSessionClientError)
+      return Promise.reject(requestId)
     return new Promise<TransportResult>((resolve, reject) => {
       const pending: Pending = {
         kind: "transport",
@@ -413,23 +699,9 @@ class Client implements MusicSessionClient {
           retryable: false,
         }),
       )
-    if (this.#pending.size >= this.#maxPendingRequests)
-      return Promise.reject(
-        new MusicSessionClientError({
-          code: "SERVER_BUSY",
-          message: "client pending request limit reached",
-          retryable: true,
-        }),
-      )
-    if (this.#nextId > Number.MAX_SAFE_INTEGER)
-      return Promise.reject(
-        new MusicSessionClientError({
-          code: "INVALID_REQUEST",
-          message: "request ID space exhausted",
-          retryable: false,
-        }),
-      )
-    const requestId = this.#nextId++
+    const requestId = this.admitRequest()
+    if (requestId instanceof MusicSessionClientError)
+      return Promise.reject(requestId)
     return new Promise<ArtworkResult>((resolve, reject) => {
       const pending: Pending = {
         kind: "artwork",
@@ -488,13 +760,576 @@ class Client implements MusicSessionClient {
       )
     return this.transport("seek", positionMs)
   }
+  private audioNegotiated() {
+    return (
+      this.selectedRevision >= AUDIO_PROTOCOL_REVISION &&
+      this.negotiatedCapabilities.includes(audioVisualizationCapability)
+    )
+  }
+  private advanceAudioGeneration(generation: number) {
+    if (generation < (this.#audioGeneration ?? 0)) return false
+    if (generation !== this.#audioGeneration) {
+      this.#audioGeneration = generation
+      this.#audioSequence = 0
+      this.#audioTimestamp = -1
+      this.#audioFeature = undefined
+      this.#notifyAudioClear("inactive", generation)
+    }
+    return true
+  }
+  private notifyAudioStatus(status: AudioCaptureStatusValue) {
+    for (const listener of [...this.#audioStatusListeners])
+      try {
+        listener(status)
+      } catch {
+        // A visualization listener must not terminate playback.
+      }
+  }
+  private endInterest(
+    generation: number,
+    reason: "source-loss" | "lease-expired",
+  ) {
+    if (
+      this.#interestGeneration !== generation &&
+      !(reason === "lease-expired" && this.#joinedGeneration === generation)
+    )
+      return
+    this.cancelInterest()
+    if (reason === "lease-expired") this.#audioLifetimeRetired = true
+    this.#audioFeature = undefined
+    this.#notifyAudioClear(
+      reason === "source-loss" ? "source-loss" : "stopped",
+      generation,
+    )
+    const status: AudioCaptureStatusValue = {
+      type: "stopped",
+      generation,
+      reason,
+    }
+    if (generation >= (this.#audioGeneration ?? 0)) this.#audioStatus = status
+    this.notifyAudioStatus(status)
+  }
+  private receiveAudio(
+    frame:
+      | { readonly type: "audio-status"; readonly status: unknown }
+      | { readonly type: "audio-features"; readonly frame: unknown },
+  ) {
+    if (!this.audioNegotiated()) return
+    if (frame.type === "audio-status") {
+      const decoded = Schema.decodeUnknownResult(AudioCaptureStatus)(
+        frame.status,
+      )
+      if (Result.isFailure(decoded)) return
+      if ("generation" in decoded.success) {
+        // Status can arrive after a newer admission response. Older generations
+        // cannot clear the fresh capture or cancel its renewal lifetime.
+        if (
+          decoded.success.type === "stopped" &&
+          decoded.success.reason === "lease-expired"
+        ) {
+          this.#expiredGeneration = Math.max(
+            this.#expiredGeneration,
+            decoded.success.generation,
+          )
+          if (this.#joinedGeneration === decoded.success.generation) {
+            // Presentation may already describe another window's newer capture.
+            // Retire our proven joined lifetime without regressing that status.
+            this.endInterest(decoded.success.generation, "lease-expired")
+            return
+          }
+          if (decoded.success.generation < (this.#audioGeneration ?? 0)) return
+          if (
+            this.#joinedGeneration !== decoded.success.generation &&
+            [...this.#pending.values()].some(
+              (request) => request.kind === "audio-start",
+            )
+          ) {
+            // A global replay cannot revoke an admission for a generation not
+            // known yet. Retain expiry evidence for a late same-generation reply.
+            this.advanceAudioGeneration(decoded.success.generation)
+            this.#audioStatus = decoded.success
+            return
+          }
+        }
+        if (decoded.success.generation < (this.#audioGeneration ?? 0)) return
+        if (
+          this.#interestGeneration !== undefined &&
+          decoded.success.generation > this.#interestGeneration
+        )
+          this.endInterest(this.#interestGeneration, "source-loss")
+        this.advanceAudioGeneration(decoded.success.generation)
+      }
+      this.#audioStatus = decoded.success
+      if (decoded.success.type !== "active") {
+        if (
+          decoded.success.type === "stopped" ||
+          decoded.success.type === "failed" ||
+          decoded.success.type === "unavailable"
+        )
+          this.cancelInterest()
+        this.#audioFeature = undefined
+        this.#notifyAudioClear(
+          decoded.success.type === "stopped"
+            ? decoded.success.reason === "source-loss"
+              ? "source-loss"
+              : "stopped"
+            : decoded.success.type === "failed"
+              ? decoded.success.reason === "source-loss"
+                ? "source-loss"
+                : "failed"
+              : decoded.success.type === "unavailable"
+                ? "unavailable"
+                : "inactive",
+        )
+      }
+      this.notifyAudioStatus(decoded.success)
+      return
+    }
+    if (this.#audioLifetimeRetired) return
+    const decoded = Schema.decodeUnknownResult(AudioFeatureFrame)(frame.frame)
+    if (Result.isFailure(decoded)) return
+    const feature = decoded.success
+    if (feature.generation <= this.#expiredGeneration) return
+    if (
+      this.#audioStatus?.type !== "active" ||
+      feature.generation !== this.#audioGeneration ||
+      feature.daemonInstanceId !== this.daemonInstanceId ||
+      !sameCaptureIdentity(feature.source, this.#audioStatus.source) ||
+      feature.capabilities.spectrum !==
+        this.#audioStatus.capabilities.spectrum ||
+      feature.capabilities.envelope !==
+        this.#audioStatus.capabilities.envelope ||
+      feature.capabilities.channels !== this.#audioStatus.capabilities.channels
+    )
+      return
+    if (
+      feature.sequence <= this.#audioSequence ||
+      feature.timestampMs < this.#audioTimestamp
+    )
+      return
+    this.#audioSequence = feature.sequence
+    this.#audioTimestamp = feature.timestampMs
+    const nowMs = this.#audioClock?.daemonNow(this.#monotonicNow())
+    if (
+      nowMs === undefined ||
+      audioFeatureFreshness({ frame: feature, nowMs }) === "stale"
+    ) {
+      this.#audioFeature = undefined
+      this.#notifyAudioClear()
+      return
+    }
+    this.#audioFeature = feature
+    this.#armFeatureExpiry(feature, nowMs)
+    for (const listener of [...this.#audioFeatureListeners])
+      try {
+        listener(feature)
+      } catch {
+        // A visualization listener must not terminate playback.
+      }
+  }
+  #notifyAudioClear(
+    reason: Extract<
+      AudioFeatureUpdate,
+      { readonly type: "clear" }
+    >["reason"] = "stale",
+    generation = this.#audioGeneration,
+  ) {
+    this.#featureTimer?.()
+    this.#featureTimer = undefined
+    for (const listener of [...this.#audioFeatureListeners])
+      try {
+        listener({
+          type: "clear",
+          reason,
+          generation,
+          sequence: this.#audioSequence,
+        })
+      } catch {
+        // A visualization listener must not terminate playback.
+      }
+  }
+  #armFeatureExpiry(frame: AudioFeatureFrameValue, nowMs: number) {
+    this.#featureTimer?.()
+    const age = Math.max(
+      frame.sampleAgeMs + (nowMs - frame.publishedAtMs),
+      nowMs - frame.timestampMs,
+    )
+    const delay = Math.max(0, AUDIO_SAMPLE_AGE_EXPIRY_MS - age)
+    this.#featureTimer = this.scheduleExpiry(() => {
+      if (this.#audioFeature !== frame) return
+      this.#audioFeature = undefined
+      this.#notifyAudioClear()
+    }, delay)
+  }
+  private audioRequest(
+    kind: "audio-sources" | "audio-start" | "audio-stop" | "audio-renew",
+    body: Record<string, unknown>,
+  ) {
+    if (this.#disposed)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "DISPOSED",
+          message: "client is disposed",
+          retryable: false,
+        }),
+      )
+    if (this.#failure)
+      return Promise.reject(new MusicSessionClientError(this.#failure))
+    if (!this.audioNegotiated())
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "UNSUPPORTED_CAPABILITY",
+          message: "audio-visualization-v1 was not negotiated",
+          retryable: false,
+        }),
+      )
+    const requestId = this.admitRequest()
+    if (requestId instanceof MusicSessionClientError)
+      return Promise.reject(requestId)
+    return new Promise((resolve, reject) => {
+      this.#pending.set(requestId, {
+        kind,
+        id: requestId,
+        resolve,
+        reject,
+      })
+      try {
+        this.#socket.write(
+          encodeFrame({ ...body, type: kind, requestId }),
+          (error) => {
+            if (error)
+              this.terminate({
+                code: "CONNECTION_LOST",
+                message: error.message,
+                retryable: true,
+              })
+          },
+        )
+      } catch {
+        this.terminate({
+          code: "CONNECTION_LOST",
+          message: "connection write failed",
+          retryable: true,
+        })
+      }
+    })
+  }
+  listAudioSources(): Promise<AudioSourceListValue> {
+    if (
+      !this.audioNegotiated() ||
+      !this.negotiatedCapabilities.includes(audioInterestLeaseCapability)
+    )
+      return Promise.resolve(unavailableAudioSourceList("not-negotiated"))
+    return this.audioRequest(
+      "audio-sources",
+      {},
+    ) as Promise<AudioSourceListValue>
+  }
+  startAudioCapture(token: string): Promise<AudioStartResultValue> {
+    if (this.#audioLifetimeRetired)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "INVALID_REQUEST",
+          message:
+            "audio interest expired; create a fresh connection before Start",
+          retryable: false,
+        }),
+      )
+    if (typeof token !== "string" || token.length === 0 || token.length > 128)
+      return Promise.reject(
+        new MusicSessionClientError({
+          code: "INVALID_REQUEST",
+          message: "audio selection token is invalid",
+          retryable: false,
+        }),
+      )
+    if (
+      !this.audioNegotiated() ||
+      !this.negotiatedCapabilities.includes(audioInterestLeaseCapability)
+    )
+      return Promise.resolve({
+        type: "unavailable",
+        reason: "capture-adapter-unavailable",
+      })
+    const ticket = this.#interestEpoch
+    return (
+      this.audioRequest("audio-start", {
+        token,
+      }) as Promise<AudioStartResultValue>
+    ).then((result) => {
+      if (
+        (result.type === "started" || result.type === "joined") &&
+        ticket === this.#interestEpoch &&
+        result.generation === this.#audioGeneration &&
+        !this.#audioLifetimeRetired &&
+        !this.#disposed &&
+        !this.#terminal
+      ) {
+        // This explicit admission owns a fresh renewal lifetime, including
+        // when it rejoins the same generation after an earlier lease expired.
+        this.cancelInterest()
+        this.#interestGeneration = result.generation
+        this.#renewedAt = this.#monotonicNow()
+        this.armInterest(result.generation, this.#interestEpoch)
+      }
+      return result
+    })
+  }
+  stopAudioCapture(): Promise<AudioStopResultValue> {
+    this.cancelInterest()
+    if (!this.audioNegotiated())
+      return Promise.resolve({ type: "rejected", reason: "not-joined" })
+    return this.audioRequest("audio-stop", {}) as Promise<AudioStopResultValue>
+  }
+  private cancelInterest() {
+    ++this.#interestEpoch
+    this.#interestTimer?.()
+    this.#interestTimer = undefined
+    this.#interestGeneration = undefined
+    this.#renewPending = false
+    const pending = this.#renewRequest
+    this.#renewRequest = undefined
+    if (pending)
+      this.settleFailure(pending, {
+        code: "DISPOSED",
+        message: "audio interest ended before renewal result",
+        retryable: false,
+      })
+  }
+  private armInterest(generation: number, ticket: number) {
+    this.#interestTimer?.()
+    this.#interestTimer = this.scheduleLease(() => {
+      if (
+        this.#disposed ||
+        this.#terminal ||
+        this.#interestEpoch !== ticket ||
+        this.#interestGeneration !== generation
+      )
+        return
+      this.#interestTimer = undefined
+      if (this.#monotonicNow() - this.#renewedAt >= AUDIO_INTEREST_LEASE_MS) {
+        this.endInterest(generation, "lease-expired")
+        return
+      }
+      if (!this.#renewPending) {
+        this.#renewPending = true
+        // This connection owns one renewal request and its rejection. Timer
+        // cancellation fences late responses; the deadline bounds a stalled reply.
+        const requestId = this.#nextId
+        const request = this.audioRequest("audio-renew", {
+          generation,
+        }) as Promise<AudioRenewResultValue>
+        const pending = this.#pending.get(requestId)
+        if (pending?.kind === "audio-renew") this.#renewRequest = pending
+        request
+          .then((result) => {
+            if (this.#renewRequest === pending) this.#renewRequest = undefined
+            if (
+              this.#interestEpoch !== ticket ||
+              this.#interestGeneration !== generation
+            )
+              return
+            this.#renewPending = false
+            if (result.type === "renewed" && result.generation === generation)
+              this.#renewedAt = this.#monotonicNow()
+            else this.endInterest(generation, "lease-expired")
+          })
+          .catch(() => {
+            if (this.#renewRequest === pending) this.#renewRequest = undefined
+            if (
+              this.#interestEpoch === ticket &&
+              this.#interestGeneration === generation
+            )
+              this.endInterest(generation, "lease-expired")
+          })
+      }
+      if (
+        !this.#disposed &&
+        !this.#terminal &&
+        this.#interestEpoch === ticket &&
+        this.#interestGeneration === generation
+      )
+        this.armInterest(generation, ticket)
+    }, AUDIO_INTEREST_RENEW_MS)
+  }
+  private flushAudioInterest() {
+    if (
+      !this.audioNegotiated() ||
+      this.#disposed ||
+      this.#terminal ||
+      this.#failure ||
+      this.#audioControlRetry
+    )
+      return
+    const desired = {
+      status: this.#audioStatusSubscribed,
+      features: this.#audioFeaturesSubscribed,
+    }
+    const current = this.#audioControl
+    if (current) {
+      // One safety successor can revoke an unanswered Subscribe. Keep its exact
+      // ID unsettled until acknowledgement; churn cannot keep writing successors.
+      if (
+        current.kind !== "audio-subscribe" ||
+        desired[current.channel] ||
+        !this.#audioControlWritten ||
+        this.#audioControlSuperseded
+      )
+        return
+      this.#pending.delete(current.id)
+      this.#audioControl = undefined
+      this.#audioControlSuperseded = true
+      // The daemon may already have applied this Subscribe. An exact successful
+      // Unsubscribe must revoke it even though its acknowledgement is withheld.
+      this.#audioInterestUncertain[current.channel] = true
+    }
+    const channels = ["features", "status"] as const
+    const channel =
+      channels.find(
+        (value) =>
+          (this.#audioInterestAcknowledged[value] ||
+            this.#audioInterestUncertain[value]) &&
+          !desired[value],
+      ) ??
+      (["status", "features"] as const).find(
+        (value) =>
+          desired[value] &&
+          (!this.#audioInterestAcknowledged[value] ||
+            this.#audioInterestUncertain[value]),
+      )
+    if (!channel) return
+    // Serialize controls and reserve one ordinary command slot when possible.
+    const requestId = this.admitRequest()
+    if (requestId instanceof MusicSessionClientError) return
+    const kind = desired[channel] ? "audio-subscribe" : "audio-unsubscribe"
+    const pending: Extract<
+      Pending,
+      { kind: "audio-subscribe" | "audio-unsubscribe" }
+    > = {
+      kind,
+      id: requestId,
+      channel,
+      resolve: () => {
+        this.#audioInterestAcknowledged[channel] = kind === "audio-subscribe"
+        this.#audioInterestUncertain[channel] = false
+      },
+      reject: () => {
+        if (this.#disposed || this.#terminal) return
+        // A failed acknowledgement can hide either applied control. Reconcile
+        // the latest desired state until a matching control confirms it.
+        this.#audioInterestUncertain[channel] = true
+        this.armAudioControlRetry()
+      },
+    }
+    this.#audioControl = pending
+    this.#audioControlWritten = false
+    this.#pending.set(requestId, pending)
+    try {
+      this.#socket.write(
+        encodeFrame({ type: kind, requestId, channel }),
+        (error) => {
+          if (error)
+            this.terminate({
+              code: "CONNECTION_LOST",
+              message: error.message,
+              retryable: true,
+            })
+          else if (this.#audioControl === pending) {
+            this.#audioControlWritten = true
+            this.flushAudioInterest()
+          }
+        },
+      )
+    } catch {
+      this.terminate({
+        code: "CONNECTION_LOST",
+        message: "connection write failed",
+        retryable: true,
+      })
+    }
+  }
+  private armAudioControlRetry() {
+    if (this.#audioControlRetry || this.#disposed || this.#terminal) return
+    const retry = { cancel: () => {} }
+    this.#audioControlRetry = retry
+    // One connection-wide cooldown prevents errors or listener churn from
+    // causing a retry loop. The callback uses the latest desired subscriptions.
+    retry.cancel = this.scheduleLease(() => {
+      if (this.#audioControlRetry !== retry) return
+      this.#audioControlRetry = undefined
+      this.flushAudioInterest()
+    }, AUDIO_CONTROL_RETRY_MS)
+  }
+  private cancelAudioControlRetry() {
+    const retry = this.#audioControlRetry
+    this.#audioControlRetry = undefined
+    retry?.cancel()
+  }
+  subscribeAudioStatus(listener: Listener<AudioCaptureStatusValue>) {
+    if (this.#terminal || this.#disposed) return () => {}
+    this.#audioStatusListeners.add(listener)
+    if (this.#audioStatus)
+      try {
+        listener(this.#audioStatus)
+      } catch {
+        // Listener isolation. Playback remains owned by this connection.
+      }
+    if (!this.#audioStatusSubscribed) {
+      this.#audioStatusSubscribed = true
+      this.flushAudioInterest()
+    }
+    return () => {
+      this.#audioStatusListeners.delete(listener)
+      if (
+        this.#audioStatusListeners.size === 0 &&
+        this.#audioFeatureListeners.size === 0 &&
+        this.#audioStatusSubscribed
+      ) {
+        this.#audioStatusSubscribed = false
+        this.flushAudioInterest()
+      }
+    }
+  }
+  subscribeAudioFeatures(listener: Listener<AudioFeatureUpdate>) {
+    if (this.#terminal || this.#disposed) return () => {}
+    this.#audioFeatureListeners.add(listener)
+    // Features require authoritative status even without a status listener.
+    if (!this.#audioStatusSubscribed) {
+      this.#audioStatusSubscribed = true
+      this.flushAudioInterest()
+    }
+    if (!this.#audioFeaturesSubscribed) {
+      this.#audioFeaturesSubscribed = true
+      this.flushAudioInterest()
+    }
+    return () => {
+      this.#audioFeatureListeners.delete(listener)
+      if (
+        this.#audioFeatureListeners.size === 0 &&
+        this.#audioFeaturesSubscribed
+      ) {
+        this.#audioFeaturesSubscribed = false
+        this.cancelInterest()
+        this.flushAudioInterest()
+        if (
+          this.#audioStatusListeners.size === 0 &&
+          this.#audioStatusSubscribed
+        ) {
+          this.#audioStatusSubscribed = false
+          this.flushAudioInterest()
+        }
+      }
+    }
+  }
   subscribeStatus(listener: Listener<ProviderStatus>) {
     if (this.#terminal || this.#disposed) return () => {}
     this.#statusListeners.add(listener)
     if (this.#status)
       try {
         listener(this.#status)
-      } catch {}
+      } catch {
+        // Replay failures belong to the subscriber, not the connection.
+      }
     return () => this.#statusListeners.delete(listener)
   }
   subscribeState(listener: Listener<RevisionedState>) {
@@ -503,14 +1338,18 @@ class Client implements MusicSessionClient {
     if (this.#state)
       try {
         listener(this.#state)
-      } catch {}
+      } catch {
+        // Replay failures belong to the subscriber, not the connection.
+      }
     return () => this.#stateListeners.delete(listener)
   }
   subscribeTerminal(listener: Listener<MusicSessionClientError>) {
     if (this.#terminalError) {
       try {
         listener(this.#terminalError)
-      } catch {}
+      } catch {
+        // The terminal observation remains retained after subscriber failure.
+      }
       return () => {}
     }
     if (this.#disposed) return () => {}
@@ -544,6 +1383,7 @@ class Client implements MusicSessionClient {
       }
       signal?.addEventListener("abort", onAbort, { once: true })
       this.attach()
+      this.#audioSendMs = this.#monotonicNow()
       try {
         this.#socket.write(frame, (error) => {
           if (error)
@@ -570,10 +1410,14 @@ class Client implements MusicSessionClient {
   private terminate(error: ProtocolError) {
     if (this.#terminal || this.#disposed) return
     this.#terminal = true
+    this.cancelInterest()
+    this.cancelAudioControlRetry()
     this.#phase = "terminal"
     this.#failure = error
     const terminal = new MusicSessionClientError(error)
     this.#terminalError = terminal
+    this.#audioFeature = undefined
+    this.#notifyAudioClear("disconnected")
     const handshake = this.#handshake
     this.#handshake = undefined
     this.detach()
@@ -581,15 +1425,25 @@ class Client implements MusicSessionClient {
     for (const listener of [...this.#terminalListeners])
       try {
         listener(terminal)
-      } catch {}
+      } catch {
+        // Terminal subscribers cannot prevent connection cleanup.
+      }
     this.#terminalListeners.clear()
     this.#statusListeners.clear()
     this.#stateListeners.clear()
+    this.#audioStatusListeners.clear()
+    this.#audioFeatureListeners.clear()
+    this.#audioFeature = undefined
     for (const pending of [...this.#pending.values()])
-      if (pending.kind === "artwork")
+      if (
+        pending.kind === "artwork" ||
+        pending.kind === "audio-sources" ||
+        pending.kind === "audio-subscribe" ||
+        pending.kind === "audio-unsubscribe"
+      )
         this.settleFailure(pending, {
           code: "CONNECTION_LOST",
-          message: "connection ended before artwork result",
+          message: "connection ended before audio or artwork result",
           retryable: true,
         })
     this.failAll({
@@ -602,6 +1456,8 @@ class Client implements MusicSessionClient {
   dispose() {
     if (this.#disposed) return
     this.#disposed = true
+    this.cancelInterest()
+    this.cancelAudioControlRetry()
     if (this.#terminal) {
       this.#terminalListeners.clear()
       this.#statusListeners.clear()
@@ -610,6 +1466,8 @@ class Client implements MusicSessionClient {
     }
     this.#terminal = true
     this.#phase = "disposed"
+    this.#audioFeature = undefined
+    this.#notifyAudioClear("stopped")
     const handshake = this.#handshake
     this.#handshake = undefined
     this.detach()
@@ -623,10 +1481,16 @@ class Client implements MusicSessionClient {
     this.#terminalListeners.clear()
     this.#statusListeners.clear()
     this.#stateListeners.clear()
+    this.#audioStatusListeners.clear()
+    this.#audioFeatureListeners.clear()
+    this.#audioFeature = undefined
     for (const pending of [...this.#pending.values()])
       this.settleFailure(
         pending,
-        pending.kind === "artwork"
+        pending.kind === "artwork" ||
+          pending.kind === "audio-sources" ||
+          pending.kind === "audio-subscribe" ||
+          pending.kind === "audio-unsubscribe"
           ? {
               code: "DISPOSED",
               message: "client is disposed",
@@ -670,6 +1534,12 @@ export async function createMusicSessionClient(
       (capability !== "native-artwork-512k" ||
         maxFrameBytes >= DEFAULT_MAX_FRAME_BYTES),
   )
+  // Opting into audio also opts into its safety lease, never into capture itself.
+  if (
+    capabilities.includes(audioVisualizationCapability) &&
+    !capabilities.includes(audioInterestLeaseCapability)
+  )
+    capabilities.push(audioInterestLeaseCapability)
   if (
     !Number.isSafeInteger(offered.major) ||
     !Number.isSafeInteger(offered.minRevision) ||
@@ -743,10 +1613,14 @@ export async function createMusicSessionClient(
       transportCode,
     )
   })
+  const monotonicNow = options.monotonicNow ?? localMonotonicMs
   const client = new Client(
     socket,
     new NdjsonFramer(maxFrameBytes),
     maxPendingRequests,
+    monotonicNow,
+    options.scheduleAudioExpiry,
+    options.scheduleAudioLease,
   )
   await client.beginHandshake(
     encodeFrame({
@@ -757,6 +1631,9 @@ export async function createMusicSessionClient(
       clientId: options.clientId,
       hostKind: options.hostKind,
       capabilities,
+      ...(capabilities.includes(audioVisualizationCapability)
+        ? { audioClientMonotonicMs: monotonicNow() }
+        : {}),
     }),
     offered,
     capabilities,
@@ -914,21 +1791,21 @@ export class MusicSessionStartupError extends Schema.TaggedError<MusicSessionSta
 const MAX_DAEMON_DIAGNOSTIC_BYTES = 512
 
 type DaemonStderr = {
-  on(event: "data", listener: (chunk: Uint8Array) => void): unknown
-  off(event: "data", listener: (chunk: Uint8Array) => void): unknown
+  on(event: "data", listener: (chunk: Uint8Array) => void): void
+  off(event: "data", listener: (chunk: Uint8Array) => void): void
   unref?(): void
 }
 type SpawnedDaemon = {
-  once(event: "spawn" | "error", listener: (cause?: Error) => void): unknown
+  once(event: "spawn" | "error", listener: (cause?: Error) => void): void
   once(
     event: "exit",
     listener: (code: number | null, signal: string | null) => void,
-  ): unknown
-  off(event: "spawn" | "error", listener: (cause?: Error) => void): unknown
+  ): void
+  off(event: "spawn" | "error", listener: (cause?: Error) => void): void
   off(
     event: "exit",
     listener: (code: number | null, signal: string | null) => void,
-  ): unknown
+  ): void
   readonly stderr: DaemonStderr | null
   unref(): void
 }
@@ -1182,12 +2059,16 @@ export const connectOrStartMusicSessionEffect = (
   const observe = (callback: (() => void) | undefined) => {
     try {
       callback?.()
-    } catch {}
+    } catch {
+      // Test observers cannot change startup ownership.
+    }
   }
   const observeReleaseFailure = (error: unknown) => {
     try {
       dependencies.onReleaseFailure?.(error)
-    } catch {}
+    } catch {
+      // Observer failure must not replace the recorded release failure.
+    }
   }
   // Preserve errors from the secure discovery/lease/launcher boundaries. Only
   // schedule exhaustion below is translated to the startup timeout operation.
@@ -1204,7 +2085,9 @@ export const connectOrStartMusicSessionEffect = (
     )
       try {
         candidate.dispose()
-      } catch {}
+      } catch {
+        // An injected late client cannot prevent cancellation from completing.
+      }
   }
   const promise = <A>(run: (signal: AbortSignal) => Promise<A>) =>
     Effect.tryPromise({
@@ -1417,6 +2300,13 @@ export type ReconnectingMusicSessionClient = {
   subscribeConnection(
     listener: Listener<MusicSessionConnectionLifecycle>,
   ): () => void
+  listAudioSources(): Promise<AudioSourceListValue>
+  // After lease expiry, create a fresh client before Start. Metadata and
+  // playback remain usable on the retired audio connection.
+  startAudioCapture(token: string): Promise<AudioStartResultValue>
+  stopAudioCapture(): Promise<AudioStopResultValue>
+  subscribeAudioStatus(listener: Listener<AudioCaptureStatusValue>): () => void
+  subscribeAudioFeatures(listener: Listener<AudioFeatureUpdate>): () => void
   toggle(): Promise<TransportResult>
   play(): Promise<TransportResult>
   pause(): Promise<TransportResult>
@@ -1448,6 +2338,12 @@ type ActiveGeneration = {
   unsubscribeStatus: () => void
   unsubscribeState: () => void
   unsubscribeTerminal: () => void
+  unsubscribeAudioStatus: () => void
+  unsubscribeAudioFeatures: () => void
+  audioStatusBound: boolean
+  audioFeaturesBound: boolean
+  audioStatusBinding: object | undefined
+  audioFeaturesBinding: object | undefined
 }
 
 type ManagedLifecycleState = {
@@ -1462,6 +2358,8 @@ type ManagedLifecycleState = {
   readonly statusListeners: Set<Listener<ProviderStatus>>
   readonly stateListeners: Set<Listener<RevisionedState>>
   readonly connectionListeners: Set<Listener<MusicSessionConnectionLifecycle>>
+  readonly audioStatusListeners: Set<Listener<AudioCaptureStatusValue>>
+  readonly audioFeatureListeners: Set<Listener<AudioFeatureUpdate>>
   readonly interrupt: (() => Promise<void>) | undefined
   readonly closeScope: (() => Promise<void>) | undefined
   readonly dispose: Promise<void> | undefined
@@ -1498,6 +2396,8 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     statusListeners: new Set(),
     stateListeners: new Set(),
     connectionListeners: new Set(),
+    audioStatusListeners: new Set(),
+    audioFeatureListeners: new Set(),
     interrupt: undefined,
     closeScope: undefined,
     dispose: undefined,
@@ -1592,7 +2492,9 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     for (const listener of [...listeners])
       try {
         listener(value)
-      } catch {}
+      } catch {
+        // A subscriber must not stop managed ownership or other subscribers.
+      }
   }
   #setConnection(next: MusicSessionConnectionLifecycle) {
     const listeners = this.#modify((current) => {
@@ -1614,15 +2516,21 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
       active.unsubscribeStatus,
       active.unsubscribeState,
       active.unsubscribeTerminal,
+      active.unsubscribeAudioStatus,
+      active.unsubscribeAudioFeatures,
     ]) {
       try {
         unsubscribe()
-      } catch {}
+      } catch {
+        // One injected disposer cannot prevent release of the other interests.
+      }
     }
     if (dispose)
       try {
         active.client.dispose()
-      } catch {}
+      } catch {
+        // The managed scope still closes its remaining generations.
+      }
   }
   #reserve(client: MusicSessionClient) {
     const reserved = this.#modify((current) =>
@@ -1636,7 +2544,9 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     }
     try {
       this.onReserved?.()
-    } catch {}
+    } catch {
+      // A test observer cannot undo the committed ownership reservation.
+    }
     return true
   }
   #unavailable() {
@@ -1692,6 +2602,185 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
       },
     )
   }
+  listAudioSources() {
+    const active = this.#active
+    return active
+      ? active.client.listAudioSources()
+      : Promise.resolve(unavailableAudioSourceList("not-negotiated"))
+  }
+  startAudioCapture(token: string) {
+    const active = this.#active
+    if (!active) return Promise.reject(this.#unavailable())
+    // Start is consent for this connection only. A later generation must not
+    // replay it or treat the old token as permission to capture.
+    return active.client.startAudioCapture(token).then(
+      (result) => {
+        if (this.#isCurrent(active.token)) return result
+        throw new MusicSessionClientError({
+          code: "INDETERMINATE_COMMAND",
+          message: "audio start outcome is indeterminate after reconnect",
+          retryable: true,
+        })
+      },
+      (error: unknown) => {
+        if (this.#isCurrent(active.token)) throw error
+        throw new MusicSessionClientError({
+          code: "INDETERMINATE_COMMAND",
+          message: "audio start outcome is indeterminate after reconnect",
+          retryable: true,
+        })
+      },
+    )
+  }
+  stopAudioCapture() {
+    const active = this.#active
+    if (!active) return Promise.reject(this.#unavailable())
+    return active.client.stopAudioCapture().then(
+      (result) => {
+        if (this.#isCurrent(active.token)) return result
+        throw new MusicSessionClientError({
+          code: "INDETERMINATE_COMMAND",
+          message: "audio stop outcome is indeterminate after reconnect",
+          retryable: true,
+        })
+      },
+      (error: unknown) => {
+        if (this.#isCurrent(active.token)) throw error
+        throw new MusicSessionClientError({
+          code: "INDETERMINATE_COMMAND",
+          message: "audio stop outcome is indeterminate after reconnect",
+          retryable: true,
+        })
+      },
+    )
+  }
+  #bindAudio(active: ActiveGeneration) {
+    const managed = Ref.getUnsafe(this.#managed)
+    if (managed.audioStatusListeners.size > 0 && !active.audioStatusBound) {
+      active.audioStatusBound = true
+      const binding = {}
+      active.audioStatusBinding = binding
+      const unsubscribe = active.client.subscribeAudioStatus((status) => {
+        if (
+          !this.#isCurrent(active.token) ||
+          active.audioStatusBinding !== binding
+        )
+          return
+        for (const listener of [
+          ...Ref.getUnsafe(this.#managed).audioStatusListeners,
+        ])
+          try {
+            listener(status)
+          } catch {
+            // Listener isolation. Reconnect must not replay capture consent.
+          }
+      })
+      if (
+        this.#isCurrent(active.token) &&
+        active.audioStatusBinding === binding
+      )
+        active.unsubscribeAudioStatus = unsubscribe
+      else unsubscribe()
+    }
+    if (
+      this.#isCurrent(active.token) &&
+      Ref.getUnsafe(this.#managed).audioFeatureListeners.size > 0 &&
+      !active.audioFeaturesBound
+    ) {
+      active.audioFeaturesBound = true
+      const binding = {}
+      active.audioFeaturesBinding = binding
+      const unsubscribe = active.client.subscribeAudioFeatures((frame) => {
+        if (
+          !this.#isCurrent(active.token) ||
+          active.audioFeaturesBinding !== binding
+        )
+          return
+        for (const listener of [
+          ...Ref.getUnsafe(this.#managed).audioFeatureListeners,
+        ])
+          try {
+            listener(frame)
+          } catch {
+            // Listener isolation. A stale frame must not grant a new session.
+          }
+      })
+      if (
+        this.#isCurrent(active.token) &&
+        active.audioFeaturesBinding === binding
+      )
+        active.unsubscribeAudioFeatures = unsubscribe
+      else unsubscribe()
+    }
+  }
+  subscribeAudioStatus(listener: Listener<AudioCaptureStatusValue>) {
+    const active = this.#modify((current) => {
+      if (current.disposed) return [undefined, current] as const
+      const listeners = new Set(current.audioStatusListeners)
+      listeners.add(listener)
+      const shouldBind =
+        current.audioStatusListeners.size === 0 && current.active !== undefined
+      return [
+        shouldBind ? current.active : undefined,
+        { ...current, audioStatusListeners: listeners },
+      ] as const
+    })
+    if (active) this.#bindAudio(active)
+    return () => {
+      const current = this.#modify((latest) => {
+        const listeners = new Set(
+          [...latest.audioStatusListeners].filter(
+            (value) => value !== listener,
+          ),
+        )
+        return [
+          listeners.size === 0 ? latest.active : undefined,
+          { ...latest, audioStatusListeners: listeners },
+        ] as const
+      })
+      if (current) {
+        const unsubscribe = current.unsubscribeAudioStatus
+        current.unsubscribeAudioStatus = () => {}
+        current.audioStatusBound = false
+        current.audioStatusBinding = undefined
+        unsubscribe()
+      }
+    }
+  }
+  subscribeAudioFeatures(listener: Listener<AudioFeatureUpdate>) {
+    const active = this.#modify((current) => {
+      if (current.disposed) return [undefined, current] as const
+      const listeners = new Set(current.audioFeatureListeners)
+      listeners.add(listener)
+      const shouldBind =
+        current.audioFeatureListeners.size === 0 && current.active !== undefined
+      return [
+        shouldBind ? current.active : undefined,
+        { ...current, audioFeatureListeners: listeners },
+      ] as const
+    })
+    if (active) this.#bindAudio(active)
+    return () => {
+      const current = this.#modify((latest) => {
+        const listeners = new Set(
+          [...latest.audioFeatureListeners].filter(
+            (value) => value !== listener,
+          ),
+        )
+        return [
+          listeners.size === 0 ? latest.active : undefined,
+          { ...latest, audioFeatureListeners: listeners },
+        ] as const
+      })
+      if (current) {
+        const unsubscribe = current.unsubscribeAudioFeatures
+        current.unsubscribeAudioFeatures = () => {}
+        current.audioFeaturesBound = false
+        current.audioFeaturesBinding = undefined
+        unsubscribe()
+      }
+    }
+  }
   subscribeStatus(listener: Listener<ProviderStatus>) {
     const replay = this.#modify((current) =>
       current.disposed
@@ -1707,7 +2796,9 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     if (replay)
       try {
         listener(replay)
-      } catch {}
+      } catch {
+        // Replay failures belong to the subscriber, not the managed connection.
+      }
     return () =>
       this.#modify((current) => [
         undefined,
@@ -1734,7 +2825,9 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     if (replay)
       try {
         listener(replay)
-      } catch {}
+      } catch {
+        // Replay failures belong to the subscriber, not the managed connection.
+      }
     return () =>
       this.#modify((current) => [
         undefined,
@@ -1764,7 +2857,9 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     if (replay)
       try {
         listener(replay)
-      } catch {}
+      } catch {
+        // Replay failures belong to the subscriber, not the managed connection.
+      }
     return () =>
       this.#modify((current) => [
         undefined,
@@ -1820,6 +2915,12 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
       unsubscribeStatus: () => {},
       unsubscribeState: () => {},
       unsubscribeTerminal: () => {},
+      unsubscribeAudioStatus: () => {},
+      unsubscribeAudioFeatures: () => {},
+      audioStatusBound: false,
+      audioFeaturesBound: false,
+      audioStatusBinding: undefined,
+      audioFeaturesBinding: undefined,
     }
     const prior = this.#modify<
       | { readonly accepted: false }
@@ -1863,6 +2964,7 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     active.unsubscribeTerminal = client.subscribeTerminal((error) =>
       this.#terminalFor(token, error, done),
     )
+    this.#bindAudio(active)
     if (!this.#isCurrent(token)) return false
     this.#setConnection({
       type: "connected",
@@ -1905,7 +3007,9 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
     this.#release(transition.active, true)
     try {
       transition.pending?.dispose()
-    } catch {}
+    } catch {
+      // An injected pending client cannot prevent terminal ownership publication.
+    }
     this.#notify(new Set(transition.listeners), { type: "terminal", error })
     Deferred.doneUnsafe(this.#initial, Effect.fail(error))
   }
@@ -1935,6 +3039,8 @@ class ManagedMusicSessionClient implements ReconnectingMusicSessionClient {
           statusListeners: new Set(),
           stateListeners: new Set(),
           connectionListeners: new Set(),
+          audioStatusListeners: new Set(),
+          audioFeatureListeners: new Set(),
         },
       ] as const
     })

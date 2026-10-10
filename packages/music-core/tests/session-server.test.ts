@@ -24,6 +24,7 @@ import {
   Queue,
   Ref,
   Scope,
+  Stream,
 } from "effect"
 import { TestClock } from "effect/testing"
 import {
@@ -37,6 +38,7 @@ import {
   makeCoordinatorProviderFixture,
   type CoordinatorProviderFixture,
 } from "../session/provider.ts"
+import { AudioCapture } from "../audio/capture.ts"
 import {
   destroySocketAndWaitClosed,
   layerWithHooks,
@@ -91,6 +93,7 @@ const test: SessionTestFn = createSessionTest(
     "two socket admissions retain FIFO order while the first transport blocks",
     "mixed-host Pi and OpenCode clients share FIFO and survive Pi reload",
     "idle grace tracks negotiated clients, cancels, restarts, and expires once",
+    "cleanup failure still publishes the committed connection leave",
     "signal and server defects take foreground precedence over idle expiry",
     "post-join interruption publishes one matching idle leave",
     "pre-hello and rejected hello sockets cannot pin idle shutdown",
@@ -610,7 +613,7 @@ test("incompatible and state-only peers do not disturb a healthy session", async
       `${JSON.stringify({
         type: "hello",
         requestId: 0,
-        protocol: { major: PROTOCOL.major, minRevision: 2, maxRevision: 3 },
+        protocol: { major: PROTOCOL.major, minRevision: 3, maxRevision: 4 },
         packageVersion: "future",
         clientId: "future",
         hostKind: "test",
@@ -625,7 +628,7 @@ test("incompatible and state-only peers do not disturb a healthy session", async
       error: {
         code: "INCOMPATIBLE_PROTOCOL",
         details: {
-          client: { major: PROTOCOL.major, minRevision: 2, maxRevision: 3 },
+          client: { major: PROTOCOL.major, minRevision: 3, maxRevision: 4 },
           daemon: PROTOCOL,
         },
       },
@@ -2652,6 +2655,85 @@ test("idle grace tracks negotiated clients, cancels, restarts, and expires once"
   })
 })
 
+test("cleanup failure still publishes the committed connection leave", async () => {
+  const path = socketPath("idle-cleanup-failure")
+  const counts: number[] = []
+  let expires = 0
+  let finalized = 0
+  const departed = Promise.withResolvers<void>()
+  const failingAudio = () =>
+    Layer.effect(
+      AudioCapture,
+      Effect.sync(() =>
+        AudioCapture.of({
+          listSources: () => Effect.die("unused"),
+          start: () => Effect.die("unused"),
+          stop: () => Effect.die("unused"),
+          renew: () => Effect.die("unused"),
+          subscribeStatus: () => Stream.never,
+          subscribeFeatures: () => Stream.never,
+          beginDetach: () =>
+            Effect.succeed(Effect.die(new Error("audio cleanup failed"))),
+          detach: () => Effect.die(new Error("audio cleanup failed")),
+          status: () => Effect.succeed({ type: "idle" }),
+        }),
+      ),
+    )
+  const graph = Layer.provide(
+    layerWithHooks(
+      {
+        onClientCount: (count) => {
+          counts.push(count)
+        },
+        onIdleExpired: () => {
+          expires += 1
+        },
+        onConnectionFinalized: () => {
+          finalized += 1
+          departed.resolve()
+        },
+      },
+      layerFromLegacy(createFakeProvider()),
+      failingAudio,
+    ),
+    configLayer({ socketPath: path, idleGraceMs: 200 }),
+  )
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make()
+        yield* Effect.gen(function* () {
+          const service = yield* MusicSessionServerService
+          const client = yield* Effect.promise(() =>
+            createMusicSessionClient({
+              socketPath: path,
+              clientId: "idle-cleanup",
+              hostKind: "test",
+            }),
+          )
+          for (let turn = 0; turn < 32 && !counts.includes(1); turn++)
+            yield* Effect.yieldNow
+          expect(counts).toEqual([0, 1])
+          client.dispose()
+          yield* Effect.promise(() => departed.promise)
+          for (let turn = 0; turn < 32 && counts.at(-1) !== 0; turn++)
+            yield* Effect.yieldNow
+          // Cleanup failed, but the committed leave must still drop the count
+          // before the 200ms grace can expire.
+          expect(counts).toEqual([0, 1, 0])
+          expect(finalized).toBe(1)
+          yield* clock.adjust("350 millis")
+          yield* service.awaitIdle
+          expect(expires).toBe(1)
+        }).pipe(
+          Effect.provide(graph),
+          Effect.provideService(Clock.Clock, clock),
+        )
+      }),
+    ),
+  )
+})
+
 test("signal and server defects take foreground precedence over idle expiry", async () => {
   const signalPath = socketPath("idle-signal-race")
   const defectPath = socketPath("idle-defect-race")
@@ -3208,7 +3290,7 @@ test("24 alternating clients share one selected provider and fan out updates", a
     expect(instanceIds.size).toBe(1)
     expect([...instanceIds][0]).not.toBe("")
     expect(new Set(clients.map((client) => client.selectedRevision))).toEqual(
-      new Set([1]),
+      new Set([PROTOCOL.maxRevision]),
     )
     expect(
       new Set(

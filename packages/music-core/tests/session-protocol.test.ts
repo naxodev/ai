@@ -11,9 +11,75 @@ import {
   negotiateHello,
   PROTOCOL,
   ProtocolErrorSchema,
+  audioVisualizationCapability,
+  audioInterestLeaseCapability,
+  baselineCapabilities,
+  type HelloRequest,
 } from "../session/protocol.ts"
 
 describe("session protocol", () => {
+  test("lease renewal validates generation and requires explicit audio negotiation at revision 2", () => {
+    expect(
+      decodeRequest({ type: "audio-renew", requestId: 1, generation: 3 }),
+    ).toEqual({ type: "audio-renew", requestId: 1, generation: 3 })
+    for (const generation of [
+      0,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+      "3",
+      null,
+      undefined,
+    ])
+      expect(() =>
+        decodeRequest({ type: "audio-renew", requestId: 1, generation }),
+      ).toThrow()
+    const hello: HelloRequest = {
+      type: "hello",
+      requestId: 0,
+      protocol: PROTOCOL,
+      packageVersion: "test",
+      clientId: "lease",
+      hostKind: "test",
+      capabilities: [
+        ...baselineCapabilities,
+        audioVisualizationCapability,
+        audioInterestLeaseCapability,
+      ],
+    }
+    const supported = [
+      ...baselineCapabilities,
+      audioVisualizationCapability,
+      audioInterestLeaseCapability,
+    ]
+    expect(negotiateHello(hello, PROTOCOL, supported)).toMatchObject({
+      capabilities: supported,
+    })
+    expect(
+      negotiateHello(
+        { ...hello, protocol: { ...PROTOCOL, maxRevision: 1 } },
+        PROTOCOL,
+        supported,
+      ),
+    ).toMatchObject({
+      capabilities: expect.not.arrayContaining([
+        audioInterestLeaseCapability,
+        audioVisualizationCapability,
+      ]),
+    })
+    expect(
+      negotiateHello(
+        {
+          ...hello,
+          capabilities: [...baselineCapabilities, audioInterestLeaseCapability],
+        },
+        PROTOCOL,
+        supported,
+      ),
+    ).toMatchObject({ capabilities: [...baselineCapabilities] })
+  })
   test("decodes a v1 hello and split/multiple frames", () => {
     expect(
       decodeRequest({

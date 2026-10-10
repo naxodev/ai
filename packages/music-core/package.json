@@ -45,6 +45,7 @@
     "system-media.ts",
     "types.ts",
     "waveform.ts",
+    "audio",
     "session",
     "dist"
   ],
@@ -62,6 +63,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check --ignore-path ../../.gitignore .",
     "build": "bun build ./session/music-sessiond.ts --target=node --outfile ./dist/music-sessiond.js",
+    "build:audio-helper": "bun run scripts/build-audio-helper.ts",
+    "native:check": "bun run scripts/check-audio-helper.ts",
     "prepack": "bun run build",
     "pack:check": "bun run build && bun run scripts/verify-pack.ts",
     "smoke:package": "bun run scripts/verify-pack.ts --installed-smoke"

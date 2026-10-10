@@ -8,13 +8,13 @@ import {
   waveformSeedKey,
   type WaveEngine,
 } from "@naxodev/music-core"
-import { onCleanup, onMount } from "solid-js"
+import { createSignal, onCleanup, onMount } from "solid-js"
 import { StyledText, fg, type TextRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { PlayerState } from "./types.ts"
 
 type Context = Plugin.Context
-type Theme = Context["theme"]
+type Theme = { text: Pick<Context["theme"]["text"], "muted"> }
 
 export type PlayerPresentationSource = {
   current: () => PlayerState | null
@@ -158,6 +158,7 @@ export function Waveform(props: {
 }) {
   const barCount = () => props.bars ?? (props.variant === "hero" ? 48 : 16)
   let text: TextRenderable | undefined
+  const [hasTrack, setHasTrack] = createSignal(false)
   const paint = (player: PlayerState, engine: WaveEngine) => {
     if (!text) return
     const playing = player.is_playing
@@ -185,6 +186,7 @@ export function Waveform(props: {
   })
 
   const update = (player: PlayerState | null) => {
+    setHasTrack(!!player?.track)
     coordinator.setInput(
       player,
       player?.track ? waveformSeedKey(player.track.name, player.track.id) : "",
@@ -200,6 +202,9 @@ export function Waveform(props: {
   })
 
   return (
-    <text ref={(element) => (text = element)}>{" ".repeat(barCount())}</text>
+    <box flexDirection="column">
+      <text fg={props.theme.text.muted}>{hasTrack() ? "Animation" : ""}</text>
+      <text ref={(element) => (text = element)}>{" ".repeat(barCount())}</text>
+    </box>
   )
 }

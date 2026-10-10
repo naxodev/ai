@@ -14,6 +14,7 @@ import {
   Option,
   Queue,
   Ref,
+  Result,
   Schema,
   Scope,
   Stream,
@@ -29,7 +30,18 @@ import {
   NdjsonFramer,
   encodeFrame,
 } from "./framing.ts"
+import { AudioCapture, unavailableLayer } from "../audio/capture.ts"
+import type { ProviderSourceObservation } from "../audio/source.ts"
+import { localMonotonicMs } from "../audio/clock.ts"
 import {
+  AUDIO_PENDING_TASK_LIMIT,
+  audioInterestLeaseCapability,
+  type AudioCaptureStatus,
+} from "../audio/schema.ts"
+import {
+  AUDIO_PROTOCOL_REVISION,
+  audioVisualizationCapability,
+  audioVisualizationCapabilities,
   baselineCapabilities,
   decodeRequestEffect,
   failure,
@@ -40,6 +52,7 @@ import {
   PROTOCOL,
   requestIdFromUnknown,
   response,
+  type AudioRequest,
   type NegotiatedSession,
   type Request,
 } from "./protocol.ts"
@@ -86,6 +99,15 @@ const socketError = (operation: string, cause: unknown) => {
   })
 }
 
+type AudioOwner = Context.Service.Shape<typeof AudioCapture>
+export type AudioCaptureLayerFactory = (
+  daemonInstanceId: string,
+  observations: Stream.Stream<ProviderSourceObservation>,
+) => Layer.Layer<AudioCapture, never, never>
+const daemonCapabilities = [
+  ...baselineCapabilities,
+  ...audioVisualizationCapabilities,
+]
 type Coordinator = {
   readonly daemonInstanceId: string
   readonly status: Stream.Stream<ProviderStatus>
@@ -156,9 +178,16 @@ export type ServerLifecycleHooks = {
   readonly onInboundOverflow?: (socket: net.Socket) => void
   readonly onOutboundOverflow?: (socket: net.Socket) => void
   readonly onStateCoalesced?: (socket: net.Socket) => void
+  /** Observes status forwarding admission, not socket delivery. */
+  readonly onAudioStatusQueued?: (
+    socket: net.Socket,
+    status: AudioCaptureStatus,
+  ) => void
   readonly onWriteBackpressure?: (socket: net.Socket) => void
   readonly onWriterBlocked?: (socket: net.Socket) => void
   readonly onWriterUnblocked?: (socket: net.Socket) => void
+  /** Test-only daemon monotonic clock. Production uses process-local performance.now. */
+  readonly audioNowMs?: () => number
 }
 const invokeHook = (hook: (() => void) | undefined) => {
   try {
@@ -270,8 +299,8 @@ const closeServer = (server: net.Server, hooks: ServerLifecycleHooks) =>
 type SocketCloseWait = {
   readonly closed: boolean
   readonly destroyed: boolean
-  once(event: "close", listener: () => void): unknown
-  destroy(): unknown
+  once(event: "close", listener: () => void): void
+  destroy(): void
 }
 
 /**
@@ -542,16 +571,19 @@ const unlinkOwnedPath = (
 const connection = (
   socket: net.Socket,
   coordinator: Coordinator,
+  capture: AudioOwner,
   maxFrameBytes: number,
   inboundChunkQueueCapacity: number,
   maxFramesPerChunk: number,
   mandatoryOutboundQueueCapacity: number,
   hooks: ServerLifecycleHooks,
   reportFailure: (cause: unknown) => void,
+  noteRetirementFailure: (cause: Cause.Cause<unknown>) => void,
   onJoin: Effect.Effect<void>,
   onLeave: Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
+    const connectionScope = yield* Scope.Scope
     const endOfInput = Symbol("end-of-input")
     const input = yield* Queue.bounded<Buffer | typeof endOfInput>(
       inboundChunkQueueCapacity,
@@ -563,6 +595,12 @@ const connection = (
     }>(mandatoryOutboundQueueCapacity)
     const outboundWake = yield* Queue.bounded<void>(1)
     const latestState = yield* Ref.make<Buffer | undefined>(undefined)
+    const latestAudioStatus = yield* Ref.make<Buffer | undefined>(undefined)
+    const latestAudioFrame = yield* Ref.make<
+      { readonly frame: Buffer; readonly epoch: number } | undefined
+    >(undefined)
+    const connectionId = randomUUID()
+    let releaseAudio: Effect.Effect<void> = Effect.void
     let ended = false
     let closed = false
     const close = () => {
@@ -620,7 +658,9 @@ const connection = (
           Effect.andThen(Queue.shutdown(mandatory)),
           Effect.andThen(Queue.shutdown(outboundWake)),
           Effect.ensuring(
-            (joined ? onLeave : Effect.void).pipe(
+            releaseAudio.pipe(
+              // Leave is committed with the connection, not with cleanup success.
+              Effect.ensuring(joined ? onLeave : Effect.void),
               Effect.ensuring(
                 Effect.sync(() => {
                   invokeHook(hooks.onInputFinalized)
@@ -638,6 +678,31 @@ const connection = (
     // Reuse the mandatory-response capacity as the per-connection waiter budget.
     // Completed fibers leave the set; disconnect interrupts every remaining waiter.
     const artworkTasks = yield* FiberSet.make<void, never>()
+    const audioTasks = yield* FiberSet.make<void, never>()
+    const stopRequestIds = yield* Ref.make<number[]>([])
+    let stopRunning = false
+    let pendingStops = 0
+    let audioStatusForward: Fiber.Fiber<void> | undefined
+    let audioFeatureForward: Fiber.Fiber<void> | undefined
+    let audioFeaturesWanted = false
+    let audioFeatureEpoch = 0
+    let audioFeatureRetirement: Deferred.Deferred<void> | undefined
+    let pendingAudioDetach: Effect.Effect<void> | undefined
+    const audioStartAttempts = new Map<
+      number,
+      {
+        readonly cancel: Deferred.Deferred<void>
+        readonly done: Deferred.Deferred<void>
+      }
+    >()
+    releaseAudio = Effect.uninterruptible(
+      Effect.gen(function* () {
+        yield* capture.detach(connectionId)
+        if (audioStatusForward) yield* Fiber.interrupt(audioStatusForward)
+        if (audioFeatureForward) yield* Fiber.interrupt(audioFeatureForward)
+        yield* FiberSet.awaitEmpty(audioTasks)
+      }),
+    )
     const encode = (value: unknown, limit = maxFrameBytes) => {
       const frame = encodeFrame(value)
       return Buffer.byteLength(frame) <= limit ? Buffer.from(frame) : undefined
@@ -680,6 +745,134 @@ const connection = (
         ),
       )
     }
+    const sendAudioStatus = (status: AudioCaptureStatus) =>
+      Effect.gen(function* () {
+        if (closed || socket.destroyed) return
+        if (status.type !== "active")
+          yield* Ref.set(latestAudioFrame, undefined)
+        const value = { type: "audio-status", status }
+        if (status.type === "stopped" && status.reason === "lease-expired") {
+          // Presentation is latest-only. Expiry is bounded mandatory evidence;
+          // queue exhaustion closes only this peer instead of erasing authority.
+          yield* Ref.set(latestAudioStatus, undefined)
+          yield* sendRequired(value)
+          return
+        }
+        const frame = encode(value)
+        if (!frame) return
+        yield* Ref.set(latestAudioStatus, frame)
+        Queue.offerUnsafe(outboundWake, undefined)
+      })
+    const sendAudioFrame = (value: unknown, epoch: number) =>
+      Effect.gen(function* () {
+        if (closed || socket.destroyed || epoch !== audioFeatureEpoch) return
+        const frame = encode(value)
+        if (!frame) return
+        yield* Ref.set(latestAudioFrame, { frame, epoch })
+        Queue.offerUnsafe(outboundWake, undefined)
+      })
+    const ensureAudioStatus = Effect.gen(function* () {
+      if (audioStatusForward) return
+      audioStatusForward = yield* capture.subscribeStatus(connectionId).pipe(
+        Stream.runForEach((next) =>
+          sendAudioStatus(next).pipe(
+            Effect.tap(() =>
+              Effect.sync(() =>
+                invokeHook(() => hooks.onAudioStatusQueued?.(socket, next)),
+              ),
+            ),
+          ),
+        ),
+        // Capture ends an overloaded status subscription. Disconnect its peer
+        // so a missing authority event cannot leave that audio lifetime usable.
+        Effect.tap(() => Effect.sync(close)),
+        Effect.forkIn(connectionScope),
+      )
+    })
+    const ensureAudioFeatures = Effect.gen(function* () {
+      if (audioFeatureForward) return
+      const epoch = audioFeatureEpoch
+      audioFeatureForward = yield* capture
+        .subscribeFeatures(connectionId, {
+          detachOnClose: false,
+        })
+        .pipe(
+          Stream.runForEach((frame) =>
+            sendAudioFrame({ type: "audio-features", frame }, epoch),
+          ),
+          Effect.forkIn(connectionScope),
+        )
+    })
+    const retireAudioFeatures = Effect.uninterruptible(
+      Effect.gen(function* () {
+        // Acknowledgement revokes authority and fences delivery, but does not join
+        // native cleanup. No finalizer may revoke tokens issued after this boundary.
+        audioFeaturesWanted = false
+        audioFeatureEpoch += 1
+        yield* Ref.set(latestAudioFrame, undefined)
+        const cleanup = yield* capture.beginDetach(connectionId)
+        const attempts = [...audioStartAttempts.values()]
+        for (const attempt of attempts)
+          yield* Deferred.succeed(attempt.cancel, undefined)
+        // Every unsubscribe revokes current tokens, even during retirement. New
+        // native admission is barred, so repeats share the same cleanup lifetime.
+        if (audioFeatureRetirement) {
+          // The first worker retains the native join. This bounded slot coalesces
+          // repeat snapshots without admitting another capture or feature sink.
+          pendingAudioDetach = cleanup
+          return
+        }
+        const previous = audioFeatureForward
+        audioFeatureForward = undefined
+        const done = Deferred.makeUnsafe<void>()
+        audioFeatureRetirement = done
+        yield* Effect.gen(function* () {
+          if (!previous) return
+          yield* Fiber.interrupt(previous)
+          const exit = yield* Fiber.await(previous)
+          if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause))
+            return yield* Effect.failCause(exit.cause)
+        }).pipe(
+          // Join the exact revoked lifetime even if the feature finalizer defects.
+          // The first join cannot be replaced by a later no-interest snapshot.
+          Effect.ensuring(
+            cleanup.pipe(
+              Effect.ensuring(
+                Effect.forEach(
+                  attempts,
+                  (attempt) => Deferred.await(attempt.done),
+                  { discard: true },
+                ),
+              ),
+              Effect.ensuring(
+                Effect.gen(function* () {
+                  while (pendingAudioDetach) {
+                    const pending = pendingAudioDetach
+                    pendingAudioDetach = undefined
+                    yield* pending
+                  }
+                }),
+              ),
+            ),
+          ),
+          Effect.andThen(
+            Effect.gen(function* () {
+              audioFeatureRetirement = undefined
+              if (audioFeaturesWanted && !closed) yield* ensureAudioFeatures
+              yield* Deferred.succeed(done, undefined)
+            }),
+          ),
+          Effect.tapCause((cause) =>
+            Effect.sync(() => {
+              noteRetirementFailure(cause)
+              reportFailure(cause)
+              close()
+            }),
+          ),
+          Effect.forkIn(connectionScope, { uninterruptible: true }),
+        )
+      }),
+    )
     const awaitDrain = Effect.callback<void>((resume) => {
       const cleanup = () => {
         socket.off("drain", onDrain)
@@ -706,9 +899,15 @@ const connection = (
     const write = (outbound: {
       readonly frame: Buffer
       readonly end?: boolean
+      readonly featureEpoch?: number
     }) =>
       Effect.sync(() => {
         if (closed || socket.destroyed) return true
+        if (
+          outbound.featureEpoch !== undefined &&
+          outbound.featureEpoch !== audioFeatureEpoch
+        )
+          return true
         invokeHook(() => hooks.onWriteAttempt?.(socket))
         if (outbound.end) {
           socket.end(outbound.frame)
@@ -735,12 +934,18 @@ const connection = (
     const nextOutbound = (): Effect.Effect<{
       readonly frame: Buffer
       readonly end?: boolean
+      readonly featureEpoch?: number
     }> =>
       Effect.gen(function* () {
         const required = yield* Queue.poll(mandatory)
         if (Option.isSome(required)) return required.value
         const state = yield* Ref.getAndSet(latestState, undefined)
         if (state) return { frame: state }
+        const audioStatus = yield* Ref.getAndSet(latestAudioStatus, undefined)
+        if (audioStatus) return { frame: audioStatus }
+        const audioFrame = yield* Ref.getAndSet(latestAudioFrame, undefined)
+        if (audioFrame)
+          return { frame: audioFrame.frame, featureEpoch: audioFrame.epoch }
         yield* Queue.take(outboundWake)
         return yield* nextOutbound()
       })
@@ -802,11 +1007,7 @@ const connection = (
           )
           return
         }
-        const negotiated = negotiateHello(
-          request,
-          PROTOCOL,
-          baselineCapabilities,
-        )
+        const negotiated = negotiateHello(request, PROTOCOL, daemonCapabilities)
         if ("code" in negotiated) {
           yield* sendRequired(
             failure(request.requestId, negotiated),
@@ -828,10 +1029,19 @@ const connection = (
           ),
         )
         invokeValueHook(hooks.onJoinCommitted, socket)
+        const hello = helloResult(coordinator.daemonInstanceId, session)
         yield* send(
           response(
             request.requestId,
-            helloResult(coordinator.daemonInstanceId, session),
+            session.capabilities.includes(audioVisualizationCapability) &&
+              !session.legacy
+              ? {
+                  ...hello,
+                  audioClock: {
+                    daemonMonotonicMs: (hooks.audioNowMs ?? localMonotonicMs)(),
+                  },
+                }
+              : hello,
           ),
         )
         yield* Effect.sync(() => invokeHook(hooks.onForwarderStarted))
@@ -914,6 +1124,201 @@ const connection = (
           "INVALID_REQUEST",
           "hello was already completed",
         )
+      if (
+        request.type === "audio-sources" ||
+        request.type === "audio-start" ||
+        request.type === "audio-stop" ||
+        request.type === "audio-renew" ||
+        request.type === "audio-subscribe" ||
+        request.type === "audio-unsubscribe"
+      ) {
+        const audioRequest: AudioRequest = request
+        if (
+          session.protocol.selectedRevision < AUDIO_PROTOCOL_REVISION ||
+          !session.capabilities.includes(audioVisualizationCapability)
+        )
+          return yield* reject(
+            request,
+            "UNSUPPORTED_CAPABILITY",
+            "audio-visualization-v1 was not negotiated",
+          )
+        if (audioRequest.type === "audio-renew") {
+          if (!session.capabilities.includes(audioInterestLeaseCapability))
+            return yield* reject(
+              request,
+              "UNSUPPORTED_CAPABILITY",
+              "audio-interest-lease-v1 was not negotiated",
+            )
+          // Renewal has no acquisition or provider work and owns no background task.
+          return yield* capture
+            .renew(connectionId, audioRequest.generation)
+            .pipe(
+              Effect.flatMap((result) =>
+                send(response(request.requestId, result)),
+              ),
+            )
+        }
+        if (
+          audioRequest.type !== "audio-stop" &&
+          audioRequest.type !== "audio-subscribe" &&
+          audioRequest.type !== "audio-unsubscribe" &&
+          (yield* FiberSet.size(audioTasks)) >= AUDIO_PENDING_TASK_LIMIT
+        )
+          return yield* reject(
+            request,
+            "SERVER_BUSY",
+            "too many pending audio requests",
+          )
+        if (
+          audioRequest.type === "audio-subscribe" ||
+          audioRequest.type === "audio-unsubscribe"
+        ) {
+          if (audioRequest.type === "audio-subscribe") {
+            if (audioRequest.channel === "status") yield* ensureAudioStatus
+            else {
+              audioFeaturesWanted = true
+              if (!audioFeatureRetirement) yield* ensureAudioFeatures
+            }
+          } else {
+            if (audioRequest.channel === "status" && audioStatusForward) {
+              yield* Fiber.interrupt(audioStatusForward)
+              audioStatusForward = undefined
+            }
+            if (audioRequest.channel === "features") yield* retireAudioFeatures
+          }
+          return yield* send(
+            response(audioRequest.requestId, {
+              type:
+                audioRequest.type === "audio-subscribe"
+                  ? "subscribed"
+                  : "unsubscribed",
+              channel: audioRequest.channel,
+            }),
+          )
+        }
+        if (audioRequest.type === "audio-stop") {
+          if (pendingStops >= mandatoryOutboundQueueCapacity)
+            return yield* reject(
+              request,
+              "SERVER_BUSY",
+              "too many pending audio Stop requests",
+            )
+          pendingStops += 1
+          yield* Ref.update(stopRequestIds, (ids) => [
+            ...ids,
+            audioRequest.requestId,
+          ])
+          if (!stopRunning) {
+            stopRunning = true
+            yield* FiberSet.run(
+              audioTasks,
+              Effect.gen(function* () {
+                while (stopRunning) {
+                  const ids = yield* Ref.getAndSet(stopRequestIds, [])
+                  if (ids.length === 0) {
+                    stopRunning = false
+                    return
+                  }
+                  const result = yield* capture
+                    .stop(connectionId)
+                    .pipe(Effect.exit)
+                  for (const requestId of ids) {
+                    yield* send(
+                      Exit.isSuccess(result)
+                        ? response(requestId, result.value)
+                        : failure(
+                            requestId,
+                            protocolError(
+                              "PROVIDER_FAILURE",
+                              "audio Stop failed",
+                              true,
+                            ),
+                          ),
+                    )
+                    pendingStops -= 1
+                  }
+                }
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    stopRunning = false
+                  }),
+                ),
+              ),
+            )
+          }
+          return
+        }
+        const epoch = audioFeatureEpoch
+        const retirement = audioFeatureRetirement
+        const attempt =
+          audioRequest.type === "audio-start"
+            ? {
+                cancel: Deferred.makeUnsafe<void>(),
+                done: Deferred.makeUnsafe<void>(),
+              }
+            : undefined
+        if (attempt) audioStartAttempts.set(audioRequest.requestId, attempt)
+        yield* FiberSet.run(
+          audioTasks,
+          Effect.gen(function* () {
+            if (audioRequest.type === "audio-sources")
+              return yield* send(
+                response(
+                  audioRequest.requestId,
+                  yield* capture.listSources(connectionId),
+                ),
+              )
+            const canceled = {
+              type: "rejected" as const,
+              reason: "canceled" as const,
+            }
+            const start = Effect.gen(function* () {
+              if (retirement) yield* Deferred.await(retirement)
+              if (closed || epoch !== audioFeatureEpoch) return canceled
+              return yield* capture.start(connectionId, audioRequest.token)
+            })
+            const result = attempt
+              ? yield* Effect.raceFirst(
+                  start,
+                  Deferred.await(attempt.cancel).pipe(Effect.as(canceled)),
+                )
+              : yield* start
+            return yield* send(
+              response(
+                audioRequest.requestId,
+                epoch === audioFeatureEpoch ? result : canceled,
+              ),
+            )
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : send(
+                    failure(
+                      audioRequest.requestId,
+                      protocolError(
+                        "PROVIDER_FAILURE",
+                        "audio request failed",
+                        true,
+                      ),
+                    ),
+                  ),
+            ),
+            Effect.ensuring(
+              attempt
+                ? Effect.sync(() => {
+                    audioStartAttempts.delete(audioRequest.requestId)
+                  }).pipe(
+                    Effect.andThen(Deferred.succeed(attempt.done, undefined)),
+                  )
+                : Effect.void,
+            ),
+            Effect.asVoid,
+          ),
+        )
+        return
+      }
       if (!session.capabilities.includes("transport"))
         return yield* reject(
           request,
@@ -980,6 +1385,7 @@ const connection = (
 const makeLayer = (
   hooks: ServerLifecycleHooks = {},
   selectedProvider = providerLayer,
+  selectedAudio?: AudioCaptureLayerFactory,
 ) =>
   Layer.effect(
     MusicSessionServerService,
@@ -990,7 +1396,9 @@ const makeLayer = (
       // Provider and coordinator ownership are deliberately built below that
       // acquisition point, in distinct child scopes.
       let coordinator: Coordinator
+      let capture: AudioOwner
       let closeCoordinator: Effect.Effect<void> = Effect.void
+      let closeCapture: Effect.Effect<void> = Effect.void
       let closeProvider: Effect.Effect<void> = Effect.void
       let active = false
       const connections = yield* FiberSet.make<void, never>()
@@ -1034,25 +1442,47 @@ const makeLayer = (
         const onClose = () => sockets.delete(socket)
         socket.once("close", onClose)
         invokeHook(() => hooks.onEnrolled?.(socket))
+        const reportedRetirementDefects = new Set<unknown>()
+        const noteRetirementFailure = (cause: Cause.Cause<unknown>) => {
+          const defect = Cause.findDefect(cause)
+          if (Result.isSuccess(defect))
+            reportedRetirementDefects.add(defect.success)
+        }
+        const retirementFailureAlreadyReported = (
+          cause: Cause.Cause<unknown>,
+        ) => {
+          // A typed failure is a new report. A replayed cleanup defect is not.
+          if (Result.isSuccess(Cause.findError(cause))) return false
+          const defect = Cause.findDefect(cause)
+          return (
+            Result.isSuccess(defect) &&
+            reportedRetirementDefects.has(defect.success)
+          )
+        }
         runConnection(
           Effect.scoped(
             connection(
               socket,
               coordinator,
+              capture,
               config.maxFrameBytes,
               config.inboundChunkQueueCapacity,
               config.maxFramesPerChunk,
               config.mandatoryOutboundQueueCapacity,
               hooks,
               reportFailure,
+              noteRetirementFailure,
               onJoin,
               onLeave,
             ),
           ).pipe(
             // Preserve ordinary shutdown interruption. Genuine local failures
             // are counted and coalesced for diagnostics before containment.
+            // Teardown replays the cached retirement defect; that report already
+            // happened, so do not count it again.
             Effect.tapCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
+              Cause.hasInterruptsOnly(cause) ||
+              retirementFailureAlreadyReported(cause)
                 ? Effect.void
                 : Effect.sync(() => {
                     reportFailure(cause)
@@ -1154,6 +1584,9 @@ const makeLayer = (
             invokeHook(hooks.onCoordinatorScopeFinalized)
             yield* FiberSet.clear(connections)
             yield* FiberSet.awaitEmpty(connections)
+            // Connections detach capture leases before idle leave. Close the
+            // capture scope only after those background tasks have joined.
+            yield* closeCapture.pipe(Effect.ignore)
             // The provider remains alive while its coordinator and all of its
             // borrowing connection children unwind.
             yield* closeProvider.pipe(Effect.ignore)
@@ -1245,6 +1678,18 @@ const makeLayer = (
         ),
       )
       coordinator = Context.get(coordinatorServices, MusicSessionCoordinator)
+      const captureScope = yield* Scope.make()
+      closeCapture = Scope.close(captureScope, Exit.void)
+      const captureServices = yield* Scope.provide(captureScope)(
+        Layer.build(
+          (
+            selectedAudio ??
+            ((daemonInstanceId: string) =>
+              unavailableLayer(daemonInstanceId, provider.sourceObservations))
+          )(coordinator.daemonInstanceId, provider.sourceObservations),
+        ),
+      )
+      capture = Context.get(captureServices, AudioCapture)
       active = true
       invokeHook(hooks.onCoordinator)
       // The zero-client branch races a single Effect sleep against the next
@@ -1304,21 +1749,26 @@ const makeLayer = (
 
 /** Production server layer; focused tests may use `layerWithHooks` directly. */
 export const layer = makeLayer()
+/** Alternate local capture graph; playback keeps the same scoped provider. */
+export const layerWithAudio = (selectedAudio: AudioCaptureLayerFactory) =>
+  makeLayer({}, providerLayer, selectedAudio)
 export const layerWithHooks = (
   hooks: ServerLifecycleHooks,
   selectedProvider = providerLayer,
-) => makeLayer(hooks, selectedProvider)
+  selectedAudio?: AudioCaptureLayerFactory,
+) => makeLayer(hooks, selectedProvider, selectedAudio)
 
 /** Compatibility adapter: one scoped graph, with Promise calls only at its edge. */
 export async function startMusicSessionServer(
   options: MusicSessionOptions,
   provider?: LegacySessionProvider,
   hooks: ServerLifecycleHooks = {},
+  selectedAudio?: AudioCaptureLayerFactory,
 ): Promise<MusicSessionServer> {
   const { layer: configLayer } = await import("./config.ts")
   const selectedProvider = provider ? layerFromLegacy(provider) : providerLayer
   const graph = Layer.provide(
-    layerWithHooks(hooks, selectedProvider),
+    layerWithHooks(hooks, selectedProvider, selectedAudio),
     configLayer(options),
   )
   const stop = Deferred.makeUnsafe<void>()
