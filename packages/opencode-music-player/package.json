@@ -66,15 +66,15 @@
     "pngjs": "^7.0.0"
   },
   "peerDependencies": {
-    "@opentui/core": "0.5.12",
-    "@opentui/solid": "0.5.12"
+    "@opentui/core": "0.5.15",
+    "@opentui/solid": "0.5.15"
   },
   "devDependencies": {
-    "@opencode/plugin": "2.0.18",
-    "@opentui/core": "0.5.12",
-    "@opentui/solid": "0.5.12",
-    "solid-js": "1.9.15",
-    "@opencode/theme": "2.0.18",
+    "@opencode/plugin": "2.0.24",
+    "@opentui/core": "0.5.15",
+    "@opentui/solid": "0.5.15",
+    "solid-js": "1.9.16",
+    "@opencode/theme": "2.0.24",
     "@types/bun": "^1.4.2",
     "@types/pngjs": "^6.0.5",
     "prettier": "3.9.9",
