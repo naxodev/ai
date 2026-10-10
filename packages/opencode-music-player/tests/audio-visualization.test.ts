@@ -117,6 +117,94 @@ test("mount, style, and source selection never start capture; declined consent h
   }
 })
 
+for (const { name, list, message } of [
+  {
+    name: "an available empty catalog",
+    list: { availability: "available", sources: [] },
+    message: "No unambiguous active Kaset source; capture is off",
+  },
+  {
+    name: "an unavailable helper",
+    list: {
+      availability: "unavailable",
+      reason: "capture-adapter-unavailable",
+      sources: [],
+    },
+    message:
+      "Capture unavailable (capture-adapter-unavailable) — check the local audio helper build; capture is off",
+  },
+  {
+    name: "capture not negotiated",
+    list: {
+      availability: "unavailable",
+      reason: "not-negotiated",
+      sources: [],
+    },
+    message:
+      "Audio capture not negotiated — use a compatible audio-enabled daemon; capture is off",
+  },
+  {
+    name: "unsupported capture",
+    list: { availability: "unavailable", reason: "unsupported", sources: [] },
+    message: "Audio capture unsupported by this daemon; capture is off",
+  },
+  {
+    name: "unavailable capture without a reason",
+    list: { availability: "unavailable", sources: [] },
+    message: "Audio capture unavailable; capture is off",
+  },
+] satisfies readonly {
+  name: string
+  list: AudioSourceList
+  message: string
+}[]) {
+  test(`${name} reports its fixed availability message without offering a source or starting capture`, async () => {
+    const fake = connection()
+    fake.client.listAudioSources = async () => list
+    let dialogs = 0
+    const model = createAudioVisualization({
+      connect: async () => fake.client,
+      confirm: async () => true,
+    })
+    try {
+      await model.chooseSource(async () => {
+        dialogs++
+        return selected
+      })
+      expect(model.current().message).toBe(message)
+      expect(model.current().selected).toBeNull()
+      expect(dialogs).toBe(0)
+      expect(fake.events).not.toContain("start")
+    } finally {
+      await model.dispose()
+    }
+  })
+}
+
+test("unavailable discovery never displays raw reasons or private source metadata", async () => {
+  const fake = connection()
+  fake.client.listAudioSources = async () =>
+    ({
+      availability: "unavailable",
+      reason: "private song title\u001b[31m",
+      sources: [{ ...selected, label: "private artist and track" }],
+    }) as unknown as AudioSourceList
+  const model = createAudioVisualization({
+    connect: async () => fake.client,
+    confirm: async () => true,
+  })
+  try {
+    await select(model)
+    expect(model.current().message).toBe(
+      "Audio capture unavailable; capture is off",
+    )
+    expect(model.current().selected).toBeNull()
+    expect(fake.events).not.toContain("start")
+  } finally {
+    await model.dispose()
+  }
+})
+
 test("disposal from a synchronous selection notification joins the action before closing", async () => {
   const fake = connection()
   const events: string[] = []
@@ -200,6 +288,41 @@ test("concurrent Starts share one confirmation; style changes reuse the selected
   expect(fake.features.size).toBe(0)
 })
 
+for (const cancellation of ["stop", "dispose"] as const) {
+  test(`a synchronous ${cancellation} observer prevents the Start request, not just late admission`, async () => {
+    const fake = connection()
+    const model = createAudioVisualization({
+      connect: async () => fake.client,
+      confirm: async () => true,
+    })
+    let canceled: Promise<void> | undefined
+    const remove = model.subscribe((state) => {
+      if (state.message === "Starting selected capture")
+        canceled = model[cancellation]()
+    })
+    try {
+      await select(model)
+      await model.start()
+      await canceled
+      expect(canceled).toBeDefined()
+      expect(fake.events).not.toContain("start")
+      expect(model.current().active).toBe(false)
+      if (cancellation === "stop") {
+        expect(model.current().selected).toBeNull()
+        const stops = fake.events.filter((event) => event === "stop").length
+        await model.stop()
+        expect(fake.events.filter((event) => event === "stop")).toHaveLength(
+          stops,
+        )
+      }
+    } finally {
+      remove()
+      await model.dispose()
+      await canceled
+    }
+  })
+}
+
 test("Stop during confirmation fences later approval and requires a new selection", async () => {
   const fake = connection()
   const consent = deferred<boolean>()
@@ -222,6 +345,67 @@ test("Stop during confirmation fences later approval and requires a new selectio
     consent.resolve(false)
     await model.dispose()
     await action
+  }
+})
+
+for (const status of [
+  { type: "stopped", generation: 1, reason: "stop" },
+  { type: "failed", generation: 1, reason: "setup" },
+  { type: "unavailable", reason: "capture-adapter-unavailable" },
+] as const satisfies readonly AudioCaptureStatus[]) {
+  test(`${status.type} shared status retires pending confirmation before late approval can start capture`, async () => {
+    const fake = connection()
+    const entered = deferred<void>()
+    const approval = deferred<boolean>()
+    const model = createAudioVisualization({
+      connect: async () => fake.client,
+      confirm: () => {
+        entered.resolve()
+        return approval.promise
+      },
+    })
+    let action: Promise<void> | undefined
+    try {
+      await select(model)
+      action = model.start()
+      await entered.promise
+      for (const listener of fake.status) listener(status)
+      expect(model.current().selected).toBeNull()
+      const retiredMessage = model.current().message
+      approval.resolve(true)
+      await action
+      expect(fake.events).toEqual(["list"])
+      expect(model.current().active).toBe(false)
+      expect(model.current().message).toBe(retiredMessage)
+      await expect(model.start()).rejects.toThrow("fresh source")
+    } finally {
+      approval.resolve(false)
+      await model.dispose()
+      await action
+    }
+  })
+}
+
+test("initial cached stopped status has no selection lifetime to retire and fresh selection remains usable", async () => {
+  const fake = connection()
+  const subscribe = fake.client.subscribeAudioStatus
+  fake.client.subscribeAudioStatus = (listener) => {
+    listener({ type: "stopped", generation: 1, reason: "stop" })
+    return subscribe(listener)
+  }
+  const model = createAudioVisualization({
+    connect: async () => fake.client,
+    confirm: async () => true,
+  })
+  try {
+    await select(model)
+    expect(model.current().selected).toEqual(selected)
+    expect(fake.events).toEqual(["list"])
+    await model.start()
+    expect(fake.events).toEqual(["list", "start"])
+    expect(model.current().active).toBe(true)
+  } finally {
+    await model.dispose()
   }
 })
 

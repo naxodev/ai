@@ -28,6 +28,19 @@ export type AudioViewState = {
   readonly message: string
 }
 
+const unavailableSourceMessage = (reason: AudioSourceList["reason"]) => {
+  switch (reason) {
+    case "capture-adapter-unavailable":
+      return "Capture unavailable (capture-adapter-unavailable) — check the local audio helper build; capture is off"
+    case "not-negotiated":
+      return "Audio capture not negotiated — use a compatible audio-enabled daemon; capture is off"
+    case "unsupported":
+      return "Audio capture unsupported by this daemon; capture is off"
+    default:
+      return "Audio capture unavailable; capture is off"
+  }
+}
+
 /** Promise-only host boundary. Selection, subscription, and style never grant capture. */
 export function createAudioVisualization(options: {
   connect: () => Promise<AudioConnection>
@@ -46,6 +59,8 @@ export function createAudioVisualization(options: {
   let client: AudioConnection | undefined
   let latestClient: AudioConnection | undefined
   let admission: { client: AudioConnection; generation: number } | undefined
+  let selection:
+    { client: AudioConnection; source: SourceEntry; epoch: number } | undefined
   let connecting: Promise<AudioConnection> | undefined
   let starting: Promise<void> | undefined
   let stopping: Promise<void> | undefined
@@ -74,6 +89,7 @@ export function createAudioVisualization(options: {
     disposers = []
     client?.dispose()
     client = undefined
+    selection = undefined
     mayOwn = false
   }
   const connect = async () => {
@@ -97,7 +113,14 @@ export function createAudioVisualization(options: {
               status.type === "unavailable"
             ) {
               const ownedInterest = mayOwn
-              if (ownedInterest) ++epoch
+              // Retire only an existing selection's lifetime, including consent
+              // still pending. A cached status on a fresh socket has no authority.
+              const selectedInterest =
+                selection?.client === connected &&
+                selection.epoch === epoch &&
+                selection.source === state.selected
+              if (ownedInterest || selectedInterest) ++epoch
+              selection = undefined
               mayOwn = false
               // Expiry retires this connection's audio lifetime. A fresh socket
               // cannot receive delayed status from the expired same-generation join.
@@ -198,6 +221,7 @@ export function createAudioVisualization(options: {
     ++epoch
     const owned = mayOwn ? client : undefined
     mayOwn = false
+    selection = undefined
     // Observers can synchronously call Stop from publication. Establish the
     // exact shared outcome before notifying them or exposing cleared authority.
     stopping = queueStop(owned, message, actions.size > 0)
@@ -249,7 +273,10 @@ export function createAudioVisualization(options: {
       if (list.availability !== "available" || list.sources.length === 0) {
         publish({
           selected: null,
-          message: "No unambiguous active Kaset source; capture is off",
+          message:
+            list.availability === "available"
+              ? "No unambiguous active Kaset source; capture is off"
+              : unavailableSourceMessage(list.reason),
         })
         return
       }
@@ -267,6 +294,7 @@ export function createAudioVisualization(options: {
         list.sources.find((source) => source.token === selected.token)
       if (canonical) {
         uncertainStop = false
+        selection = { client: connected, source: canonical, epoch: ticket }
         publish({
           selected: canonical,
           frame: null,
@@ -286,15 +314,39 @@ export function createAudioVisualization(options: {
       return Promise.reject(new Error("Choose a fresh source first"))
     if (state.active) return Promise.resolve()
     const ticket = epoch
+    const lifetime = selection
+    const currentSelection = () =>
+      lifetime !== undefined &&
+      selection === lifetime &&
+      lifetime.epoch === epoch &&
+      lifetime.client === client &&
+      lifetime.source === state.selected
     starting = (async () => {
       await retiring
-      if (disposed || ticket !== epoch) return
+      if (disposed || ticket !== epoch || !currentSelection()) return
       if (!(await options.confirm(selected))) return
-      if (disposed || ticket !== epoch) return
+      if (disposed || ticket !== epoch || !currentSelection()) return
       const connected = await connect()
-      if (disposed || ticket !== epoch || client !== connected) return
+      if (
+        disposed ||
+        ticket !== epoch ||
+        client !== connected ||
+        !currentSelection()
+      )
+        return
       mayOwn = true
       publish({ frame: null, message: "Starting selected capture" })
+      // Publication can synchronously revoke consent before any capture request.
+      if (
+        disposed ||
+        ticket !== epoch ||
+        client !== connected ||
+        !mayOwn ||
+        !currentSelection()
+      ) {
+        mayOwn = false
+        return
+      }
       const result = await connected.startAudioCapture(selected.token)
       if (
         (result.type === "started" || result.type === "joined") &&
