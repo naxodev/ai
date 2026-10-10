@@ -344,11 +344,47 @@ test("Stop cancels a Start already waiting on expired native cleanup, before ano
             .start("b", token)
             .pipe(Effect.forkScoped)
           yield* Latch.await(f.closing)
-          expect(yield* f.capture.stop("b")).toEqual({
+          const stopping = yield* f.capture.stop("b").pipe(Effect.forkScoped)
+          yield* Effect.yieldNow
+          expect(stopping.pollUnsafe()).toBeUndefined()
+          expect(starting.pollUnsafe()).toBeUndefined()
+          yield* Latch.open(f.releaseCleanup)
+          expect(yield* Fiber.join(stopping)).toEqual({
             type: "rejected",
             reason: "not-joined",
           })
+          expect(yield* Fiber.join(starting)).toEqual({
+            type: "rejected",
+            reason: "canceled",
+          })
+          expect(yield* Ref.get(f.starts)).toBe(1)
+        }).pipe(Effect.ensuring(Latch.open(f.releaseCleanup)))
+      }),
+    ),
+  )
+})
+
+test("detach joins a canceled Start waiting on another connection's exact expired retirement", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture
+        yield* Effect.gen(function* () {
+          yield* Latch.open(f.ready)
+          yield* f.capture.start("a", yield* f.select("a"))
+          const token = yield* f.select("b")
+          yield* Latch.close(f.releaseCleanup)
+          yield* f.setNow(5_000)
+          const starting = yield* f.capture
+            .start("b", token)
+            .pipe(Effect.forkChild)
+          yield* Latch.await(f.closing)
+          const completion = yield* f.capture.detach("b").pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          expect(completion.pollUnsafe()).toBeUndefined()
+          expect(starting.pollUnsafe()).toBeUndefined()
           yield* Latch.open(f.releaseCleanup)
+          yield* Fiber.join(completion)
           expect(yield* Fiber.join(starting)).toEqual({
             type: "rejected",
             reason: "canceled",
@@ -393,11 +429,16 @@ test("expired departing ownership joins cleanup but cannot regain Stop authority
           yield* Latch.open(f.ready)
           yield* f.capture.start("a", yield* f.select("a"))
           yield* Latch.close(f.releaseCleanup)
+          yield* f.advance(0)
           yield* f.setNow(5_000)
           const sweep = yield* f.capture
             .listSources("metadata")
             .pipe(Effect.forkChild)
           yield* Latch.await(f.closing)
+          // Listing must issue fresh tokens while the old native release is
+          // blocked. Only Start, Stop, and detach own the cleanup join.
+          yield* Effect.yieldNow
+          expect(sweep.pollUnsafe()).toBeDefined()
           const stopping = yield* f.capture.stop("a").pipe(Effect.forkChild)
           const departing = yield* f.capture.detach("a").pipe(Effect.forkChild)
           yield* Effect.yieldNow
