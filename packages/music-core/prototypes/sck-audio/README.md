@@ -24,13 +24,13 @@ Run from the repository root:
 
    The four checks cover PCM extraction, shutdown ordering, permission/source policy, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. They construct no stream and query no shareable content.
 
-3. Run the fifteen offline regressions:
+3. Run the seventeen offline regressions:
 
    ```sh
    bun test packages/music-core/prototypes/sck-audio/*.test.ts
    ```
 
-   These use fake process boundaries and real temporary Unix sockets. They verify initial denial, silence, revocation, generic failure, explicit Stop, and pipe/heartbeat races through the daemon and sidebar model. An isolated import check blocks live server startup and verifies imports cannot start a probe. Diagnostic checks reject unknown text and preserve a fixed native failure reason across a fast exit. They do not mount OpenCode or establish real macOS permission behavior.
+   These use fake process boundaries, fixed fake catalogs from real Bun subprocesses, and real temporary Unix sockets. They verify initial denial, silence, revocation, generic failure, explicit Stop, and pipe/heartbeat races through the daemon and sidebar model. An isolated import check blocks live server startup and verifies imports cannot start a probe. Diagnostic checks reject unknown text and preserve a fixed native failure reason across a fast exit. Metadata checks keep the recorder's scope open and reject a source without running output. They do not mount OpenCode or establish real macOS permission behavior.
 
 4. Check the prototype's own TypeScript project:
 
@@ -56,16 +56,21 @@ The 50 ms cap bounds the exit-result wait. The owning layer still joins reader c
 
 ## Local matrix, 2026-10-11 UTC
 
-Two of four approved probes have run. The app was copied into an ignored project `dist` directory because Launch Services could not resolve its bundle from `/private/tmp`. Bundle-only AudioCapture and ScreenCapture resets then succeeded.
+Three of four approved probes have run. The app was copied into an ignored project `dist` directory because Launch Services could not resolve its bundle from `/private/tmp`. Bundle-only AudioCapture and ScreenCapture resets then succeeded.
 
 | Stage          | Duration | Frames | Ever active | Result                        |
 | -------------- | -------- | ------ | ----------- | ----------------------------- |
 | Initial denial | 2.715 s  | 0      | No          | Permission failure; denied.   |
 | Grant attempt  | 3.101 s  | 0      | No          | Setup failure; grant present. |
+| Grant retry    | 1.048 s  | 0      | No          | No source selected; no Start. |
 
-Both requests were attributed to `dev.naxo.music.sck-matrix.20261011`. Narrow TCC logs provide diagnostic evidence only. Runtime permission classification still uses the public ScreenCaptureKit error and clean native exit 77.
+The denial and first grant requests were attributed to `dev.naxo.music.sck-matrix.20261011`. Narrow TCC logs provide diagnostic evidence only. Runtime permission classification still uses the public ScreenCaptureKit error and clean native exit 77.
 
-The grant failure's native cause remains unresolved. These two runs preceded the fixed diagnostic recorder. No further probe or revocation check has run. The local JSON summaries remain in ignored `dist/live-evidence`; they contain no audio or video. Production capture remains unavailable.
+The first grant failure's native cause remains unresolved. The first two runs preceded the fixed diagnostic recorder. The third run stopped during source selection and recorded no native diagnostic reason. No revocation check has run.
+
+Follow-up metadata-only checks found one verified Kaset process with `runningOutput: false`. The helper's field checks passed, and both plain and instrumented catalogs succeeded. The resolver lists no source without running output; the daemon then returns the generic unavailable status shown as `Helper off: check build`. The same symptom was reproduced through the graph without capture. These later checks explain a current source-selection block; they do not prove the output state at the third probe's timestamp.
+
+The local JSON summaries remain in ignored `dist/live-evidence`; they contain no audio or video. Production capture remains unavailable.
 
 For a later approved full TUI check, build the existing local plugin:
 

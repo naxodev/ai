@@ -1,11 +1,21 @@
 import { expect, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { join } from "node:path"
-import { Cause, Deferred, Effect, Queue, Result, Stream } from "effect"
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Layer,
+  Queue,
+  Result,
+  Scope,
+  Stream,
+} from "effect"
 import { testUnixSession } from "../../tests/unix-session.ts"
 import { localMonotonicMs } from "../../audio/clock.ts"
 import {
   helperError,
+  liveNativeHelperDependencies,
   type NativeHelperDependencies,
   type NativeHelperExit,
   type NativeHelperProcess,
@@ -290,6 +300,96 @@ const waitFor = (
       }
     })
   })
+}
+
+for (const runningOutput of [true, false]) {
+  testUnixSession(
+    runningOutput
+      ? "the diagnostic layer preserves verified source selection without starting capture"
+      : "a verified Kaset process without running output cannot authorize a probe",
+    async () => {
+      const child = fixture()
+      const recorded: ProbeDiagnostic[] = []
+      let ownerClosed = false
+      let captureRequests = 0
+      let choices = 0
+      const metadata =
+        JSON.stringify({
+          sources: [{ identity: source.identity, runningOutput }],
+        }) + "\n"
+      const metadataBoundary: NativeHelperDependencies = {
+        ...child.boundary,
+        spawn: (request) => {
+          if (request.args[0] !== "--list-kaset-sources") {
+            captureRequests++
+            throw new Error("capture prohibited in metadata fixture")
+          }
+          return liveNativeHelperDependencies.spawn({
+            executable: process.execPath,
+            args: [
+              "-e",
+              "process.stdout.write(" + JSON.stringify(metadata) + ")",
+            ],
+            shell: false,
+          })
+        },
+      }
+      const socketPath = `/tmp/sck-metadata-${process.pid}-${crypto.randomUUID()}.sock`
+      const server = await startMusicSessionServer(
+        { socketPath },
+        createFakeProvider(),
+        {},
+        (id, observations) =>
+          Layer.unwrap(
+            Effect.gen(function* () {
+              const owner = yield* Scope.Scope
+              yield* Scope.addFinalizer(
+                owner,
+                Effect.sync(() => {
+                  ownerClosed = true
+                }),
+              )
+              const boundary = yield* withProbeDiagnostics(
+                metadataBoundary,
+                (event) => recorded.push(event),
+              )
+              return sckPrototypeLayer(id, observations, boundary)
+            }),
+          ),
+      )
+      const model = createAudioVisualization({
+        connect: () =>
+          createMusicSessionClient({
+            socketPath,
+            clientId: "sck-metadata",
+            hostKind: "test",
+            capabilities: [
+              ...baselineCapabilities,
+              ...audioVisualizationCapabilities,
+            ],
+          }),
+        confirm: async () => true,
+      })
+      try {
+        expect(ownerClosed).toBe(false)
+        await model.chooseSource(async (list) => {
+          choices++
+          return list.sources[0]
+        })
+        expect(model.current().selected !== null).toBe(runningOutput)
+        expect(model.current().active).toBe(false)
+        expect(captureRequests).toBe(0)
+        expect(choices).toBe(runningOutput ? 1 : 0)
+        if (!runningOutput)
+          expect(model.current().message).toBe("Helper off: check build")
+        expect(recorded).toEqual([])
+      } finally {
+        await model.dispose()
+        await server.close()
+      }
+      expect(ownerClosed).toBe(true)
+    },
+  )
 }
 
 for (const scenario of [
