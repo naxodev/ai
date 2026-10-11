@@ -306,6 +306,37 @@ The approved test app used bundle ID `dev.naxo.music.sck-application-capture.202
 
 The single approved capture is used. The result, user-reported playback context, preparation/cleanup ledger, metadata preflight, archived helper, and profile remain in ignored `dist/application-capture-evidence`. No further capture or reference stream is authorized. Controlled isolation evidence remains the next investigation stage, and production capture remains unavailable.
 
+## Prepare the unrelated source without playback
+
+The [controlled-source research](CONTROLLED-SOURCE-RESEARCH.md) found no supported direct local-tone route in Kaset's matching upstream version. Existing uploads and remote YouTube media remain possible routes, but no suitable controlled asset has been identified. The full simultaneous protocol remains a draft. A narrower Safari-only exclusion check with Kaset silent could answer one part of the isolation question after separate preparation and review.
+
+Build the local Safari tone page from the repository root:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/browser/build.ts
+```
+
+This writes `safari-tone.html`, `offline-tone-check.html`, and `hashes.json` into this prototype's ignored `dist/controlled-sources`. The command bundles local source only. It opens no browser, starts no playback or native helper, and changes no permission or registration. Building again replaces these generated files; preserve any approved artifact and its hash before rebuilding.
+
+The source page waits for **Start once**. It schedules a 2113 Hz sine at 0.1 peak amplitude, with identical stereo channels and a 48 kHz requested sample rate. A monotonic check rejects startup after fifteen elapsed seconds. Earlier startup uses only the remaining duration, capped at fifteen audio seconds. The audio clock stops the oscillator independently of JavaScript timers. A wall timer requests cleanup fifteen seconds after the click; browser scheduling can delay that callback. This page does not provide a hard wall-clock deadline. Future captures still need their native watchdog.
+
+**Stop**, leaving or hiding the tab, and audio interruption request immediate graph disconnection. These handlers also depend on browser scheduling. The page permits one start per load. A reload is not another approved live attempt. Keep the page visible during any later approved playback.
+
+The self-contained page uses inline hashed scripts and styles. Its content policy blocks external connections and resource loads. It sends no network requests and uses no microphone, recording, or capture API. Its status describes playback lifecycle only; it supplies no independent capture reference.
+
+Run the source's type check and eight offline lifecycle regressions:
+
+```sh
+bunx tsc --noEmit -p packages/music-core/prototypes/sck-audio/browser/tsconfig.json
+bun test packages/music-core/prototypes/sck-audio/browser/page.test.ts
+```
+
+The regressions reject automatic or repeated playback, a late resume before timer delivery, hidden/closed page continuation, audio interruption, and hidden startup or cleanup failure. They verify that startup time reduces the scheduled tone duration. They use fake contexts and play no sound. The separate browser fixture renders the same graph through [OfflineAudioContext](https://www.w3.org/TR/2021/REC-webaudio-20210617/#OfflineAudioContext), which produces an in-memory buffer without realtime output. It checks the fixed frequency's power, amplitude, identical channels, and zero output after fifteen audio seconds. It discards the buffer and reports only aggregate check results in the page.
+
+Offline verification used Chrome 155.0.8059.40 with a temporary dedicated profile because the DevTools connector's profile was locked. The rendered graph measured peak `0.10000000149011612`, mean power `0.004999998109751191`, and marker purity `0.9999991658455091`. Channel difference and post-fifteen-second peak were zero. The source page stayed idle on load. Its idle controls and layout were inspected in a browser screenshot. Both pages produced zero console errors or warnings and zero external requests. The browser exited, and its temporary profile was removed.
+
+The exact generated pages, hashes, screenshot, and aggregate browser verification remain in ignored `dist/controlled-sources`. Installed Safari playback, source ownership, route observation, common-clock analysis, and simultaneous reference streams remain unverified. No live capture, audible playback, permission reset, or app registration occurred during this preparation. This work creates no live allowance and does not clear the production gate.
+
 ## Interpret the result
 
 The original process-targeted native filter accepts exactly one ScreenCaptureKit application whose PID matches the verified Kaset WebKit process. It rechecks launch identity, running code, Core Audio identity, and mapped-cache ownership. Missing or duplicate matches stop acquisition. It never falls back to Kaset's main PID or a display-wide audio source.
