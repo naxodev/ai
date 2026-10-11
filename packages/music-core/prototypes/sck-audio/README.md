@@ -24,13 +24,13 @@ Run from the repository root:
 
    The four checks cover PCM extraction, shutdown ordering, permission/source policy, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. They construct no stream and query no shareable content.
 
-3. Run the ten offline regressions:
+3. Run the fifteen offline regressions:
 
    ```sh
-   bun test packages/music-core/prototypes/sck-audio/adapter.test.ts
+   bun test packages/music-core/prototypes/sck-audio/*.test.ts
    ```
 
-   These use fake process boundaries and real temporary Unix sockets. They verify initial denial, silence, revocation, generic failure, explicit Stop, and pipe/heartbeat races through the daemon and sidebar model. An isolated import check blocks live server startup and verifies imports cannot start a probe. They do not mount OpenCode or establish real macOS permission behavior.
+   These use fake process boundaries and real temporary Unix sockets. They verify initial denial, silence, revocation, generic failure, explicit Stop, and pipe/heartbeat races through the daemon and sidebar model. An isolated import check blocks live server startup and verifies imports cannot start a probe. Diagnostic checks reject unknown text and preserve a fixed native failure reason across a fast exit. They do not mount OpenCode or establish real macOS permission behavior.
 
 4. Check the prototype's own TypeScript project:
 
@@ -48,7 +48,24 @@ The isolated app uses bundle ID `dev.naxo.music.sck-matrix.20261011`. Its deny, 
 
 The probe stops after 15 seconds. The native helper begins shutdown one second before its own 15-second deadline and has an independent forced-exit backstop. The app terminates a stuck probe at 17 seconds and forces it down at 19 seconds. Forced termination is abnormal cleanup, never successful release evidence.
 
-The app has not been launched or registered. Its permission attribution remains unverified. Any approved reset must name only that bundle and the relevant AudioCapture or ScreenCapture service. Existing terminal and other-app grants remain outside the experiment.
+The app was registered and launched for the separately approved local matrix below. Any approved reset must name only that bundle and the relevant AudioCapture or ScreenCapture service. Existing terminal and other-app grants remain outside the experiment.
+
+The recorder now retains at most 64 fixed native diagnostic reasons and timestamps. Each helper inspects at most 4096 stderr bytes, accepts exact allowlisted status lines, and retains no arbitrary stderr. One shared diagnostic drain prevents an immediate exit from hiding the reason. After physical exit, diagnostic completion has a 50 ms cap and cannot change the exit code or consent classification. The signed helper and app remain unchanged.
+
+The 50 ms cap bounds the exit-result wait. The owning layer still joins reader cleanup. The fixed live pipe reader removes listeners synchronously; arbitrary test boundaries with blocking finalizers can delay scope closure. The held-cleanup regression verifies that this cleanup does not delay the exit result.
+
+## Local matrix, 2026-10-11 UTC
+
+Two of four approved probes have run. The app was copied into an ignored project `dist` directory because Launch Services could not resolve its bundle from `/private/tmp`. Bundle-only AudioCapture and ScreenCapture resets then succeeded.
+
+| Stage          | Duration | Frames | Ever active | Result                        |
+| -------------- | -------- | ------ | ----------- | ----------------------------- |
+| Initial denial | 2.715 s  | 0      | No          | Permission failure; denied.   |
+| Grant attempt  | 3.101 s  | 0      | No          | Setup failure; grant present. |
+
+Both requests were attributed to `dev.naxo.music.sck-matrix.20261011`. Narrow TCC logs provide diagnostic evidence only. Runtime permission classification still uses the public ScreenCaptureKit error and clean native exit 77.
+
+The grant failure's native cause remains unresolved. These two runs preceded the fixed diagnostic recorder. No further probe or revocation check has run. The local JSON summaries remain in ignored `dist/live-evidence`; they contain no audio or video. Production capture remains unavailable.
 
 For a later approved full TUI check, build the existing local plugin:
 
@@ -74,6 +91,6 @@ Only `SCStreamErrorDomain.userDeclined` becomes native exit 77, after clean tear
 
 The native cancellation path retains the Start completion, joins it, then joins Stop after any late success. An unresolved operation fails cleanup. A follow-up review verified those ordering and deadline corrections; real ScreenCaptureKit callback ordering remains untested.
 
-The [authorization report](../../../../docs/music-audio-authorization-research.md#decision-and-proposed-experiment) defines the live acceptance criteria. Minimum sufficient consent, WebKit enumeration, actual Kaset isolation, initial prompt denial, active revocation, full TUI behavior, and responsible-app attribution remain untested. If the exact process is absent, record that failure instead of broadening the filter.
+The [authorization report](../../../../docs/music-audio-authorization-research.md#decision-and-proposed-experiment) defines the live acceptance criteria. Initial denial and responsible-app attribution have local evidence above. Minimum sufficient consent, WebKit enumeration, measured Kaset capture, actual isolation, active revocation, and full TUI behavior remain open. If the exact process is absent, record that failure instead of broadening the filter.
 
 Primary API contracts: [application filter](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init%28display%3Aincluding%3Aexceptingwindows%3A%29), [stream-stop delegate](https://developer.apple.com/documentation/screencapturekit/scstreamdelegate/stream%28_%3Adidstopwitherror%3A%29), and [stream errors](https://developer.apple.com/documentation/screencapturekit/scstreamerror/code). The installed `SCStream.h`, `SCShareableContent.h`, and `CMSampleBuffer.h` supplied the compiled declarations.

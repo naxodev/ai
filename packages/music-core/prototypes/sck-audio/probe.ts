@@ -1,6 +1,7 @@
 /** Only the separately approved app harness runs this live entrypoint. */
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
+import { Effect, Layer } from "effect"
 import { createMusicSessionClient } from "../../session/client.ts"
 import { baselineCapabilities } from "../../session/protocol.ts"
 import { audioVisualizationCapabilities } from "../../audio/schema.ts"
@@ -10,6 +11,8 @@ import {
 } from "../../session/server.ts"
 import { createAudioVisualization } from "../../../opencode-music-player/audio-visualization.ts"
 import { sckPrototypeLayer } from "./adapter.ts"
+import { withProbeDiagnostics, type ProbeDiagnostic } from "./diagnostics.ts"
+import { liveNativeHelperDependencies } from "../../audio/helper-process.ts"
 
 export async function runProbe(stage: string) {
   if (!["deny", "allow", "revoke"].includes(stage))
@@ -18,11 +21,25 @@ export async function runProbe(stage: string) {
   await mkdir(directory, { recursive: true })
   const socketPath = "/tmp/sck-probe-" + process.pid + ".sock"
   const startedAt = new Date().toISOString()
+  const nativeDiagnostics: Array<ProbeDiagnostic & { at: string }> = []
   const server = await startMusicSessionServer(
     { socketPath },
     createFakeProvider(),
     {},
-    sckPrototypeLayer,
+    (id, observations) =>
+      Layer.unwrap(
+        withProbeDiagnostics(liveNativeHelperDependencies, (diagnostic) => {
+          if (nativeDiagnostics.length < 64)
+            nativeDiagnostics.push({
+              ...diagnostic,
+              at: new Date().toISOString(),
+            })
+        }).pipe(
+          Effect.map((boundary) =>
+            sckPrototypeLayer(id, observations, boundary),
+          ),
+        ),
+      ),
   )
   const model = createAudioVisualization({
     connect: () =>
@@ -96,6 +113,7 @@ export async function runProbe(stage: string) {
     peakRms,
     activeEver,
     messages,
+    nativeDiagnostics,
     failed,
   }
   await Bun.write(

@@ -31,6 +31,7 @@ import {
   sckHelperPath,
   sckPrototypeLayer,
 } from "./adapter.ts"
+import { withProbeDiagnostics, type ProbeDiagnostic } from "./diagnostics.ts"
 
 const source: ResolvedCaptureSource = {
   mode: "process",
@@ -200,6 +201,39 @@ test("confirmed initial denial cannot become readiness or a silent first frame",
   expect(child.verified).toEqual([
     { executable: sckHelperPath, identifier: sckHelperIdentifier },
   ])
+})
+
+test("the real adapter retains a fixed native failure reason without treating it as consent", async () => {
+  const child = fixture(1)
+  const recorded: ProbeDiagnostic[] = []
+  const boundary = withProbeDiagnostics(
+    {
+      ...child.boundary,
+      spawn: (request) => ({
+        ...child.boundary.spawn(request),
+        stderr: Stream.make(
+          Buffer.from(
+            '{"event":"music-audio-helper-stop","reason":"source-loss"}\n',
+          ),
+        ),
+      }),
+    },
+    (value) => recorded.push(value),
+  )
+  const outcome = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        return yield* makeSckAdapter(yield* boundary)
+          .start(source)
+          .pipe(Effect.exit)
+      }),
+    ),
+  )
+  expect(outcome._tag).toBe("Failure")
+  if (outcome._tag !== "Failure") throw new Error("source loss became ready")
+  const error = Cause.findError(outcome.cause)
+  expect(Result.isSuccess(error) && error.success.reason).toBe("setup")
+  expect(recorded).toEqual([{ command: "capture", reason: "source-loss" }])
 })
 
 test("a generic operating-system permission error cannot claim system-audio denial", async () => {
