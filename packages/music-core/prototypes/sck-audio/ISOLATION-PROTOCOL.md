@@ -2,7 +2,7 @@
 
 This draft separates a first signal-availability check from later controlled isolation checks. The [application-targeting contract](APPLICATION-TARGETING.md) governs identity, scope, permission classification, and cleanup. The [completed application discovery](README.md#application-discovery-result-2026-10-11-utc) found one eligible Kaset application. It created no stream, so paused playback did not invalidate that result.
 
-Only the first availability stage can proceed after its implementation passes review and receives specific live approval. The controlled stages remain blocked on the source, route, reference, and timing prerequisites below. This document grants no live approval and reports no capture result.
+The [first availability probe](README.md#application-capture-result-2026-10-11-utc) completed under separate approval and observed measured signal. The user confirmed Kaset playback. Its one-attempt allowance is used, and its test app was cleaned up. The controlled stages remain blocked on the source, route, reference, and timing prerequisites below. This document grants no further live approval and reports no controlled isolation result.
 
 ## Freeze the experiment before approval
 

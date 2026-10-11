@@ -278,18 +278,44 @@ bun packages/music-core/prototypes/sck-audio/check-application-capture-native.ts
 
 They cover profile and identity policy, discovery ordering, sample freshness and aggregation, exact filter membership, environment changes, late Start cleanup, cleanup precedence, synthetic interleaved/planar tone and silence, native denial, and rejected cross-mode commands. The complete forty-test prototype suite also checks the parent boundaries, one-shot claims, malformed summaries, cancellation, native exits 70/77, and import safety for the capture stage.
 
-No application-capture probe has run. The app has not been registered, opened, or granted permissions. One separately approved Kaset-only availability probe is the proposed live scope. It would require user-controlled Kaset playback and save only the bounded summary in ignored `dist/application-capture-evidence`. It would not exercise the later reference-capture campaign or clear the production gate.
+The app was registered and opened for the separately approved availability probe below. It was stopped and removed afterward, and its permission choices were reset. The probe used user-controlled Kaset playback and saved only the bounded summary in ignored `dist/application-capture-evidence`. It did not exercise the later reference-capture campaign or clear the production gate.
+
+## Application capture result, 2026-10-11 UTC
+
+One approved availability probe ran from 15:15:48.028 to 15:16:02.099 UTC, completing in 14.071 seconds. The user confirmed that Kaset was playing during the probe. That confirmation is context; no track identity or playback-state history was recorded.
+
+| Check                                                 | Result                                |
+| ----------------------------------------------------- | ------------------------------------- |
+| Matching pinned Kaset applications                    | 1                                     |
+| Profile, application, witness, and environment checks | Passed throughout                     |
+| Stream Start                                          | Completed                             |
+| Fresh measured frames                                 | 28                                    |
+| Frames at or above RMS `1e-4`                         | 28                                    |
+| Peak stereo-channel RMS                               | 0.2823674976825714                    |
+| Measured sample span                                  | 9,160 ms                              |
+| Stream Stop and output removal                        | Joined cleanly                        |
+| Availability                                          | `signal-observed` / `measured-energy` |
+| Native diagnostics                                    | None                                  |
+| Isolation established                                 | No                                    |
+
+The result meets the predeclared minimum of three measured frames, three signal frames, and 500 ms of sample span. It establishes measured signal availability in the verified Kaset application filter for this Mac, build, and configuration. It does not independently establish the signal's origin or exclude unrelated application audio. The controlled reference and isolation cases have not run.
+
+The native helper registered only audio output. It saved no PCM, feature arrays, screen samples, or microphone samples. The parent returned the checked summary after physical helper exit and clean process cleanup. This successful path does not establish initial-denial behavior, active revocation, minimum sufficient consent, other OS versions, or full daemon/sidebar integration for the application target.
+
+The approved test app used bundle ID `dev.naxo.music.sck-application-capture.20261011`. Cleanup verified the reviewed helper, profile, launcher, plist, runtime files, native sources, and signatures. It archived the exact helper and profile, stopped the app, reset only its AudioCapture and ScreenCapture choices, unregistered both generated app copies, and removed them. A Launch Services dump contained no matching bundle identifier. No app, probe, or helper remained running. No reset targeted Hex or Ghostty.
+
+The single approved capture is used. The result, user-reported playback context, preparation/cleanup ledger, metadata preflight, archived helper, and profile remain in ignored `dist/application-capture-evidence`. No further capture or reference stream is authorized. Controlled isolation evidence remains the next investigation stage, and production capture remains unavailable.
 
 ## Interpret the result
 
-The native filter accepts exactly one ScreenCaptureKit application whose PID matches the verified Kaset WebKit process. It rechecks launch identity, running code, Core Audio identity, and mapped-cache ownership. Missing or duplicate matches stop acquisition. It never falls back to Kaset's main PID or a display-wide audio source.
+The original process-targeted native filter accepts exactly one ScreenCaptureKit application whose PID matches the verified Kaset WebKit process. It rechecks launch identity, running code, Core Audio identity, and mapped-cache ownership. Missing or duplicate matches stop acquisition. It never falls back to Kaset's main PID or a display-wide audio source.
 
 The stream registers only an audio output and disables microphone capture. It still uses a display-bound application filter. No screen samples are delivered to this program; this does not prove that screen machinery or screen consent is absent.
 
 Only `SCStreamErrorDomain.userDeclined` becomes native exit 77, after clean teardown. The adapter preserves that cause across concurrent pipe failures. Generic OS permission errors and generic stream stops remain setup failures. Silence remains measured zero. Cleanup errors supersede permission errors with abnormal exit 70.
 
-The native cancellation path retains the Start completion, joins it, then joins Stop after any late success. An unresolved operation fails cleanup. A follow-up review verified those ordering and deadline corrections; real ScreenCaptureKit callback ordering remains untested.
+The native cancellation path retains the Start completion, joins it, then joins Stop after any late success. An unresolved operation fails cleanup. A follow-up review verified those ordering and deadline corrections. Exceptional cancellation and late-Start callback ordering remain untested live.
 
-The [authorization report](../../../../docs/music-audio-authorization-research.md#decision-and-proposed-experiment) defines the live acceptance criteria. Initial denial and responsible-app attribution have local evidence above. Minimum sufficient consent, WebKit enumeration, measured Kaset capture, actual isolation, active revocation, and full TUI behavior remain open. If the exact process is absent, record that failure instead of broadening the filter.
+The [authorization report](../../../../docs/music-audio-authorization-research.md#decision-and-proposed-experiment) defines the live acceptance criteria. Initial denial and responsible-app attribution have local evidence above. The exact-WebKit-process selector still lacks enumeration and capture evidence. Minimum sufficient consent, controlled audio-origin and isolation evidence, active revocation, and full TUI behavior remain open. If that exact process is absent, record that failure instead of broadening its filter.
 
 Primary API contracts: [application filter](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init%28display%3Aincluding%3Aexceptingwindows%3A%29), [stream-stop delegate](https://developer.apple.com/documentation/screencapturekit/scstreamdelegate/stream%28_%3Adidstopwitherror%3A%29), and [stream errors](https://developer.apple.com/documentation/screencapturekit/scstreamerror/code). The installed `SCStream.h`, `SCShareableContent.h`, and `CMSampleBuffer.h` supplied the compiled declarations.
