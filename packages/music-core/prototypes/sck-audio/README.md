@@ -161,7 +161,27 @@ The parent operation has an eight-second timeout and reuses the existing one-sec
 
 Results are written to `dist/source-discovery-evidence/discovery-result.json`. The stdout reader accepts at most 4096 bytes and projects only the schema's fixed fields. Diagnostics keep the existing byte and entry caps. Import checks block native work even if an entrypoint accidentally starts during import.
 
-The discovery app has not been registered or launched. No new screen permission request or protected discovery has run. Its offline checks do not establish a live result or clear the production gate.
+The discovery app was registered and launched for the separately approved check below. It was stopped and removed afterward, and its permission choices were reset. Its offline checks do not clear the production gate.
+
+## Discovery-only result, 2026-10-11 UTC
+
+One approved check ran from 04:25:00.283 to 04:25:02.433 UTC, completing in 2.150 seconds.
+
+| Check                                     | Result                            |
+| ----------------------------------------- | --------------------------------- |
+| Approved identity                         | Passed before and after discovery |
+| Local cache attribution                   | Passed before and after discovery |
+| Matching ScreenCaptureKit applications    | 0                                 |
+| Returned displays                         | 2                                 |
+| Filter, stream, or sample buffers created | None                              |
+
+The selected source identity remained valid at both checks, while the returned application list had no matching PID. This adds direct evidence of a discovery mismatch for a stable verified source in this configuration. The exact-PID capture selector cannot proceed with that result. It does not establish a universal ScreenCaptureKit limitation, explain how the framework groups WebKit audio, or prove that explicit application-scoped targeting would work.
+
+Narrow TCC diagnostics attributed the request to `dev.naxo.music.sck-discovery.20261011` and showed allowed ScreenCapture checks (`authValue=2`, `authReason=4`). Those logs remain diagnostic evidence. The native result came from the public discovery API and before-and-after source verification; no permission database or private TCC interface was used.
+
+The one protected query is used. Cleanup verified the reviewed artifact hashes and app signature, archived the helper, stopped the app, reset only its AudioCapture and ScreenCapture choices, unregistered both generated app copies, and removed them. A Launch Services dump contained no discovery bundle identifier. No app, probe, or helper remained running. No permission reset targeted Hex or Ghostty.
+
+The result, sanitized permission diagnostics, preparation/cleanup ledger, and archived helper remain in ignored `dist/source-discovery-evidence`. No PID, path, application catalog, window title, audio, or video was retained from discovery. Production capture remains unavailable, and no further protected query or capture is authorized.
 
 ## Interpret the result
 
