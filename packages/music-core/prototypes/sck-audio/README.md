@@ -22,9 +22,9 @@ Run from the repository root:
    bun packages/music-core/prototypes/sck-audio/check-native.ts
    ```
 
-   The five checks cover PCM extraction, shutdown ordering, permission policy, source guards, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. Source fixtures reject absent or duplicate PIDs, missing displays, and broadened or mismatched filters. They preserve the original failure reason and check that native checkpoint names match the recorder's allowlist. They construct no stream and query no shareable content.
+   The six checks cover PCM extraction, shutdown ordering, permission policy, source guards, discovery ordering, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. Source fixtures reject absent or duplicate PIDs, missing displays, and broadened or mismatched filters. They preserve the original failure reason and check that native checkpoint names match the recorder's allowlist. The discovery fixture rejects changed identity or ownership before consuming content and verifies that discovery dispatch cannot call capture. They construct no stream and query no shareable content.
 
-3. Run the nineteen offline regressions:
+3. Run the twenty-six offline regressions:
 
    ```sh
    bun test packages/music-core/prototypes/sck-audio/*.test.ts
@@ -123,11 +123,45 @@ The helper passed its identity and cache-ownership checks before discovery. Shar
 
 Narrow TCC diagnostics attributed the request to the source-trace app and showed allowed ScreenCapture checks (`authValue=2`, `authReason=4`). Those logs remain diagnostic evidence, not runtime authorization authority. No PIDs, application catalogs, window titles, audio, or video were retained from discovery.
 
-This identifies the failed guard in this run. It does not establish why the PID was absent, rule out process loss during discovery, or prove that ScreenCaptureKit can never expose Kaset WebKit audio. The checks after discovery currently run after application selection, so they did not run in this failure. Further investigation must establish source continuity across discovery before changing source selection. The exact-PID guard and production release gate remain unchanged.
+This identifies the failed guard in this run. It does not establish why the PID was absent, rule out process loss during discovery, or prove that ScreenCaptureKit can never expose Kaset WebKit audio. At that revision, the checks after discovery ran after application selection, so they did not run in this failure. The discovery-only preparation below moves those checks before content use. The exact-PID guard and production release gate remain unchanged.
 
 Cleanup verified the reviewed artifact hashes and app signature. It stopped the app, reset only the source-trace bundle's AudioCapture and ScreenCapture choices, and removed both generated app copies. The temporary-copy unregister command returned `-10814`; a subsequent Launch Services dump contained no source-trace bundle identifier. No app, probe, or helper remained running. No permission reset targeted Hex or Ghostty.
 
 The completed trace, sanitized permission diagnostics, preparation/cleanup ledger, and archived helper remain in ignored `dist/source-trace-evidence`. The approved daemon Start request is used; no further live attempt is authorized.
+
+## Prepare a discovery-only continuity check
+
+Build without registering, launching, requesting permission, or inspecting shareable content:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/build-harness.ts --source-discovery
+```
+
+This creates `dist/Kaset SCK Discovery Check.app`, with bundle ID `dev.naxo.music.sck-discovery.20261011`. Its **Request Screen Access** button requests only the app's screen permission. Its separate **discover** button runs `discovery-probe.ts`. Permission setup and protected discovery require separate approval. The previous trace approval is used.
+
+The runner reads the verified Core Audio catalog first. It accepts exactly one owned Kaset WebKit source, including a paused source. Missing or ambiguous metadata returns `source-unavailable` before claiming an attempt or querying ScreenCaptureKit. In that case, the app enables its discover button again. Open Kaset before retrying the metadata preflight; no playback is required.
+
+For an eligible source, the runner atomically claims `dist/source-discovery-evidence/attempt.json`, then launches the fixed helper with `--discover-sck-source`. The process boundary rejects every capture command. The native mode checks the approved identity and local cache attribution before discovery and again immediately after it. Only after both pairs of checks pass can returned content be used. The capture prototype now shares this ordering, so a missing application cannot skip the second verification.
+
+The discovery mode returns only this bounded summary:
+
+```json
+{
+  "event": "sck-source-discovery",
+  "identityChecks": "passed-before-and-after",
+  "attributionChecks": "passed-before-and-after",
+  "matchingApplications": 0,
+  "displayCount": 1
+}
+```
+
+The numbers above illustrate the format; they are not live results. This path creates no content filter, stream configuration, `SCStream`, output sink, or audio/video sample buffers. It requests no microphone access and has no global-audio fallback. It retains no PID, executable path, application catalog, or window title from discovery.
+
+The parent operation has an eight-second timeout and reuses the existing one-second SIGTERM and one-second SIGKILL waits. The native discovery command has its own ten-second hard deadline. The app terminates a stuck runner after ten seconds and kills it after twelve. Forced termination and failed cleanup cannot produce checked evidence. The parent preserves a confirmed native permission exit across pipe/heartbeat races; cleanup failure takes precedence.
+
+Results are written to `dist/source-discovery-evidence/discovery-result.json`. The stdout reader accepts at most 4096 bytes and projects only the schema's fixed fields. Diagnostics keep the existing byte and entry caps. Import checks block native work even if an entrypoint accidentally starts during import.
+
+The discovery app has not been registered or launched. No new screen permission request or protected discovery has run. Its offline checks do not establish a live result or clear the production gate.
 
 ## Interpret the result
 

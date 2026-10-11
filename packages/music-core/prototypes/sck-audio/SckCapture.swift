@@ -147,22 +147,50 @@ private func checkSckFilter(_ pid: Int32, applicationPids: [Int32], displayCount
     guard applicationPids.first == pid else { try sckSourceFailure(.filterApplicationPid, report: report) }
     guard displayCount == 1 else { try sckSourceFailure(.filterDisplayCount, report: report) }
 }
-private func captureSck(_ source: Source, lease: Lease, cleanup: Cleanup) throws {
-    try sckChecked(.beforeDiscoveryIdentity) { try source.verify() }
-    try sckChecked(.beforeDiscoveryOwnership) { try source.verifyAttribution() }
-    let content: SCShareableContent = try sckChecked(.discovery) {
-        try sckAwait(lease) { done in
-            SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { value, error in
-                if let error { done(.failure(error)) }
-                else if let value { done(.success(value)) }
-                else { done(.failure(HelperError(reason: "source-loss"))) }
-            }
+private func withSckDiscovery<Content, Result>(verifyIdentity: () throws -> Void,
+    verifyOwnership: () throws -> Void, discover: () throws -> Content,
+    report: (String) -> Void = diagnostic, use: (Content) throws -> Result) throws -> Result {
+    try sckChecked(.beforeDiscoveryIdentity, report: report, verifyIdentity)
+    try sckChecked(.beforeDiscoveryOwnership, report: report, verifyOwnership)
+    let content = try sckChecked(.discovery, report: report, discover)
+    try sckChecked(.afterDiscoveryIdentity, report: report, verifyIdentity)
+    try sckChecked(.afterDiscoveryOwnership, report: report, verifyOwnership)
+    return try use(content)
+}
+private enum SckRequestMode { case capture, discovery }
+private func performSckRequest(_ mode: SckRequestMode, discovery: () throws -> Void,
+                               capture: () throws -> Void) throws {
+    switch mode {
+    case .discovery: try discovery()
+    case .capture: try capture()
+    }
+}
+private func inspectSck(_ source: Source, lease: Lease) throws {
+    let summary = try withSckDiscovery(verifyIdentity: { try source.verify() },
+        verifyOwnership: { try source.verifyAttribution() }, discover: { try shareableSckContent(lease) }) { content in
+            ["event": "sck-source-discovery", "identityChecks": "passed-before-and-after",
+             "attributionChecks": "passed-before-and-after",
+             "matchingApplications": content.applications.filter { $0.processID == source.pid }.count,
+             "displayCount": content.displays.count] as [String: Any]
+        }
+    guard lease.state() == nil else { throw HelperError(reason: "prototype-deadline") }
+    FileHandle.standardOutput.write(try jsonLine(summary, limit: 4096))
+}
+private func shareableSckContent(_ lease: Lease) throws -> SCShareableContent {
+    try sckAwait(lease) { done in
+        SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { value, error in
+            if let error { done(.failure(error)) }
+            else if let value { done(.success(value)) }
+            else { done(.failure(HelperError(reason: "source-loss"))) }
         }
     }
-    let selected = try selectSckSource(source.pid, applications: content.applications,
-        processID: { $0.processID }, displays: content.displays)
-    try sckChecked(.afterDiscoveryIdentity) { try source.verify() }
-    try sckChecked(.afterDiscoveryOwnership) { try source.verifyAttribution() }
+}
+private func captureSck(_ source: Source, lease: Lease, cleanup: Cleanup) throws {
+    let selected = try withSckDiscovery(verifyIdentity: { try source.verify() },
+        verifyOwnership: { try source.verifyAttribution() }, discover: { try shareableSckContent(lease) }) { content in
+            try selectSckSource(source.pid, applications: content.applications,
+                processID: { $0.processID }, displays: content.displays)
+        }
     let filter = SCContentFilter(display: selected.display, including: [selected.application], exceptingWindows: [])
     try checkSckFilter(source.pid, applicationPids: filter.includedApplications.map { $0.processID },
         displayCount: filter.includedDisplays.count)
@@ -254,6 +282,47 @@ private func pcmFixture(_ silent: Bool, rate: Double = 48000, planar: Bool = fal
 }
 
 private func syntheticSck(_ scenario: String) throws {
+    if scenario == "discovery-flow" {
+        var identities = 0
+        var used = false
+        var reported = [String]()
+        do {
+            _ = try withSckDiscovery(verifyIdentity: {
+                identities += 1
+                if identities == 2 { throw HelperError(reason: "source-loss") }
+            }, verifyOwnership: {}, discover: { [Int32(7)] }, report: { reported.append($0) }) { applications in
+                used = true
+                return try selectSckSource(42, applications: applications, processID: { $0 }, displays: [1], report: { reported.append($0) })
+            }
+            throw HelperError(reason: "discovery-flow-fixture")
+        } catch {
+            guard identities == 2, !used, reported == [SckSourceCheckpoint.afterDiscoveryIdentity.rawValue],
+                  sckReason(error) == "source-loss" else { throw HelperError(reason: "discovery-flow-fixture") }
+        }
+        var phases = [String]()
+        let applications = try withSckDiscovery(verifyIdentity: { phases.append("identity") },
+            verifyOwnership: { phases.append("ownership") }, discover: { phases.append("discovery"); return [Int32(7)] },
+            report: { reported.append($0) }) { content in phases.append("use"); return content }
+        guard phases == ["identity", "ownership", "discovery", "identity", "ownership", "use"],
+              applications == [7] else { throw HelperError(reason: "discovery-flow-fixture") }
+        var ownershipChecks = 0
+        used = false; reported = []
+        do {
+            _ = try withSckDiscovery(verifyIdentity: {}, verifyOwnership: {
+                ownershipChecks += 1
+                if ownershipChecks == 2 { throw HelperError(reason: "source-loss") }
+            }, discover: { 1 }, report: { reported.append($0) }) { value in used = true; return value }
+            throw HelperError(reason: "discovery-flow-fixture")
+        } catch {
+            guard !used, reported == [SckSourceCheckpoint.afterDiscoveryOwnership.rawValue],
+                  sckReason(error) == "source-loss" else { throw HelperError(reason: "discovery-flow-fixture") }
+        }
+        var captureCalls = 0
+        var discoveryCalls = 0
+        try performSckRequest(.discovery, discovery: { discoveryCalls += 1 }, capture: { captureCalls += 1 })
+        guard discoveryCalls == 1, captureCalls == 0 else { throw HelperError(reason: "discovery-flow-fixture") }
+        return
+    }
     if scenario == "source-guards" {
         func expectFailure(_ expected: SckSourceCheckpoint, _ operation: ((String) -> Void) throws -> Void) throws {
             var reported = [String]()
@@ -380,11 +449,13 @@ private func syntheticSck(_ scenario: String) throws {
 
 private func sckMain() throws {
     guard timebaseStatus == KERN_SUCCESS, tickMs.isFinite, tickMs > 0 else { throw HelperError(reason: "clock") }
-    let args = Array(CommandLine.arguments.dropFirst())
+    var args = Array(CommandLine.arguments.dropFirst())
     if args == ["--list-kaset-sources"] { try listKasetSources(); return }
-    if args.count == 2, args.first == "--self-test", ["policy", "pcm", "shutdown", "source-guards", "denied", "revoked", "generic-stop", "silence", "stream"].contains(args[1]) {
+    if args.count == 2, args.first == "--self-test", ["policy", "pcm", "shutdown", "source-guards", "discovery-flow", "denied", "revoked", "generic-stop", "silence", "stream"].contains(args[1]) {
         try syntheticSck(args[1]); return
     }
+    let mode: SckRequestMode = args.first == "--discover-sck-source" ? .discovery : .capture
+    if mode == .discovery { args.removeFirst() }
     guard args.count == 12, args[0] == "--protocol", args[1] == "1",
           args[2] == "--process-id", let pid = Int32(args[3]), pid > 0,
           args[4] == "--launch-identity", !args[5].isEmpty, args[5].utf8.count <= 512,
@@ -392,7 +463,7 @@ private func sckMain() throws {
           args[8] == "--core-audio-object", let object = UInt32(args[9]), object > 0,
           args[10] == "--attribution", args[11] == "kaset-cache-v1" else { throw HelperError(reason: "arguments") }
     let lease = Lease(); lease.watch()
-    let deadline = nativeNow() + 15000
+    let deadline = nativeNow() + (mode == .discovery ? 10000 : 15000)
     Thread.detachNewThread {
         while nativeNow() < deadline - 1000 { Thread.sleep(forTimeInterval: 0.01) }
         lease.stop("prototype-deadline")
@@ -402,7 +473,9 @@ private func sckMain() throws {
     }
     let cleanup = Cleanup()
     do {
-        try captureSck(Source(pid: pid, object: object, launch: args[5], executable: args[7], kasetAttribution: true), lease: lease, cleanup: cleanup)
+        let source = Source(pid: pid, object: object, launch: args[5], executable: args[7], kasetAttribution: true)
+        try performSckRequest(mode, discovery: { try inspectSck(source, lease: lease) },
+            capture: { try captureSck(source, lease: lease, cleanup: cleanup) })
     } catch {
         if cleanup.failed { throw HelperError(reason: "cleanup-failed") }
         throw error

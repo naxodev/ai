@@ -3,24 +3,66 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { buildSckPrototype } from "./build.ts"
 import { sourceTrace } from "./source-trace.ts"
+import { sourceDiscovery } from "./source-discovery.ts"
 
 const directory = import.meta.dir
 const flags = process.argv.slice(2)
 if (
   flags.length > 1 ||
-  (flags.length === 1 && flags[0] !== sourceTrace.buildFlag)
+  (flags.length === 1 &&
+    flags[0] !== sourceTrace.buildFlag &&
+    flags[0] !== sourceDiscovery.buildFlag)
 )
-  throw new Error("Expected no flag or --source-trace")
+  throw new Error("Expected no flag, --source-trace, or --source-discovery")
 const traceOnly = flags[0] === sourceTrace.buildFlag
-const appName = traceOnly ? sourceTrace.appName : "Kaset SCK Permission Probe"
+const discoveryOnly = flags[0] === sourceDiscovery.buildFlag
+const oneShot = traceOnly || discoveryOnly
+const profile = discoveryOnly
+  ? {
+      appName: sourceDiscovery.appName,
+      identifier: sourceDiscovery.bundleIdentifier,
+      evidenceDirectory: sourceDiscovery.evidenceDirectory,
+      entrypoint: "discovery-probe.ts",
+      stages: [sourceDiscovery.stage],
+      sourceFile: "dist/DiscoveryLauncher.swift",
+      terminateAfter: 10,
+      killAfter: 12,
+      instructions:
+        "Request Screen Access first. Open Kaset, then run one approved discovery check. No audio or video capture.",
+      actionHint: "Open Kaset, then click discover. No audio or video capture.",
+    }
+  : traceOnly
+    ? {
+        appName: sourceTrace.appName,
+        identifier: sourceTrace.bundleIdentifier,
+        evidenceDirectory: "dist/source-trace-evidence",
+        entrypoint: "probe.ts",
+        stages: [sourceTrace.stage],
+        sourceFile: "dist/SourceTraceLauncher.swift",
+        terminateAfter: 17,
+        killAfter: 19,
+        instructions:
+          "Request Screen Access first. Play Kaset, then run one approved 15-second trace.",
+        actionHint: "Play Kaset, then click trace. Capture is off.",
+      }
+    : {
+        appName: "Kaset SCK Permission Probe",
+        identifier: "dev.naxo.music.sck-matrix.20261011",
+        evidenceDirectory: "dist/live-evidence",
+        entrypoint: "probe.ts",
+        stages: ["deny", "allow", "revoke"],
+        sourceFile: "dist/Launcher.swift",
+        terminateAfter: 17,
+        killAfter: 19,
+        instructions:
+          "Each approved probe lasts at most 15 seconds. A stage button starts capture.",
+        actionHint: "Capture is off.",
+      }
+const appName = profile.appName
 const contents = join(directory, "dist", appName + ".app", "Contents")
 const executable = join(contents, "MacOS/Launcher")
-const identifier = traceOnly
-  ? sourceTrace.bundleIdentifier
-  : "dev.naxo.music.sck-matrix.20261011"
-const evidenceDirectory = traceOnly
-  ? "dist/source-trace-evidence"
-  : "dist/live-evidence"
+const identifier = profile.identifier
+const evidenceDirectory = profile.evidenceDirectory
 await buildSckPrototype()
 await mkdir(join(contents, "MacOS"), { recursive: true })
 await writeFile(
@@ -29,7 +71,11 @@ await writeFile(
     identifier +
     "</string><key>CFBundleExecutable</key><string>Launcher</string><key>CFBundleName</key><string>" +
     appName +
-    "</string><key>CFBundlePackageType</key><string>APPL</string><key>NSAudioCaptureUsageDescription</key><string>Test bounded Kaset audio visualization after explicit approval.</string></dict></plist>",
+    "</string><key>CFBundlePackageType</key><string>APPL</string><key>NSAudioCaptureUsageDescription</key><string>" +
+    (discoveryOnly
+      ? "Inspect Kaset source metadata. This diagnostic creates no audio or video stream."
+      : "Test bounded Kaset audio visualization after explicit approval.") +
+    "</string></dict></plist>",
 )
 const source = [
   "import Cocoa",
@@ -41,14 +87,11 @@ const source = [
   "var used = false",
   "var traceButton: NSButton?",
   "let attemptPath = " +
-    JSON.stringify(join(directory, "dist/source-trace-evidence/attempt.json")),
-  "let oneShot = " + String(traceOnly),
+    JSON.stringify(join(directory, evidenceDirectory, "attempt.json")),
+  "let oneShot = " + String(oneShot),
+  "let allowPreflightRetry = " + String(discoveryOnly),
   "let label = NSTextField(labelWithString: " +
-    JSON.stringify(
-      traceOnly
-        ? "Request Screen Access first. Play Kaset, then run one approved 15-second trace."
-        : "Each approved probe lasts at most 15 seconds. A stage button starts capture.",
-    ) +
+    JSON.stringify(profile.instructions) +
     ")",
   "func applicationDidFinishLaunching(_ notification: Notification) {",
   "window = NSWindow(contentRect: NSRect(x:0,y:0,width:620,height:230),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)",
@@ -57,11 +100,9 @@ const source = [
   "label.maximumNumberOfLines = 3; label.preferredMaxLayoutWidth = 560; stack.addArrangedSubview(label)",
   'if oneShot { used = FileManager.default.fileExists(atPath: attemptPath); stack.addArrangedSubview(NSButton(title:"Request Screen Access",target:self,action:#selector(requestScreenAccess(_:)))) }',
   "for title in " +
-    JSON.stringify(
-      traceOnly ? [sourceTrace.stage] : ["deny", "allow", "revoke"],
-    ) +
+    JSON.stringify(profile.stages) +
     " { let button = NSButton(title:title,target:self,action:#selector(runStage(_:))); if oneShot { traceButton = button; button.isEnabled = !used && CGPreflightScreenCaptureAccess() }; stack.addArrangedSubview(button) }",
-  'if oneShot && used { label.stringValue = "This trace was already attempted. Capture is off." }',
+  'if oneShot && used { label.stringValue = "This check was already attempted. No operation is running." }',
   "stack.frame = NSRect(x:20,y:20,width:580,height:190)",
   "window.contentView!.addSubview(stack); window.center(); window.makeKeyAndOrderFront(nil)",
   "NSApp.activate(ignoringOtherApps:true)",
@@ -70,7 +111,9 @@ const source = [
   "guard oneShot, child == nil, !used else { return }",
   "let granted = CGRequestScreenCaptureAccess()",
   "traceButton?.isEnabled = granted",
-  'label.stringValue = granted ? "Screen access is available. Play Kaset, then click trace. Capture is off." : "Enable only this app in Screen & System Audio Recording, then quit and reopen. Capture is off."',
+  "label.stringValue = granted ? " +
+    JSON.stringify("Screen access is available. " + profile.actionHint) +
+    ' : "Enable only this app in Screen & System Audio Recording, then quit and reopen. No operation is running."',
   "}",
   "@objc func runStage(_ button: NSButton) {",
   "guard child == nil, !oneShot || !used else { return }",
@@ -80,7 +123,7 @@ const source = [
     JSON.stringify(process.execPath) +
     ")",
   "process.arguments = [" +
-    JSON.stringify(join(directory, "probe.ts")) +
+    JSON.stringify(join(directory, profile.entrypoint)) +
     ",button.title]",
   "process.currentDirectoryURL = URL(fileURLWithPath:" +
     JSON.stringify(join(directory, "../../../..")) +
@@ -88,12 +131,16 @@ const source = [
   "process.terminationHandler = { [weak self] ended in",
   'DispatchQueue.main.async { self?.label.stringValue = "Finished (exit \\(ended.terminationStatus)); summaries are in ' +
     evidenceDirectory +
-    '."; self?.child = nil }',
+    '."; self?.child = nil; if let self, self.allowPreflightRetry && !FileManager.default.fileExists(atPath:self.attemptPath) { self.used = false; self.traceButton?.isEnabled = CGPreflightScreenCaptureAccess(); self.label.stringValue = "No discovery query was requested. Open Kaset and try again." } }',
   "}",
   'do { try process.run(); child = process; if oneShot { used = true; button.isEnabled = false }; label.stringValue = "Running \\(button.title). Respond to the system prompt or adjust only this test app." }',
   'catch { label.stringValue = "Probe failed to launch."; return }',
-  "DispatchQueue.main.asyncAfter(deadline:.now()+17) { if process.isRunning { process.terminate() } }",
-  "DispatchQueue.main.asyncAfter(deadline:.now()+19) { if process.isRunning { kill(process.processIdentifier,SIGKILL) } }",
+  "DispatchQueue.main.asyncAfter(deadline:.now()+" +
+    profile.terminateAfter +
+    ") { if process.isRunning { process.terminate() } }",
+  "DispatchQueue.main.asyncAfter(deadline:.now()+" +
+    profile.killAfter +
+    ") { if process.isRunning { kill(process.processIdentifier,SIGKILL) } }",
   "}",
   "func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {",
   "if let child, child.isRunning { child.terminate() }",
@@ -103,10 +150,7 @@ const source = [
   "let app = NSApplication.shared",
   "let delegate = Harness(); app.delegate = delegate; app.setActivationPolicy(.regular); app.run()",
 ].join("\n")
-const sourcePath = join(
-  directory,
-  traceOnly ? "dist/SourceTraceLauncher.swift" : "dist/Launcher.swift",
-)
+const sourcePath = join(directory, profile.sourceFile)
 await writeFile(sourcePath, source)
 for (const args of [
   [

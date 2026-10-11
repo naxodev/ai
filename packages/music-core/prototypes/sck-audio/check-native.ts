@@ -7,6 +7,7 @@ for (const [scenario, expected] of [
   ["shutdown", 0],
   ["policy", 0],
   ["source-guards", 0],
+  ["discovery-flow", 0],
   ["denied", 77],
 ] as const) {
   const child = Bun.spawn([sckHelperPath, "--self-test", scenario], {

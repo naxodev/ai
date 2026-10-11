@@ -2,6 +2,7 @@
 import { Buffer } from "node:buffer"
 import { Effect, Fiber, Scope, Stream } from "effect"
 import type { NativeHelperDependencies } from "../../audio/helper-process.ts"
+import { sourceDiscovery } from "./source-discovery.ts"
 
 export const sckSourceCheckpoints = [
   "sck-before-discovery-identity",
@@ -46,7 +47,7 @@ const reasons = new Set([
 ])
 
 export type ProbeDiagnostic = {
-  command: "catalog" | "capture"
+  command: "catalog" | "capture" | "discovery"
   reason: string
 }
 
@@ -62,7 +63,11 @@ export const withProbeDiagnostics = Effect.fn("SckProbe.withDiagnostics")(
       spawn: (request) => {
         const child = boundary.spawn(request)
         const command =
-          request.args[0] === "--list-kaset-sources" ? "catalog" : "capture"
+          request.args[0] === "--list-kaset-sources"
+            ? "catalog"
+            : request.args[0] === sourceDiscovery.nativeFlag
+              ? "discovery"
+              : "capture"
         const line = Buffer.alloc(256)
         let length = 0
         let bytes = 0

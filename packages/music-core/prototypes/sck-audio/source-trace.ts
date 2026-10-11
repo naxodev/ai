@@ -10,10 +10,18 @@ export const sourceTrace = {
 
 /** Claim before creating the daemon. A restart cannot silently repeat a trace. */
 export async function claimSourceTrace(directory: string, startedAt: string) {
+  await claimDiagnosticAttempt(directory, sourceTrace.stage, startedAt)
+}
+
+export async function claimDiagnosticAttempt(
+  directory: string,
+  stage: "trace" | "discover",
+  startedAt: string,
+) {
   await mkdir(directory, { recursive: true })
   await writeFile(
     join(directory, "attempt.json"),
-    JSON.stringify({ stage: sourceTrace.stage, startedAt }) + "\n",
+    JSON.stringify({ stage, startedAt }) + "\n",
     { flag: "wx" },
   )
 }

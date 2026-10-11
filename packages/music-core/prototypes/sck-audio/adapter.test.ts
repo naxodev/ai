@@ -63,30 +63,32 @@ const source: ResolvedCaptureSource = {
 }
 
 test("importing a probe with a valid stage never starts a daemon or capture", async () => {
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      "--preload",
-      join(import.meta.dir, "import-safety-preload.ts"),
-      join(import.meta.dir, "import-safety-fixture.ts"),
-      "allow",
-    ],
-    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
-  )
-  const timer = setTimeout(() => child.kill("SIGKILL"), 3000)
-  try {
-    const [stdout, stderr, exit] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ])
-    expect({ exit, stderr, stdout }).toEqual({
-      exit: 0,
-      stderr: "",
-      stdout: "imported safely\n",
-    })
-  } finally {
-    clearTimeout(timer)
+  for (const stage of ["allow", "discover"]) {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "--preload",
+        join(import.meta.dir, "import-safety-preload.ts"),
+        join(import.meta.dir, "import-safety-fixture.ts"),
+        stage,
+      ],
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    )
+    const timer = setTimeout(() => child.kill("SIGKILL"), 3000)
+    try {
+      const [stdout, stderr, exit] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+      expect({ exit, stderr, stdout }).toEqual({
+        exit: 0,
+        stderr: "",
+        stdout: "imported safely\n",
+      })
+    } finally {
+      clearTimeout(timer)
+    }
   }
 })
 
