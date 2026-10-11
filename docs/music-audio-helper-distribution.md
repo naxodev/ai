@@ -40,7 +40,7 @@ Apple's [notarization guidance](https://developer.apple.com/documentation/securi
 
 ## Design consequences
 
-- The helper signature covers the code hash. Every rebuild produces a different ad-hoc signature. Whether macOS re-prompts for system-audio permission after an ad-hoc helper changes is **unverified**; the plan already lists this as an open question, and it needs a user-approved permission experiment.
+- An ad-hoc signature binds the helper's code hash. An update can change that hash; a rebuild alone does not prove it changed. The [isolated permission experiment](music-local-daemon-audio-evidence.md#isolated-permission-matrix-2026-10-10) records the helper hashes and responsible app separately. Permission persistence for a shipped layout remains unverified.
 - TCC attributed the failed local helper request to Hex, the responsible application, in the [shared-daemon live test](music-local-daemon-audio-evidence.md#permission-diagnosis). A manual grant to Hex preceded successful capture. A later Ghostty launch attributed the request to Ghostty and refused it without a prompt, because Ghostty has no audio-capture usage string. The helper still reported measured frames. Stable attribution for a shipped layout remains unverified.
 - Integrity verification is worth implementing regardless of route. The spike proves it detects modification.
 - A universal helper is feasible, but it costs two compiles and a mandatory re-sign. A thin per-architecture artifact is the cheaper alternative if size and build time matter more than one download for both architectures.
@@ -58,8 +58,10 @@ Apple's [notarization guidance](https://developer.apple.com/documentation/securi
 
 The helper proves mapped-file ownership with public `PROC_PIDREGIONPATHINFO` only. It does not call the private region flavor. A zero-sized record is not ownership; the walk continues and fails closed if the cursor cannot advance. Synthetic checks cover a zero-sized prefix, a foreign owner, and an incomplete scan. One metadata-only check on this Mac agreed with the private walk for six GPU processes and selected only Kaset. It did not capture audio, and it does not clear signing or the permission matrix.
 
-These remain unverified and must pass before any release: signed distribution, notarization, ticket handling, quarantined and offline launch, shipped-helper prompt attribution, permission persistence across updates and package paths, the deny/grant/revoke matrix, supported helper-process attribution, additional players, device changes, and sustained performance.
+The [isolated permission matrix](music-local-daemon-audio-evidence.md#isolated-permission-matrix-2026-10-10) verifies stored denial, grant, and revocation after app restart on this Mac. A changed ad-hoc helper retained the grant without another prompt under the same responsible app. Denial and revocation still produced zero-valued feature frames, so the requirement to stop feature delivery failed. Daemon `active` behavior under denial and declining the initial prompt remain untested. Feature values alone cannot establish authorization.
+
+These gates remain open before any release: signed distribution, notarization, ticket handling, quarantined and offline launch, shipped-helper prompt attribution, permission persistence across app updates and package paths, production-layout deny/grant/revoke handling, supported helper-process attribution, additional players, device changes, and sustained performance.
 
 ## Recommended next step
 
-Continue local-only work behind the daemon capture adapter, and keep production capture unavailable. Ad-hoc signing is sufficient for that work. The ownership walk is now the public region API. One metadata-only Kaset check passed on this Mac; signing and the permission matrix remain open. A Developer ID certificate alone does not clear the remaining gates.
+Keep production capture unavailable. Establish an authorization signal independent of feature values, then verify denied and revoked behavior through the daemon and sidebar. The isolated helper matrix does not clear that gate. A Developer ID certificate alone does not clear the remaining gates.
