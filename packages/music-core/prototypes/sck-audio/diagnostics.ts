@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer"
 import { Effect, Fiber, Scope, Stream } from "effect"
 import type { NativeHelperDependencies } from "../../audio/helper-process.ts"
 import { sourceDiscovery } from "./source-discovery.ts"
+import { applicationDiscovery } from "./application-discovery.ts"
 
 export const sckSourceCheckpoints = [
   "sck-before-discovery-identity",
@@ -24,6 +25,16 @@ export const sckSourceCheckpoints = [
 
 const reasons = new Set([
   ...sckSourceCheckpoints,
+  "application-profile",
+  "application-signature",
+  "application-before-identity",
+  "application-before-witness",
+  "application-discovery",
+  "application-after-identity",
+  "application-after-witness",
+  "application-match-count",
+  "application-match-pid",
+  "application-display",
   "permission",
   "source-loss",
   "source-bound",
@@ -63,9 +74,11 @@ export const withProbeDiagnostics = Effect.fn("SckProbe.withDiagnostics")(
       spawn: (request) => {
         const child = boundary.spawn(request)
         const command =
-          request.args[0] === "--list-kaset-sources"
+          request.args[0] === "--list-kaset-sources" ||
+          request.args[0] === applicationDiscovery.preflightFlag
             ? "catalog"
-            : request.args[0] === sourceDiscovery.nativeFlag
+            : request.args[0] === sourceDiscovery.nativeFlag ||
+                request.args[0] === applicationDiscovery.nativeFlag
               ? "discovery"
               : "capture"
         const line = Buffer.alloc(256)

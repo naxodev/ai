@@ -11,3 +11,8 @@ await mock.module("./discovery-check.ts", () => ({
     throw new Error("Import attempted protected discovery")
   },
 }))
+await mock.module("./application-check.ts", () => ({
+  inspectApplicationDiscovery: () => {
+    throw new Error("Import attempted protected application discovery")
+  },
+}))

@@ -1,6 +1,6 @@
 # Why Kaset application targeting needs a separate contract
 
-Explicit Kaset application targeting is a proposed experiment. It is not implemented, and it does not clear the production gate.
+The [discovery-only Kaset application path](README.md#prepare-application-discovery-without-a-stream) is implemented as an isolated prototype. It has not run protected discovery. Application capture remains a proposed experiment, and the production gate stays closed.
 
 The [completed discovery check](README.md#discovery-only-result-2026-10-11-utc) found no ScreenCaptureKit application for a verified Kaset WebKit PID. Identity and cache attribution passed before and after discovery. Replacing that PID inside the current process source would change the approved scope.
 
@@ -34,7 +34,7 @@ The following fields define the proposed internal application proof. They are de
 
 Public Security APIs must validate the running code against the reviewed policy. Reading signing fields alone does not validate them. Verify the on-disk bundle separately, and bind its executable to the running-code identity. Missing fields, failed validation, or inconsistent metadata make the candidate unavailable.
 
-Read-only inspection of `/Applications/Kaset.app` found the expected signing identifier and a development signature. Strict bundle verification passed outside the command sandbox. The sandbox check returned `CSSMERR_TP_NOT_TRUSTED`; that result must remain a failure in that environment. No trust setting or signature was changed. Running-code verification for this proposed application target remains untested.
+Read-only inspection of `/Applications/Kaset.app` found the expected signing identifier and a development signature. Strict bundle verification passed outside the command sandbox. The sandbox check returned `CSSMERR_TP_NOT_TRUSTED`; that result must remain a failure in that environment. No trust setting or signature was changed. A metadata-only preflight also verified the running application and WebKit witness. A process guard refused protected discovery, and no attempt was claimed.
 
 Offline preparation must freeze the reviewed bundle location, signing requirement, Team Identifier, and CDHash in a bounded local profile. Compile that profile's digest into the dedicated signed helper. The helper must reject a changed profile. It must accept no command-line override for these fields. A Kaset update requires a new reviewed profile and invalidates the prepared experiment.
 
@@ -48,7 +48,7 @@ The proposed application mode stays inside this prototype directory. It does not
 
 An application runner owns an internal proof containing `scope: "kaset-application"`, the application identity, and the WebKit witness. Only native verification can construct that proof. A client label, source token, successful metadata read, or permission preflight grants no capture authority.
 
-The first implementation should expose only a fixed discovery command, `--discover-kaset-application`. That name is reserved by this design; the current helper does not accept it. Its process boundary must reject capture flags. It creates no filter, configuration, stream, sink, or sample buffers.
+The separate application helper exposes the fixed discovery command `--discover-kaset-application`, with fixed metadata and synthetic-test commands. Its process boundary rejects capture flags. It creates no filter, configuration, stream, sink, or sample buffers.
 
 The runner uses a new isolated app identity and evidence directory. Build-only preparation must not register or launch the app. The app needs a separate permission button and a one-shot discovery button. Granting permission starts no discovery. An atomic attempt marker precedes the protected query and survives app restarts.
 
@@ -96,9 +96,9 @@ No case has run for application targeting. Even a passing local protocol would e
 
 ## Implementation order and review gates
 
-The first change should implement the fixed application profile, native identity verifier, and fake-boundary selector tests. It can run offline. The tests must reject duplicate applications, spoofed bundle metadata, wrong signing policy, changed executable code, PID reuse, and missing or ambiguous witnesses.
+The fixed application profile, native identity verifier, and fake-boundary selector tests are implemented. The tests reject duplicate applications, spoofed bundle metadata, wrong signing policy, changed executable code, PID reuse, and missing or ambiguous witnesses. Profile preparation validates the installed bundle on disk. The metadata-only preflight verified the local running app against that policy. Protected discovery and application audio grouping remain untested.
 
-The second change should add the discovery-only runner and isolated build profile. Offline tests must prove that changes before or after discovery prevent content use. They must also reject cross-mode commands and changed profiles, preserve cancellation and cleanup precedence, and prevent imports or permission setup from starting native work. No protected discovery belongs in a test.
+The discovery-only runner and isolated build profile are also implemented. Offline tests check that changes before or after discovery prevent content use. They reject cross-mode commands and changed profiles, preserve cancellation and cleanup precedence, and prevent imports from starting native work. A launcher fixture verifies that granted or declined permission setup never launches a child. No protected discovery belongs in a test. Real permission setup and framework callback behavior remain live acceptance work.
 
 After both changes pass review, a separately approved application-discovery check can establish whether the main Kaset application is available. Failure ends that investigation stage without a capture retry or another selection strategy.
 

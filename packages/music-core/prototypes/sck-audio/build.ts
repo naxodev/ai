@@ -5,12 +5,12 @@ import { sckHelperIdentifier, sckHelperPath } from "./adapter.ts"
 
 const directory = import.meta.dir
 const output = join(directory, "dist")
-const compiler =
+export const compiler =
   "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
-const sdk =
+export const sdk =
   "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
 
-async function command(args: string[]) {
+export async function command(args: string[]) {
   const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" })
   const timer = setTimeout(() => child.kill("SIGKILL"), 120_000)
   try {
@@ -21,6 +21,7 @@ async function command(args: string[]) {
     ])
     if (exit !== 0)
       throw new Error(`${args[0]} exited ${exit}: ${stderr || stdout}`)
+    return stdout
   } finally {
     clearTimeout(timer)
   }

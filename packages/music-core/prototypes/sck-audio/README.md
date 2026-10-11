@@ -24,7 +24,7 @@ Run from the repository root:
 
    The six checks cover PCM extraction, shutdown ordering, permission policy, source guards, discovery ordering, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. Source fixtures reject absent or duplicate PIDs, missing displays, and broadened or mismatched filters. They preserve the original failure reason and check that native checkpoint names match the recorder's allowlist. The discovery fixture rejects changed identity or ownership before consuming content and verifies that discovery dispatch cannot call capture. They construct no stream and query no shareable content.
 
-3. Run the twenty-six offline regressions:
+3. Run the thirty-three offline regressions:
 
    ```sh
    bun test packages/music-core/prototypes/sck-audio/*.test.ts
@@ -183,7 +183,39 @@ The one protected query is used. Cleanup verified the reviewed artifact hashes a
 
 The result, sanitized permission diagnostics, preparation/cleanup ledger, and archived helper remain in ignored `dist/source-discovery-evidence`. No PID, path, application catalog, window title, audio, or video was retained from discovery. Production capture remains unavailable, and no further protected query or capture is authorized.
 
-The [application-targeting design](APPLICATION-TARGETING.md) defines a separate Kaset application scope and its identity, discovery, and isolation requirements. It is not implemented. The current selector below still requires an exact WebKit process match.
+The [application-targeting contract](APPLICATION-TARGETING.md) defines a separate Kaset application scope and its identity, discovery, and isolation requirements. Its discovery-only path is prepared below. The current capture selector still requires an exact WebKit process match.
+
+## Prepare application discovery without a stream
+
+Build the separate helper and unregistered diagnostic app:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/build-harness.ts --application-discovery
+```
+
+The build validates `/Applications/Kaset.app` through public Security APIs and freezes its signed identifier, Team Identifier, designated requirement, architecture-specific CDHash, and canonical paths. The bounded profile stays in ignored `dist/kaset-application-profile.json`. The helper compiles its exact-byte SHA-256 digest and accepts no profile or signing override. Sandbox trust-service failures stop preparation; they do not relax validation. An attempted discovery prevents this builder from overwriting its reviewed artifacts.
+
+This creates `dist/sck-application-helper` and `dist/Kaset SCK Application Discovery.app`, with responsible bundle ID `dev.naxo.music.sck-application-discovery.20261011`. The helper has a separate signing identifier and contains no sample ring, analyzer, tap, aggregate-device creation, or stream construction. It accepts only fixed metadata, discovery, and synthetic-test commands. The preparation executable is removed after building. The old capture helper remains separate.
+
+Run the new native checks without live metadata or protected discovery:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/check-application-native.ts
+```
+
+Its five checks use fake identities, content, consent, and child-launch boundaries. They reject signing mismatches, spoofed metadata, replacement code, PID reuse, duplicate or missing candidates, changed or oversized profiles, missing displays, and mismatched ScreenCaptureKit application PIDs. They check verification order before content use and reject capture and preparation flags in the final helper. The launcher fixture proves that permission setup cannot launch a child, including after a grant.
+
+The parent first reads the verified WebKit catalog, including paused sources when checking ambiguity. It requires exactly one witness. A metadata-only preflight then verifies exactly one running Kaset app against the frozen profile. The app identity stays in memory. Missing or invalid metadata returns unavailable before claiming a protected attempt.
+
+A local metadata-only preflight passed for the reviewed application and single WebKit witness. Its extra process guard accepted only catalog and identity commands. The caller deliberately refused the operation before the protected-query claim. It saved fixed eligibility and command-count evidence in ignored `dist/application-discovery-evidence/metadata-preflight.json`; it started no protected query and retained no process identity.
+
+After an atomic claim, the native discovery command rechecks the approved app identity, profile, and single WebKit witness before and after public shareable-content discovery. It accepts exactly one returned Kaset application with the approved PID and at least one display. A zero WebKit PID match remains a valid diagnostic count. No filter, configuration, stream, sink, or sample buffers are created.
+
+The result records only fixed statuses and bounded counts for application matches, witness PID matches, and displays. Explicit projection strips unknown native fields. The shared parent supervisor retains the eight-second operation timeout, bounded physical-exit cleanup, cancellation behavior, and confirmed-permission classification. Cleanup failure supersedes other outcomes. The app has ten-second termination and twelve-second forced-termination backstops.
+
+Run all prototype regressions and its own typecheck using the commands at the start of this guide. The application tests use fake process boundaries. They prove that invalid preflights cannot claim an attempt, invalid results cannot establish eligibility, transient identities are excluded from saved evidence, and cancellation joins physical exit. Import checks also block application discovery from starting during import.
+
+The app has not been registered or launched. No permission request, protected application discovery, or application capture has run. A live discovery check needs separate approval. The existing [live test guide](../../../../docs/music-local-daemon-audio.md#before-you-start) governs registration, permission changes, and scoped cleanup. The [application contract](APPLICATION-TARGETING.md#isolation-evidence-required-before-a-backend-decision) still requires later capture and controlled isolation evidence. Production capture remains unavailable.
 
 ## Interpret the result
 
