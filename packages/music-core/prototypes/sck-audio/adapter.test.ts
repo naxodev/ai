@@ -1,0 +1,327 @@
+import { expect, test } from "bun:test"
+import { Buffer } from "node:buffer"
+import { join } from "node:path"
+import { Cause, Deferred, Effect, Queue, Result, Stream } from "effect"
+import { testUnixSession } from "../../tests/unix-session.ts"
+import { localMonotonicMs } from "../../audio/clock.ts"
+import {
+  helperError,
+  type NativeHelperDependencies,
+  type NativeHelperExit,
+  type NativeHelperProcess,
+} from "../../audio/helper-process.ts"
+import { createMusicSessionClient } from "../../session/client.ts"
+import {
+  createFakeProvider,
+  startMusicSessionServer,
+} from "../../session/server.ts"
+import { baselineCapabilities } from "../../session/protocol.ts"
+import {
+  audioVisualizationCapabilities,
+  type ResolvedCaptureSource,
+} from "../../audio/schema.ts"
+import {
+  createAudioVisualization,
+  type AudioViewState,
+} from "../../../opencode-music-player/audio-visualization.ts"
+import {
+  permissionAwareProcess,
+  makeSckAdapter,
+  sckHelperIdentifier,
+  sckHelperPath,
+  sckPrototypeLayer,
+} from "./adapter.ts"
+
+const source: ResolvedCaptureSource = {
+  mode: "process",
+  label: "Synthetic Kaset",
+  observationSequence: 0,
+  attribution: "kaset-cache-v1",
+  identity: {
+    kind: "native",
+    processIdentifier: 42,
+    launchIdentity: "100:0",
+    executableIdentity: "/fixture|abcdef12",
+    coreAudioObject: "99",
+  },
+  capabilities: {
+    spectrum: "measured",
+    envelope: "measured",
+    channels: "stereo",
+  },
+}
+
+test("importing a probe with a valid stage never starts a daemon or capture", async () => {
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "--preload",
+      join(import.meta.dir, "import-safety-preload.ts"),
+      join(import.meta.dir, "import-safety-fixture.ts"),
+      "allow",
+    ],
+    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+  )
+  const timer = setTimeout(() => child.kill("SIGKILL"), 3000)
+  try {
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ])
+    expect({ exit, stderr, stdout }).toEqual({
+      exit: 0,
+      stderr: "",
+      stdout: "imported safely\n",
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+function fixture(initialCode?: number, fault?: "stdout" | "heartbeat") {
+  const input = Effect.runSync(Queue.bounded<Uint8Array, Cause.Done>(8))
+  const exit = Deferred.makeUnsafe<NativeHelperExit>()
+  const spawned = Deferred.makeUnsafe<void>()
+  const events: string[] = []
+  const finish = (code: number) => {
+    Deferred.doneUnsafe(exit, Effect.succeed({ code, signal: null }))
+    Queue.endUnsafe(input)
+  }
+  const process: NativeHelperProcess = {
+    ready: Effect.void,
+    stdout:
+      fault === "stdout"
+        ? Stream.fail(helperError())
+        : fault === "heartbeat"
+          ? Stream.never
+          : Stream.fromQueue(input),
+    stderr: Stream.never,
+    exit: Deferred.await(exit),
+    heartbeat: fault === "heartbeat" ? Effect.fail(helperError()) : Effect.void,
+    stopIO: () => {
+      events.push("stop-io")
+      Queue.endUnsafe(input)
+    },
+    signal: (signal) => {
+      events.push(signal)
+      finish(0)
+    },
+  }
+  const verified: { executable: string; identifier: string }[] = []
+  let starts = 0
+  const boundary: NativeHelperDependencies = {
+    artifactPresent: () => true,
+    verify: (executable, identifier) =>
+      Effect.sync(() => {
+        verified.push({ executable, identifier })
+        return true
+      }),
+    spawn: (request) => {
+      expect(request.executable).toBe(sckHelperPath)
+      expect(request.shell).toBe(false)
+      if (request.args[0] === "--list-kaset-sources")
+        return {
+          ...process,
+          stdout: Stream.make(
+            Buffer.from(
+              `${JSON.stringify({ sources: [{ identity: source.identity, runningOutput: true }] })}\n`,
+            ),
+          ),
+          stderr: Stream.empty,
+          exit: Effect.succeed({ code: 0, signal: null }),
+          stopIO: () => {},
+          signal: () => {},
+        }
+      starts++
+      Deferred.doneUnsafe(spawned, Effect.void)
+      if (initialCode !== undefined) finish(initialCode)
+      return process
+    },
+  }
+  const frame = (value = 0) => {
+    expect(
+      Queue.offerUnsafe(
+        input,
+        Buffer.from(
+          `${JSON.stringify({
+            timestampMs: localMonotonicMs() - 40,
+            sampleAgeMs: 40,
+            clockDomain: "capture-monotonic",
+            spectrum: [value],
+            envelope: [{ min: -value, max: value }],
+            channels: { layout: "stereo", rms: [value, 0], peaks: [value, 0] },
+          })}\n`,
+        ),
+      ),
+    ).toBe(true)
+  }
+  return {
+    process,
+    boundary,
+    finish,
+    frame,
+    events,
+    verified,
+    spawned,
+    starts: () => starts,
+  }
+}
+
+test("only the prototype's reserved clean permission exit changes the existing adapter error", async () => {
+  for (const code of [1, 70, 77, 124, 125]) {
+    const child = fixture()
+    child.finish(code)
+    const wrapped = permissionAwareProcess(child.process)
+    const outcome = await Effect.runPromise(
+      wrapped.stdout.pipe(Stream.runDrain, Effect.exit),
+    )
+    const exited = await Effect.runPromise(wrapped.exit)
+    expect(exited.code).toBe(code === 77 ? 0 : code)
+    expect(outcome._tag).toBe(code === 77 ? "Failure" : "Success")
+  }
+})
+
+test("confirmed initial denial cannot become readiness or a silent first frame", async () => {
+  const child = fixture(77)
+  const outcome = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const adapter = makeSckAdapter(child.boundary)
+        return yield* adapter.start(source).pipe(Effect.exit)
+      }),
+    ),
+  )
+  expect(outcome._tag).toBe("Failure")
+  if (outcome._tag !== "Failure") throw new Error("denial became ready")
+  const error = Cause.findError(outcome.cause)
+  expect(Result.isSuccess(error) && error.success.reason).toBe("permission")
+  expect(child.events).toEqual(["stop-io", "SIGTERM"])
+  expect(child.verified).toEqual([
+    { executable: sckHelperPath, identifier: sckHelperIdentifier },
+  ])
+})
+
+test("a generic operating-system permission error cannot claim system-audio denial", async () => {
+  const child = fixture(1)
+  const adapter = makeSckAdapter({
+    ...child.boundary,
+    spawn: (request) => ({
+      ...child.boundary.spawn(request),
+      ready: Effect.fail(helperError("permission")),
+    }),
+  })
+  const outcome = await Effect.runPromise(
+    Effect.scoped(adapter.start(source).pipe(Effect.exit)),
+  )
+  if (outcome._tag !== "Failure")
+    throw new Error("failed OS operation became ready")
+  const error = Cause.findError(outcome.cause)
+  expect(Result.isSuccess(error) && error.success.reason).toBe("setup")
+})
+
+for (const fault of ["stdout", "heartbeat"] as const) {
+  test(`confirmed denial remains permission when ${fault} fails during shutdown`, async () => {
+    const child = fixture(77, fault)
+    const outcome = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const adapter = makeSckAdapter(child.boundary)
+          return yield* adapter.start(source).pipe(Effect.exit)
+        }),
+      ),
+    )
+    if (outcome._tag !== "Failure") throw new Error("denial became ready")
+    const error = Cause.findError(outcome.cause)
+    expect(Result.isSuccess(error) && error.success.reason).toBe("permission")
+    expect(child.events).toEqual(["stop-io", "SIGTERM"])
+  })
+}
+
+const waitFor = (
+  model: ReturnType<typeof createAudioVisualization>,
+  predicate: (state: AudioViewState) => boolean,
+) => {
+  if (predicate(model.current())) return Promise.resolve()
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsubscribe()
+      reject(new Error(`view did not reach state: ${model.current().message}`))
+    }, 3000)
+    const unsubscribe = model.subscribe((state) => {
+      if (predicate(state)) {
+        clearTimeout(timer)
+        unsubscribe()
+        resolve()
+      }
+    })
+  })
+}
+
+for (const scenario of [
+  "denied",
+  "revoked",
+  "generic-stop",
+  "explicit-stop",
+] as const) {
+  const initialDenial = scenario === "denied"
+  testUnixSession(
+    initialDenial
+      ? "real daemon and sidebar model show initial permission denial without active status"
+      : `real daemon keeps measured silence active then clears the sidebar on ${scenario}`,
+    async () => {
+      const child = fixture(initialDenial ? 77 : undefined)
+      const socketPath = `/tmp/sck-fixture-${process.pid}-${crypto.randomUUID()}.sock`
+      const server = await startMusicSessionServer(
+        { socketPath },
+        createFakeProvider(),
+        {},
+        (id, observations) =>
+          sckPrototypeLayer(id, observations, child.boundary),
+      )
+      const model = createAudioVisualization({
+        connect: () =>
+          createMusicSessionClient({
+            socketPath,
+            clientId: "sck-sidebar",
+            hostKind: "test",
+            capabilities: [
+              ...baselineCapabilities,
+              ...audioVisualizationCapabilities,
+            ],
+          }),
+        confirm: async () => true,
+      })
+      try {
+        await model.chooseSource(async (list) => list.sources[0])
+        expect(model.current().selected).not.toBeNull()
+        expect(child.starts()).toBe(0)
+        const started = model.start()
+        await Effect.runPromise(Deferred.await(child.spawned))
+        if (!initialDenial) child.frame(0)
+        await started
+        if (!initialDenial) {
+          await waitFor(model, (state) => state.active && state.frame !== null)
+          expect(model.current().frame?.spectrum).toEqual([0])
+          if (scenario === "explicit-stop") await model.stop()
+          else child.finish(scenario === "generic-stop" ? 1 : 77)
+        }
+        await waitFor(
+          model,
+          (state) =>
+            !state.active &&
+            state.frame === null &&
+            (scenario === "explicit-stop" ||
+              state.message.includes(
+                scenario === "generic-stop" ? "setup" : "permission",
+              )),
+        )
+        expect(child.starts()).toBe(1)
+        expect(child.events).toEqual(["stop-io", "SIGTERM"])
+      } finally {
+        await model.dispose()
+        await server.close()
+      }
+    },
+  )
+}
