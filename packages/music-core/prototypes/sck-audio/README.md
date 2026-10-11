@@ -183,6 +183,8 @@ The one protected query is used. Cleanup verified the reviewed artifact hashes a
 
 The result, sanitized permission diagnostics, preparation/cleanup ledger, and archived helper remain in ignored `dist/source-discovery-evidence`. No PID, path, application catalog, window title, audio, or video was retained from discovery. Production capture remains unavailable, and no further protected query or capture is authorized.
 
+The [application-targeting design](APPLICATION-TARGETING.md) defines a separate Kaset application scope and its identity, discovery, and isolation requirements. It is not implemented. The current selector below still requires an exact WebKit process match.
+
 ## Interpret the result
 
 The native filter accepts exactly one ScreenCaptureKit application whose PID matches the verified Kaset WebKit process. It rechecks launch identity, running code, Core Audio identity, and mapped-cache ownership. Missing or duplicate matches stop acquisition. It never falls back to Kaset's main PID or a display-wide audio source.
