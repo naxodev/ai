@@ -215,7 +215,30 @@ The result records only fixed statuses and bounded counts for application matche
 
 Run all prototype regressions and its own typecheck using the commands at the start of this guide. The application tests use fake process boundaries. They prove that invalid preflights cannot claim an attempt, invalid results cannot establish eligibility, transient identities are excluded from saved evidence, and cancellation joins physical exit. Import checks also block application discovery from starting during import.
 
-The app has not been registered or launched. No permission request, protected application discovery, or application capture has run. A live discovery check needs separate approval. The existing [live test guide](../../../../docs/music-local-daemon-audio.md#before-you-start) governs registration, permission changes, and scoped cleanup. The [application contract](APPLICATION-TARGETING.md#isolation-evidence-required-before-a-backend-decision) still requires later capture and controlled isolation evidence. Production capture remains unavailable.
+The app was registered and launched for the separately approved discovery check below. It was stopped and removed afterward, and its permission choices were reset. The existing [live test guide](../../../../docs/music-local-daemon-audio.md#before-you-start) governs registration, permission changes, and scoped cleanup. The [application contract](APPLICATION-TARGETING.md#isolation-evidence-required-before-a-backend-decision) still requires later capture and controlled isolation evidence. Production capture remains unavailable.
+
+## Application discovery result, 2026-10-11 UTC
+
+One approved check ran from 13:55:30.718 to 13:55:33.107 UTC, completing in 2.389 seconds.
+
+| Check                                                | Result                            |
+| ---------------------------------------------------- | --------------------------------- |
+| Pinned Kaset application identity and profile        | Passed before and after discovery |
+| Single WebKit witness identity and cache attribution | Passed before and after discovery |
+| Matching Kaset applications                          | 1                                 |
+| Matching WebKit witness PIDs                         | 0                                 |
+| Returned displays                                    | 2                                 |
+| Filter, stream, or sample buffers created            | None                              |
+
+The returned application matched the approved Kaset PID and fixed bundle identifier. The separate WebKit witness remained verified at both checks, but its PID had no application match. This establishes eligibility for an explicit application target on this Mac and configuration. It does not establish how ScreenCaptureKit groups WebKit audio, whether Kaset audio would be delivered, or whether unrelated audio would be excluded.
+
+The approved test app used bundle ID `dev.naxo.music.sck-application-discovery.20261011`. The user completed its screen-permission setup. The native result used public shareable-content discovery, the frozen application profile, and source verification. No TCC database or private permission interface was used. The check does not establish the minimum sufficient consent for a later audio stream.
+
+The protected query is used; no further query or capture is authorized. Cleanup verified the reviewed hashes, runtime files, and both app signatures. It archived the exact helper and profile, stopped the app, reset only its AudioCapture and ScreenCapture choices, unregistered both generated app copies, and removed them. A Launch Services dump contained no matching bundle identifier. No app, probe, or helper remained running. No reset targeted Hex or Ghostty.
+
+The result, preparation/cleanup ledger, metadata preflight, archived helper, and profile remain in ignored `dist/application-discovery-evidence`. Discovery retained only fixed statuses and scalar counts. It saved no process identities, application catalog, window titles, audio, or video. The profile retains the reviewed installation paths and signing policy from offline preparation.
+
+The next step is a separately reviewed application-capture prototype and a controlled isolation protocol. Discovery success provides no capture approval and does not clear the production gate.
 
 ## Interpret the result
 

@@ -1,6 +1,6 @@
 # Why Kaset application targeting needs a separate contract
 
-The [discovery-only Kaset application path](README.md#prepare-application-discovery-without-a-stream) is implemented as an isolated prototype. It has not run protected discovery. Application capture remains a proposed experiment, and the production gate stays closed.
+The [discovery-only Kaset application path](README.md#application-discovery-result-2026-10-11-utc) found one verified application in a separately approved local check. It created no stream. Application capture remains a proposed experiment, and the production gate stays closed.
 
 The [completed discovery check](README.md#discovery-only-result-2026-10-11-utc) found no ScreenCaptureKit application for a verified Kaset WebKit PID. Identity and cache attribution passed before and after discovery. Replacing that PID inside the current process source would change the approved scope.
 
@@ -96,10 +96,10 @@ No case has run for application targeting. Even a passing local protocol would e
 
 ## Implementation order and review gates
 
-The fixed application profile, native identity verifier, and fake-boundary selector tests are implemented. The tests reject duplicate applications, spoofed bundle metadata, wrong signing policy, changed executable code, PID reuse, and missing or ambiguous witnesses. Profile preparation validates the installed bundle on disk. The metadata-only preflight verified the local running app against that policy. Protected discovery and application audio grouping remain untested.
+The fixed application profile, native identity verifier, and fake-boundary selector tests are implemented. The tests reject duplicate applications, spoofed bundle metadata, wrong signing policy, changed executable code, PID reuse, and missing or ambiguous witnesses. Profile preparation validates the installed bundle on disk. The metadata preflight and protected discovery check verified the local running app against that policy. Application audio grouping remains untested.
 
-The discovery-only runner and isolated build profile are also implemented. Offline tests check that changes before or after discovery prevent content use. They reject cross-mode commands and changed profiles, preserve cancellation and cleanup precedence, and prevent imports from starting native work. A launcher fixture verifies that granted or declined permission setup never launches a child. No protected discovery belongs in a test. Real permission setup and framework callback behavior remain live acceptance work.
+The discovery-only runner and isolated build profile are also implemented. Offline tests check that changes before or after discovery prevent content use. They reject cross-mode commands and changed profiles, preserve cancellation and cleanup precedence, and prevent imports from starting native work. A launcher fixture verifies that granted or declined permission setup never launches a child. No protected discovery belongs in a test. The local check exercised screen-permission setup and the shareable-content callback. Audio-stream consent, denial, revocation, and stream callback lifecycle remain untested for this application target.
 
-After both changes pass review, a separately approved application-discovery check can establish whether the main Kaset application is available. Failure ends that investigation stage without a capture retry or another selection strategy.
+Both changes passed review. The separately approved application-discovery check found one verified main Kaset application and no application match for its WebKit witness PID. That query is used, and its test app was cleaned up. It establishes local discovery eligibility only.
 
 Only a checked application match supports preparing the later capture mode and its controlled isolation protocol. That preparation needs another review before requesting specific live permission changes and bounded capture attempts. No live query, capture, registration, permission reset, or playback change is authorized by this design.
