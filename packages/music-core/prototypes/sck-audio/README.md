@@ -22,15 +22,15 @@ Run from the repository root:
    bun packages/music-core/prototypes/sck-audio/check-native.ts
    ```
 
-   The four checks cover PCM extraction, shutdown ordering, permission/source policy, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. They construct no stream and query no shareable content.
+   The five checks cover PCM extraction, shutdown ordering, permission policy, source guards, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. Source fixtures reject absent or duplicate PIDs, missing displays, and broadened or mismatched filters. They preserve the original failure reason and check that native checkpoint names match the recorder's allowlist. They construct no stream and query no shareable content.
 
-3. Run the seventeen offline regressions:
+3. Run the nineteen offline regressions:
 
    ```sh
    bun test packages/music-core/prototypes/sck-audio/*.test.ts
    ```
 
-   These use fake process boundaries, fixed fake catalogs from real Bun subprocesses, and real temporary Unix sockets. They verify initial denial, silence, revocation, generic failure, explicit Stop, and pipe/heartbeat races through the daemon and sidebar model. An isolated import check blocks live server startup and verifies imports cannot start a probe. Diagnostic checks reject unknown text and preserve a fixed native failure reason across a fast exit. Metadata checks keep the recorder's scope open and reject a source without running output. They do not mount OpenCode or establish real macOS permission behavior.
+   These use fake process boundaries, fixed fake catalogs from real Bun subprocesses, and real temporary Unix sockets. They verify initial denial, silence, revocation, generic failure, explicit Stop, and pipe/heartbeat races through the daemon and sidebar model. An isolated import check blocks live server startup and verifies imports cannot start a probe. Diagnostic checks reject unknown text and preserve fixed native failure reasons and source checkpoints across a fast exit. Metadata checks keep the recorder's scope open and reject a source without running output. A concurrent file-claim test prevents a second trace attempt. They do not mount OpenCode or establish real macOS permission behavior.
 
 4. Check the prototype's own TypeScript project:
 
@@ -88,6 +88,26 @@ bun packages/music-core/prototypes/sck-audio/daemon.ts --socket /tmp/music-sck-p
 ```
 
 Startup leaves capture off and refuses the managed production socket. Use temporary OpenCode configuration for the built local plugin. No personal plugin entry has been changed.
+
+## Prepare one source trace without capture
+
+The four-probe matrix above is closed. Its original helper was archived as `dist/live-evidence/matrix-helper` before the diagnostic rebuild. The historical artifact hashes still describe that archived binary.
+
+Build the diagnostic app without registering, launching, or requesting permission:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/build-harness.ts --source-trace
+```
+
+This creates `dist/Kaset SCK Source Trace.app` with bundle ID `dev.naxo.music.sck-source-trace.20261011`. It has a separate **Request Screen Access** button and one **trace** button. A live request and trace require new approval; the previous four-probe allowance does not apply.
+
+The permission button calls public `CGRequestScreenCaptureAccess` in the app and starts no helper or capture. Its screen-access preflight only controls the trace button. It is not an AudioCapture authorization query. Granting screen access starts no trace. Complete any required Settings change and app restart before clicking trace. Runtime capture still uses the verified source, public ScreenCaptureKit errors, and measured-feature readiness.
+
+The trace uses the same daemon and sidebar model with the same 15-second limits. It adds fixed failure checkpoints for identity, cache ownership, shareable-content discovery, missing or duplicate application matches, display availability, filter membership, and checks before Start or during capture. Checkpoints contain no PIDs, paths, application catalogs, window titles, audio, or video. They identify the failed guard without changing its error or widening its filter.
+
+Before creating a daemon, the trace atomically creates `dist/source-trace-evidence/attempt.json`. An existing marker prevents another attempt, including after app restart. The marker records an attempt; it grants no permission. Results go to `dist/source-trace-evidence/trace-result.json`. Do not remove the marker to retry without another explicit approval.
+
+The diagnostic app has not been registered or launched. No new permission request or live trace has run. The native source failure remains unresolved until separately approved runtime evidence identifies its checkpoint.
 
 ## Interpret the result
 

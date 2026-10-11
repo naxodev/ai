@@ -13,14 +13,21 @@ import { createAudioVisualization } from "../../../opencode-music-player/audio-v
 import { sckPrototypeLayer } from "./adapter.ts"
 import { withProbeDiagnostics, type ProbeDiagnostic } from "./diagnostics.ts"
 import { liveNativeHelperDependencies } from "../../audio/helper-process.ts"
+import { claimSourceTrace, sourceTrace } from "./source-trace.ts"
 
 export async function runProbe(stage: string) {
-  if (!["deny", "allow", "revoke"].includes(stage))
-    throw new Error("Choose deny, allow, or revoke")
-  const directory = join(import.meta.dir, "dist/live-evidence")
+  if (!["deny", "allow", "revoke", sourceTrace.stage].includes(stage))
+    throw new Error("Choose deny, allow, revoke, or trace")
+  const directory = join(
+    import.meta.dir,
+    stage === sourceTrace.stage
+      ? "dist/source-trace-evidence"
+      : "dist/live-evidence",
+  )
   await mkdir(directory, { recursive: true })
   const socketPath = "/tmp/sck-probe-" + process.pid + ".sock"
   const startedAt = new Date().toISOString()
+  if (stage === sourceTrace.stage) await claimSourceTrace(directory, startedAt)
   const nativeDiagnostics: Array<ProbeDiagnostic & { at: string }> = []
   const server = await startMusicSessionServer(
     { socketPath },
@@ -125,6 +132,6 @@ export async function runProbe(stage: string) {
 
 if (import.meta.main) {
   const stage = process.argv[2]
-  if (!stage) throw new Error("Choose deny, allow, or revoke")
+  if (!stage) throw new Error("Choose deny, allow, revoke, or trace")
   await runProbe(stage)
 }

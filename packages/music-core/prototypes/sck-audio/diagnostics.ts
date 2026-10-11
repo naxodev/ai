@@ -3,7 +3,26 @@ import { Buffer } from "node:buffer"
 import { Effect, Fiber, Scope, Stream } from "effect"
 import type { NativeHelperDependencies } from "../../audio/helper-process.ts"
 
+export const sckSourceCheckpoints = [
+  "sck-before-discovery-identity",
+  "sck-before-discovery-ownership",
+  "sck-discovery",
+  "sck-application-absent",
+  "sck-application-ambiguous",
+  "sck-display-absent",
+  "sck-after-discovery-identity",
+  "sck-after-discovery-ownership",
+  "sck-filter-app-count",
+  "sck-filter-app-pid",
+  "sck-filter-display-count",
+  "sck-before-start-identity",
+  "sck-before-start-ownership",
+  "sck-running-identity",
+  "sck-running-ownership",
+] as const
+
 const reasons = new Set([
+  ...sckSourceCheckpoints,
   "permission",
   "source-loss",
   "source-bound",

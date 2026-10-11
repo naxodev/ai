@@ -2,7 +2,11 @@ import { expect, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { Deferred, Effect, Stream } from "effect"
 import type { NativeHelperDependencies } from "../../audio/helper-process.ts"
-import { withProbeDiagnostics, type ProbeDiagnostic } from "./diagnostics.ts"
+import {
+  withProbeDiagnostics,
+  sckSourceCheckpoints,
+  type ProbeDiagnostic,
+} from "./diagnostics.ts"
 
 function fixture(chunks: string[]) {
   const child = {
@@ -25,6 +29,31 @@ function fixture(chunks: string[]) {
   )
   return { child, observer, recorded }
 }
+
+test("every fixed source checkpoint survives recording without granting permission", async () => {
+  const { observer, recorded } = fixture(
+    sckSourceCheckpoints.map(
+      (reason) =>
+        JSON.stringify({ event: "music-audio-helper-stop", reason }) + "\n",
+    ),
+  )
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const child = (yield* observer).spawn({
+          executable: "/fixture",
+          args: ["--protocol", "1"],
+          shell: false,
+        })
+        yield* child.stderr.pipe(Stream.runDrain)
+        expect(yield* child.exit).toEqual({ code: 1, signal: null })
+      }),
+    ),
+  )
+  expect(recorded).toEqual(
+    sckSourceCheckpoints.map((reason) => ({ command: "capture", reason })),
+  )
+})
 
 test("diagnostics reveal source loss once without changing the helper exit", async () => {
   const message = '{"event":"music-audio-helper-stop","reason":"source-loss"}\n'
