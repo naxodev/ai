@@ -48,7 +48,7 @@ The isolated app uses bundle ID `dev.naxo.music.sck-matrix.20261011`. Its deny, 
 
 The probe stops after 15 seconds. The native helper begins shutdown one second before its own 15-second deadline and has an independent forced-exit backstop. The app terminates a stuck probe at 17 seconds and forces it down at 19 seconds. Forced termination is abnormal cleanup, never successful release evidence.
 
-The app was registered and launched for the separately approved local matrix below. Any approved reset must name only that bundle and the relevant AudioCapture or ScreenCapture service. Existing terminal and other-app grants remain outside the experiment.
+The app was registered and launched for the separately approved local matrix below, then stopped and removed during cleanup. Any approved reset must name only that bundle and the relevant AudioCapture or ScreenCapture service. Existing terminal and other-app grants remain outside the experiment.
 
 The recorder now retains at most 64 fixed native diagnostic reasons and timestamps. Each helper inspects at most 4096 stderr bytes, accepts exact allowlisted status lines, and retains no arbitrary stderr. One shared diagnostic drain prevents an immediate exit from hiding the reason. After physical exit, diagnostic completion has a 50 ms cap and cannot change the exit code or consent classification. The signed helper and app remain unchanged.
 
@@ -56,21 +56,24 @@ The 50 ms cap bounds the exit-result wait. The owning layer still joins reader c
 
 ## Local matrix, 2026-10-11 UTC
 
-Three of four approved probes have run. The app was copied into an ignored project `dist` directory because Launch Services could not resolve its bundle from `/private/tmp`. Bundle-only AudioCapture and ScreenCapture resets then succeeded.
+All four approved probes have run. The allowance is exhausted. The app was copied into an ignored project `dist` directory because Launch Services could not resolve its bundle from `/private/tmp`. Bundle-only AudioCapture and ScreenCapture resets then succeeded.
 
-| Stage          | Duration | Frames | Ever active | Result                        |
-| -------------- | -------- | ------ | ----------- | ----------------------------- |
-| Initial denial | 2.715 s  | 0      | No          | Permission failure; denied.   |
-| Grant attempt  | 3.101 s  | 0      | No          | Setup failure; grant present. |
-| Grant retry    | 1.048 s  | 0      | No          | No source selected; no Start. |
+| Stage             | Duration | Frames | Ever active | Result                            |
+| ----------------- | -------- | ------ | ----------- | --------------------------------- |
+| Initial denial    | 2.715 s  | 0      | No          | Permission failure; denied.       |
+| Grant attempt     | 3.101 s  | 0      | No          | Setup failure; grant present.     |
+| Grant retry       | 1.048 s  | 0      | No          | No source selected; no Start.     |
+| Final grant retry | 3.123 s  | 0      | No          | Native source-loss; no readiness. |
 
-The denial and first grant requests were attributed to `dev.naxo.music.sck-matrix.20261011`. Narrow TCC logs provide diagnostic evidence only. Runtime permission classification still uses the public ScreenCaptureKit error and clean native exit 77.
+The denial and granted capture attempts were attributed to `dev.naxo.music.sck-matrix.20261011`. The final attempt's ScreenCapture checks returned allowed (`authValue=2`, `authReason=4`). Narrow TCC logs provide diagnostic evidence only. Runtime permission classification still uses the public ScreenCaptureKit error and clean native exit 77.
 
-The first grant failure's native cause remains unresolved. The first two runs preceded the fixed diagnostic recorder. The third run stopped during source selection and recorded no native diagnostic reason. No revocation check has run.
+The first grant failure's native cause remains unresolved. The first two runs preceded the fixed diagnostic recorder. The third run stopped during source selection and recorded no native diagnostic reason. After user-controlled Kaset playback, the final retry selected a source but returned the fixed native reason `source-loss`. It emitted no features and never reached readiness. That reason does not identify which identity, ownership, enumeration, or filter check failed. It does not prove that ScreenCaptureKit omitted the WebKit PID. No revocation or isolation check has run.
 
 Follow-up metadata-only checks found one verified Kaset process with `runningOutput: false`. The helper's field checks passed, and both plain and instrumented catalogs succeeded. The resolver lists no source without running output; the daemon then returns the generic unavailable status shown as `Helper off: check build`. The same symptom was reproduced through the graph without capture. These later checks explain a current source-selection block; they do not prove the output state at the third probe's timestamp.
 
-The local JSON summaries remain in ignored `dist/live-evidence`; they contain no audio or video. Production capture remains unavailable.
+The matrix failed its granted-capture criterion. Initial denial passed locally; active revocation, source isolation, and full TUI behavior remain unverified. Keep the prototype separate from the shipped backend. The next investigation must distinguish the source guards before another separately approved live test.
+
+Cleanup verified the original helper, launcher, and plist hashes and the app's strict signature. It stopped the app, reset only its AudioCapture and ScreenCapture choices, unregistered both generated app copies, and removed those copies. No reset targeted Hex or Ghostty. The helper and local JSON summaries remain in ignored `dist/live-evidence` and `dist`; they contain no audio or video. Production capture remains unavailable.
 
 For a later approved full TUI check, build the existing local plugin:
 
