@@ -290,6 +290,21 @@ private func applicationFlowFixture() throws {
         }
     }
 }
+private func applicationWitnessArguments(_ args: [String]) throws -> Source {
+    guard args.count == 12, args[0] == "--protocol", args[1] == "1",
+          args[2] == "--process-id", let pid = Int32(args[3]), pid > 0,
+          args[4] == "--launch-identity", !args[5].isEmpty, args[5].utf8.count <= 512,
+          args[6] == "--executable-identity", !args[7].isEmpty, args[7].utf8.count <= 512,
+          args[8] == "--core-audio-object", let object = UInt32(args[9]), object > 0,
+          args[10] == "--attribution", args[11] == "kaset-cache-v1" else { throw HelperError(reason: "arguments") }
+    return Source(pid: pid, object: object, launch: args[5], executable: args[7], kasetAttribution: true)
+}
+private func applicationIdentityArguments(_ args: [String]) throws -> ApplicationIdentity {
+    guard args.count == 6, args[0] == "--application-id", let pid = Int32(args[1]), pid > 0,
+          args[2] == "--application-launch", !args[3].isEmpty, args[3].utf8.count <= 512,
+          args[4] == "--application-executable", !args[5].isEmpty, args[5].utf8.count <= 512 else { throw HelperError(reason: "arguments") }
+    return ApplicationIdentity(pid: pid, launch: args[3], executable: args[5])
+}
 private func applicationMain() throws {
     guard timebaseStatus == KERN_SUCCESS, tickMs.isFinite, tickMs > 0 else { throw HelperError(reason: "clock") }
     let args = Array(CommandLine.arguments.dropFirst())
@@ -302,13 +317,8 @@ private func applicationMain() throws {
     if args == ["--list-kaset-sources"] { _ = try loadApplicationProfile(); try listKasetSources(); return }
     let preflight = args.first == "--check-kaset-application"
     guard preflight || args.first == "--discover-kaset-application",
-          args.count == (preflight ? 13 : 19), args[1] == "--protocol", args[2] == "1",
-          args[3] == "--process-id", let pid = Int32(args[4]), pid > 0,
-          args[5] == "--launch-identity", !args[6].isEmpty, args[6].utf8.count <= 512,
-          args[7] == "--executable-identity", !args[8].isEmpty, args[8].utf8.count <= 512,
-          args[9] == "--core-audio-object", let object = UInt32(args[10]), object > 0,
-          args[11] == "--attribution", args[12] == "kaset-cache-v1" else { throw HelperError(reason: "arguments") }
-    let source = Source(pid: pid, object: object, launch: args[6], executable: args[8], kasetAttribution: true)
+          args.count == (preflight ? 13 : 19) else { throw HelperError(reason: "arguments") }
+    let source = try applicationWitnessArguments(Array(args[1...12]))
     if preflight {
         let profile = try loadApplicationProfile()
         try verifySingleWitness(source)
@@ -318,11 +328,8 @@ private func applicationMain() throws {
                          "executableIdentity": application.executable]], limit: 4096))
         return
     }
-    guard args[13] == "--application-id", let appPid = Int32(args[14]), appPid > 0,
-          args[15] == "--application-launch", !args[16].isEmpty, args[16].utf8.count <= 512,
-          args[17] == "--application-executable", !args[18].isEmpty, args[18].utf8.count <= 512 else { throw HelperError(reason: "arguments") }
     let lease = Lease(); lease.watch()
-    try inspectApplication(source, expected: ApplicationIdentity(pid: appPid, launch: args[16], executable: args[18]), lease: lease)
+    try inspectApplication(source, expected: applicationIdentityArguments(Array(args[13...18])), lease: lease)
     #endif
 }
 // Applies to metadata, protected discovery, and fixtures. No unbounded native operation.

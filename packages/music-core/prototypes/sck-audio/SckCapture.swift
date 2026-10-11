@@ -45,7 +45,11 @@ private final class SckAudioSink: NSObject, SCStreamOutput, SCStreamDelegate {
     private let lock = NSLock()
     private var terminal: Error?
     private var streamStopped = false
-    init(_ lease: Lease) { self.lease = lease }
+    private var accepting = true
+    private let strictPCM: Bool
+    init(_ lease: Lease, strictPCM: Bool = false) { self.lease = lease; self.strictPCM = strictPCM }
+    func fence() { lock.lock(); accepting = false; lock.unlock() }
+    private func acceptsSamples() -> Bool { lock.lock(); defer { lock.unlock() }; return accepting }
     func stopped(_ error: Error, streamDidStop: Bool = false) {
         lock.lock(); if terminal == nil { terminal = error }; streamStopped = streamStopped || streamDidStop; lock.unlock()
         lease.stop(sckReason(error))
@@ -58,7 +62,7 @@ private final class SckAudioSink: NSObject, SCStreamOutput, SCStreamDelegate {
         consume(buffer)
     }
     func consume(_ buffer: CMSampleBuffer) {
-        guard lease.state() == nil else { return }
+        guard lease.state() == nil, acceptsSamples() else { return }
         guard CMSampleBufferIsValid(buffer), CMSampleBufferDataIsReady(buffer),
               let description = CMSampleBufferGetFormatDescription(buffer),
               let format = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
@@ -97,6 +101,14 @@ private final class SckAudioSink: NSObject, SCStreamOutput, SCStreamDelegate {
               (buffers.count == 1 && buffers[0].mNumberChannels == 2) ||
               (buffers.count == 2 && buffers.allSatisfy({ $0.mNumberChannels == 1 })) else {
             stopped(HelperError(reason: "format")); return
+        }
+        if strictPCM {
+            for buffer in buffers {
+                guard let data = buffer.mData else { stopped(HelperError(reason: "format")); return }
+                let values = UnsafeBufferPointer(start: data.assumingMemoryBound(to: Float.self),
+                    count: count * Int(buffer.mNumberChannels))
+                guard values.allSatisfy({ $0.isFinite }) else { stopped(HelperError(reason: "format")); return }
+            }
         }
         var time = AudioTimeStamp()
         time.mHostTime = CMClockConvertHostTimeToSystemUnits(timestamp)
@@ -251,7 +263,7 @@ private func captureSck(_ source: Source, lease: Lease, cleanup: Cleanup) throws
     if let failure = sink.failure() { throw failure }
 }
 
-private func pcmFixture(_ silent: Bool, rate: Double = 48000, planar: Bool = false) throws -> CMSampleBuffer {
+private func pcmFixture(_ silent: Bool, rate: Double = 48000, planar: Bool = false, firstValue: Float? = nil, rightFirstValue: Float? = nil) throws -> CMSampleBuffer {
     let bytesPerFrame: UInt32 = planar ? 4 : 8
     var format = AudioStreamBasicDescription(mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
         mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | (planar ? kAudioFormatFlagIsNonInterleaved : 0),
@@ -261,8 +273,11 @@ private func pcmFixture(_ silent: Bool, rate: Double = 48000, planar: Bool = fal
     guard CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &format, layoutSize: 0,
         layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil,
         formatDescriptionOut: &description) == noErr, let description else { throw HelperError(reason: "pcm-fixture") }
-    let left = (0..<sampleCount).map { silent ? Float(0) : Float(0.25 * sin(2 * Double.pi * 1000 * Double($0) / rate)) }
-    let pcm: [Float] = planar ? left + [Float](repeating: 0, count: sampleCount) : left.flatMap { [$0, Float(0)] }
+    var left = (0..<sampleCount).map { silent ? Float(0) : Float(0.25 * sin(2 * Double.pi * 1000 * Double($0) / rate)) }
+    if let firstValue { left[0] = firstValue }
+    var right = [Float](repeating: 0, count: sampleCount)
+    if let rightFirstValue { right[0] = rightFirstValue }
+    let pcm: [Float] = planar ? left + right : zip(left, right).flatMap { [$0, $1] }
     var block: CMBlockBuffer?
     guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil,
         blockLength: pcm.count * 4, blockAllocator: kCFAllocatorDefault, customBlockSource: nil,

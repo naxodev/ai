@@ -1,4 +1,4 @@
-/** Shared ownership for the two bounded, discovery-only process boundaries. */
+/** Own a fixed helper command, its bounded summary, and physical process cleanup. */
 import { Buffer } from "node:buffer"
 import { Cause, Effect, Exit, Result, Schedule, Scope, Stream } from "effect"
 import type { AudioAdapterError } from "../../audio/capture.ts"
@@ -12,7 +12,7 @@ import {
 } from "../../audio/helper-process.ts"
 import { withProbeDiagnostics, type ProbeDiagnostic } from "./diagnostics.ts"
 
-export type DiscoveryResult<Summary> =
+export type ProbeResult<Summary> =
   | {
       status: "checked"
       summary: Summary
@@ -29,17 +29,18 @@ export type DiscoveryResult<Summary> =
       nativeDiagnostics: ProbeDiagnostic[]
     }
 
-type ReadJson = (
+export type ReadProbeJson = (
   args: readonly string[],
 ) => Effect.Effect<unknown, AudioAdapterError, Scope.Scope>
-type DiscoveryPlan<Summary> = {
+type ProbePlan<Summary> = {
   helperPath: string
   helperIdentifier: string
   metadataFlags: readonly string[]
-  discoveryFlag: string
+  protectedFlag: string
+  operationTimeout: "8 seconds" | "20 seconds"
   prepare: (
     boundary: NativeHelperDependencies,
-    readJson: ReadJson,
+    readJson: ReadProbeJson,
   ) => Effect.Effect<
     readonly string[] | undefined,
     AudioAdapterError,
@@ -48,8 +49,8 @@ type DiscoveryPlan<Summary> = {
   decode: (value: unknown) => Effect.Effect<Summary, AudioAdapterError>
 }
 
-export const makeDiscoveryInspector = <Summary>(plan: DiscoveryPlan<Summary>) =>
-  Effect.fn("SckDiscovery.inspect")(function* (
+export const makeBoundedProbeInspector = <Summary>(plan: ProbePlan<Summary>) =>
+  Effect.fn("SckProbe.inspect")(function* (
     beforeQuery: Effect.Effect<void, AudioAdapterError>,
     raw: NativeHelperDependencies = liveNativeHelperDependencies,
   ) {
@@ -64,13 +65,13 @@ export const makeDiscoveryInspector = <Summary>(plan: DiscoveryPlan<Summary>) =>
             if (
               request.executable !== plan.helperPath ||
               request.shell !== false ||
-              ![...plan.metadataFlags, plan.discoveryFlag].includes(
+              ![...plan.metadataFlags, plan.protectedFlag].includes(
                 request.args[0] ?? "",
               )
             )
-              throw new Error("Unexpected discovery helper command")
+              throw new Error("Unexpected bounded helper command")
             const child = raw.spawn(request)
-            return request.args[0] === plan.discoveryFlag
+            return request.args[0] === plan.protectedFlag
               ? {
                   ...child,
                   exit: child.exit.pipe(
@@ -87,7 +88,7 @@ export const makeDiscoveryInspector = <Summary>(plan: DiscoveryPlan<Summary>) =>
         const boundary = yield* withProbeDiagnostics(guarded, (diagnostic) => {
           if (nativeDiagnostics.length < 64) nativeDiagnostics.push(diagnostic)
         })
-        const readJson: ReadJson = Effect.fn("SckDiscovery.readJson")(
+        const readJson: ReadProbeJson = Effect.fn("SckProbe.readJson")(
           function* (args: readonly string[]) {
             const child = yield* Effect.uninterruptible(
               Effect.gen(function* () {
@@ -174,20 +175,20 @@ export const makeDiscoveryInspector = <Summary>(plan: DiscoveryPlan<Summary>) =>
             status: "unavailable",
             reason: "source-unavailable",
             nativeDiagnostics,
-          } satisfies DiscoveryResult<Summary>
+          } satisfies ProbeResult<Summary>
         if (!(yield* boundary.verify(plan.helperPath, plan.helperIdentifier)))
           return yield* Effect.fail(helperError("unavailable"))
         yield* beforeQuery
-        const value = yield* readJson([plan.discoveryFlag, ...args])
+        const value = yield* readJson([plan.protectedFlag, ...args])
         const summary = yield* plan.decode(value)
         return {
           status: "checked",
           summary,
           nativeDiagnostics,
-        } satisfies DiscoveryResult<Summary>
+        } satisfies ProbeResult<Summary>
       }).pipe(
         Effect.timeoutOrElse({
-          duration: "8 seconds",
+          duration: plan.operationTimeout,
           orElse: () => Effect.fail(helperError("timeout")),
         }),
       ),
@@ -196,16 +197,17 @@ export const makeDiscoveryInspector = <Summary>(plan: DiscoveryPlan<Summary>) =>
     if (Exit.isSuccess(outcome)) return outcome.value
     if (Cause.hasInterruptsOnly(outcome.cause)) return yield* Effect.interrupt
     const error = Cause.findError(outcome.cause)
-    const reason = cleanupFailed
-      ? "cleanup-failed"
-      : settledExit?.code === 77 && settledExit.signal === null
-        ? "permission"
-        : Result.isSuccess(error) && error.success.reason === "timeout"
-          ? "timeout"
-          : "setup"
+    const reason =
+      cleanupFailed || (settledExit?.code === 70 && settledExit.signal === null)
+        ? "cleanup-failed"
+        : settledExit?.code === 77 && settledExit.signal === null
+          ? "permission"
+          : Result.isSuccess(error) && error.success.reason === "timeout"
+            ? "timeout"
+            : "setup"
     return {
       status: "failed",
       reason,
       nativeDiagnostics,
-    } satisfies DiscoveryResult<Summary>
+    } satisfies ProbeResult<Summary>
   })

@@ -8,9 +8,9 @@ import {
   sckHelperPath,
 } from "./adapter.ts"
 import {
-  makeDiscoveryInspector,
-  type DiscoveryResult,
-} from "./discovery-process.ts"
+  makeBoundedProbeInspector,
+  type ProbeResult,
+} from "./bounded-probe-process.ts"
 import { sourceDiscovery } from "./source-discovery.ts"
 
 export const DiscoveryCount = Schema.Finite.check(
@@ -28,7 +28,7 @@ const DiscoverySummary = Schema.Struct({
 interface DiscoverySummary extends Schema.Schema.Type<
   typeof DiscoverySummary
 > {}
-export type SourceDiscoveryResult = DiscoveryResult<DiscoverySummary>
+export type SourceDiscoveryResult = ProbeResult<DiscoverySummary>
 
 export const witnessArguments = (identity: {
   processIdentifier: number
@@ -50,27 +50,30 @@ export const witnessArguments = (identity: {
   "kaset-cache-v1",
 ]
 
-export const inspectSourceDiscovery = makeDiscoveryInspector<DiscoverySummary>({
-  helperPath: sckHelperPath,
-  helperIdentifier: sckHelperIdentifier,
-  metadataFlags: ["--list-kaset-sources"],
-  discoveryFlag: sourceDiscovery.nativeFlag,
-  prepare: Effect.fn("SckDiscovery.prepareSource")(function* (boundary) {
-    const catalog = yield* readLocalKasetCatalog(
-      sckDependencies(boundary),
-    ).pipe(Effect.catch(() => Effect.succeed(undefined)))
-    const entry = catalog?.sources.length === 1 ? catalog.sources[0] : undefined
-    return entry ? witnessArguments(entry.identity) : undefined
-  }),
-  decode: (value) =>
-    Schema.decodeUnknownEffect(DiscoverySummary)(value).pipe(
-      Effect.mapError(() => helperError()),
-      Effect.map((decoded) => ({
-        event: decoded.event,
-        identityChecks: decoded.identityChecks,
-        attributionChecks: decoded.attributionChecks,
-        matchingApplications: decoded.matchingApplications,
-        displayCount: decoded.displayCount,
-      })),
-    ),
-})
+export const inspectSourceDiscovery =
+  makeBoundedProbeInspector<DiscoverySummary>({
+    helperPath: sckHelperPath,
+    helperIdentifier: sckHelperIdentifier,
+    metadataFlags: ["--list-kaset-sources"],
+    protectedFlag: sourceDiscovery.nativeFlag,
+    operationTimeout: "8 seconds",
+    prepare: Effect.fn("SckDiscovery.prepareSource")(function* (boundary) {
+      const catalog = yield* readLocalKasetCatalog(
+        sckDependencies(boundary),
+      ).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const entry =
+        catalog?.sources.length === 1 ? catalog.sources[0] : undefined
+      return entry ? witnessArguments(entry.identity) : undefined
+    }),
+    decode: (value) =>
+      Schema.decodeUnknownEffect(DiscoverySummary)(value).pipe(
+        Effect.mapError(() => helperError()),
+        Effect.map((decoded) => ({
+          event: decoded.event,
+          identityChecks: decoded.identityChecks,
+          attributionChecks: decoded.attributionChecks,
+          matchingApplications: decoded.matchingApplications,
+          displayCount: decoded.displayCount,
+        })),
+      ),
+  })

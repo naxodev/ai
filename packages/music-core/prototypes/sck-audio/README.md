@@ -24,7 +24,7 @@ Run from the repository root:
 
    The six checks cover PCM extraction, shutdown ordering, permission policy, source guards, discovery ordering, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. Source fixtures reject absent or duplicate PIDs, missing displays, and broadened or mismatched filters. They preserve the original failure reason and check that native checkpoint names match the recorder's allowlist. The discovery fixture rejects changed identity or ownership before consuming content and verifies that discovery dispatch cannot call capture. They construct no stream and query no shareable content.
 
-3. Run the thirty-three offline regressions:
+3. Run the forty offline regressions:
 
    ```sh
    bun test packages/music-core/prototypes/sck-audio/*.test.ts
@@ -238,7 +238,47 @@ The protected query is used; no further query or capture is authorized. Cleanup 
 
 The result, preparation/cleanup ledger, metadata preflight, archived helper, and profile remain in ignored `dist/application-discovery-evidence`. Discovery retained only fixed statuses and scalar counts. It saved no process identities, application catalog, window titles, audio, or video. The profile retains the reviewed installation paths and signing policy from offline preparation.
 
-The next step is a separately reviewed application-capture prototype and a controlled isolation protocol. Discovery success provides no capture approval and does not clear the production gate.
+The separate application-capture preparation below follows this eligibility result. Discovery success provides no capture approval and does not clear the production gate.
+
+## Prepare one application-audio availability probe
+
+This local preparation requires the archived profile from the successful application-discovery check. The builder pins its exact SHA-256 digest. A missing or changed profile stops preparation; the builder does not refresh it from the installed app.
+
+Build the new helper and unregistered app without launching either:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/build-harness.ts --application-capture
+```
+
+This creates `dist/sck-application-capture-helper` and `dist/Kaset SCK Application Capture.app`. The app uses bundle ID `dev.naxo.music.sck-application-capture.20261011`. The helper has a separate signing identifier, profile path, and attempt directory. Historical discovery artifacts stay unchanged. An existing capture attempt marker prevents a rebuild.
+
+The native mode accepts only its fixed catalog, application preflight, capture, and synthetic-test commands. It includes the existing bounded sample ring, analyzer, PCM sink, and Start/Stop completion ownership. Its composition excludes the Core Audio process-tap implementation. The parent never represents this application target as a process-mode source and starts no daemon or installed plugin.
+
+The metadata preflight pins exactly one application and one verified WebKit witness in memory. After the one-shot claim, capture revalidates both around discovery. It includes exactly that application, with no window exceptions, on the returned display with the lowest identifier. The filter's application and display membership must match. It verifies the selected display's identity and dimensions, and the default output device's object and persistent UID. Missing or changed metadata stops the attempt. This route check does not establish the rendering process's physical output path.
+
+Before Start, before accepting each fresh feature, and after Stop, the helper rechecks the pinned profile, application, witness, and environment. It enables 48 kHz stereo audio, disables microphone capture, and registers only an audio output. No screen sample, recording output, PCM file, or feature array is delivered or saved.
+
+The native hard deadline is 15 seconds from helper startup, including discovery, Start, collection, and cleanup. Collection ends after ten seconds or one second before that deadline, whichever comes first. Start completion, any late successful Start, Stop, and output removal must settle before a summary is returned. Native cleanup failure uses exit 70; only the supported consent error after clean teardown uses exit 77. Forced termination cannot produce a checked result.
+
+The parent has a twenty-second operation timeout covering metadata and capture. Its existing physical-exit cleanup allows one second after SIGTERM and one second after SIGKILL. The app terminates a stuck runner after 22 seconds and kills it after 24. These outer limits do not extend the native capture deadline. Permission setup starts no helper, and the attempt marker survives app restarts. A metadata failure before the claim can re-enable the button; a claimed capture cannot retry automatically.
+
+The helper returns one bounded summary after teardown. It retains fresh, distinct measurement count `frames`, count `signalFrames` with maximum stereo RMS at least `1e-4`, `peakRms`, and `sampleSpanMs`. Samples older than 500 ms, repeated callbacks, and non-increasing timestamps cannot count. The capture sink rejects non-finite PCM before the shared ring. Unsupported or non-finite levels fail validation. The parent projects fixed fields, rejects inconsistent counts, and records one of these availability outcomes:
+
+- `signal-observed`: at least three measured frames, three signal frames, and 500 ms of sample span.
+- `measured-silence`: enough frames and span, with all measured RMS values exactly zero.
+- `inconclusive`: insufficient frames, span, or signal. The result includes a fixed reason.
+
+Every checked summary carries `isolationEstablished: false`. Energy in this filtered stream alone cannot establish its origin or exclude unrelated audio. Silence cannot establish a permission failure. The [isolation protocol](ISOLATION-PROTOCOL.md) separates this first availability check from later controlled reference captures. Those later stages remain a draft with unverified controls and need separate implementation, review, and approval.
+
+Run the ten new native checks without live capture or discovery:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/check-application-capture-native.ts
+```
+
+They cover profile and identity policy, discovery ordering, sample freshness and aggregation, exact filter membership, environment changes, late Start cleanup, cleanup precedence, synthetic interleaved/planar tone and silence, native denial, and rejected cross-mode commands. The complete forty-test prototype suite also checks the parent boundaries, one-shot claims, malformed summaries, cancellation, native exits 70/77, and import safety for the capture stage.
+
+No application-capture probe has run. The app has not been registered, opened, or granted permissions. One separately approved Kaset-only availability probe is the proposed live scope. It would require user-controlled Kaset playback and save only the bounded summary in ignored `dist/application-capture-evidence`. It would not exercise the later reference-capture campaign or clear the production gate.
 
 ## Interpret the result
 

@@ -63,7 +63,7 @@ const source: ResolvedCaptureSource = {
 }
 
 test("importing a probe with a valid stage never starts a daemon or capture", async () => {
-  for (const stage of ["allow", "discover"]) {
+  for (const stage of ["allow", "discover", "capture"]) {
     const child = Bun.spawn(
       [
         process.execPath,

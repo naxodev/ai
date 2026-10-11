@@ -16,3 +16,8 @@ await mock.module("./application-check.ts", () => ({
     throw new Error("Import attempted protected application discovery")
   },
 }))
+await mock.module("./application-capture-check.ts", () => ({
+  inspectApplicationCapture: () => {
+    throw new Error("Import attempted application capture")
+  },
+}))

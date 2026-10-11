@@ -1,10 +1,10 @@
 # Why Kaset application targeting needs a separate contract
 
-The [discovery-only Kaset application path](README.md#application-discovery-result-2026-10-11-utc) found one verified application in a separately approved local check. It created no stream. Application capture remains a proposed experiment, and the production gate stays closed.
+The [discovery-only Kaset application path](README.md#application-discovery-result-2026-10-11-utc) found one verified application in a separately approved local check. It created no stream. A [separate bounded capture prototype](README.md#prepare-one-application-audio-availability-probe) is prepared but has not run. The production gate stays closed.
 
 The [completed discovery check](README.md#discovery-only-result-2026-10-11-utc) found no ScreenCaptureKit application for a verified Kaset WebKit PID. Identity and cache attribution passed before and after discovery. Replacing that PID inside the current process source would change the approved scope.
 
-The proposed target covers all audio that ScreenCaptureKit assigns to one verified Kaset application. It does not promise a single WebKit process, song, window, or tab. The experiment must state that scope before requesting live approval.
+The application target covers all audio that ScreenCaptureKit assigns to one verified Kaset application. It does not promise a single WebKit process, song, window, or tab. The experiment must state that scope before requesting live approval.
 
 ## What the API contract supports
 
@@ -92,7 +92,7 @@ The required cases are:
 - Kaset or witness exit, restart, or identity change: stop publishing features and require a new selection.
 - Initial denial and active revocation: meet the existing permission criteria with supported evidence and declared bounds.
 
-No case has run for application targeting. Even a passing local protocol would establish only the tested build and configuration. Distribution, update behavior, other supported macOS versions, and full daemon/sidebar integration remain separate release work.
+No capture case has run for application targeting. The [controlled protocol draft](ISOLATION-PROTOCOL.md) declares thresholds, controls, and unresolved prerequisites. Even a passing local protocol would establish only the tested build and configuration. Distribution, update behavior, other supported macOS versions, and full daemon/sidebar integration remain separate release work.
 
 ## Implementation order and review gates
 
@@ -102,4 +102,4 @@ The discovery-only runner and isolated build profile are also implemented. Offli
 
 Both changes passed review. The separately approved application-discovery check found one verified main Kaset application and no application match for its WebKit witness PID. That query is used, and its test app was cleaned up. It establishes local discovery eligibility only.
 
-Only a checked application match supports preparing the later capture mode and its controlled isolation protocol. That preparation needs another review before requesting specific live permission changes and bounded capture attempts. No live query, capture, registration, permission reset, or playback change is authorized by this design.
+The checked application match supports the separately prepared capture mode and controlled isolation protocol. Capture preparation needs another review before requesting specific live permission changes and bounded capture attempts. The prepared first probe reports availability only; it cannot claim isolation. No live query, capture, registration, permission reset, or playback change is authorized by this design.

@@ -1,10 +1,16 @@
 /** Application discovery uses a separate pinned helper and no capture adapter. */
 import { Effect, Schema } from "effect"
-import { helperError } from "../../audio/helper-process.ts"
+import {
+  helperError,
+  type NativeHelperDependencies,
+} from "../../audio/helper-process.ts"
 import { readLocalKasetCatalog } from "../../audio/local-kaset.ts"
 import { applicationDiscovery } from "./application-discovery.ts"
 import { DiscoveryCount, witnessArguments } from "./discovery-check.ts"
-import { makeDiscoveryInspector } from "./discovery-process.ts"
+import {
+  makeBoundedProbeInspector,
+  type ReadProbeJson,
+} from "./bounded-probe-process.ts"
 
 const Preflight = Schema.Struct({
   event: Schema.Literal("sck-application-preflight"),
@@ -39,54 +45,54 @@ interface ApplicationSummary extends Schema.Schema.Type<
   typeof ApplicationSummary
 > {}
 
+/** Keep application and witness identities in memory across a one-shot claim. */
+export const prepareApplicationArguments = (profile: {
+  helperPath: string
+  helperIdentifier: string
+  preflightFlag: string
+}) =>
+  Effect.fn("SckApplication.prepare")(function* (
+    boundary: NativeHelperDependencies,
+    readJson: ReadProbeJson,
+  ) {
+    const catalog = yield* readLocalKasetCatalog({
+      ...boundary,
+      verify: () =>
+        boundary.verify(profile.helperPath, profile.helperIdentifier),
+      spawn: (request) =>
+        boundary.spawn({ ...request, executable: profile.helperPath }),
+    }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+    const entry = catalog?.sources.length === 1 ? catalog.sources[0] : undefined
+    if (!entry) return undefined
+    const args = witnessArguments(entry.identity)
+    const preflight = yield* readJson([profile.preflightFlag, ...args]).pipe(
+      Effect.flatMap((value) =>
+        Schema.decodeUnknownEffect(Preflight)(value).pipe(
+          Effect.mapError(() => helperError()),
+        ),
+      ),
+      Effect.catch(() => Effect.succeed(undefined)),
+    )
+    if (!preflight) return undefined
+    return [
+      ...args,
+      "--application-id",
+      String(preflight.identity.processIdentifier),
+      "--application-launch",
+      preflight.identity.launchIdentity,
+      "--application-executable",
+      preflight.identity.executableIdentity,
+    ]
+  })
+
 export const inspectApplicationDiscovery =
-  makeDiscoveryInspector<ApplicationSummary>({
+  makeBoundedProbeInspector<ApplicationSummary>({
     helperPath: applicationDiscovery.helperPath,
     helperIdentifier: applicationDiscovery.helperIdentifier,
     metadataFlags: ["--list-kaset-sources", applicationDiscovery.preflightFlag],
-    discoveryFlag: applicationDiscovery.nativeFlag,
-    prepare: Effect.fn("SckApplication.prepare")(
-      function* (boundary, readJson) {
-        const catalog = yield* readLocalKasetCatalog({
-          ...boundary,
-          verify: () =>
-            boundary.verify(
-              applicationDiscovery.helperPath,
-              applicationDiscovery.helperIdentifier,
-            ),
-          spawn: (request) =>
-            boundary.spawn({
-              ...request,
-              executable: applicationDiscovery.helperPath,
-            }),
-        }).pipe(Effect.catch(() => Effect.succeed(undefined)))
-        const entry =
-          catalog?.sources.length === 1 ? catalog.sources[0] : undefined
-        if (!entry) return undefined
-        const args = witnessArguments(entry.identity)
-        const preflight = yield* readJson([
-          applicationDiscovery.preflightFlag,
-          ...args,
-        ]).pipe(
-          Effect.flatMap((value) =>
-            Schema.decodeUnknownEffect(Preflight)(value).pipe(
-              Effect.mapError(() => helperError()),
-            ),
-          ),
-          Effect.catch(() => Effect.succeed(undefined)),
-        )
-        if (!preflight) return undefined
-        return [
-          ...args,
-          "--application-id",
-          String(preflight.identity.processIdentifier),
-          "--application-launch",
-          preflight.identity.launchIdentity,
-          "--application-executable",
-          preflight.identity.executableIdentity,
-        ]
-      },
-    ),
+    protectedFlag: applicationDiscovery.nativeFlag,
+    operationTimeout: "8 seconds",
+    prepare: prepareApplicationArguments(applicationDiscovery),
     decode: (value) =>
       Schema.decodeUnknownEffect(ApplicationSummary)(value).pipe(
         Effect.mapError(() => helperError()),

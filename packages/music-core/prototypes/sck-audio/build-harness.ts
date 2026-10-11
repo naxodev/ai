@@ -6,6 +6,8 @@ import { sourceTrace } from "./source-trace.ts"
 import { sourceDiscovery } from "./source-discovery.ts"
 import { applicationDiscovery } from "./application-discovery.ts"
 import { buildApplicationDiscovery } from "./build-application.ts"
+import { applicationCapture } from "./application-capture.ts"
+import { buildApplicationCapture } from "./build-application-capture.ts"
 
 const directory = import.meta.dir
 const flags = process.argv.slice(2)
@@ -14,78 +16,96 @@ if (
   (flags.length === 1 &&
     flags[0] !== sourceTrace.buildFlag &&
     flags[0] !== sourceDiscovery.buildFlag &&
-    flags[0] !== applicationDiscovery.buildFlag)
+    flags[0] !== applicationDiscovery.buildFlag &&
+    flags[0] !== applicationCapture.buildFlag)
 )
   throw new Error(
-    "Expected no flag, --source-trace, --source-discovery, or --application-discovery",
+    "Expected no flag, --source-trace, --source-discovery, --application-discovery, or --application-capture",
   )
 const traceOnly = flags[0] === sourceTrace.buildFlag
 const applicationOnly = flags[0] === applicationDiscovery.buildFlag
+const captureOnly = flags[0] === applicationCapture.buildFlag
 const discoveryOnly = flags[0] === sourceDiscovery.buildFlag || applicationOnly
-const oneShot = traceOnly || discoveryOnly
-const profile = applicationOnly
+const oneShot = traceOnly || discoveryOnly || captureOnly
+const profile = captureOnly
   ? {
-      appName: applicationDiscovery.appName,
-      identifier: applicationDiscovery.bundleIdentifier,
-      evidenceDirectory: applicationDiscovery.evidenceDirectory,
-      entrypoint: "application-probe.ts",
-      stages: [applicationDiscovery.stage],
-      sourceFile: "dist/ApplicationDiscoveryLauncher.swift",
-      terminateAfter: 10,
-      killAfter: 12,
+      appName: applicationCapture.appName,
+      identifier: applicationCapture.bundleIdentifier,
+      evidenceDirectory: applicationCapture.evidenceDirectory,
+      entrypoint: "application-capture-probe.ts",
+      stages: [applicationCapture.stage],
+      sourceFile: "dist/ApplicationCaptureLauncher.swift",
+      terminateAfter: 22,
+      killAfter: 24,
       instructions:
-        "Request Screen Access first. Open the reviewed Kaset app, then run one approved application discovery. No stream is created.",
+        "Request Screen Access first. Play Kaset, then run one approved application-audio probe. Saves counts and levels only.",
       actionHint:
-        "Open the reviewed Kaset app, then click discover. No stream is created.",
+        "Play Kaset, then click capture. No operation starts until that click.",
     }
-  : discoveryOnly
+  : applicationOnly
     ? {
-        appName: sourceDiscovery.appName,
-        identifier: sourceDiscovery.bundleIdentifier,
-        evidenceDirectory: sourceDiscovery.evidenceDirectory,
-        entrypoint: "discovery-probe.ts",
-        stages: [sourceDiscovery.stage],
-        sourceFile: "dist/DiscoveryLauncher.swift",
+        appName: applicationDiscovery.appName,
+        identifier: applicationDiscovery.bundleIdentifier,
+        evidenceDirectory: applicationDiscovery.evidenceDirectory,
+        entrypoint: "application-probe.ts",
+        stages: [applicationDiscovery.stage],
+        sourceFile: "dist/ApplicationDiscoveryLauncher.swift",
         terminateAfter: 10,
         killAfter: 12,
         instructions:
-          "Request Screen Access first. Open Kaset, then run one approved discovery check. No audio or video capture.",
+          "Request Screen Access first. Open the reviewed Kaset app, then run one approved application discovery. No stream is created.",
         actionHint:
-          "Open Kaset, then click discover. No audio or video capture.",
+          "Open the reviewed Kaset app, then click discover. No stream is created.",
       }
-    : traceOnly
+    : discoveryOnly
       ? {
-          appName: sourceTrace.appName,
-          identifier: sourceTrace.bundleIdentifier,
-          evidenceDirectory: "dist/source-trace-evidence",
-          entrypoint: "probe.ts",
-          stages: [sourceTrace.stage],
-          sourceFile: "dist/SourceTraceLauncher.swift",
-          terminateAfter: 17,
-          killAfter: 19,
+          appName: sourceDiscovery.appName,
+          identifier: sourceDiscovery.bundleIdentifier,
+          evidenceDirectory: sourceDiscovery.evidenceDirectory,
+          entrypoint: "discovery-probe.ts",
+          stages: [sourceDiscovery.stage],
+          sourceFile: "dist/DiscoveryLauncher.swift",
+          terminateAfter: 10,
+          killAfter: 12,
           instructions:
-            "Request Screen Access first. Play Kaset, then run one approved 15-second trace.",
-          actionHint: "Play Kaset, then click trace. Capture is off.",
+            "Request Screen Access first. Open Kaset, then run one approved discovery check. No audio or video capture.",
+          actionHint:
+            "Open Kaset, then click discover. No audio or video capture.",
         }
-      : {
-          appName: "Kaset SCK Permission Probe",
-          identifier: "dev.naxo.music.sck-matrix.20261011",
-          evidenceDirectory: "dist/live-evidence",
-          entrypoint: "probe.ts",
-          stages: ["deny", "allow", "revoke"],
-          sourceFile: "dist/Launcher.swift",
-          terminateAfter: 17,
-          killAfter: 19,
-          instructions:
-            "Each approved probe lasts at most 15 seconds. A stage button starts capture.",
-          actionHint: "Capture is off.",
-        }
+      : traceOnly
+        ? {
+            appName: sourceTrace.appName,
+            identifier: sourceTrace.bundleIdentifier,
+            evidenceDirectory: "dist/source-trace-evidence",
+            entrypoint: "probe.ts",
+            stages: [sourceTrace.stage],
+            sourceFile: "dist/SourceTraceLauncher.swift",
+            terminateAfter: 17,
+            killAfter: 19,
+            instructions:
+              "Request Screen Access first. Play Kaset, then run one approved 15-second trace.",
+            actionHint: "Play Kaset, then click trace. Capture is off.",
+          }
+        : {
+            appName: "Kaset SCK Permission Probe",
+            identifier: "dev.naxo.music.sck-matrix.20261011",
+            evidenceDirectory: "dist/live-evidence",
+            entrypoint: "probe.ts",
+            stages: ["deny", "allow", "revoke"],
+            sourceFile: "dist/Launcher.swift",
+            terminateAfter: 17,
+            killAfter: 19,
+            instructions:
+              "Each approved probe lasts at most 15 seconds. A stage button starts capture.",
+            actionHint: "Capture is off.",
+          }
 const appName = profile.appName
 const contents = join(directory, "dist", appName + ".app", "Contents")
 const executable = join(contents, "MacOS/Launcher")
 const identifier = profile.identifier
 const evidenceDirectory = profile.evidenceDirectory
-if (applicationOnly) await buildApplicationDiscovery()
+if (captureOnly) await buildApplicationCapture()
+else if (applicationOnly) await buildApplicationDiscovery()
 else await buildSckPrototype()
 await mkdir(join(contents, "MacOS"), { recursive: true })
 await writeFile(
@@ -116,7 +136,7 @@ const source =
     "let attemptPath = " +
       JSON.stringify(join(directory, evidenceDirectory, "attempt.json")),
     "let oneShot = " + String(oneShot),
-    "let allowPreflightRetry = " + String(discoveryOnly),
+    "let allowPreflightRetry = " + String(discoveryOnly || captureOnly),
     "let label = NSTextField(labelWithString: " +
       JSON.stringify(profile.instructions) +
       ")",
@@ -157,7 +177,7 @@ const source =
     "process.terminationHandler = { [weak self] ended in",
     'DispatchQueue.main.async { self?.label.stringValue = "Finished (exit \\(ended.terminationStatus)); summaries are in ' +
       evidenceDirectory +
-      '."; self?.child = nil; if let self, self.allowPreflightRetry && !FileManager.default.fileExists(atPath:self.attemptPath) { self.used = false; self.traceButton?.isEnabled = CGPreflightScreenCaptureAccess(); self.label.stringValue = "No discovery query was requested. Open Kaset and try again." } }',
+      '."; self?.child = nil; if let self, self.allowPreflightRetry && !FileManager.default.fileExists(atPath:self.attemptPath) { self.used = false; self.traceButton?.isEnabled = CGPreflightScreenCaptureAccess(); self.label.stringValue = "No protected operation was requested. Open Kaset and try again." } }',
     "}",
     'do { guard try actions.start(process, oneShot: oneShot, used: used, childRunning: child != nil) else { return }; child = process; if oneShot { used = true; button.isEnabled = false }; label.stringValue = "Running \\(button.title). Respond to the system prompt or adjust only this test app." }',
     'catch { label.stringValue = "Probe failed to launch."; return }',
