@@ -64,4 +64,6 @@ These gates remain open before any release: signed distribution, notarization, t
 
 ## Recommended next step
 
-Keep production capture unavailable. Establish an authorization signal independent of feature values, then verify denied and revoked behavior through the daemon and sidebar. The isolated helper matrix does not clear that gate. A Developer ID certificate alone does not clear the remaining gates.
+Keep production capture unavailable. The [authorization API investigation](music-audio-authorization-research.md) found no documented process-tap authorization query or revocation observer in the inspected macOS 27 SDK and Apple sources. Error mapping and zero-valued frames cannot clear the deny/revoke gate.
+
+Evaluate ScreenCaptureKit's public failure and stop callbacks in an isolated experiment before choosing another backend. Verify Kaset source isolation, audio-only scope, initial denial, and revocation through the daemon and sidebar. Those behaviors remain untested. A Developer ID certificate alone does not clear the remaining gates.
