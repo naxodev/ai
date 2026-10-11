@@ -393,7 +393,31 @@ Cleanup verified the original hashes and strict signatures, stopped the isolated
 
 The replacement build passed strict signing checks and all nineteen native synthetic checks. The two disk-signature checks, fifty-six tests, prototype type check, workspace lint, core/plugin type checks, and package-content checks passed. The shared discovery source also passed a separate compile-only check. Standards and Spec reviews found no issue in this correction.
 
-The original frozen plan, approval, helper/profile archives, and cleanup record remain in ignored `dist/safari-exclusion-evidence`. The replacement app was built and checked before registration. Its changed helper and Safari profile need a separately frozen replacement plan. The user's existing approval covers the unchanged app, application scopes, capture limits, and single unclaimed attempt. Record that continuation against the replacement plan; it adds no attempt. No protected attempt has been claimed, and no exclusion result exists. Production capture remains unavailable.
+The original frozen plan, approval, helper/profile archives, and cleanup record remain in ignored `dist/safari-exclusion-evidence`. The replacement app was built and checked before registration. Its changed helper and Safari profile were frozen in a replacement plan. The user's existing approval covered the unchanged app, application scopes, capture limits, and single unclaimed attempt. The continuation record added no attempt. The completed run below consumed that allowance. Production capture remains unavailable.
+
+### Inconclusive paired run on 2026-10-11
+
+The approved run started at `2026-10-11T23:32:51.055Z` and finished at `23:33:05.965Z`. Its elapsed time was 14.910 seconds, including the parent's metadata checks. The native capture command kept its separate fifteen-second startup-to-exit deadline. Two application-scoped streams started, passed identity verification throughout, completed sixty paired windows, and joined teardown.
+
+| Measurement                   | Result                 |
+| ----------------------------- | ---------------------- |
+| Paired windows                | `60`                   |
+| Valid Safari control windows  | `0`                    |
+| Safari total and marker power | `0`                    |
+| Maximum Kaset total power     | `0.00668128814105206`  |
+| Maximum Kaset marker power    | `4.477880436723367e-8` |
+| Clipped windows               | `0`                    |
+| Measured verdict              | `inconclusive`         |
+| Reason                        | `invalid-reference`    |
+| Isolation established         | `false`                |
+
+The user reported that Kaset was playing and that they had not clicked Start on the Safari tone page. This is user context, not independent playback verification. The required paused-target and positive-reference controls were not established. No Safari reference window passed, so the zero violation count cannot establish exclusion. The target energy cannot establish its audio's origin. This run establishes neither Safari tone availability nor isolation.
+
+The frozen helper SHA-256 was `697306521ca9ecae93e92d33101c9f1e41042c390a9ebeb0faa82c403d07275a`. The unchanged Kaset profile SHA-256 was `64bd9ed8cd6cc2c6a08920cda94afc1251379cc6d9442aaff7ae1d968e082780`. The corrected Safari profile SHA-256 was `475421c149b49438861bed58de9c2f2a091c56cbb52ffe213cd4b9c29efb3ca1`. The reviewed tone page SHA-256 stayed `ca07954793ac65f95b44916cafe7e16a4e2f6e2bb34ce9a6c79bcc8f5e8cd86a`. The local configuration remained macOS 27.0.1 build 26A434, SDK 27.0, with the macOS 15.2 deployment target.
+
+Cleanup completed at `2026-10-11T23:36:09.860Z`. It verified the frozen helper, profiles, tone page, app copies, runtime sources, and strict signatures. It archived the measured aggregate result, user context, launcher, and plist. It stopped the app, reset only this bundle's AudioCapture and ScreenCapture choices, unregistered both app copies, and removed them. A Launch Services dump contained no matching bundle identifier, and no owned app, probe, or helper remained running. No reset targeted Hex or Ghostty.
+
+The immutable attempt marker, result, frozen plans, approval continuation, exact artifact archives, and cleanup ledger remain in ignored `dist/safari-exclusion-evidence`. No PCM, spectra, per-window arrays, process identities, or device lists were retained. One approved attempt was used; zero remain. Another run requires explicit approval before rearming the one-shot claim. It must establish Kaset pause and Safari marker playback before the user starts capture. The production gate remains closed.
 
 ## Interpret the result
 

@@ -2,7 +2,7 @@
 
 This reference defines one narrower experiment: Kaset remains paused while Safari plays the fixed unrelated marker. Two separate ScreenCaptureKit streams measure the pinned Kaset application and the pinned Safari application. A pass would establish exclusion within these captured digital streams for the tested build and configuration. It would establish neither acoustic output nor full isolation during Kaset playback.
 
-This contract has no measured exclusion result. The first approved setup stopped at Safari's metadata check and was cleaned up. Freeze the corrected helper and profile before resuming the same approved scope and unclaimed attempt. The [application-targeting contract](APPLICATION-TARGETING.md) still governs Kaset identity, permission classification, cleanup, and the production gate. The [four-case isolation draft](ISOLATION-PROTOCOL.md) remains unchanged, including its stronger physical-route prerequisites.
+One [paired run](README.md#inconclusive-paired-run-on-2026-10-11) completed with an invalid Safari reference and an inconclusive verdict. The user reported Kaset playback and no Safari tone start. The run consumed its single approved attempt and was cleaned up. The [application-targeting contract](APPLICATION-TARGETING.md) still governs Kaset identity, permission classification, cleanup, and the production gate. The [four-case isolation draft](ISOLATION-PROTOCOL.md) remains unchanged, including its stronger physical-route prerequisites.
 
 ## Scope and controls
 
