@@ -107,7 +107,27 @@ The trace uses the same daemon and sidebar model with the same 15-second limits.
 
 Before creating a daemon, the trace atomically creates `dist/source-trace-evidence/attempt.json`. An existing marker prevents another attempt, including after app restart. The marker records an attempt; it grants no permission. Results go to `dist/source-trace-evidence/trace-result.json`. Do not remove the marker to retry without another explicit approval.
 
-The diagnostic app has not been registered or launched. No new permission request or live trace has run. The native source failure remains unresolved until separately approved runtime evidence identifies its checkpoint.
+The diagnostic app was registered and launched for the separately approved trace below, then stopped and removed. Its permission choices were reset during cleanup. Another live request needs new approval.
+
+## Source trace, 2026-10-11 UTC
+
+The user approved permission setup and one 15-second Kaset trace for `dev.naxo.music.sck-source-trace.20261011`.
+
+An initial invocation at 03:03:08 UTC ended during source selection, before calling Start. It saved zero frames and no checkpoint. The user reported that the trace button was unavailable. The files were preserved under `dist/source-trace-evidence/preflight-1`. Metadata-only checks then found one verified source with running output. The preflight marker was archived to finish the original approved capture request. Only the following invocation issued daemon Start.
+
+| Start (UTC)  | Duration | Frames | Ever active | Native checkpoint        |
+| ------------ | -------- | ------ | ----------- | ------------------------ |
+| 03:10:22.345 | 3.064 s  | 0      | No          | `sck-application-absent` |
+
+The helper passed its identity and cache-ownership checks before discovery. Shareable-content discovery completed, but no returned application matched the selected Kaset WebKit PID. The helper then reported `source-loss`. This guard runs before filter or stream construction, so no `SCStream` was created.
+
+Narrow TCC diagnostics attributed the request to the source-trace app and showed allowed ScreenCapture checks (`authValue=2`, `authReason=4`). Those logs remain diagnostic evidence, not runtime authorization authority. No PIDs, application catalogs, window titles, audio, or video were retained from discovery.
+
+This identifies the failed guard in this run. It does not establish why the PID was absent, rule out process loss during discovery, or prove that ScreenCaptureKit can never expose Kaset WebKit audio. The checks after discovery currently run after application selection, so they did not run in this failure. Further investigation must establish source continuity across discovery before changing source selection. The exact-PID guard and production release gate remain unchanged.
+
+Cleanup verified the reviewed artifact hashes and app signature. It stopped the app, reset only the source-trace bundle's AudioCapture and ScreenCapture choices, and removed both generated app copies. The temporary-copy unregister command returned `-10814`; a subsequent Launch Services dump contained no source-trace bundle identifier. No app, probe, or helper remained running. No permission reset targeted Hex or Ghostty.
+
+The completed trace, sanitized permission diagnostics, preparation/cleanup ledger, and archived helper remain in ignored `dist/source-trace-evidence`. The approved daemon Start request is used; no further live attempt is authorized.
 
 ## Interpret the result
 
