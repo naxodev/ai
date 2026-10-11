@@ -45,6 +45,7 @@ export async function buildSckPrototype() {
   // analyzer code. It replaces the entrypoint without editing the real helper.
   const source =
     original.slice(0, split) +
+    (await readFile(join(directory, "SckPCM.swift"), "utf8")) +
     (await readFile(join(directory, "SckCapture.swift"), "utf8"))
   const sourcePath = join(output, "main.swift")
   const plistPath = join(output, "Info.plist")

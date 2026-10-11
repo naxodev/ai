@@ -24,13 +24,15 @@ Run from the repository root:
 
    The six checks cover PCM extraction, shutdown ordering, permission policy, source guards, discovery ordering, and native denial exit 77. PCM fixtures cover interleaved and planar stereo, tone, silence, and invalid-rate rejection. Source fixtures reject absent or duplicate PIDs, missing displays, and broadened or mismatched filters. They preserve the original failure reason and check that native checkpoint names match the recorder's allowlist. The discovery fixture rejects changed identity or ownership before consuming content and verifies that discovery dispatch cannot call capture. They construct no stream and query no shareable content.
 
-3. Run the forty offline regressions:
+3. Run the forty-eight offline regressions:
 
    ```sh
    bun test packages/music-core/prototypes/sck-audio/*.test.ts
    ```
 
    These use fake process boundaries, fixed fake catalogs from real Bun subprocesses, and real temporary Unix sockets. They verify initial denial, silence, revocation, generic failure, explicit Stop, and pipe/heartbeat races through the daemon and sidebar model. An isolated import check blocks live server startup and verifies imports cannot start a probe. Diagnostic checks reject unknown text and preserve fixed native failure reasons and source checkpoints across a fast exit. Metadata checks keep the recorder's scope open and reject a source without running output. A concurrent file-claim test prevents a second trace attempt. They do not mount OpenCode or establish real macOS permission behavior.
+
+   Eight paired-reference tests also reject missing or spoofed application proofs, incomplete coverage, invalid controls, contradictory summaries, and failed cleanup. The separate browser directory contains eight more source-page tests.
 
 4. Check the prototype's own TypeScript project:
 
@@ -336,6 +338,42 @@ The regressions reject automatic or repeated playback, a late resume before time
 Offline verification used Chrome 155.0.8059.40 with a temporary dedicated profile because the DevTools connector's profile was locked. The rendered graph measured peak `0.10000000149011612`, mean power `0.004999998109751191`, and marker purity `0.9999991658455091`. Channel difference and post-fifteen-second peak were zero. The source page stayed idle on load. Its idle controls and layout were inspected in a browser screenshot. Both pages produced zero console errors or warnings and zero external requests. The browser exited, and its temporary profile was removed.
 
 The exact generated pages, hashes, screenshot, and aggregate browser verification remain in ignored `dist/controlled-sources`. Installed Safari playback, source ownership, route observation, common-clock analysis, and simultaneous reference streams remain unverified. No live capture, audible playback, permission reset, or app registration occurred during this preparation. This work creates no live allowance and does not clear the production gate.
+
+## Prepare the Safari reference without capture
+
+The [Safari exclusion contract](SAFARI-EXCLUSION.md) defines a smaller question: whether the Kaset application stream excludes a measured Safari marker while Kaset is paused. The full simultaneous isolation protocol remains separate. This preparation creates no live allowance.
+
+Use this prototype checkout on the preparation Mac, with the archived successful Kaset discovery profile and the reviewed tone page already present. Build the isolated app from the repository root:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/build-harness.ts --safari-exclusion
+```
+
+This creates `dist/Kaset Safari Exclusion.app` with bundle ID `dev.naxo.music.sck-safari-exclusion.20261011`. It creates a separately signed helper, a fixed Kaset profile copy, and a separately prepared Safari profile. Preparation validates Safari's disk code and freezes its canonical paths, Apple requirement, absent Team Identifier, and architecture-specific CDHash. Both profile digests are compiled into the helper. Kaset keeps its existing nonempty-team policy. The builder registers or opens no app, queries no shareable content, starts no stream, and changes no permission.
+
+The native mode exposes only its fixed catalog, two application preflights, paired capture, and synthetic commands. It rejects the earlier capture and discovery flags. The parent verifies the signed helper before metadata and again before claiming the attempt. Three metadata commands pin one Kaset application, its existing WebKit witness, and one Safari application in memory. The reviewed tone page's exact hash must match before the atomic attempt claim. Missing metadata or a changed page cannot start protected discovery. An existing attempt marker blocks another run or rebuild.
+
+After a later approval, the app's permission action starts no helper. The user pauses Kaset, starts the exact reviewed Safari page, keeps that tab visible, and promptly clicks **exclude** once. No playback command comes from this runner. It separately includes the pinned Kaset and Safari applications on the same selected display. It registers only audio outputs, requests 48 kHz stereo, and disables microphone capture. It creates no Core Audio tap, global mix, screen output, recording output, or fallback selection.
+
+Both Start completions remain owned. After both succeed, one host-clock anchor fixes two seconds of warmup and sixty 100 ms evaluation windows. Each stream's presentation timestamps convert through its own unchanged synchronization clock. Complete 4,800-frame stereo windows must align to the same grid. Missing, duplicate, overlapping, stale, future, or discontinuous samples cannot become measured silence. The first admitted PCM format is pinned; a later layout or format change fails the operation. Identity, profile, display, and default-output consistency checks continue while measurements are accepted and after teardown.
+
+The bounded analyzer retains one partial PCM window per stream. It computes a periodic Hann transform over bins 209–214, within the declared Safari band. It averages channel powers separately, so opposite channels cannot cancel. The independent reference must meet the fixed marker-power and spectral-purity thresholds in every paired window. Only aggregate powers and counts leave the helper. PCM, spectra, window arrays, identities, device lists, and arbitrary errors are not saved.
+
+A clean result reports `passed` / `paused-target-exclusion`, `failed` / `target-energy-limit`, or `inconclusive` with a fixed coverage, control, or clipping reason. Exceeding a target threshold does not establish its audio's origin. Every result keeps `isolationEstablished: false`. A passing paused-target case would not establish Kaset admission, simultaneous isolation, permission behavior, or production readiness.
+
+Both sinks are fenced before teardown. Any late successful Start receives Stop, and both Stop operations and output removals must join. Cleanup failure takes precedence over measurement and permission outcomes. Native exit 70 denotes failed cleanup; only the supported consent error after clean teardown uses exit 77. The native hard deadline is fifteen seconds from helper startup, including discovery and teardown. Collection ends by one second before that deadline. The parent has a twenty-second operation timeout; the app terminates a stuck runner at 22 seconds and kills it at 24. These outer limits do not extend the native capture allowance.
+
+Run the nineteen native synthetic checks without discovery or capture:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/check-safari-exclusion-native.ts
+```
+
+They cover both signing policies, exact filters, native clock arithmetic, contiguous sample coverage, Hann power normalization, tone/silence/opposite channels, non-finite samples, changed PCM layout, positive-control loss, marked and unmarked target energy, partial registration, late Start, cancellation during Stop, cleanup precedence, denial, and rejected cross-mode flags. The shared PCM checks also preserve the older sink's non-strict default. They construct no stream and query no shareable content.
+
+The complete offline suite has fifty-six tests, including the eight browser tests. Run it with `bun test packages/music-core/prototypes/sck-audio`. Check the prototype and browser TypeScript projects separately, then run workspace lint. Installed Safari playback, actual dual-stream timing, exceptional callback ordering, and the measured exclusion case remain untested. The generated app remains unregistered and unopened. No permission reset, audible playback, protected discovery, or live capture occurred during preparation.
+
+The build and nineteen native checks passed. The fifty-six tests, prototype/browser type checks, workspace lint, core/plugin type checks, and package-content checks passed. Standards and Spec reviews resolved their two P3 findings; a separate clock/analysis/lifecycle review found no issue. A metadata-only preflight issued three permitted metadata commands and no protected command. It returned unavailable; a separate process check confirmed Safari was closed. No attempt was claimed, and all prepared artifact hashes stayed unchanged. Running-source eligibility still needs checking after Safari opens under the later approval.
 
 ## Interpret the result
 

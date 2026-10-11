@@ -15,7 +15,7 @@ export async function claimSourceTrace(directory: string, startedAt: string) {
 
 export async function claimDiagnosticAttempt(
   directory: string,
-  stage: "trace" | "discover" | "capture",
+  stage: "trace" | "discover" | "capture" | "exclude",
   startedAt: string,
 ) {
   await mkdir(directory, { recursive: true })

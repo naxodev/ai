@@ -37,6 +37,7 @@ export function makeApplicationFixture(
   options: {
     witnesses?: number
     preflight?: string
+    metadata?: Readonly<Record<string, string>>
     payload?: string
     code?: number
     fault?: "stdout" | "heartbeat" | "cleanup"
@@ -113,6 +114,8 @@ export function makeApplicationFixture(
       expect(request.executable).toBe(profile.helperPath)
       expect(request.shell).toBe(false)
       calls.push([...request.args])
+      const metadata = options.metadata?.[request.args[0] ?? ""]
+      if (metadata !== undefined) return completed(metadata)
       if (request.args[0] === "--list-kaset-sources")
         return completed(
           JSON.stringify({

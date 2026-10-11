@@ -21,3 +21,8 @@ await mock.module("./application-capture-check.ts", () => ({
     throw new Error("Import attempted application capture")
   },
 }))
+await mock.module("./safari-exclusion-check.ts", () => ({
+  inspectSafariExclusion: () => {
+    throw new Error("Import attempted paired capture")
+  },
+}))

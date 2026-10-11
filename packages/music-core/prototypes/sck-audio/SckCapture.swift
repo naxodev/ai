@@ -14,8 +14,10 @@ private final class SckCompletion<T> {
     func finish(_ value: Result<T, Error>) { lock.lock(); defer { lock.unlock() }; if result == nil { result = value } }
     func read() -> Result<T, Error>? { lock.lock(); defer { lock.unlock() }; return result }
 }
-private func sckWait<T>(_ completion: SckCompletion<T>, lease: Lease? = nil, deadline: Double? = nil) throws -> Result<T, Error> {
+private func sckWait<T>(_ completion: SckCompletion<T>, lease: Lease? = nil, deadline: Double? = nil,
+    onWait: () -> Void = {}) throws -> Result<T, Error> {
     while completion.read() == nil {
+        onWait()
         if let deadline, nativeNow() >= deadline { throw HelperError(reason: "cleanup-failed") }
         if let stopped = lease?.state() { throw HelperError(reason: stopped.reason) }
         _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
@@ -63,57 +65,14 @@ private final class SckAudioSink: NSObject, SCStreamOutput, SCStreamDelegate {
     }
     func consume(_ buffer: CMSampleBuffer) {
         guard lease.state() == nil, acceptsSamples() else { return }
-        guard CMSampleBufferIsValid(buffer), CMSampleBufferDataIsReady(buffer),
-              let description = CMSampleBufferGetFormatDescription(buffer),
-              let format = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
-              format.mFormatID == kAudioFormatLinearPCM, format.mSampleRate == 48000,
-              format.mChannelsPerFrame == 2, format.mBitsPerChannel == 32,
-              format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
-              format.mFormatFlags & kAudioFormatFlagIsPacked != 0,
-              format.mFormatFlags & kAudioFormatFlagIsBigEndian == 0 else {
-            stopped(HelperError(reason: "format")); return
-        }
-        let count = CMSampleBufferGetNumSamples(buffer)
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(buffer)
-        guard count > 0, count <= 16384, timestamp.isNumeric,
-              CMTimeGetSeconds(timestamp).isFinite, CMTimeGetSeconds(timestamp) > 0 else {
-            stopped(HelperError(reason: "clock")); return
-        }
-        let size = MemoryLayout<AudioBufferList>.size + MemoryLayout<AudioBuffer>.size
-        let storage = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: MemoryLayout<AudioBufferList>.alignment)
-        defer { storage.deallocate() }
-        storage.initializeMemory(as: UInt8.self, repeating: 0, count: size)
-        let list = storage.bindMemory(to: AudioBufferList.self, capacity: 1)
-        list.pointee.mNumberBuffers = 2
-        var needed = 0
-        var block: CMBlockBuffer?
-        _ = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(buffer, bufferListSizeNeededOut: &needed,
-            bufferListOut: nil, bufferListSize: 0, blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil, flags: 0, blockBufferOut: nil)
-        guard needed > 0, needed <= size else { stopped(HelperError(reason: "format")); return }
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(buffer, bufferListSizeNeededOut: &needed,
-            bufferListOut: list, bufferListSize: needed, blockBufferAllocator: kCFAllocatorDefault,
-            blockBufferMemoryAllocator: kCFAllocatorDefault, flags: 0, blockBufferOut: &block)
-        guard status == noErr, needed <= size else { stopped(HelperError(reason: "format")); return }
-        let buffers = UnsafeMutableAudioBufferListPointer(list)
-        guard buffers.count == 1 || buffers.count == 2,
-              buffers.allSatisfy({ $0.mData != nil && Int($0.mDataByteSize) == count * Int($0.mNumberChannels) * 4 }),
-              (buffers.count == 1 && buffers[0].mNumberChannels == 2) ||
-              (buffers.count == 2 && buffers.allSatisfy({ $0.mNumberChannels == 1 })) else {
-            stopped(HelperError(reason: "format")); return
-        }
-        if strictPCM {
-            for buffer in buffers {
-                guard let data = buffer.mData else { stopped(HelperError(reason: "format")); return }
-                let values = UnsafeBufferPointer(start: data.assumingMemoryBound(to: Float.self),
-                    count: count * Int(buffer.mNumberChannels))
-                guard values.allSatisfy({ $0.isFinite }) else { stopped(HelperError(reason: "format")); return }
+        do {
+            try withSckPCM(buffer, strict: strictPCM) { list, _, timestamp in
+                var time = AudioTimeStamp()
+                time.mHostTime = CMClockConvertHostTimeToSystemUnits(timestamp)
+                time.mFlags = .hostTimeValid
+                samples.append(list, time: &time, rate: 48000)
             }
-        }
-        var time = AudioTimeStamp()
-        time.mHostTime = CMClockConvertHostTimeToSystemUnits(timestamp)
-        time.mFlags = .hostTimeValid
-        withExtendedLifetime(block) { samples.append(list, time: &time, rate: 48000) }
+        } catch { stopped(error) }
     }
 }
 

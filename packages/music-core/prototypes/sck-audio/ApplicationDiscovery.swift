@@ -6,6 +6,16 @@ import CryptoKit
 private let kasetIdentifier = "com.sertacozercan.Kaset"
 private let kasetBundlePath = "/Applications/Kaset.app"
 private let kasetExecutablePath = kasetBundlePath + "/Contents/MacOS/Kaset"
+private struct ApplicationLocation {
+    let identifier: String
+    let bundle: String
+    let executable: String
+    let requiresTeam: Bool
+    static let kaset = ApplicationLocation(identifier: kasetIdentifier, bundle: kasetBundlePath,
+        executable: kasetExecutablePath, requiresTeam: true)
+    static let safari = ApplicationLocation(identifier: "com.apple.Safari", bundle: canonical("/Applications/Safari.app"),
+        executable: canonical("/Applications/Safari.app/Contents/MacOS/Safari"), requiresTeam: false)
+}
 private struct ApplicationProfile: Codable, Equatable {
     let revision: Int
     let bundleIdentifier: String
@@ -46,11 +56,12 @@ private var appArchitecture: String {
 private func canonical(_ path: String) -> String {
     URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
 }
-private func validateProfile(_ profile: ApplicationProfile) throws {
-    guard profile.revision == 1, profile.bundleIdentifier == kasetIdentifier,
-          profile.bundlePath == kasetBundlePath, profile.executablePath == kasetExecutablePath,
+private func validateProfile(_ profile: ApplicationProfile, location: ApplicationLocation = .kaset) throws {
+    guard profile.revision == 1, profile.bundleIdentifier == location.identifier,
+          profile.bundlePath == location.bundle, profile.executablePath == location.executable,
           profile.architecture == appArchitecture,
-          profile.teamIdentifier.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil,
+          (location.requiresTeam ? profile.teamIdentifier.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil
+            : profile.teamIdentifier.isEmpty && profile.requirement == "identifier \"com.apple.Safari\" and anchor apple"),
           profile.cdHash.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil,
           !profile.requirement.isEmpty, profile.requirement.utf8.count <= 4096 else {
         throw HelperError(reason: "application-profile")
@@ -67,10 +78,14 @@ private func signingFields(_ code: SecStaticCode) throws -> (identifier: String,
     guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
           let fields = information as? [String: Any],
           let identifier = fields[kSecCodeInfoIdentifier as String] as? String,
-          let team = fields[kSecCodeInfoTeamIdentifier as String] as? String,
           let hash = fields[kSecCodeInfoUnique as String] as? Data, hash.count == 20 else {
         throw HelperError(reason: "application-signature")
     }
+    let team: String
+    if let value = fields[kSecCodeInfoTeamIdentifier as String] {
+        guard let value = value as? String else { throw HelperError(reason: "application-signature") }
+        team = value
+    } else { team = "" }
     return (identifier, team, hex(hash))
 }
 private func validateSigningFields(_ fields: (identifier: String, team: String, hash: String),
@@ -78,12 +93,12 @@ private func validateSigningFields(_ fields: (identifier: String, team: String, 
     guard fields.identifier == profile.bundleIdentifier, fields.team == profile.teamIdentifier,
           fields.hash == profile.cdHash else { throw HelperError(reason: "application-signature") }
 }
-private func diskCode() throws -> SecStaticCode {
-    guard canonical(kasetBundlePath) == kasetBundlePath, canonical(kasetExecutablePath) == kasetExecutablePath else {
+private func diskCode(_ location: ApplicationLocation = .kaset) throws -> SecStaticCode {
+    guard canonical(location.bundle) == location.bundle, canonical(location.executable) == location.executable else {
         throw HelperError(reason: "application-profile")
     }
     var result: SecStaticCode?
-    guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: kasetBundlePath) as CFURL, [], &result) == errSecSuccess,
+    guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: location.bundle) as CFURL, [], &result) == errSecSuccess,
           let result else { throw HelperError(reason: "application-signature") }
     return result
 }
@@ -93,8 +108,8 @@ private func validateDiskCode(_ code: SecStaticCode, _ requirement: SecRequireme
         throw HelperError(reason: "application-signature")
     }
 }
-private func prepareApplicationProfile() throws {
-    let code = try diskCode()
+private func prepareApplicationProfile(_ location: ApplicationLocation = .kaset) throws {
+    let code = try diskCode(location)
     try validateDiskCode(code, nil)
     let fields = try signingFields(code)
     var requirement: SecRequirement?
@@ -104,18 +119,19 @@ private func prepareApplicationProfile() throws {
         throw HelperError(reason: "application-profile")
     }
     let profile = ApplicationProfile(revision: 1, bundleIdentifier: fields.identifier,
-        bundlePath: kasetBundlePath, executablePath: kasetExecutablePath, architecture: appArchitecture,
+        bundlePath: location.bundle, executablePath: location.executable, architecture: appArchitecture,
         teamIdentifier: fields.team, cdHash: fields.hash, requirement: text as String)
-    try validateProfile(profile)
+    try validateProfile(profile, location: location)
+    try validateDiskCode(code, profileRequirement(profile))
     let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
     FileHandle.standardOutput.write(try encoder.encode(profile) + Data([10]))
 }
-private func decodeApplicationProfile(_ bytes: Data, digest: String) throws -> ApplicationProfile {
+private func decodeApplicationProfile(_ bytes: Data, digest: String, location: ApplicationLocation = .kaset) throws -> ApplicationProfile {
     guard bytes.count <= 16384, hex(Data(SHA256.hash(data: bytes))) == digest else {
         throw HelperError(reason: "application-profile")
     }
     let result = try JSONDecoder().decode(ApplicationProfile.self, from: bytes)
-    try validateProfile(result)
+    try validateProfile(result, location: location)
     return result
 }
 private func loadApplicationProfile() throws -> ApplicationProfile {
@@ -135,10 +151,11 @@ private func singleApplication<T>(_ values: [T]) throws -> T {
     guard values.count == 1, let value = values.first else { throw HelperError(reason: "source-loss") }
     return value
 }
-private func verifiedApplication(_ profile: ApplicationProfile, expected: ApplicationIdentity? = nil) throws -> ApplicationIdentity {
+private func verifiedApplication(_ profile: ApplicationProfile, expected: ApplicationIdentity? = nil,
+    location: ApplicationLocation = .kaset) throws -> ApplicationIdentity {
     // Query afresh. An NSRunningApplication object can outlive the actual process.
-    let candidate = try singleApplication(NSRunningApplication.runningApplications(withBundleIdentifier: kasetIdentifier))
-    guard !candidate.isTerminated, candidate.bundleIdentifier == kasetIdentifier,
+    let candidate = try singleApplication(NSRunningApplication.runningApplications(withBundleIdentifier: location.identifier))
+    guard !candidate.isTerminated, candidate.bundleIdentifier == location.identifier,
           let bundle = candidate.bundleURL, let executable = candidate.executableURL else {
         throw HelperError(reason: "source-loss")
     }
@@ -148,7 +165,7 @@ private func verifiedApplication(_ profile: ApplicationProfile, expected: Applic
     try validateSnapshot(ApplicationSnapshot(identity: identity, bundleIdentifier: candidate.bundleIdentifier ?? "",
         bundlePath: canonical(bundle.path), executablePath: canonical(executable.path)), profile: profile, expected: expected)
     let requirement = try profileRequirement(profile)
-    let disk = try diskCode()
+    let disk = try diskCode(location)
     try validateDiskCode(disk, requirement)
     try validateSigningFields(signingFields(disk), profile)
     var running: SecCode?
@@ -199,7 +216,7 @@ private final class ApplicationContentCompletion {
     func finish(_ value: Result<SCShareableContent, Error>) { lock.lock(); defer { lock.unlock() }; if result == nil { result = value } }
     func read() -> Result<SCShareableContent, Error>? { lock.lock(); defer { lock.unlock() }; return result }
 }
-private func applicationShareableContent(_ lease: Lease) throws -> SCShareableContent {
+private func applicationShareableContent(_ lease: Lease, onWait: () -> Void = {}) throws -> SCShareableContent {
     let completion = ApplicationContentCompletion()
     SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { content, error in
         if let error { completion.finish(.failure(error)) }
@@ -207,6 +224,7 @@ private func applicationShareableContent(_ lease: Lease) throws -> SCShareableCo
         else { completion.finish(.failure(HelperError(reason: "setup"))) }
     }
     while completion.read() == nil {
+        onWait()
         guard lease.state() == nil else { throw HelperError(reason: "prototype-deadline") }
         _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.005))
     }

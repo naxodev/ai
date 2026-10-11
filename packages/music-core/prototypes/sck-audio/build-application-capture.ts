@@ -77,7 +77,13 @@ export async function buildApplicationCapture() {
   )
   const constants = `private let applicationProfilePath = ${JSON.stringify(applicationCapture.profilePath)}\nprivate let applicationProfileDigest = ${JSON.stringify(digest)}\n`
   const source =
-    primitives + constants + runtime + pcmFixture + identity + implementation
+    primitives +
+    constants +
+    (await readFile(join(import.meta.dir, "SckPCM.swift"), "utf8")) +
+    runtime +
+    pcmFixture +
+    identity +
+    implementation
   await mkdir(output, { recursive: true })
   await writeFile(applicationCapture.profilePath, archived, { mode: 0o600 })
   const sourcePath = join(output, "application-capture-main.swift")

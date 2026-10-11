@@ -4,6 +4,7 @@ import { Effect, Fiber, Scope, Stream } from "effect"
 import type { NativeHelperDependencies } from "../../audio/helper-process.ts"
 import { sourceDiscovery } from "./source-discovery.ts"
 import { applicationDiscovery } from "./application-discovery.ts"
+import { safariExclusion } from "./safari-exclusion.ts"
 
 export const sckSourceCheckpoints = [
   "sck-before-discovery-identity",
@@ -80,7 +81,8 @@ export const withProbeDiagnostics = Effect.fn("SckProbe.withDiagnostics")(
         const child = boundary.spawn(request)
         const command =
           request.args[0] === "--list-kaset-sources" ||
-          request.args[0] === applicationDiscovery.preflightFlag
+          request.args[0] === applicationDiscovery.preflightFlag ||
+          request.args[0] === safariExclusion.preflightFlag
             ? "catalog"
             : request.args[0] === sourceDiscovery.nativeFlag ||
                 request.args[0] === applicationDiscovery.nativeFlag
