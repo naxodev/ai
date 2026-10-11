@@ -349,7 +349,7 @@ Use this prototype checkout on the preparation Mac, with the archived successful
 bun packages/music-core/prototypes/sck-audio/build-harness.ts --safari-exclusion
 ```
 
-This creates `dist/Kaset Safari Exclusion.app` with bundle ID `dev.naxo.music.sck-safari-exclusion.20261011`. It creates a separately signed helper, a fixed Kaset profile copy, and a separately prepared Safari profile. Preparation validates Safari's disk code and freezes its canonical paths, Apple requirement, absent Team Identifier, and architecture-specific CDHash. Both profile digests are compiled into the helper. Kaset keeps its existing nonempty-team policy. The builder registers or opens no app, queries no shareable content, starts no stream, and changes no permission.
+This creates `dist/Kaset Safari Exclusion.app` with bundle ID `dev.naxo.music.sck-safari-exclusion.20261011`. It creates a separately signed helper, a fixed Kaset profile copy, and a separately prepared Safari profile. Preparation selects the helper's native signing architecture explicitly. It validates Safari's disk code and freezes its canonical paths, Apple requirement, absent Team Identifier, and architecture-specific CDHash. Both profile digests are compiled into the helper. Kaset keeps its existing nonempty-team policy. The builder registers or opens no app, queries no shareable content, starts no stream, and changes no permission.
 
 The native mode exposes only its fixed catalog, two application preflights, paired capture, and synthetic commands. It rejects the earlier capture and discovery flags. The parent verifies the signed helper before metadata and again before claiming the attempt. Three metadata commands pin one Kaset application, its existing WebKit witness, and one Safari application in memory. The reviewed tone page's exact hash must match before the atomic attempt claim. Missing metadata or a changed page cannot start protected discovery. An existing attempt marker blocks another run or rebuild.
 
@@ -371,9 +371,29 @@ bun packages/music-core/prototypes/sck-audio/check-safari-exclusion-native.ts
 
 They cover both signing policies, exact filters, native clock arithmetic, contiguous sample coverage, Hann power normalization, tone/silence/opposite channels, non-finite samples, changed PCM layout, positive-control loss, marked and unmarked target energy, partial registration, late Start, cancellation during Stop, cleanup precedence, denial, and rejected cross-mode flags. The shared PCM checks also preserve the older sink's non-strict default. They construct no stream and query no shareable content.
 
-The complete offline suite has fifty-six tests, including the eight browser tests. Run it with `bun test packages/music-core/prototypes/sck-audio`. Check the prototype and browser TypeScript projects separately, then run workspace lint. Installed Safari playback, actual dual-stream timing, exceptional callback ordering, and the measured exclusion case remain untested. The generated app remains unregistered and unopened. No permission reset, audible playback, protected discovery, or live capture occurred during preparation.
+Check the actual disk-code selector against an explicit native-architecture reference:
 
-The build and nineteen native checks passed. The fifty-six tests, prototype/browser type checks, workspace lint, core/plugin type checks, and package-content checks passed. Standards and Spec reviews resolved their two P3 findings; a separate clock/analysis/lifecycle review found no issue. A metadata-only preflight issued three permitted metadata commands and no protected command. It returned unavailable; a separate process check confirmed Safari was closed. No attempt was claimed, and all prepared artifact hashes stayed unchanged. Running-source eligibility still needs checking after Safari opens under the later approval.
+```sh
+bun packages/music-core/prototypes/sck-audio/check-application-architecture.ts
+```
+
+This macOS check reads the installed Kaset and Safari signatures. It compiles the actual selector into a temporary program. It performs strict disk validation and compares each selected CDHash with the explicitly selected native slice. It queries no running process or protected content and starts no stream. The temporary program is removed afterward. This check is separate from the synthetic checks above.
+
+The complete offline suite has fifty-six tests, including the eight browser tests. Run it with `bun test packages/music-core/prototypes/sck-audio`. Check the prototype and browser TypeScript projects separately, then run workspace lint. Installed Safari playback, actual dual-stream timing, exceptional callback ordering, and the measured exclusion case remain untested.
+
+The original build and nineteen native checks passed. The fifty-six tests, prototype/browser type checks, workspace lint, core/plugin type checks, and package-content checks passed. Standards and Spec reviews resolved their two P3 findings; a separate clock/analysis/lifecycle review found no issue. The original metadata-only preflight returned unavailable while Safari was closed. No attempt was claimed during that preparation.
+
+### Safari metadata failure on 2026-10-11
+
+After separate approval, the isolated app was registered and opened. Only its AudioCapture and ScreenCapture permission choices were reset. The reviewed Safari page opened idle. The three-command metadata preflight then returned unavailable before claiming an attempt or requesting protected discovery. Safari was running, and its paths, signed identifier, and absent Team Identifier matched. Its running CDHash differed from the profile prepared with Security's default architecture selection.
+
+A read-only diagnostic verified that explicit `arm64` selection matched running Safari. The actual-selector regression above failed with `native-architecture-mismatch` before the fix. It passed for Kaset and Safari after the selector began passing `kSecCodeAttributeArchitecture` to `SecStaticCodeCreateWithPathAndAttributes`. The rebuilt helper's three-command metadata preflight reached eligibility, then deliberately stopped before the attempt claim. It ran no protected command and returned no measured exclusion verdict. Kaset's archived profile stayed unchanged.
+
+Cleanup verified the original hashes and strict signatures, stopped the isolated app, reset only its two permission choices, unregistered both generated app copies, and removed them. A Launch Services dump contained no matching bundle identifier. No owned app, probe, or helper remained running. No reset targeted Hex or Ghostty. The reviewed Safari tab was left open. The runner issued no playback command, protected discovery request, or capture request.
+
+The replacement build passed strict signing checks and all nineteen native synthetic checks. The two disk-signature checks, fifty-six tests, prototype type check, workspace lint, core/plugin type checks, and package-content checks passed. The shared discovery source also passed a separate compile-only check. Standards and Spec reviews found no issue in this correction.
+
+The original frozen plan, approval, helper/profile archives, and cleanup record remain in ignored `dist/safari-exclusion-evidence`. The replacement app was built and checked before registration. Its changed helper and Safari profile need a separately frozen replacement plan. The user's existing approval covers the unchanged app, application scopes, capture limits, and single unclaimed attempt. Record that continuation against the replacement plan; it adds no attempt. No protected attempt has been claimed, and no exclusion result exists. Production capture remains unavailable.
 
 ## Interpret the result
 

@@ -98,7 +98,10 @@ private func diskCode(_ location: ApplicationLocation = .kaset) throws -> SecSta
         throw HelperError(reason: "application-profile")
     }
     var result: SecStaticCode?
-    guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: location.bundle) as CFURL, [], &result) == errSecSuccess,
+    // The default selector can choose another slice of a universal application.
+    let attributes = [kSecCodeAttributeArchitecture as String: appArchitecture] as CFDictionary
+    guard SecStaticCodeCreateWithPathAndAttributes(URL(fileURLWithPath: location.bundle) as CFURL,
+          [], attributes, &result) == errSecSuccess,
           let result else { throw HelperError(reason: "application-signature") }
     return result
 }
