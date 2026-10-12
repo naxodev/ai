@@ -2,13 +2,22 @@
 
 Both OpenCode plugins share one exact supported host set in [scripts/opencode-compatibility.json](../scripts/opencode-compatibility.json).
 
-- `@opencode/cli`, `@opencode/plugin`, and `@opencode/theme`: `2.0.18`.
-- `@opentui/core` and `@opentui/solid`: `0.5.12`.
+- `@opencode/cli`, `@opencode/plugin`, and `@opencode/theme`: `2.0.26`.
+- `@opentui/core` and `@opentui/solid`: `0.5.17`.
 - `solid-js`: `1.9.15`.
+- Music-core and the host's `effect`: `4.0.0-rc.112`.
 
-The [stable CLI source catalog](https://github.com/anomalyco/opencode/blob/v2.0.18/package.json) selects these OpenTUI and Solid versions. Upstream `@opencode/plugin@2.0.18` declares optional OpenTUI peers `>=0.5.12` and theme `2.0.18`. OpenTUI Solid still declares a `solid-js` peer of `1.9.12`; the host uses `1.9.15`. Bun reports that metadata mismatch. Type-checks and packed real-host smokes establish support for the exact host combination, not a wider range.
+The [stable CLI source catalog](https://github.com/anomalyco/opencode/blob/v2.0.26/package.json) selects these OpenTUI, Solid, and Effect versions. OpenTUI Solid still declares a `solid-js` peer of `1.9.12`; the host uses `1.9.15`. Bun reports that metadata mismatch. Type-checks and packed real-host smokes establish support for the exact host combination, not a wider range.
 
-`bun run compatibility:check` checks both manifests, their lockfile workspace entries, and all coupled lockfile resolutions. It rejects mixed versions and ranges before packing or launching a host. Policy tests prove that a core-only update and a mismatched host fail. Both package smokes use the same host manifest and verify the installed executable's version. Dependabot groups OpenCode, OpenTUI, and Solid updates outside the development-only group. A grouped proposal still requires updating the compatibility contract and passing the full gates.
+`bun run compatibility:check` checks both plugin manifests, music-core's Effect dependency, their lockfile workspace entries, and all coupled host lockfile resolutions. It rejects mixed versions and ranges before packing or launching a host. Policy tests prove that a renderer-only update, a mismatched host, and an incompatible music-core Effect pin fail. Both package smokes use the same host manifest and verify the installed executable's version. Dependabot groups OpenCode, OpenTUI, and Solid updates outside the development-only group. A grouped proposal still requires updating the compatibility contract and passing the full gates.
+
+## OpenCode 2.0.26 runtime update
+
+OpenCode now redirects `effect` imports from plugins and their dependencies to its embedded `4.0.0-rc.112` runtime. The [host runtime loader](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/plugin/src/runtime.ts) enforces this rule. Promise-based adapters do not isolate transitive package imports from that redirection.
+
+Music-player 0.5.5 depends on music-core 0.2.2, which uses Effect `4.0.0-rc.117`. Its `Config.String` call fails during import on the new host, before the player registers. Music-core now pins the host's Effect version and uses `Config.string`. The build keeps Effect external, as required by the [Effect plugin contract](https://opencode.ai/v2/docs/build/plugins/effect#publish).
+
+Both plugins update their API, theme, and renderer pins together. This requires coordinated pre-1.0 minor releases and a music-core release before the music-player release. Until those releases are published, users of music-player 0.5.5 and Vim 0.4.2 must retain the supported 2.0.18 host.
 
 ## OpenCode 2.0.18 renderer update
 
@@ -30,7 +39,7 @@ The [stable CLI plugin contract](https://opencode.ai/v2/docs/build/plugins/cli) 
 
 OpenTUI `0.5.10` clears selection when assigning `EditBufferRenderable.cursorOffset`. Vim must move the cursor before restoring selection. Real-renderer regression tests cover visual reload reconciliation and change motions. The packed host gate also preserves visual mode, undo history, and the unnamed register across reload.
 
-Music-core and Apnea pin Effect `4.0.0-rc.117`. OpenCode's plugin and theme packages pin `4.0.0-rc.112`; other upstream packages retain their own pins. The music adapter crosses the host boundary through ordinary values, callbacks, and Promises, not host Effect services or fibers. The workspace does not override Effect across those dependency graphs.
+In the original migration, music-core and Apnea pinned Effect `4.0.0-rc.117`, while OpenCode's plugin and theme packages pinned `4.0.0-rc.112`. The adapter used values, callbacks, and Promises rather than host Effect services. The 2.0.26 runtime update above supersedes that dependency boundary for music-core. Apnea retains its independent Effect pin; the workspace does not override Effect across those dependency graphs.
 
 The workspace overrides `@opentelemetry/core` to `2.8.0` and Babel to `7.29.7` for development dependencies. It also pins Axios `1.20.0`, brace-expansion `5.0.12`, and ip-address `10.7.3` to address published advisories. Packed consumers do not need these overrides. The prebuilt host has a separate dependency boundary, described below. See the [dependency audit assessment](dependency-audit.md) for the remaining unpatched development advisory.
 
@@ -68,7 +77,7 @@ This build step is required by the exact host: packed TSX failed with `Cannot fi
 
 Both packages require the exact supported OpenCode Bun host. They declare `@opentui/core` and `@opentui/solid` as exact optional peers and exact development dependencies. The plugin API and Solid remain required host-supplied modules with exact development pins, but no npm peer metadata. The executable supplies all four modules; npm does not install copies for ordinary plugin consumers. Music-core and pngjs remain production dependencies.
 
-The [official CLI plugin guide](https://opencode.ai/v2/docs/build/plugins/cli) documents runtime resolution of `@opencode/plugin/tui`. The [stable host setup](https://github.com/anomalyco/opencode/blob/v2.0.18/packages/tui/src/plugin/runtime-plugin-support.bun.ts) registers that module with OpenTUI's runtime resolver. The [OpenTUI Solid configurator](https://unpkg.com/@opentui/solid@0.5.12/scripts/runtime-plugin-support-configure.js) supplies OpenTUI, JSX runtimes, Solid, and Solid store. The [core resolver](https://unpkg.com/@opentui/core@0.5.12/runtime-plugin.js) rewrites external ESM imports, including packages under `node_modules`, to the host's module instances. This preserves renderer and reactive-context identity.
+The [official CLI plugin guide](https://opencode.ai/v2/docs/build/plugins/cli) documents runtime resolution of `@opencode/plugin/tui`. The [stable host setup](https://github.com/anomalyco/opencode/blob/v2.0.26/packages/tui/src/plugin/runtime-plugin-support.bun.ts) registers that module with OpenTUI's runtime resolver and enables OpenCode's Effect resolver. The [OpenTUI Solid configurator](https://unpkg.com/@opentui/solid@0.5.17/scripts/runtime-plugin-support-configure.js) supplies OpenTUI, JSX runtimes, Solid, and Solid store. The [core resolver](https://unpkg.com/@opentui/core@0.5.17/runtime-plugin.js) rewrites external ESM imports, including packages under `node_modules`, to the host's module instances. This preserves renderer and reactive-context identity.
 
 Optional peers describe host provision, not an optional feature. npm peer metadata cannot validate an executable's embedded versions. The compatibility guard and packed real-host smokes enforce that requirement. The upstream documentation's publication example uses a runtime plugin dependency and ordinary OpenTUI peers; these packages deliberately use the narrower host-provided contract.
 
@@ -86,7 +95,7 @@ The same prospective-graph behavior affects the optional `@opencode/plugin@2.0.1
 
 ## Bundled host security boundary (2.0.3 assessment)
 
-The source assessment below applies to the original 2.0.3 host. It does not certify the 2.0.18 binary. The consumer audit covers installed plugin dependencies only.
+The source assessment below applies to the original 2.0.3 host. It does not certify the 2.0.26 binary. The consumer audit covers installed plugin dependencies only.
 
 The [tagged host lockfile](https://github.com/anomalyco/opencode/blob/v2.0.3/bun.lock) resolves fixed Babel `7.29.7` and affected OpenTelemetry core `2.6.1`. The binary's npm manifest cannot audit its bundled dependencies. A clean plugin-consumer audit does not establish an audit-clean binary.
 
