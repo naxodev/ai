@@ -1,6 +1,6 @@
 import { expect, test as baseTest } from "bun:test"
 import { createSessionTest, type SessionTestFn } from "./unix-session.ts"
-import { existsSync } from "node:fs"
+import { existsSync, unlinkSync } from "node:fs"
 import {
   chmod,
   lstat,
@@ -75,6 +75,8 @@ const test: SessionTestFn = createSessionTest(
     "Node acceptance rejected before enrollment destroys the exact socket",
     "an occupied path reports listen failure without disrupting its owner",
     "a dead exact bind reservation is reclaimed before binding",
+    "a disappearing bind reservation reports its filesystem error before provider ownership",
+    "a malformed bind reservation stays in place and blocks provider ownership",
     "simultaneous daemon bind contenders retain one provider owner",
     "process daemon contenders retain one winner and a non-interfering loser",
     "one graph replays hello, status, and state to both clients",
@@ -1368,6 +1370,63 @@ test("a dead exact bind reservation is reclaimed before binding", async () => {
   expect(existsSync(reservation)).toBe(false)
 })
 
+test("a disappearing bind reservation reports its filesystem error before provider ownership", async () => {
+  const path = socketPath("disappearing-bind-reservation")
+  const reservation = `${path}.bind-lock`
+  const uid = process.getuid?.()
+  if (typeof uid !== "number") throw new Error("expected a POSIX test runtime")
+  await writeFile(
+    reservation,
+    JSON.stringify({ version: 1, uid, pid: process.pid }),
+    { mode: 0o600 },
+  )
+  const provider = createFakeProvider()
+  try {
+    await expect(
+      startMusicSessionServer({ socketPath: path }, provider, {
+        onBindReservationInspected(inspected) {
+          if (inspected === reservation) unlinkSync(reservation)
+        },
+      }),
+    ).rejects.toMatchObject({
+      _tag: "MusicSession.SocketError",
+      operation: "listen",
+      path: reservation,
+      message: expect.stringContaining("ENOENT"),
+    })
+    expect(provider.counts.subscriptions).toBe(0)
+    expect(provider.counts.disposals).toBe(0)
+    expect(provider.counts.providerDisposals).toBe(0)
+    expect(existsSync(path)).toBe(false)
+    expect(existsSync(reservation)).toBe(false)
+  } finally {
+    await unlink(reservation).catch(() => {})
+  }
+})
+
+test("a malformed bind reservation stays in place and blocks provider ownership", async () => {
+  const path = socketPath("malformed-bind-reservation")
+  const reservation = `${path}.bind-lock`
+  await writeFile(reservation, "{", { mode: 0o600 })
+  const provider = createFakeProvider()
+  try {
+    await expect(
+      startMusicSessionServer({ socketPath: path }, provider),
+    ).rejects.toMatchObject({
+      _tag: "MusicSession.SocketError",
+      operation: "listen",
+      message: "bind reservation is malformed",
+    })
+    expect(existsSync(reservation)).toBe(true)
+    expect(existsSync(path)).toBe(false)
+    expect(provider.counts.subscriptions).toBe(0)
+    expect(provider.counts.disposals).toBe(0)
+    expect(provider.counts.providerDisposals).toBe(0)
+  } finally {
+    await unlink(reservation).catch(() => {})
+  }
+})
+
 test("simultaneous daemon bind contenders retain one provider owner", async () => {
   const path = socketPath("bind-race")
   const firstProvider = createFakeProvider()
@@ -1495,6 +1554,7 @@ test("process daemon contenders retain one winner and a non-interfering loser", 
       loserOutput.includes(path) ||
         loserOutput.includes("socket path is already occupied") ||
         loserOutput.includes("EADDRINUSE"),
+      loserOutput,
     ).toBe(true)
     expect(
       loser.observations.some(

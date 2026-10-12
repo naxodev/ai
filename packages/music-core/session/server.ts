@@ -154,6 +154,11 @@ export type ServerLifecycleHooks = {
   readonly onProviderScopeFinalized?: () => void
   /** Runs after partial identity capture and before socket hardening. */
   readonly onPartialBound?: (identity: BoundPathIdentity) => void
+  /**
+   * Test-only seam after reservation metadata checks and before reading its
+   * contents. Production supplies no hook.
+   */
+  readonly onBindReservationInspected?: (path: string) => void
   readonly onListener?: (server: net.Server) => void
   readonly onListenerFinalized?: () => void
   readonly onAccepted?: (socket: net.Socket) => void
@@ -391,15 +396,22 @@ const unlinkExactBindLock = async (
 const validBindLock = (stat: PathStat, uid: number) =>
   stat.isFile() && stat.uid === uid && (stat.mode & 0o777) === 0o600
 
-const reclaimDeadBindLock = async (path: string) => {
+const reclaimDeadBindLock = async (
+  path: string,
+  onInspected?: (path: string) => void,
+) => {
   const uid = process.getuid?.()
   const stat = await lstat(path)
   if (typeof uid !== "number" || !validBindLock(stat, uid))
     throw new Error("bind reservation is not an owner-only regular file")
   if (stat.size > 256) throw new Error("bind reservation is too large")
+  // A winner can remove the reservation between this stat and the read.
+  // Preserve that filesystem error; only invalid JSON is malformed.
+  onInspected?.(path)
+  const text = await readFile(path, "utf8")
   let payload: unknown
   try {
-    payload = JSON.parse(await readFile(path, "utf8"))
+    payload = JSON.parse(text)
   } catch {
     throw new Error("bind reservation is malformed")
   }
@@ -437,7 +449,10 @@ const reclaimDeadBindLock = async (path: string) => {
 // Bun's Node-compatible Unix listener can accept simultaneous `listen` calls
 // for one missing pathname. `link` publishes a fully written reservation, so
 // a crash before publication leaves only an inert private temporary file.
-const acquireBindLock = (socketPath: string) =>
+const acquireBindLock = (
+  socketPath: string,
+  onInspected?: (path: string) => void,
+) =>
   Effect.tryPromise({
     try: async () => {
       const path = `${socketPath}.bind-lock`
@@ -466,7 +481,7 @@ const acquireBindLock = (socketPath: string) =>
               cause !== null &&
               "code" in cause &&
               cause.code === "EEXIST" &&
-              (await reclaimDeadBindLock(path))
+              (await reclaimDeadBindLock(path, onInspected))
             ) {
               await handle.close().catch(() => {})
               await unlinkExactBindLock(temporaryPath, identity).catch(() => {})
@@ -1551,7 +1566,10 @@ const makeLayer = (
             yield* prepareManagedRuntimeDirectory(config.runtime).pipe(
               Effect.mapError((cause) => socketError("prepare", cause)),
             )
-          bindLock = yield* acquireBindLock(config.socketPath)
+          bindLock = yield* acquireBindLock(
+            config.socketPath,
+            hooks.onBindReservationInspected,
+          )
           yield* listen(server, config.socketPath)
           boundPath = yield* captureBoundPath(config.socketPath, (identity) => {
             partialBoundPath = identity

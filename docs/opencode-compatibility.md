@@ -17,7 +17,7 @@ OpenCode now redirects `effect` imports from plugins and their dependencies to i
 
 Music-player 0.5.5 depends on music-core 0.2.2, which uses Effect `4.0.0-rc.117`. Its `Config.String` call fails during import on the new host, before the player registers. Music-core now pins the host's Effect version and uses `Config.string`. The build keeps Effect external, as required by the [Effect plugin contract](https://opencode.ai/v2/docs/build/plugins/effect#publish).
 
-Both plugins update their API, theme, and renderer pins together. This requires coordinated pre-1.0 minor releases and a music-core release before the music-player release. Until those releases are published, users of music-player 0.5.5 and Vim 0.4.2 must retain the supported 2.0.18 host.
+Both plugins update their API, theme, and renderer pins together. This requires coordinated pre-1.0 minor releases and a music-core release before the music-player release. Nx releases these projects independently, so publishing music-core does not update either host dependency floor. After the new core version is visible, raise both music-host floors to that published version and regenerate the lockfile before publishing the hosts. Do not reserve an unpublished core version. The music-player floor must exclude music-core 0.2.2 because that release still pins Effect `4.0.0-rc.117`. Until those releases are published, users of music-player 0.5.5 and Vim 0.4.2 must retain the supported 2.0.18 host.
 
 ## OpenCode 2.0.18 renderer update
 
