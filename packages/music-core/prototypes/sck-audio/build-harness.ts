@@ -41,10 +41,8 @@ const profile = exclusionOnly
       sourceFile: "dist/SafariExclusionLauncher.swift",
       terminateAfter: 22,
       killAfter: 24,
-      instructions:
-        "Request Screen Access first. Pause Kaset. Start the reviewed Safari tone, keep its tab visible, then click exclude once. Captures each app separately and saves aggregate powers only.",
-      actionHint:
-        "Pause Kaset. Start the reviewed Safari tone and keep it visible, then click exclude once.",
+      instructions: safariExclusion.instructions,
+      actionHint: safariExclusion.actionHint,
     }
   : captureOnly
     ? {
@@ -208,7 +206,11 @@ const source =
       ) +
       " } }",
     "}",
-    'do { guard try actions.start(process, oneShot: oneShot, used: used, childRunning: child != nil) else { return }; child = process; if oneShot { used = true; button.isEnabled = false }; label.stringValue = "Running \\(button.title). Respond to the system prompt or adjust only this test app." }',
+    "do { guard try actions.start(process, oneShot: oneShot, used: used, childRunning: child != nil) else { return }; child = process; if oneShot { used = true; button.isEnabled = false }; label.stringValue = " +
+      (exclusionOnly
+        ? JSON.stringify(safariExclusion.runningHint)
+        : '"Running \\(button.title). Respond to the system prompt or adjust only this test app."') +
+      " }",
     'catch { label.stringValue = "Probe failed to launch."; return }',
     "DispatchQueue.main.asyncAfter(deadline:.now()+" +
       profile.terminateAfter +

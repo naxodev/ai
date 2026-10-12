@@ -16,6 +16,12 @@ export const safariExclusion = {
     new URL("./dist/safari-exclusion-profile.json", import.meta.url),
   ),
   appName: "Kaset Safari Exclusion",
+  instructions:
+    "Request Screen Access first. Pause Kaset. Click exclude, then immediately Start the reviewed Safari tone. Keep its tab visible. Saves aggregate powers only.",
+  actionHint:
+    "Keep Kaset paused. Click exclude, then immediately Start the reviewed Safari tone. Keep its tab visible.",
+  runningHint:
+    "Running exclude. Start the reviewed Safari tone now and keep its tab visible. Keep Kaset paused.",
   bundleIdentifier: "dev.naxo.music.sck-safari-exclusion.20261011",
   evidenceDirectory: "dist/safari-exclusion-evidence",
   tonePagePath: fileURLToPath(

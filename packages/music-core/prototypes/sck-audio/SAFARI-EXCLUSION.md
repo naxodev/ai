@@ -2,7 +2,7 @@
 
 This reference defines one narrower experiment: Kaset remains paused while Safari plays the fixed unrelated marker. Two separate ScreenCaptureKit streams measure the pinned Kaset application and the pinned Safari application. A pass would establish exclusion within these captured digital streams for the tested build and configuration. It would establish neither acoustic output nor full isolation during Kaset playback.
 
-One [paired run](README.md#inconclusive-paired-run-on-2026-10-11) completed with an invalid Safari reference and an inconclusive verdict. The user reported Kaset playback and no Safari tone start. The run consumed its single approved attempt and was cleaned up. The [application-targeting contract](APPLICATION-TARGETING.md) still governs Kaset identity, permission classification, cleanup, and the production gate. The [four-case isolation draft](ISOLATION-PROTOCOL.md) remains unchanged, including its stronger physical-route prerequisites.
+Two paired runs completed with inconclusive verdicts. The [first run](README.md#inconclusive-paired-run-on-2026-10-11) had no valid Safari reference. The [retry](README.md#paired-retry-on-2026-10-12-utc) had fifty-three valid reference windows and zero measured Kaset power. Seven invalid controls prevented acceptance. Both approved attempts are spent and were cleaned up. The [application-targeting contract](APPLICATION-TARGETING.md) still governs Kaset identity, permission classification, cleanup, and the production gate. The [four-case isolation draft](ISOLATION-PROTOCOL.md) remains unchanged, including its stronger physical-route prerequisites.
 
 ## Scope and controls
 
@@ -10,7 +10,9 @@ The target includes exactly the verified `com.sertacozercan.Kaset` application. 
 
 Apple's [including-applications initializer](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init%28display%3Aincluding%3Aexceptingwindows%3A%29) supplies this boundary. Application membership does not itself prove audio attribution. The two streams share ScreenCaptureKit, so the reference is an independent capture selection, not an independent framework implementation.
 
-The user pauses Kaset and starts the [prepared Safari page](README.md#prepare-the-unrelated-source-without-playback). Freeze that page's exact-byte hash before approval. It generates a 2113 Hz sine at 0.1 peak amplitude in identical stereo channels, for at most fifteen audio seconds. Browser scheduling provides no hard wall-clock playback bound. Close other Safari audio only with the user's approval. The reference covers Safari as an application, not a particular tab.
+The user pauses Kaset and completes permission setup while the [prepared Safari page](README.md#prepare-the-unrelated-source-without-playback) stays idle. After the readiness check, request capture first, then immediately start the tone and keep its tab visible. This revised order remains untested live. Starting the tone before the app switch and metadata/setup checks consumes playback budget before evaluation; this is a timing inference, not the established cause of the retry's seven invalid controls. Starting after the request leaves more of the fixed duration for measurement. It does not guarantee all controls will pass.
+
+Freeze that page's exact-byte hash before approval. It generates a 2113 Hz sine at 0.1 peak amplitude in identical stereo channels, for at most fifteen audio seconds. Browser scheduling provides no hard wall-clock playback bound. Close other Safari audio only with the user's approval. The reference covers Safari as an application, not a particular tab. Keep the fixed sixty-window acceptance rule; a late tone start or early stop remains invalid control data.
 
 Enable 48 kHz stereo capture and disable microphone capture. Register only audio outputs. Create no screen output, recording output, Core Audio tap, or Kaset test marker. Retain PCM only in bounded memory until analysis finishes, then discard it.
 

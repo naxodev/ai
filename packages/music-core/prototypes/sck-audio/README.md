@@ -353,7 +353,7 @@ This creates `dist/Kaset Safari Exclusion.app` with bundle ID `dev.naxo.music.sc
 
 The native mode exposes only its fixed catalog, two application preflights, paired capture, and synthetic commands. It rejects the earlier capture and discovery flags. The parent verifies the signed helper before metadata and again before claiming the attempt. Three metadata commands pin one Kaset application, its existing WebKit witness, and one Safari application in memory. The reviewed tone page's exact hash must match before the atomic attempt claim. Missing metadata or a changed page cannot start protected discovery. An existing attempt marker blocks another run or rebuild.
 
-After a later approval, the app's permission action starts no helper. The user pauses Kaset, starts the exact reviewed Safari page, keeps that tab visible, and promptly clicks **exclude** once. No playback command comes from this runner. It separately includes the pinned Kaset and Safari applications on the same selected display. It registers only audio outputs, requests 48 kHz stereo, and disables microphone capture. It creates no Core Audio tap, global mix, screen output, recording output, or fallback selection.
+After a later approval, the app's permission action starts no helper. The user pauses Kaset and completes permission setup while the Safari tone stays idle. After the readiness check, the user clicks **exclude** once, then immediately clicks **Start** on the exact reviewed Safari page. Keep its tab visible. This order leaves more of the fixed tone duration for measurement. The sixty-window reference check still determines validity. No playback command comes from this runner. It separately includes the pinned Kaset and Safari applications on the same selected display. It registers only audio outputs, requests 48 kHz stereo, and disables microphone capture. It creates no Core Audio tap, global mix, screen output, recording output, or fallback selection.
 
 Both Start completions remain owned. After both succeed, one host-clock anchor fixes two seconds of warmup and sixty 100 ms evaluation windows. Each stream's presentation timestamps convert through its own unchanged synchronization clock. Complete 4,800-frame stereo windows must align to the same grid. Missing, duplicate, overlapping, stale, future, or discontinuous samples cannot become measured silence. The first admitted PCM format is pinned; a later layout or format change fails the operation. Identity, profile, display, and default-output consistency checks continue while measurements are accepted and after teardown.
 
@@ -393,7 +393,7 @@ Cleanup verified the original hashes and strict signatures, stopped the isolated
 
 The replacement build passed strict signing checks and all nineteen native synthetic checks. The two disk-signature checks, fifty-six tests, prototype type check, workspace lint, core/plugin type checks, and package-content checks passed. The shared discovery source also passed a separate compile-only check. Standards and Spec reviews found no issue in this correction.
 
-The original frozen plan, approval, helper/profile archives, and cleanup record remain in ignored `dist/safari-exclusion-evidence`. The replacement app was built and checked before registration. Its changed helper and Safari profile were frozen in a replacement plan. The user's existing approval covered the unchanged app, application scopes, capture limits, and single unclaimed attempt. The continuation record added no attempt. The completed run below consumed that allowance. Production capture remains unavailable.
+The original frozen plan, approval, helper/profile archives, and cleanup record remain in ignored `dist/safari-exclusion-evidence-spent-20261011T233251Z`. The replacement app was built and checked before registration. Its changed helper and Safari profile were frozen in a replacement plan. The user's existing approval covered the unchanged app, application scopes, capture limits, and single unclaimed attempt. The continuation record added no attempt. The completed run below consumed that allowance. Production capture remains unavailable.
 
 ### Inconclusive paired run on 2026-10-11
 
@@ -417,7 +417,39 @@ The frozen helper SHA-256 was `697306521ca9ecae93e92d33101c9f1e41042c390a9ebeb0f
 
 Cleanup completed at `2026-10-11T23:36:09.860Z`. It verified the frozen helper, profiles, tone page, app copies, runtime sources, and strict signatures. It archived the measured aggregate result, user context, launcher, and plist. It stopped the app, reset only this bundle's AudioCapture and ScreenCapture choices, unregistered both app copies, and removed them. A Launch Services dump contained no matching bundle identifier, and no owned app, probe, or helper remained running. No reset targeted Hex or Ghostty.
 
-The immutable attempt marker, result, frozen plans, approval continuation, exact artifact archives, and cleanup ledger remain in ignored `dist/safari-exclusion-evidence`. No PCM, spectra, per-window arrays, process identities, or device lists were retained. One approved attempt was used; zero remain. Another run requires explicit approval before rearming the one-shot claim. It must establish Kaset pause and Safari marker playback before the user starts capture. The production gate remains closed.
+The immutable attempt marker, result, frozen plans, approval continuation, exact artifact archives, and cleanup ledger remain in ignored `dist/safari-exclusion-evidence-spent-20261011T233251Z`. No PCM, spectra, per-window arrays, process identities, or device lists were retained. That approved attempt was used. Its spent marker was preserved when the user approved the separate retry below. The production gate remains closed.
+
+### Paired retry on 2026-10-12 UTC
+
+The user approved one additional attempt with the same helper, profiles, tone page, thresholds, and capture limits. Preparation preserved the entire first evidence directory, including its spent marker, before creating a fresh one-shot directory. The user confirmed permission readiness, then confirmed completing the requested Kaset-pause, Safari-Start, and exclude sequence. These replies are context, not independent playback-state verification.
+
+The retry started at `2026-10-12T00:55:15.225Z` and finished at `00:55:30.048Z`, with 14.823 seconds of parent elapsed time. Both streams started, passed identity verification throughout, completed sixty paired windows, and joined teardown.
+
+| Measurement                  | Result                 |
+| ---------------------------- | ---------------------- |
+| Paired windows               | `60`                   |
+| Valid Safari control windows | `53`                   |
+| Maximum Safari total power   | `0.005003610940538646` |
+| Minimum Safari marker power  | `0`                    |
+| Maximum Safari marker power  | `0.004999594560878371` |
+| Maximum Kaset total power    | `0`                    |
+| Maximum Kaset marker power   | `0`                    |
+| Clipped windows              | `0`                    |
+| Measured verdict             | `inconclusive`         |
+| Reason                       | `invalid-reference`    |
+| Isolation established        | `false`                |
+
+The Safari marker passed in fifty-three windows while the Kaset stream measured zero throughout. Seven invalid reference windows prevent acceptance. The zero violation count does not override the missing controls. This provides partial control evidence, not a passing exclusion case.
+
+The user did not notice when the tone stopped or whether the Safari page became hidden. They asked whether the delay before clicking exclude explains the missing windows. That is plausible: the fixed fifteen-second tone starts before the user's app switch, parent metadata checks, native setup, and warmup. These steps consume its playback budget before evaluation. The retained aggregates cannot locate the seven invalid windows or establish their cause.
+
+The app instructions now request capture first, then immediate Safari Start. This preserves more of the tone budget without extending playback or capture. It does not guarantee timely startup. The first evaluation window still follows both stream Starts and the fixed two-second warmup. All sixty reference windows, fixed thresholds, identity checks, and joined cleanup remain required. The revised order has not run live.
+
+The revised launcher changes three displayed strings: initial instructions, permission-ready instructions, and the running reminder. Its process launch, permission actions, one-shot guard, and timeout behavior stay unchanged. It compiled with warnings treated as errors and passed strict signing verification. The helper, profiles, and tone page kept their exact hashes. The fifty-six offline tests, prototype/core/plugin type checks, and workspace lint passed. Standards and Spec reviews found no issue. The prepared app remains unregistered and unopened.
+
+Cleanup completed at `2026-10-12T00:59:28.437Z`. It verified the frozen artifacts, runtime sources, both app copies, strict signatures, and the first spent record. It archived the aggregate result, user context, launcher, plist, and signature resource envelope. It stopped the app, reset only this bundle's AudioCapture and ScreenCapture choices, unregistered both app copies, and removed them. Launch Services contained no matching identifier, and no owned app, probe, or helper remained running. Hex and Ghostty grants stayed unchanged.
+
+The retry evidence remains in ignored `dist/safari-exclusion-evidence`. Both approved attempts are spent; zero remain. The two attempt markers and result archives remain preserved. Another run requires explicit approval before archival and rearming. No audio, spectra, or per-window arrays were retained. Production capture remains unavailable.
 
 ## Interpret the result
 
