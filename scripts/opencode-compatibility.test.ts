@@ -4,6 +4,7 @@ import {
   assertOpenCodeCompatibility,
   checkOpenCodeCompatibility,
   compatibility,
+  assertMusicCoreCompatibility,
 } from "./opencode-compatibility.ts"
 
 const manifest = () => ({
@@ -50,6 +51,19 @@ test("editing the contract cannot bless mismatched host or renderer releases", (
 
 test("the workspace and lock use the tested host contract", async () => {
   await checkOpenCodeCompatibility()
+})
+
+test("music-core uses the host Effect API because OpenCode redirects dependency imports", async () => {
+  const core = await Bun.file(
+    new URL("../packages/music-core/package.json", import.meta.url),
+  ).json()
+  expect(() => assertMusicCoreCompatibility(core)).not.toThrow()
+  expect(() =>
+    assertMusicCoreCompatibility({
+      name: "@naxodev/music-core",
+      dependencies: { effect: "4.0.0-rc.117" },
+    }),
+  ).toThrow("effect must be exactly")
 })
 
 test("a core-only upgrade fails before incompatible branded renderables reach the host", () => {

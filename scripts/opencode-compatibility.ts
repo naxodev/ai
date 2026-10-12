@@ -109,7 +109,19 @@ export function assertOpenCodeCompatibility(
   }
 }
 
+export function assertMusicCoreCompatibility(manifest: Manifest) {
+  if (manifest.dependencies?.effect !== compatibility.host.effect)
+    throw new Error(
+      `${manifest.name}: effect must be exactly ${compatibility.host.effect}; OpenCode supplies the runtime even for plugin dependencies`,
+    )
+}
+
 export async function checkOpenCodeCompatibility() {
+  assertMusicCoreCompatibility(
+    await Bun.file(
+      new URL("../packages/music-core/package.json", import.meta.url),
+    ).json(),
+  )
   const names = ["opencode-vim", "opencode-music-player"]
   const manifests = await Promise.all(
     names.map(
@@ -129,6 +141,10 @@ export async function checkOpenCodeCompatibility() {
     >
     packages: Record<string, [string, ...unknown[]]>
   }
+  assertMusicCoreCompatibility({
+    ...lock.workspaces["packages/music-core"],
+    name: "bun.lock:music-core",
+  })
   assertOpenCodeCompatibility(
     names.map((name) => ({
       ...lock.workspaces[`packages/${name}`],
