@@ -482,6 +482,20 @@ Cleanup completed at `2026-10-12T01:22:21.405Z`. It verified the frozen artifact
 
 The passing evidence remains in ignored `dist/safari-exclusion-evidence`, with an archive map linking both earlier records. All three paired-probe allowances are spent; zero remain. All three attempt markers and result archives remain preserved. No PCM, spectra, per-window arrays, process identities, or device lists were retained. Another live attempt requires explicit approval before archival and rearming. The production gate remains closed.
 
+## Prepare a controlled Kaset source without playback
+
+The [controlled source guide](KASET-CONTROLLED-ASSET.md) defines the generated 997 Hz FLAC and its offline checks. The [route report](KASET-CONTROLLED-ASSET-ROUTE.md) traces personal uploads through the pinned Kaset Music player. Build the fixed asset with:
+
+```sh
+bun packages/music-core/prototypes/sck-audio/build-kaset-control.ts
+```
+
+The command creates source audio only in ignored `dist/controlled-kaset-source`. It encodes thirty seconds of 48 kHz, identical stereo, 24-bit PCM with installed FFmpeg, then independently decodes with macOS `afconvert` and requires exact PCM equality. It accepts no arguments, refuses an existing output directory, and deletes temporary WAV files. It performs no upload, playback, capture, registration, or permission change.
+
+The prepared FLAC SHA-256 is `4bfcc9069ff2ece73daf81095b7b14d2c8043fa9a82646d5b9ca70e4d9e34268`. All three hundred local 100 ms windows passed marker-power, purity, and other-band checks. Channel identity and the file's peak also passed. A full rebuild reproduced identical file bytes, and a second invocation preserved the existing output. Only the generic title is included as a comment field; no artwork or personal metadata is included.
+
+This establishes the local asset, not its playback in Kaset. One owner upload needs separate account-write approval under the guide's upload-only proposal. Playback and live capture need their own reviewed scope. All three earlier paired allowances remain spent. The full isolation campaign and production gate remain closed.
+
 ## Interpret the result
 
 The original process-targeted native filter accepts exactly one ScreenCaptureKit application whose PID matches the verified Kaset WebKit process. It rechecks launch identity, running code, Core Audio identity, and mapped-cache ownership. Missing or duplicate matches stop acquisition. It never falls back to Kaset's main PID or a display-wide audio source.

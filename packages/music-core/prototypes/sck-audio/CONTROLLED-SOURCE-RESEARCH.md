@@ -6,6 +6,8 @@ The reviewed source provides no supported route for playing a generated local to
 
 A narrower Safari-only exclusion case does not need a Kaset marker. It can test unrelated-source leakage while Kaset is silent. It cannot establish simultaneous isolation or Kaset admission.
 
+Follow-up on 2026-10-12 UTC: that [narrower case passed](README.md#passing-paused-kaset-case-on-2026-10-12-utc). A [controlled local FLAC](KASET-CONTROLLED-ASSET.md) is now prepared and verified. The [personal-upload route report](KASET-CONTROLLED-ASSET-ROUTE.md) traces a plausible Music playback path in the pinned source. Account upload, installed Kaset playback, decoded reference validation, and simultaneous isolation remain unverified.
+
 ## Installed version and source provenance
 
 Read-only inspection of `/Applications/Kaset.app/Contents/Info.plist` reported version `0.14.1`, build `26`, and only the `kaset` URL scheme.
@@ -53,4 +55,4 @@ This case needs a known Safari signal, an independent simultaneous Safari refere
 
 A passing result would establish exclusion only for that silent-target case and tested configuration. It would not establish behavior when both applications play, or rule out a target filter that always returns silence. A later independent Kaset admission case addresses the latter limitation.
 
-The current controlled protocol is not runnable unchanged: its exact Kaset marker remains unresolved, and its independent references are unimplemented. Preparation can proceed with the analyzer, Safari asset, and narrower case design. The completed availability probe's allowance is spent; this research creates no new live allowance.
+The full controlled protocol is not runnable unchanged. The original Kaset file is now known, but its supported account route remains untested and needs explicit account-write approval. The independent Kaset reference and cross-framework timing remain unimplemented. The separate Safari reference has passed its narrower case. All three paired-probe allowances are spent; this research creates no new live allowance.
