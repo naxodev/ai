@@ -57,7 +57,7 @@
     "smoke:package": "bun scripts/package-smoke.ts && bun scripts/package-smoke.ts --pi-version=1.0.0"
   },
   "dependencies": {
-    "@naxodev/music-core": "^0.2.1"
+    "@naxodev/music-core": "^0.3.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.83.0 <0.85.0 || 0.87.1 || ^1.0.0",
