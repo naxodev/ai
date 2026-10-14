@@ -62,6 +62,8 @@ test("two real daemon clients explicitly join one synthetic helper; hidden and m
     await a.start()
     await waitFor(a, (state) => state.active && state.frame !== null)
     await b.chooseSource(async (list) => list.sources[0])
+    if (!b.current().selected)
+      throw new Error(`no selection for shared join: ${b.current().message}`)
     expect(b.current().active).toBe(false)
     await b.start()
     await waitFor(b, (state) => state.active && state.frame !== null)
