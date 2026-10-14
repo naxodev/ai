@@ -14,12 +14,18 @@ import {
 const waitFor = (
   model: ReturnType<typeof createAudioVisualization>,
   predicate: (state: AudioViewState) => boolean,
+  phase: string,
 ) => {
   if (predicate(model.current())) return Promise.resolve()
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       unsubscribe()
-      reject(new Error("audio model did not reach expected state"))
+      const state = model.current()
+      reject(
+        new Error(
+          `audio model did not reach ${phase}: ${state.message}; active=${state.active}; selected=${state.selected !== null}; frame=${state.frame?.sequence ?? "none"}`,
+        ),
+      )
     }, 3000)
     const unsubscribe = model.subscribe((state) => {
       if (!predicate(state)) return
@@ -60,13 +66,21 @@ test("two real daemon clients explicitly join one synthetic helper; hidden and m
       throw new Error(`no selection: ${a.current().message}`)
     expect(fixture.starts()).toBe(0)
     await a.start()
-    await waitFor(a, (state) => state.active && state.frame !== null)
+    await waitFor(
+      a,
+      (state) => state.active && state.frame !== null,
+      "first capture",
+    )
     await b.chooseSource(async (list) => list.sources[0])
     if (!b.current().selected)
       throw new Error(`no selection for shared join: ${b.current().message}`)
     expect(b.current().active).toBe(false)
     await b.start()
-    await waitFor(b, (state) => state.active && state.frame !== null)
+    await waitFor(
+      b,
+      (state) => state.active && state.frame !== null,
+      "shared join",
+    )
     expect(b.current().message).toBe("Joined shared capture")
     expect(fixture.starts()).toBe(1)
     for (const style of ["mirror", "scope", "meters", "spectrum"] as const)
@@ -74,10 +88,14 @@ test("two real daemon clients explicitly join one synthetic helper; hidden and m
     expect(fixture.starts()).toBe(1)
     await a.dispose()
     const sequence = b.current().frame?.sequence ?? 0
-    await waitFor(b, (state) => (state.frame?.sequence ?? 0) > sequence)
+    await waitFor(
+      b,
+      (state) => (state.frame?.sequence ?? 0) > sequence,
+      "surviving capture",
+    )
     expect(b.current().active).toBe(true)
     await b.stop()
-    await waitFor(b, (state) => state.frame === null)
+    await waitFor(b, (state) => state.frame === null, "stopped capture")
     await fixture.waitCapturesClosed()
     expect(await metadata.play()).toEqual({ action: "play" })
 
@@ -92,7 +110,11 @@ test("two real daemon clients explicitly join one synthetic helper; hidden and m
     if (!b.current().selected)
       throw new Error(`no selection: ${b.current().message}`)
     await b.start()
-    await waitFor(b, (state) => state.active && state.frame !== null)
+    await waitFor(
+      b,
+      (state) => state.active && state.frame !== null,
+      "replacement capture",
+    )
     expect(fixture.starts()).toBe(2)
     await b.dispose()
     await fixture.waitCapturesClosed()
