@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Buffer } from "node:buffer"
 import { lstatSync } from "node:fs"
 import { join } from "node:path"
+import { PassThrough } from "node:stream"
 import { testUnixSession } from "./unix-session.ts"
 import {
   Cause,
@@ -23,6 +24,7 @@ import {
   makeHelperTermination,
   makeHelperVerifier,
   liveNativeHelperDependencies,
+  readHelperPipe,
 } from "../audio/helper-process.ts"
 import { localMonotonicMs } from "../audio/clock.ts"
 import {
@@ -36,6 +38,70 @@ import {
   MAX_AUDIO_FEATURE_FRAME_BYTES,
   type ResolvedCaptureSource,
 } from "../audio/schema.ts"
+
+test("helper exit cannot drain bytes between bounded pipe reads", async () => {
+  // ChildProcess flushes stdio with resume() after exit. A slow consumer must
+  // retain every byte while its per-read callback has removed its listeners.
+  const pipe = new PassThrough()
+  const bytes = Buffer.alloc(12_000, 65)
+  const reader = readHelperPipe(pipe)
+  pipe.end(bytes)
+  const chunks: Uint8Array[] = []
+  try {
+    await Effect.runPromise(
+      reader.pipe(
+        Stream.runForEach((chunk) =>
+          Effect.promise(async () => {
+            chunks.push(chunk)
+            pipe.resume()
+            await new Promise<void>((resolve) => setImmediate(resolve))
+          }),
+        ),
+      ),
+    )
+    expect(Buffer.concat(chunks).length).toBe(bytes.length)
+    expect(Buffer.concat(chunks).equals(bytes)).toBe(true)
+    expect(chunks.every((chunk) => chunk.length <= 4_096)).toBe(true)
+    expect(pipe.listenerCount("readable")).toBe(0)
+    expect(pipe.listenerCount("resume")).toBe(0)
+    expect(pipe.listenerCount("close")).toBe(0)
+  } finally {
+    pipe.destroy()
+  }
+})
+
+test("helper exit cannot drain output before its reader starts", async () => {
+  const pipe = new PassThrough()
+  const bytes = Buffer.from("complete source metadata")
+  const reader = readHelperPipe(pipe)
+  try {
+    pipe.end(bytes)
+    pipe.resume()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const chunks = await Effect.runPromise(Stream.runCollect(reader))
+    expect(Buffer.concat(chunks).toString()).toBe(bytes.toString())
+    expect(pipe.listenerCount("resume")).toBe(0)
+  } finally {
+    pipe.destroy()
+  }
+})
+
+test("partial helper reads release the pause guard on cancellation", async () => {
+  const pipe = new PassThrough()
+  const reader = readHelperPipe(pipe)
+  try {
+    pipe.write(Buffer.alloc(8_192))
+    const chunks = await Effect.runPromise(
+      reader.pipe(Stream.take(1), Stream.runCollect),
+    )
+    expect(chunks[0]?.length).toBe(4_096)
+    expect(pipe.listenerCount("resume")).toBe(0)
+    expect(pipe.listenerCount("readable")).toBe(0)
+    expect(pipe.listenerCount("close")).toBe(0)
+  } finally {
+    pipe.destroy()
+  }
+})
 
 const source: ResolvedCaptureSource = {
   mode: "process",

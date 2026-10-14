@@ -58,12 +58,14 @@ test("music-core uses the host Effect API because OpenCode redirects dependency 
     new URL("../packages/music-core/package.json", import.meta.url),
   ).json()
   expect(() => assertMusicCoreCompatibility(core)).not.toThrow()
-  expect(() =>
-    assertMusicCoreCompatibility({
-      name: "@naxodev/music-core",
-      dependencies: { effect: "4.0.0-rc.117" },
-    }),
-  ).toThrow("effect must be exactly")
+  // Earlier prerelease pins do not establish compatibility with the stable host.
+  for (const effect of ["4.0.0-rc.112", "4.0.0-rc.117"])
+    expect(() =>
+      assertMusicCoreCompatibility({
+        name: "@naxodev/music-core",
+        dependencies: { effect },
+      }),
+    ).toThrow("effect must be exactly")
 })
 
 test("a core-only upgrade fails before incompatible branded renderables reach the host", () => {

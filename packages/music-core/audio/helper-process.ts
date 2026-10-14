@@ -64,11 +64,20 @@ export const cleanHelperExit = (exit: NativeHelperExit) =>
 const readBytes = 4_096
 const shutdownMs = 1_000
 
-// Pull fixed-size chunks. Node's pipe backpressure bounds unread bytes.
-const readPipe = (
+// Internal reader seam. Pull fixed-size chunks; pipe backpressure bounds bytes.
+export const readHelperPipe = (
   pipe: Readable,
-): Stream.Stream<Uint8Array, AudioAdapterError> =>
-  Stream.unfold(undefined, () =>
+): Stream.Stream<Uint8Array, AudioAdapterError> => {
+  // ChildProcess resumes stdio after exit. Keep readable mode between pulls
+  // so that the automatic flush cannot discard bytes while consumers yield.
+  const keepPaused = () => pipe.pause()
+  const release = () => {
+    pipe.off("resume", keepPaused)
+    pipe.off("close", release)
+  }
+  pipe.on("resume", keepPaused)
+  pipe.once("close", release)
+  return Stream.unfold(undefined, () =>
     Effect.callback<
       readonly [Uint8Array, undefined] | undefined,
       AudioAdapterError
@@ -119,7 +128,8 @@ const readPipe = (
       pull()
       return Effect.sync(cleanup)
     }),
-  )
+  ).pipe(Stream.onExit(() => Effect.sync(release)))
+}
 
 type VerificationBoundary = {
   readonly regularFile: (executable: string) => boolean
@@ -214,10 +224,10 @@ export const liveNativeHelperDependencies: NativeHelperDependencies = {
     child.stderr.on("error", pipeError)
     return {
       ready: Deferred.await(ready),
-      stdout: readPipe(child.stdout).pipe(
+      stdout: readHelperPipe(child.stdout).pipe(
         Stream.interruptWhen(Deferred.await(fault)),
       ),
-      stderr: readPipe(child.stderr).pipe(
+      stderr: readHelperPipe(child.stderr).pipe(
         Stream.interruptWhen(Deferred.await(fault)),
       ),
       exit: Deferred.await(exit),

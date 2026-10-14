@@ -987,6 +987,7 @@ test("server close interrupts post-hello forwarding before late provider events"
 })
 
 test("partial-frame disconnect exactly finalizes input and connection while listener stays healthy", async () => {
+  // Transport finalization must not wait for the user's real media provider.
   const path = socketPath("mid-frame")
   let inputs = 0
   let processors = 0
@@ -1000,21 +1001,25 @@ test("partial-frame disconnect exactly finalizes input and connection while list
   let partial: net.Socket | undefined
   let healthy: net.Socket | undefined
   try {
-    server = await startMusicSessionServer({ socketPath: path }, undefined, {
-      onInputFinalized: () => {
-        inputs += 1
+    server = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+      {
+        onInputFinalized: () => {
+          inputs += 1
+        },
+        onInputProcessorFinalized: () => {
+          processors += 1
+        },
+        onInputEof: () => {
+          eofProcessed += 1
+        },
+        onConnectionFinalized: () => {
+          connections += 1
+          resolveFinalized()
+        },
       },
-      onInputProcessorFinalized: () => {
-        processors += 1
-      },
-      onInputEof: () => {
-        eofProcessed += 1
-      },
-      onConnectionFinalized: () => {
-        connections += 1
-        resolveFinalized()
-      },
-    })
+    )
     const partialSocket = await connected(path)
     partial = partialSocket
     const closed = new Promise<void>((resolve) =>
@@ -1044,7 +1049,10 @@ test("natural malformed-client disconnect leaves the listener healthy", async ()
   let partial: net.Socket | undefined
   let healthy: net.Socket | undefined
   try {
-    const activeServer = await startMusicSessionServer({ socketPath: path })
+    const activeServer = await startMusicSessionServer(
+      { socketPath: path },
+      createFakeProvider(),
+    )
     server = activeServer
     partial = await connected(path)
     const closed = new Promise<void>((resolve) =>

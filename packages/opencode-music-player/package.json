@@ -70,11 +70,11 @@
     "@opentui/solid": "0.5.17"
   },
   "devDependencies": {
-    "@opencode/plugin": "2.0.26",
+    "@opencode/plugin": "2.0.28",
     "@opentui/core": "0.5.17",
     "@opentui/solid": "0.5.17",
     "solid-js": "1.9.15",
-    "@opencode/theme": "2.0.26",
+    "@opencode/theme": "2.0.28",
     "@types/bun": "^1.4.2",
     "@types/pngjs": "^6.0.5",
     "prettier": "3.9.9",

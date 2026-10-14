@@ -1,8 +1,8 @@
 {
   "host": {
     "package": "@opencode/cli",
-    "version": "2.0.26",
-    "effect": "4.0.0-rc.112",
+    "version": "2.0.28",
+    "effect": "4.0.1",
     "binary": "opencode"
   },
   "peerDependencies": {
@@ -10,8 +10,8 @@
     "@opentui/solid": "0.5.17"
   },
   "devDependencies": {
-    "@opencode/plugin": "2.0.26",
-    "@opencode/theme": "2.0.26",
+    "@opencode/plugin": "2.0.28",
+    "@opencode/theme": "2.0.28",
     "solid-js": "1.9.15"
   }
 }
