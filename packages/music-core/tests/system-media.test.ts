@@ -219,38 +219,28 @@ describe("stream-backed provider sampling", () => {
   })
 
   for (const subscribe of ["subscribe", "subscribeAttempt"] as const) {
-    test(`${subscribe} keeps cached playback and source hints from the same stream snapshot`, async () => {
+    test(`${subscribe} keeps cached playback from the latest stream snapshot`, async () => {
       const fake = createStreamFakes()
       const dispose = fake.backend[subscribe]!(() => {})
       try {
         fake.sources[0]!.callbacks.onLine(
           dataEnvelope({ ...completePausedPayload, processIdentifier: 42 }),
         )
-        const first = fake.backend.latestSourceObservation!()
-        expect(first.hint?.processIdentifier).toBe(42)
         await fake.backend.player()
-        expect(fake.backend.latestSourceObservation!()).toBe(first)
 
-        // A new track without a PID must not inherit the previous capture identity.
+        // The current streamed track must replace the cached track without another read.
         fake.sources[0]!.callbacks.onLine(
           dataEnvelope({ ...completePausedPayload, title: "Replacement" }),
         )
         expect((await fake.backend.player())?.track?.name).toBe("Replacement")
-        expect(fake.backend.latestSourceObservation!().hint).toEqual({
-          bundleIdentifier: "com.Spotify.client",
-        })
         expect(fake.getCalls).toEqual([])
         fake.sources[0]!.callbacks.onTerminal()
-        expect(fake.backend.latestSourceObservation!()).toMatchObject({
-          kind: "invalidation",
-          hint: undefined,
-        })
       } finally {
         dispose()
       }
     })
 
-    test(`${subscribe} rejects an older startup read for both playback and capture identity`, async () => {
+    test(`${subscribe} rejects an older startup read after a newer playback snapshot`, async () => {
       let callbacks: LineStreamCallbacks | undefined
       let finishRead!: (result: Awaited<ReturnType<typeof run>>) => void
       const backend = createSystemMediaAdapter({
@@ -275,7 +265,6 @@ describe("stream-backed provider sampling", () => {
             processIdentifier: 42,
           }),
         )
-        const current = backend.latestSourceObservation!()
         finishRead({
           ok: true,
           out: JSON.stringify({
@@ -285,8 +274,6 @@ describe("stream-backed provider sampling", () => {
           }),
         })
         expect((await pending)?.track?.name).toBe("Current")
-        expect(backend.latestSourceObservation!()).toBe(current)
-        expect(current.hint?.processIdentifier).toBe(42)
       } finally {
         finishRead({ ok: true, out: "null" })
         await pending

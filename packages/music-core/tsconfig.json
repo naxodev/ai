@@ -13,11 +13,5 @@
     "types": ["bun"],
     "ignoreDeprecations": "6.0"
   },
-  "include": [
-    "*.ts",
-    "audio/**/*.ts",
-    "session/**/*.ts",
-    "tests/**/*.ts",
-    "scripts/**/*.ts"
-  ]
+  "include": ["*.ts", "session/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]
 }
