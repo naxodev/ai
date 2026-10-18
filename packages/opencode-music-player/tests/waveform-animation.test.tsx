@@ -5,7 +5,7 @@ import { RGBA } from "@opentui/core"
 import { Waveform, type PlayerPresentationSource } from "../waveform.tsx"
 import type { PlayerState } from "../types.ts"
 
-test("generated bars stay labeled as animation so they cannot be mistaken for measured audio", async () => {
+test("generated bars use the first row and clear when the track disappears", async () => {
   let current: PlayerState | null = {
     is_playing: true,
     progress_ms: 1_000,
@@ -44,10 +44,11 @@ test("generated bars stay labeled as animation so they cannot be mistaken for me
     { width: 30, height: 4 },
   )
   try {
-    const playing = await app.waitForFrame(
-      (value) => value.includes("Animation") && /[▁▂▃▄▅▆▇█]/.test(value),
-    )
-    expect(playing).toContain("Animation")
+    const playing = await app.waitForFrame((value) => /[▁▂▃▄▅▆▇█]/.test(value))
+    expect(playing).not.toContain("Animation")
+    expect(
+      playing.split("\n").findIndex((line) => /[▁▂▃▄▅▆▇█]/.test(line)),
+    ).toBe(0)
     current = null
     for (const listener of listeners) listener(current)
     const cleared = await app.waitForFrame(
