@@ -33,7 +33,7 @@
     },
     "packages/music-core": {
       "name": "@naxodev/music-core",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "bin": {
         "naxodev-music-sessiond": "./dist/music-sessiond.js",
       },
@@ -48,9 +48,9 @@
     },
     "packages/opencode-music-player": {
       "name": "@naxodev/opencode-music-player",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "dependencies": {
-        "@naxodev/music-core": "^0.4.0",
+        "@naxodev/music-core": "^0.5.0",
         "pngjs": "^7.0.0",
       },
       "devDependencies": {
@@ -115,9 +115,9 @@
     },
     "packages/pi-music-dock": {
       "name": "@naxodev/pi-music-dock",
-      "version": "0.3.4",
+      "version": "0.4.0",
       "dependencies": {
-        "@naxodev/music-core": "^0.4.0",
+        "@naxodev/music-core": "^0.5.0",
       },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "1.0.4",
