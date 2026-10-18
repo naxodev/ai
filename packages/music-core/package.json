@@ -1,6 +1,6 @@
 {
   "name": "@naxodev/music-core",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Host-neutral macOS Now Playing core (types, clock, reconcile, waveform engine, system-media)",
   "license": "MIT",
   "author": {
