@@ -14,7 +14,7 @@ Read the [music session architecture field guide](../../docs/music-session-archi
 
 ## Waveform
 
-The standard sidebar waveform is generated and labeled **Animation**. It follows playback state and time, not measured sound. It does not require song files, fetch audio, or start capture.
+The standard sidebar waveform is generated. It follows playback state and time, not measured sound. It does not require song files, fetch audio, or start capture.
 
 The [local audio prototype](prototypes/audio-reactive/README.md#try-kaset-in-the-sidebar) provides an explicitly started live Kaset preview. That preview is not part of the published package. Sustained shared-daemon capture and Linux player integration remain unfinished.
 
