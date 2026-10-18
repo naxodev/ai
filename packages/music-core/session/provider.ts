@@ -1,5 +1,4 @@
 import {
-  Cause,
   Context,
   Duration,
   Effect,
@@ -13,10 +12,7 @@ import {
   Scope,
   Stream,
 } from "effect"
-import {
-  unavailableSourceObservations,
-  type ProviderSourceObservation,
-} from "../audio/source.ts"
+
 import {
   createSystemMediaAdapter,
   type SystemMediaAttemptAdapter,
@@ -60,39 +56,8 @@ export class SessionProvider extends Context.Service<
       maxBytes: number,
     ) => Effect.Effect<ArtworkResult, ProviderError>
     readonly events: Stream.Stream<MusicChangeEvent, ProviderError>
-    readonly sourceObservations: Stream.Stream<ProviderSourceObservation>
   }
 >()("@naxodev/music-core/SessionProvider") {}
-
-const sourceObservationsFromAdapter = (
-  backend: SystemMediaAttemptAdapter,
-): Stream.Stream<ProviderSourceObservation> => {
-  const subscribe = backend.subscribeSourceObservations
-  if (!subscribe) return unavailableSourceObservations
-  return Stream.callback<ProviderSourceObservation>(
-    (queue) =>
-      Effect.acquireRelease(
-        Effect.sync(() =>
-          subscribe((observation) => {
-            // Source observations carry authority. Never slide invalidation
-            // out of a snapshot burst; overflow fails the stream closed.
-            if (!Queue.offerUnsafe(queue, observation))
-              Queue.failCauseUnsafe(
-                queue,
-                Cause.die(new Error("source observation overflow")),
-              )
-          }),
-        ),
-        (dispose) =>
-          Effect.try({
-            try: dispose,
-            catch: (cause) =>
-              providerError("source-observation-dispose", cause),
-          }).pipe(Effect.ignore),
-      ),
-    { bufferSize: 16, strategy: "dropping" },
-  )
-}
 
 const drainSnapshots = (
   snapshots: Queue.Dequeue<void>,
@@ -361,7 +326,6 @@ const serviceFromAdapter = (
       transport,
       nativeArtwork,
       events,
-      sourceObservations: sourceObservationsFromAdapter(backend),
     })
   })
 
@@ -455,7 +419,6 @@ export const layerFromLegacy = (provider: LegacySessionProvider) =>
           })
         }),
         events,
-        sourceObservations: unavailableSourceObservations,
       })
     }),
   )
@@ -717,7 +680,6 @@ export const makeCoordinatorProviderFixture = (
                   () => Ref.update(activeTransports, (count) => count - 1),
                 ),
               events,
-              sourceObservations: unavailableSourceObservations,
             }),
           ),
         ),

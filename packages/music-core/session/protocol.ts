@@ -1,11 +1,7 @@
 import { Effect } from "effect"
 import * as Schema from "effect/Schema"
 import { Buffer } from "node:buffer"
-import {
-  AUDIO_PROTOCOL_REVISION,
-  audioVisualizationCapability,
-  audioInterestLeaseCapability,
-} from "../audio/schema.ts"
+
 import type { PlayerState as CorePlayerState } from "../types.ts"
 import {
   MAX_ARTWORK_BASE64_CHARS,
@@ -14,12 +10,6 @@ import {
 } from "./config.ts"
 
 export { PACKAGE_VERSION }
-export {
-  AUDIO_PROTOCOL_REVISION,
-  audioVisualizationCapabilities,
-  audioVisualizationCapability,
-  audioInterestLeaseCapability,
-} from "../audio/schema.ts"
 
 export const LEGACY_PROTOCOL = { major: 1, minor: 0 } as const
 export const PROTOCOL = { major: 1, minRevision: 0, maxRevision: 2 } as const
@@ -240,7 +230,6 @@ export const CurrentHelloRequestSchema = Schema.Struct({
   clientId: Schema.String,
   hostKind: HostKindSchema,
   capabilities: Schema.Array(CapabilitySchema),
-  audioClientMonotonicMs: Schema.optionalKey(Schema.Finite),
 })
 export const HelloRequestSchema = Schema.Union([
   LegacyHelloRequestSchema,
@@ -282,71 +271,8 @@ export const ArtworkRequestSchema = Schema.Struct({
   identity: ArtworkIdentitySchema,
 })
 export type ArtworkRequest = Schema.Schema.Type<typeof ArtworkRequestSchema>
-export const AudioSourcesRequestSchema = Schema.Struct({
-  type: Schema.Literal("audio-sources"),
-  requestId: SafeInt,
-})
-export const AudioStartRequestSchema = Schema.Struct({
-  type: Schema.Literal("audio-start"),
-  requestId: SafeInt,
-  token: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-})
-export const AudioStopRequestSchema = Schema.Struct({
-  type: Schema.Literal("audio-stop"),
-  requestId: SafeInt,
-})
-export const AudioRenewRequestSchema = Schema.Struct({
-  type: Schema.Literal("audio-renew"),
-  requestId: SafeInt,
-  generation: SafeInt.check(
-    Schema.isGreaterThan(0),
-    Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-  ),
-})
-export const AudioSubscribeRequestSchema = Schema.Struct({
-  type: Schema.Literal("audio-subscribe"),
-  requestId: SafeInt,
-  channel: Schema.Literals(["status", "features"]),
-})
-export const AudioUnsubscribeRequestSchema = Schema.Struct({
-  type: Schema.Literal("audio-unsubscribe"),
-  requestId: SafeInt,
-  channel: Schema.Literals(["status", "features"]),
-})
-export type AudioSourcesRequest = Schema.Schema.Type<
-  typeof AudioSourcesRequestSchema
->
-export type AudioStartRequest = Schema.Schema.Type<
-  typeof AudioStartRequestSchema
->
-export type AudioStopRequest = Schema.Schema.Type<typeof AudioStopRequestSchema>
-export type AudioRenewRequest = Schema.Schema.Type<
-  typeof AudioRenewRequestSchema
->
-export type AudioSubscribeRequest = Schema.Schema.Type<
-  typeof AudioSubscribeRequestSchema
->
-export type AudioUnsubscribeRequest = Schema.Schema.Type<
-  typeof AudioUnsubscribeRequestSchema
->
-export type AudioRequest =
-  | AudioSourcesRequest
-  | AudioStartRequest
-  | AudioStopRequest
-  | AudioRenewRequest
-  | AudioSubscribeRequest
-  | AudioUnsubscribeRequest
 export type Request =
-  HelloRequest | StateRequest | TransportRequest | ArtworkRequest | AudioRequest
-
-export const AudioStatusEventSchema = Schema.Struct({
-  type: Schema.Literal("audio-status"),
-  status: Schema.Unknown,
-})
-export const AudioFeaturesEventSchema = Schema.Struct({
-  type: Schema.Literal("audio-features"),
-  frame: Schema.Unknown,
-})
+  HelloRequest | StateRequest | TransportRequest | ArtworkRequest
 
 export const StatusEventSchema = Schema.Struct({
   type: Schema.Literal("status"),
@@ -359,8 +285,6 @@ export const StateEventSchema = Schema.Struct({
 export type Event =
   | Schema.Schema.Type<typeof StatusEventSchema>
   | Schema.Schema.Type<typeof StateEventSchema>
-  | Schema.Schema.Type<typeof AudioStatusEventSchema>
-  | Schema.Schema.Type<typeof AudioFeaturesEventSchema>
 
 export const LegacyHelloResultSchema = Schema.Struct({
   daemonInstanceId: Schema.String,
@@ -373,9 +297,6 @@ export const HelloResultSchema = Schema.Struct({
   packageVersion: Schema.String,
   protocol: NegotiatedProtocolSchema,
   capabilities: Schema.Array(CapabilitySchema),
-  audioClock: Schema.optionalKey(
-    Schema.Struct({ daemonMonotonicMs: Schema.Finite }),
-  ),
 })
 export type HelloResult = Schema.Schema.Type<typeof HelloResultSchema>
 
@@ -416,8 +337,6 @@ const TransportEnvelopeSchema = Schema.Struct({
 export const ServerFrameSchema = Schema.Union([
   StatusEventSchema,
   StateEventSchema,
-  AudioStatusEventSchema,
-  AudioFeaturesEventSchema,
   ResponseSchema,
 ])
 
@@ -503,16 +422,9 @@ export function negotiateHello(
   const maximum = Math.min(offered.maxRevision, daemon.maxRevision)
   if (minimum > maximum) return incompatibility(offered, daemon)
   const selectedRevision = maximum
-  const capabilities = daemonCapabilities
-    .filter((capability) => hello.capabilities.includes(capability))
-    .filter(
-      (capability) =>
-        (capability !== audioVisualizationCapability &&
-          capability !== audioInterestLeaseCapability) ||
-        (selectedRevision >= AUDIO_PROTOCOL_REVISION &&
-          (capability !== audioInterestLeaseCapability ||
-            hello.capabilities.includes(audioVisualizationCapability))),
-    )
+  const capabilities = daemonCapabilities.filter((capability) =>
+    hello.capabilities.includes(capability),
+  )
   if (!capabilities.includes("state-replay"))
     return protocolError(
       "UNSUPPORTED_CAPABILITY",
@@ -556,34 +468,6 @@ export function decodeRequest(value: unknown): Request {
     return decode(StateRequestSchema, value, "invalid state request")
   if (envelope.type === "artwork")
     return decode(ArtworkRequestSchema, value, "invalid artwork request")
-  if (envelope.type === "audio-sources")
-    return decode(
-      AudioSourcesRequestSchema,
-      value,
-      "invalid audio source request",
-    )
-  if (envelope.type === "audio-start")
-    return decode(AudioStartRequestSchema, value, "invalid audio start request")
-  if (envelope.type === "audio-stop")
-    return decode(AudioStopRequestSchema, value, "invalid audio stop request")
-  if (envelope.type === "audio-renew")
-    return decode(
-      AudioRenewRequestSchema,
-      value,
-      "invalid audio renewal request",
-    )
-  if (envelope.type === "audio-subscribe")
-    return decode(
-      AudioSubscribeRequestSchema,
-      value,
-      "invalid audio subscribe request",
-    )
-  if (envelope.type === "audio-unsubscribe")
-    return decode(
-      AudioUnsubscribeRequestSchema,
-      value,
-      "invalid audio unsubscribe request",
-    )
   if (envelope.type === "transport") {
     const raw = decode(
       TransportEnvelopeSchema,

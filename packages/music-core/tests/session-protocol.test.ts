@@ -11,74 +11,50 @@ import {
   negotiateHello,
   PROTOCOL,
   ProtocolErrorSchema,
-  audioVisualizationCapability,
-  audioInterestLeaseCapability,
   baselineCapabilities,
   type HelloRequest,
 } from "../session/protocol.ts"
 
 describe("session protocol", () => {
-  test("lease renewal validates generation and requires explicit audio negotiation at revision 2", () => {
-    expect(
-      decodeRequest({ type: "audio-renew", requestId: 1, generation: 3 }),
-    ).toEqual({ type: "audio-renew", requestId: 1, generation: 3 })
-    for (const generation of [
-      0,
-      -1,
-      1.5,
-      NaN,
-      Infinity,
-      Number.MAX_SAFE_INTEGER + 1,
-      "3",
-      null,
-      undefined,
-    ])
-      expect(() =>
-        decodeRequest({ type: "audio-renew", requestId: 1, generation }),
-      ).toThrow()
+  test("retired capture requests cannot run or negotiate access while playback remains compatible", () => {
+    const retired = [
+      "audio-visualization-v1",
+      "audio-interest-lease-v1",
+      "audio-application-source-v1",
+      "audio-terminal-evidence-v1",
+    ]
     const hello: HelloRequest = {
       type: "hello",
       requestId: 0,
       protocol: PROTOCOL,
       packageVersion: "test",
-      clientId: "lease",
+      clientId: "retired-client",
       hostKind: "test",
-      capabilities: [
-        ...baselineCapabilities,
-        audioVisualizationCapability,
-        audioInterestLeaseCapability,
-      ],
+      capabilities: [...baselineCapabilities, ...retired],
     }
-    const supported = [
-      ...baselineCapabilities,
-      audioVisualizationCapability,
-      audioInterestLeaseCapability,
-    ]
-    expect(negotiateHello(hello, PROTOCOL, supported)).toMatchObject({
-      capabilities: supported,
+    expect(negotiateHello(hello)).toMatchObject({
+      capabilities: [...baselineCapabilities],
     })
+    for (const type of [
+      "audio-sources",
+      "audio-start",
+      "audio-stop",
+      "audio-renew",
+      "audio-subscribe",
+      "audio-unsubscribe",
+    ])
+      expect(() =>
+        decodeRequest({
+          type,
+          requestId: 1,
+          token: "old-selection",
+          generation: 1,
+          channel: "features",
+        }),
+      ).toThrow()
     expect(
-      negotiateHello(
-        { ...hello, protocol: { ...PROTOCOL, maxRevision: 1 } },
-        PROTOCOL,
-        supported,
-      ),
-    ).toMatchObject({
-      capabilities: expect.not.arrayContaining([
-        audioInterestLeaseCapability,
-        audioVisualizationCapability,
-      ]),
-    })
-    expect(
-      negotiateHello(
-        {
-          ...hello,
-          capabilities: [...baselineCapabilities, audioInterestLeaseCapability],
-        },
-        PROTOCOL,
-        supported,
-      ),
-    ).toMatchObject({ capabilities: [...baselineCapabilities] })
+      decodeRequest({ type: "transport", requestId: 2, action: "play" }),
+    ).toMatchObject({ action: "play" })
   })
   test("decodes a v1 hello and split/multiple frames", () => {
     expect(

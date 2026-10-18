@@ -566,25 +566,6 @@ const scriptedGeneration = (daemonInstanceId: string) => {
       new Promise<ArtworkResult>((resolve, reject) =>
         artworkResolvers.push({ resolve, reject }),
       ),
-    listAudioSources: async () => ({
-      availability: "unavailable",
-      reason: "not-negotiated",
-      sources: [],
-    }),
-    startAudioCapture: () =>
-      Promise.reject(
-        new MusicSessionClientError({
-          code: "UNSUPPORTED_CAPABILITY",
-          message: "audio-visualization-v1 was not negotiated",
-          retryable: false,
-        }),
-      ),
-    stopAudioCapture: async () => ({
-      type: "rejected",
-      reason: "not-joined",
-    }),
-    subscribeAudioStatus: () => () => {},
-    subscribeAudioFeatures: () => () => {},
     dispose: () => {
       disposed = true
       statusListeners.clear()
