@@ -67,10 +67,10 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.87.1",
-    "@types/bun": "^1.4.2",
-    "@types/node": "^26.6.2",
-    "effect": "4.0.0-rc.117",
-    "prettier": "^3.9.9",
+    "@types/bun": "^1.4.3",
+    "@types/node": "^26.6.5",
+    "effect": "4.0.5",
+    "prettier": "^3.9.10",
     "typescript": "^7.0.2"
   }
 }
