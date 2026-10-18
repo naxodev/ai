@@ -14,6 +14,18 @@ type AuditLock = {
   packages: Record<string, [string, string, DependencyGroups?, ...unknown[]]>
 }
 
+test("CodeQL steps share a version so analysis can read the initialization configuration", async () => {
+  const workflow = await Bun.file(
+    new URL("../.github/workflows/security.yml", import.meta.url),
+  ).text()
+  const versions = [
+    ...workflow.matchAll(/^\s*uses:\s*github\/codeql-action\/[\w-]+@(\S+)/gm),
+  ].map(([, version]) => version)
+
+  expect(versions.length).toBeGreaterThan(1)
+  expect(new Set(versions).size).toBe(1)
+})
+
 test("security overrides remove all affected serializer and TOML resolutions", async () => {
   const manifest = (await Bun.file("package.json").json()) as {
     overrides: Record<string, string>
