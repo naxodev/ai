@@ -30,6 +30,12 @@ The initial local follow-up used Seroval `1.6.4` and smol-toml `1.9.0`, with lif
 
 The full `bun run check` gate also passed, including all six package smokes, packed-consumer audits, and minimum-Bun checks.
 
+## Nx 23.3.0 hold
+
+Nx 23.3.0 pins Undici `7.29.0`. That version falls within the affected range of [the TLS validation advisory](https://github.com/advisories/GHSA-w293-vg96-wgc3) and other findings reported by the audit. Dependency proposal [#262](https://github.com/naxodev/ai/pull/262) fails the audit on all three platforms.
+
+The workspace retains Nx and `@nx/js` at `23.2.1`. Dependabot skips only `23.3.0` for these two packages; other versions remain eligible for updates. The existing audit gate and exceptions are unchanged.
+
 ## Unpatched cache advisory
 
 [GHSA-ch52-4w7c-c8xp](https://github.com/advisories/GHSA-ch52-4w7c-c8xp) affects `http-cache-semantics` through 4.2.0. The registry still publishes 4.2.0 as its latest release, and the advisory lists no patched version at this assessment on 3 October 2026.

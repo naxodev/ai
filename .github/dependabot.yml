@@ -4,6 +4,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "@nx/js"
+        versions: ["23.3.0"]
+      - dependency-name: "nx"
+        versions: ["23.3.0"]
     groups:
       opencode-host:
         patterns:
