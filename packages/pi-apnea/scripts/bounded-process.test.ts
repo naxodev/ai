@@ -12,6 +12,25 @@ function emptyStream(): ReadableStream<Uint8Array> {
 }
 
 describe("runBoundedCommand", () => {
+  test("isolates child Pi settings without changing the parent agent directory", async () => {
+    const parentAgentDir = process.env.PI_CODING_AGENT_DIR
+    const childAgentDir = "pi-smoke-private-agent-directory"
+    const result = await runBoundedCommand(
+      [
+        process.execPath,
+        "-e",
+        'process.stdout.write(process.env.PI_CODING_AGENT_DIR ?? "missing")',
+      ],
+      {
+        label: "isolated child environment",
+        timeoutMs: 5_000,
+        env: { ...process.env, PI_CODING_AGENT_DIR: childAgentDir },
+      },
+    )
+    expect(result.stdout).toBe(childAgentDir)
+    expect(process.env.PI_CODING_AGENT_DIR).toBe(parentAgentDir)
+  })
+
   test.skipIf(process.platform !== "darwin")(
     "cleans up a macOS process group after its shell leader exits",
     async () => {

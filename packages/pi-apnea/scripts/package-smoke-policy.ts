@@ -5,3 +5,17 @@ export function assertPeerVersion(version: string, range: string): void {
     )
   }
 }
+
+export function selectPiVersion(
+  developmentVersion: string,
+  peerRange: string,
+  override?: string,
+): string {
+  const version = override ?? developmentVersion
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version))
+    throw new Error(
+      `Pi smoke version must be an exact stable version: ${version}`,
+    )
+  assertPeerVersion(version, peerRange)
+  return version
+}

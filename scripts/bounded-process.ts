@@ -47,6 +47,7 @@ type SpawnedChild = {
 
 type SpawnOptions = {
   cwd?: string
+  env?: NodeJS.ProcessEnv
   detached: boolean
   stdin: "pipe"
   stdout: "pipe"
@@ -72,6 +73,8 @@ export type BoundedProcessDeps = {
 
 export type BoundedCommandOptions = {
   cwd?: string
+  /** Complete child environment; omit to inherit the parent environment. */
+  env?: NodeJS.ProcessEnv
   label: string
   timeoutMs: number
   terminationGraceMs?: number
@@ -284,6 +287,7 @@ export async function runBoundedCommand(
     options.processGroup ?? (platform !== "win32" ? true : false)
   const child = deps.spawn(args, {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.env === undefined ? {} : { env: options.env }),
     detached: processGroup,
     stdin: "pipe",
     stdout: "pipe",
