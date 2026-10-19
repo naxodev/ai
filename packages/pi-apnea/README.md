@@ -9,6 +9,8 @@ Pi adapter for the [Apnea workflow engine](../apnea/README.md). It registers Apn
 - Bun within core's declared runtime range for the transitive `apnea` executable
 - Herdr and at least one supported agent CLI, as documented by [`@naxodev/apnea`](../apnea/README.md#requirements)
 
+Pi 1.3 and later 1.x releases are supported alongside the existing legacy host range. Package checks install Pi 1.3.0 and 0.87.1 separately. Each check loads the packed extension, verifies command registration, and executes `workflow_status` without a model request.
+
 ## Install
 
 ![Pi displaying Apnea's command reference and a labeled scripted demonstration](https://raw.githubusercontent.com/naxodev/ai/main/docs/media/pi-apnea/preview.png)
