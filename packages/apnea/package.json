@@ -66,8 +66,8 @@
     "typebox": "^1.3.37"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.3",
-    "@types/node": "^26.6.5",
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.6",
     "prettier": "^3.9.10",
     "typescript": "^7.0.2"
   }
