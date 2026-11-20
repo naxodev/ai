@@ -30,12 +30,12 @@
     "security:consumers": "bun run scripts/opencode-consumer-audit.ts"
   },
   "devDependencies": {
-    "@nx/js": "23.2.1",
-    "@types/bun": "^1.4.3",
-    "nx": "23.2.1",
-    "oxlint": "1.88.0",
-    "oxlint-tsgolint": "7.0.2004",
-    "prettier": "3.9.10",
+    "@nx/js": "24.0.6",
+    "@types/bun": "^1.4.4",
+    "nx": "24.0.6",
+    "oxlint": "1.94.0",
+    "oxlint-tsgolint": "7.0.2007",
+    "prettier": "3.10.1",
     "typescript": "7.0.2"
   },
   "patchedDependencies": {
